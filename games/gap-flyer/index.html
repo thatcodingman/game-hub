@@ -23,6 +23,7 @@ const BALE_WIDTH = 60;
 const HORSE_X = 110;
 const HORSE_HITBOX_W = 40;  // slightly smaller than the visual for a forgiving hitbox
 const HORSE_HITBOX_H = 24;
+const NEAR_MISS_THRESHOLD = 14; // px clearance below which a camera shake fires
 
 const COLOR_SKY_TOP = 0x7dd3fc;
 const COLOR_SKY_BOTTOM = 0xfed7aa;
@@ -36,6 +37,17 @@ const COLOR_MANE = 0xfef3c7;
 const COLOR_WING = 0xf8fafc;
 
 const BEST_SCORE_KEY = 'gapflyer_best';
+
+// Named difficulty bands instead of continuous linear scaling — feels like a
+// designed curve rather than a formula, and stabilizes at Endgame instead of
+// tightening forever.
+function getDifficultyPhase(score) {
+  if (score < 5)  return { speed: 200, spacing: 1700, minGap: 220, movingChance: 0,    label: 'Warm-up' };
+  if (score < 15) return { speed: 250, spacing: 1500, minGap: 195, movingChance: 0.15, label: 'Building' };
+  if (score < 30) return { speed: 300, spacing: 1250, minGap: 170, movingChance: 0.30, label: 'Pressure' };
+  if (score < 50) return { speed: 340, spacing: 1050, minGap: 150, movingChance: 0.45, label: 'Mastery' };
+  return { speed: 360, spacing: 950, minGap: 150, movingChance: 0.50, label: 'Endgame' };
+}
 
 class MainScene extends Phaser.Scene {
   constructor() { super('MainScene'); }
@@ -158,13 +170,20 @@ class MainScene extends Phaser.Scene {
     });
   }
 
+  pickObstacleType(score) {
+    const phase = getDifficultyPhase(score);
+    return Math.random() < phase.movingChance ? 'MOVING' : 'STATIC';
+  }
+
   spawnObstaclePair() {
-    const minGap = Math.max(150, 220 - this.score * 2);
+    const phase = getDifficultyPhase(this.score);
+    const minGap = phase.minGap;
     const gapHeight = Phaser.Math.Between(minGap, minGap + 30);
     const gapCenter = Phaser.Math.Between(140, GAME_HEIGHT - GROUND_HEIGHT - 140);
     const gapTop = gapCenter - gapHeight / 2;
     const gapBottom = gapCenter + gapHeight / 2;
     const startX = GAME_WIDTH + BALE_WIDTH / 2;
+    const type = this.pickObstacleType(this.score);
 
     const topH = gapTop;
     const topRect = this.add.rectangle(startX, topH / 2, BALE_WIDTH, topH, COLOR_BALE);
@@ -174,9 +193,19 @@ class MainScene extends Phaser.Scene {
     const botRect = this.add.rectangle(startX, gapBottom + botH / 2, BALE_WIDTH, botH, COLOR_BALE);
     this.addBaleLines(botRect, botH);
 
-    this.obstaclePairs.push({ x: startX, top: topRect, topH, bottom: botRect, botH, scored: false });
+    const pair = { x: startX, top: topRect, topH, bottom: botRect, botH, scored: false, type };
 
-    this.spawnHayWisp(startX, gapCenter);
+    if (type === 'MOVING') {
+      pair.baseGapCenter = gapCenter;
+      pair.gapHeight = gapHeight;
+      pair.oscAmplitude = 40 + Math.min(this.score, 20) * 1.5;
+      pair.oscSpeed = 2.2;
+      pair.oscPhase = Math.random() * Math.PI * 2;
+    }
+
+    this.obstaclePairs.push(pair);
+
+    if (type === 'STATIC') this.spawnHayWisp(startX, gapCenter);
   }
 
   addBaleLines(rect, height) {
@@ -195,6 +224,25 @@ class MainScene extends Phaser.Scene {
     const wisp = this.add.ellipse(x, y, 14, 8, COLOR_HAY);
     this.tweens.add({ targets: wisp, y: y - 6, duration: 450, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     this.hayWisps.push({ sprite: wisp, collected: false });
+  }
+
+  spawnHayBurst(x, y) {
+    // Small scattering straw particles on catch — pure visual reward, no gameplay effect.
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI * 2 / 6) * i + Math.random() * 0.3;
+      const dist = 18 + Math.random() * 10;
+      const bit = this.add.rectangle(x, y, 3, 8, COLOR_HAY);
+      bit.rotation = angle;
+      this.tweens.add({
+        targets: bit,
+        x: x + Math.cos(angle) * dist,
+        y: y + Math.sin(angle) * dist,
+        alpha: 0,
+        duration: 350,
+        ease: 'Quad.easeOut',
+        onComplete: () => bit.destroy()
+      });
+    }
   }
 
   checkHit(rect, w, h) {
@@ -221,7 +269,9 @@ class MainScene extends Phaser.Scene {
 
     if (!this.started) return; // nothing spawns until the first flap
 
-    this.obstacleSpeed = 200 + Math.min(this.score * 4, 160);
+    const phase = getDifficultyPhase(this.score);
+    this.obstacleSpeed = phase.speed;
+    this.spawnInterval = phase.spacing;
 
     this.spawnTimer += delta;
     if (this.spawnTimer >= this.spawnInterval) {
@@ -234,8 +284,36 @@ class MainScene extends Phaser.Scene {
       pair.x -= this.obstacleSpeed * dt;
       pair.top.x = pair.x;
       pair.bottom.x = pair.x;
+
+      if (pair.type === 'MOVING') {
+        const rawCenter = pair.baseGapCenter + pair.oscAmplitude * Math.sin((time / 1000) * pair.oscSpeed + pair.oscPhase);
+        const gapCenter = Phaser.Math.Clamp(rawCenter, 100, GAME_HEIGHT - GROUND_HEIGHT - 100);
+        const gapTop = gapCenter - pair.gapHeight / 2;
+        const gapBottom = gapCenter + pair.gapHeight / 2;
+
+        pair.topH = gapTop;
+        pair.top.setSize(BALE_WIDTH, pair.topH);
+        pair.top.y = pair.topH / 2;
+
+        pair.botH = (GAME_HEIGHT - GROUND_HEIGHT) - gapBottom;
+        pair.bottom.setSize(BALE_WIDTH, pair.botH);
+        pair.bottom.y = gapBottom + pair.botH / 2;
+      }
+
       this.redrawBaleLines(pair.top, pair.topH);
       this.redrawBaleLines(pair.bottom, pair.botH);
+
+      if (!pair.nearMissFired && Math.abs(pair.x - this.horseX) < BALE_WIDTH) {
+        const topEdge = pair.top.y + pair.topH / 2;
+        const botEdge = pair.bottom.y - pair.botH / 2;
+        const horseTopEdge = this.horseY - HORSE_HITBOX_H / 2;
+        const horseBotEdge = this.horseY + HORSE_HITBOX_H / 2;
+        const clearance = Math.min(horseTopEdge - topEdge, botEdge - horseBotEdge);
+        if (clearance >= 0 && clearance < NEAR_MISS_THRESHOLD) {
+          pair.nearMissFired = true;
+          this.cameras.main.shake(120, 0.006);
+        }
+      }
 
       if (!pair.scored && pair.x + BALE_WIDTH / 2 < this.horseX) {
         pair.scored = true;
@@ -266,6 +344,7 @@ class MainScene extends Phaser.Scene {
         this.hay++;
         this.hayText.setText('Hay: ' + this.hay);
         SFX.pickup();
+        this.spawnHayBurst(wisp.sprite.x, wisp.sprite.y);
         wisp.sprite.destroy();
         this.hayWisps.splice(i, 1);
         continue;
