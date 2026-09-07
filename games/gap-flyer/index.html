@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Gap Flyer</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; overflow:hidden; height:100%; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="/assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const GROUND_HEIGHT = 40;
+const GRAVITY = 1500;      // px/s^2
+const FLAP_VELOCITY = -480; // px/s, negative = upward
+const BALE_WIDTH = 60;
+const HORSE_X = 110;
+const HORSE_HITBOX_W = 40;  // slightly smaller than the visual for a forgiving hitbox
+const HORSE_HITBOX_H = 24;
+
+const COLOR_SKY_TOP = 0x7dd3fc;
+const COLOR_SKY_BOTTOM = 0xfed7aa;
+const COLOR_GROUND = 0x65a30d;
+const COLOR_BALE = 0xd97706;
+const COLOR_BALE_LINE = 0xb45309;
+const COLOR_HAY = 0xfbbf24;
+const COLOR_HORSE_BODY = 0xb45309;
+const COLOR_HORSE_DARK = 0x78350f;
+const COLOR_MANE = 0xfef3c7;
+const COLOR_WING = 0xf8fafc;
+
+const BEST_SCORE_KEY = 'gapflyer_best';
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.started = false;
+    this.gameOver = false;
+    this.horseX = HORSE_X;
+    this.horseY = GAME_HEIGHT / 2;
+    this.horseVY = 0;
+    this.score = 0;
+    this.hay = 0;
+    this.obstacleSpeed = 200;
+    this.spawnTimer = 0;
+    this.spawnInterval = 1500;
+    this.obstaclePairs = [];
+    this.hayWisps = [];
+    this.bestScore = parseInt(localStorage.getItem(BEST_SCORE_KEY) || '0', 10);
+
+    this.drawBackground();
+
+    this.horseContainer = this.createHorseSprite(this.horseX, this.horseY);
+
+    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#1c1917' });
+    this.hayText = this.add.text(10, 34, 'Hay: 0', { fontFamily: 'monospace', fontSize: '16px', color: '#78350f' });
+    this.bestText = this.add.text(10, 58, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '14px', color: '#44403c' });
+
+    this.startText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, 'Tap to Fly', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#1c1917'
+    }).setOrigin(0.5);
+
+    this.gameOverText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, '', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#1c1917', align: 'center'
+    }).setOrigin(0.5);
+
+    this.idleBobTween = this.tweens.add({
+      targets: this.horseContainer,
+      y: this.horseY - 10,
+      duration: 500,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    this.input.on('pointerdown', () => {
+      if (this.gameOver) this.scene.restart();
+      else this.flap();
+    });
+    this.input.keyboard.on('keydown-SPACE', () => {
+      if (this.gameOver) this.scene.restart();
+      else this.flap();
+    });
+  }
+
+  drawBackground() {
+    const sky = this.add.graphics();
+    sky.fillGradientStyle(COLOR_SKY_TOP, COLOR_SKY_TOP, COLOR_SKY_BOTTOM, COLOR_SKY_BOTTOM, 1);
+    sky.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT - GROUND_HEIGHT);
+
+    // simple drifting clouds for depth, purely decorative
+    for (let i = 0; i < 3; i++) {
+      const cx = 60 + i * 140;
+      const cy = 90 + i * 60;
+      const cloud = this.add.container(cx, cy);
+      cloud.add(this.add.ellipse(0, 0, 50, 22, 0xffffff, 0.7));
+      cloud.add(this.add.ellipse(20, -6, 34, 18, 0xffffff, 0.7));
+      cloud.add(this.add.ellipse(-20, -4, 30, 16, 0xffffff, 0.7));
+      this.tweens.add({ targets: cloud, x: cx - 30, duration: 9000 + i * 2000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    }
+
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT / 2, GAME_WIDTH, GROUND_HEIGHT, COLOR_GROUND);
+  }
+
+  createHorseSprite(x, y) {
+    const container = this.add.container(x, y);
+    const legBack = this.add.rectangle(-6, 12, 5, 14, COLOR_HORSE_DARK);
+    const legFront = this.add.rectangle(10, 12, 5, 14, COLOR_HORSE_DARK);
+    const body = this.add.ellipse(0, 0, 46, 26, COLOR_HORSE_BODY);
+    const tail = this.add.triangle(-24, 0, 0, -8, 0, 8, -16, 2, COLOR_MANE);
+    const head = this.add.ellipse(22, -8, 18, 14, COLOR_HORSE_BODY);
+    const muzzle = this.add.ellipse(30, -5, 9, 7, COLOR_HORSE_DARK);
+    const mane = this.add.ellipse(13, -17, 11, 9, COLOR_MANE);
+    const wing = this.add.triangle(-4, -4, 0, 0, -24, -20, -32, 2, COLOR_WING);
+
+    container.add([legBack, legFront, body, tail, head, muzzle, mane, wing]);
+
+    this.idleWingTween = this.tweens.add({
+      targets: wing,
+      angle: { from: -6, to: 16 },
+      duration: 260,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    container.wing = wing;
+    return container;
+  }
+
+  flap() {
+    if (!this.started) {
+      this.started = true;
+      this.startText.setVisible(false);
+      if (this.idleBobTween) this.idleBobTween.stop();
+    }
+    this.horseVY = FLAP_VELOCITY;
+    SFX.jump();
+
+    if (this.idleWingTween) this.idleWingTween.pause();
+    this.tweens.killTweensOf(this.horseContainer.wing);
+    this.horseContainer.wing.angle = -34;
+    this.tweens.add({
+      targets: this.horseContainer.wing,
+      angle: 14,
+      duration: 160,
+      ease: 'Sine.easeOut',
+      onComplete: () => { if (this.idleWingTween) this.idleWingTween.resume(); }
+    });
+  }
+
+  spawnObstaclePair() {
+    const minGap = Math.max(150, 220 - this.score * 2);
+    const gapHeight = Phaser.Math.Between(minGap, minGap + 30);
+    const gapCenter = Phaser.Math.Between(140, GAME_HEIGHT - GROUND_HEIGHT - 140);
+    const gapTop = gapCenter - gapHeight / 2;
+    const gapBottom = gapCenter + gapHeight / 2;
+    const startX = GAME_WIDTH + BALE_WIDTH / 2;
+
+    const topH = gapTop;
+    const topRect = this.add.rectangle(startX, topH / 2, BALE_WIDTH, topH, COLOR_BALE);
+    this.addBaleLines(topRect, topH);
+
+    const botH = (GAME_HEIGHT - GROUND_HEIGHT) - gapBottom;
+    const botRect = this.add.rectangle(startX, gapBottom + botH / 2, BALE_WIDTH, botH, COLOR_BALE);
+    this.addBaleLines(botRect, botH);
+
+    this.obstaclePairs.push({ x: startX, top: topRect, topH, bottom: botRect, botH, scored: false });
+
+    this.spawnHayWisp(startX, gapCenter);
+  }
+
+  addBaleLines(rect, height) {
+    // simple stacked-bale texture: a few horizontal lines across the rect
+    const lines = this.add.graphics();
+    lines.lineStyle(2, COLOR_BALE_LINE, 0.6);
+    const segments = Math.max(1, Math.floor(height / 34));
+    for (let i = 1; i <= segments; i++) {
+      const ly = rect.y - height / 2 + (height / (segments + 1)) * i;
+      lines.lineBetween(rect.x - BALE_WIDTH / 2, ly, rect.x + BALE_WIDTH / 2, ly);
+    }
+    rect.baleLines = lines;
+  }
+
+  spawnHayWisp(x, y) {
+    const wisp = this.add.ellipse(x, y, 14, 8, COLOR_HAY);
+    this.tweens.add({ targets: wisp, y: y - 6, duration: 450, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.hayWisps.push({ sprite: wisp, collected: false });
+  }
+
+  checkHit(rect, w, h) {
+    const hw = HORSE_HITBOX_W / 2, hh = HORSE_HITBOX_H / 2;
+    return Math.abs(this.horseX - rect.x) < (hw + w / 2) && Math.abs(this.horseY - rect.y) < (hh + h / 2);
+  }
+
+  update(time, delta) {
+    if (this.gameOver) return;
+    const dt = delta / 1000;
+
+    // horse physics
+    if (this.started) {
+      this.horseVY += GRAVITY * dt;
+      this.horseY += this.horseVY * dt;
+      this.horseContainer.y = this.horseY;
+      this.horseContainer.angle = Phaser.Math.Clamp(this.horseVY / 12, -25, 75);
+
+      if (this.horseY < 0 || this.horseY > GAME_HEIGHT - GROUND_HEIGHT) {
+        this.triggerGameOver();
+        return;
+      }
+    }
+
+    if (!this.started) return; // nothing spawns until the first flap
+
+    this.obstacleSpeed = 200 + Math.min(this.score * 4, 160);
+
+    this.spawnTimer += delta;
+    if (this.spawnTimer >= this.spawnInterval) {
+      this.spawnTimer = 0;
+      this.spawnObstaclePair();
+    }
+
+    for (let i = this.obstaclePairs.length - 1; i >= 0; i--) {
+      const pair = this.obstaclePairs[i];
+      pair.x -= this.obstacleSpeed * dt;
+      pair.top.x = pair.x;
+      pair.bottom.x = pair.x;
+      this.redrawBaleLines(pair.top, pair.topH);
+      this.redrawBaleLines(pair.bottom, pair.botH);
+
+      if (!pair.scored && pair.x + BALE_WIDTH / 2 < this.horseX) {
+        pair.scored = true;
+        this.score++;
+        this.scoreText.setText('Score: ' + this.score);
+        SFX.blip();
+      }
+
+      if (this.checkHit(pair.top, BALE_WIDTH, pair.topH) || this.checkHit(pair.bottom, BALE_WIDTH, pair.botH)) {
+        this.triggerGameOver();
+        return;
+      }
+
+      if (pair.x < -BALE_WIDTH) {
+        pair.top.destroy();
+        pair.bottom.destroy();
+        pair.top.baleLines.destroy();
+        pair.bottom.baleLines.destroy();
+        this.obstaclePairs.splice(i, 1);
+      }
+    }
+
+    for (let i = this.hayWisps.length - 1; i >= 0; i--) {
+      const wisp = this.hayWisps[i];
+      wisp.sprite.x -= this.obstacleSpeed * dt;
+      if (!wisp.collected && Math.abs(this.horseX - wisp.sprite.x) < 20 && Math.abs(this.horseY - wisp.sprite.y) < 20) {
+        wisp.collected = true;
+        this.hay++;
+        this.hayText.setText('Hay: ' + this.hay);
+        SFX.pickup();
+        wisp.sprite.destroy();
+        this.hayWisps.splice(i, 1);
+        continue;
+      }
+      if (wisp.sprite.x < -20) {
+        wisp.sprite.destroy();
+        this.hayWisps.splice(i, 1);
+      }
+    }
+  }
+
+  redrawBaleLines(rect, height) {
+    const lines = rect.baleLines;
+    lines.clear();
+    lines.lineStyle(2, COLOR_BALE_LINE, 0.6);
+    const segments = Math.max(1, Math.floor(height / 34));
+    for (let i = 1; i <= segments; i++) {
+      const ly = rect.y - height / 2 + (height / (segments + 1)) * i;
+      lines.lineBetween(rect.x - BALE_WIDTH / 2, ly, rect.x + BALE_WIDTH / 2, ly);
+    }
+  }
+
+  triggerGameOver() {
+    SFX.fail();
+    this.gameOver = true;
+    let isNewBest = false;
+    if (this.score > this.bestScore) {
+      this.bestScore = this.score;
+      localStorage.setItem(BEST_SCORE_KEY, String(this.bestScore));
+      isNewBest = true;
+    }
+    this.gameOverText.setText(
+      'GAME OVER\n' +
+      'Score: ' + this.score + '\n' +
+      'Hay: ' + this.hay + '\n' +
+      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
+      'Tap to retry'
+    );
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#7dd3fc',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
