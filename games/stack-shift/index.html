@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Stack Shift</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const BLOCK_THICKNESS = 46;
+const BASE_SIZE = 210;
+const INITIAL_SIZE = 150;
+const MIN_ARM_SIZE = 70;
+const PERFECT_TOLERANCE = 6;
+const SWING_AMPLITUDE = 110;
+const SWING_BASE_SPEED = 1.6;
+const BEST_KEY = 'stackshift_best';
+
+const COLOR_ICE = 0xbae6fd;
+const COLOR_ICE_LIGHT = 0xf0f9ff;
+const COLOR_ICE_EDGE = 0x0ea5e9;
+const COLOR_BASE = 0x7dd3fc;
+const COLOR_LAVA_TOP = 0x431407;
+const COLOR_LAVA_BOTTOM = 0xea580c;
+const COLOR_LAVA_GLOW = 0xfb923c;
+const COLOR_SPARK = 0xfacc15;
+
+const DIRS = ['UP', 'RIGHT', 'DOWN', 'LEFT'];
+const DIR_ARROWS = { UP: '\u2191', RIGHT: '\u2192', DOWN: '\u2193', LEFT: '\u2190' };
+
+function nextDirection(dir) {
+  return DIRS[(DIRS.indexOf(dir) + 1) % 4];
+}
+
+function dirInfo(dir) {
+  if (dir === 'UP')    return { axis: 'y', sign: -1, swingAxis: 'x' };
+  if (dir === 'DOWN')  return { axis: 'y', sign: 1,  swingAxis: 'x' };
+  if (dir === 'RIGHT') return { axis: 'x', sign: 1,  swingAxis: 'y' };
+  return { axis: 'x', sign: -1, swingAxis: 'y' }; // LEFT
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.started = false;
+    this.gameOver = false;
+    this.score = 0;
+    this.totalBlocks = 0;
+    this.perfectStreak = 0;
+    this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+
+    this.growthDir = 'UP';
+    this.blocksSinceShift = 0;
+    this.shiftInterval = 5;
+    this.shiftCount = 0;
+
+    this.prevX = 0;
+    this.prevY = 0;
+    this.prevSwingSize = BASE_SIZE;
+    this.currentSize = INITIAL_SIZE;
+    this.roundElapsed = 0;
+    this.currentSwingOffset = 0;
+
+    this.drawLavaBackground();
+
+    // Base platform (world space)
+    this.baseVisual = this.createIceVisual(BASE_SIZE, BLOCK_THICKNESS, true);
+    this.baseVisual.setPosition(0, 0);
+
+    this.movingVisual = null;
+
+    // HUD (fixed to screen)
+    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#f8fafc' }).setScrollFactor(0);
+    this.bestText = this.add.text(10, 34, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '14px', color: '#cbd5e1' }).setScrollFactor(0);
+    this.dirText = this.add.text(GAME_WIDTH - 10, 10, DIR_ARROWS[this.growthDir], {
+      fontFamily: 'monospace', fontSize: '30px', color: '#f8fafc'
+    }).setOrigin(1, 0).setScrollFactor(0);
+
+    this.startText = this.add.text(GAME_WIDTH / 2, 140, 'Tap to Stack', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#f8fafc'
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    this.gameOverText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, '', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#f8fafc', align: 'center'
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    this.cameras.main.scrollX = -GAME_WIDTH / 2;
+    this.cameras.main.scrollY = -GAME_HEIGHT * 0.62;
+
+    this.input.on('pointerdown', () => {
+      if (!this.started) this.startGame();
+      else if (this.gameOver) this.scene.restart();
+      else this.handleDrop();
+    });
+  }
+
+  drawLavaBackground() {
+    const g = this.add.graphics().setScrollFactor(0);
+    g.fillGradientStyle(COLOR_LAVA_TOP, COLOR_LAVA_TOP, COLOR_LAVA_BOTTOM, COLOR_LAVA_BOTTOM, 1);
+    g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    this.lavaGlow = this.add.graphics().setScrollFactor(0);
+    this.lavaGlow.fillStyle(COLOR_LAVA_GLOW, 0.15);
+    this.lavaGlow.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    this.tweens.add({ targets: this.lavaGlow, alpha: 0.35, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+    for (let i = 0; i < 8; i++) {
+      const bubble = this.add.circle(
+        Phaser.Math.Between(0, GAME_WIDTH),
+        Phaser.Math.Between(0, GAME_HEIGHT),
+        Phaser.Math.Between(2, 5),
+        COLOR_LAVA_GLOW, 0.5
+      ).setScrollFactor(0);
+      this.tweens.add({
+        targets: bubble,
+        y: bubble.y - 40,
+        alpha: 0,
+        duration: 1800 + Math.random() * 1200,
+        repeat: -1,
+        delay: Math.random() * 2000,
+        ease: 'Sine.easeInOut'
+      });
+    }
+  }
+
+  createIceVisual(w, h, isBase) {
+    const c = this.add.container(0, 0);
+    const body = this.add.rectangle(0, 0, w, h, isBase ? COLOR_BASE : COLOR_ICE).setStrokeStyle(2, COLOR_ICE_EDGE, 0.8);
+    const shine = this.add.rectangle(-w * 0.2, -h * 0.22, w * 0.4, h * 0.28, COLOR_ICE_LIGHT, 0.6);
+    c.add([body, shine]);
+    return c;
+  }
+
+  startGame() {
+    this.started = true;
+    this.startText.setVisible(false);
+    this.startNewRound();
+  }
+
+  startNewRound() {
+    this.roundElapsed = 0;
+    if (this.movingVisual) this.movingVisual.destroy();
+    const info = dirInfo(this.growthDir);
+    const w = info.axis === 'y' ? this.currentSize : BLOCK_THICKNESS;
+    const h = info.axis === 'y' ? BLOCK_THICKNESS : this.currentSize;
+    this.movingVisual = this.createIceVisual(w, h, false);
+  }
+
+  updateDirText() {
+    this.dirText.setText(DIR_ARROWS[this.growthDir]);
+    const blocksLeft = this.shiftInterval - this.blocksSinceShift;
+    if (blocksLeft <= 2) {
+      this.tweens.killTweensOf(this.dirText);
+      this.dirText.setScale(1);
+      this.tweens.add({ targets: this.dirText, scale: 1.25, duration: 220, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    } else {
+      this.tweens.killTweensOf(this.dirText);
+      this.dirText.setScale(1);
+    }
+  }
+
+  spawnBurst(x, y, color) {
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI * 2 / 6) * i + Math.random() * 0.3;
+      const dist = 16 + Math.random() * 10;
+      const bit = this.add.circle(x, y, 3, color);
+      this.tweens.add({
+        targets: bit,
+        x: x + Math.cos(angle) * dist,
+        y: y + Math.sin(angle) * dist,
+        alpha: 0,
+        duration: 320,
+        ease: 'Quad.easeOut',
+        onComplete: () => bit.destroy()
+      });
+    }
+  }
+
+  handleDrop() {
+    const info = dirInfo(this.growthDir);
+    const growthPos = this[info.axis === 'x' ? 'prevX' : 'prevY'] + info.sign * BLOCK_THICKNESS;
+    const movingCenter = this[info.swingAxis === 'x' ? 'prevX' : 'prevY'] + this.currentSwingOffset;
+    const movingSize = this.currentSize;
+
+    const prevCenter = this[info.swingAxis === 'x' ? 'prevX' : 'prevY'];
+    const prevSize = this.prevSwingSize;
+
+    const halfPrev = prevSize / 2, halfMov = movingSize / 2;
+    const prevMin = prevCenter - halfPrev, prevMax = prevCenter + halfPrev;
+    const movMin = movingCenter - halfMov, movMax = movingCenter + halfMov;
+    const overlapMin = Math.max(prevMin, movMin);
+    const overlapMax = Math.min(prevMax, movMax);
+    const overlapSize = overlapMax - overlapMin;
+
+    if (overlapSize <= 0) {
+      this.triggerMiss();
+      return;
+    }
+
+    const isPerfect = movMin >= prevMin - PERFECT_TOLERANCE && movMax <= prevMax + PERFECT_TOLERANCE;
+    const newSize = isPerfect ? movingSize : overlapSize;
+    const newSwingCenter = isPerfect ? movingCenter : (overlapMin + overlapMax) / 2;
+
+    // Lock the block at its final position
+    if (this.movingVisual) this.movingVisual.destroy();
+    const w = info.axis === 'y' ? newSize : BLOCK_THICKNESS;
+    const h = info.axis === 'y' ? BLOCK_THICKNESS : newSize;
+    const lockedVisual = this.createIceVisual(w, h, false);
+    const finalX = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? newSwingCenter : this.prevX);
+    const finalY = info.axis === 'y' ? growthPos : (info.swingAxis === 'y' ? newSwingCenter : this.prevY);
+    lockedVisual.setPosition(finalX, finalY);
+
+    if (!isPerfect) this.spawnBurst(finalX, finalY, COLOR_ICE_EDGE);
+
+    // Update state
+    this.prevX = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? newSwingCenter : this.prevX);
+    this.prevY = info.axis === 'y' ? growthPos : (info.swingAxis === 'y' ? newSwingCenter : this.prevY);
+    this.prevSwingSize = newSize;
+    this.currentSize = newSize;
+
+    this.totalBlocks++;
+    this.blocksSinceShift++;
+
+    if (isPerfect) {
+      this.perfectStreak++;
+      this.score += 25 + this.perfectStreak * 5;
+      SFX.combo(this.perfectStreak);
+      this.showFloatingText(finalX, finalY - 30, 'Perfect!', COLOR_SPARK);
+    } else {
+      this.perfectStreak = 0;
+      this.score += 10;
+      SFX.blip();
+    }
+    this.scoreText.setText('Score: ' + this.score);
+
+    if (this.blocksSinceShift >= this.shiftInterval) {
+      this.performShift();
+    }
+
+    this.startNewRound();
+  }
+
+  performShift() {
+    this.shiftCount++;
+    this.growthDir = nextDirection(this.growthDir);
+    this.blocksSinceShift = 0;
+    this.shiftInterval = this.shiftCount < 2 ? 5 : Phaser.Math.Between(4, 6);
+
+    // Fresh arm: reset the active size (with a small permanent penalty per shift)
+    // rather than let width compound-shrink forever across every arm.
+    this.currentSize = Math.max(MIN_ARM_SIZE, INITIAL_SIZE - this.shiftCount * 8);
+    this.prevSwingSize = BLOCK_THICKNESS;
+
+    this.score += 25;
+    SFX.powerup();
+    this.updateDirText();
+  }
+
+  showFloatingText(x, y, text, color) {
+    const t = this.add.text(x, y, text, { fontFamily: 'monospace', fontSize: '14px', color: '#' + color.toString(16).padStart(6, '0') }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 24, alpha: 0, duration: 500, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
+  }
+
+  triggerMiss() {
+    this.gameOver = true;
+    SFX.hit();
+    if (this.movingVisual) {
+      this.tweens.add({
+        targets: this.movingVisual,
+        scale: 0,
+        alpha: 0,
+        angle: 25,
+        duration: 380,
+        ease: 'Quad.easeIn',
+        onComplete: () => {
+          this.movingVisual.destroy();
+          this.finishGameOver();
+        }
+      });
+      this.spawnBurst(this.movingVisual.x, this.movingVisual.y, COLOR_LAVA_GLOW);
+    } else {
+      this.finishGameOver();
+    }
+  }
+
+  finishGameOver() {
+    SFX.fail();
+    let isNewBest = false;
+    if (this.score > this.bestScore) {
+      this.bestScore = this.score;
+      localStorage.setItem(BEST_KEY, String(this.bestScore));
+      isNewBest = true;
+    }
+    this.gameOverText.setText(
+      'MELTED\n' +
+      'Score: ' + this.score + '\n' +
+      'Blocks: ' + this.totalBlocks + '\n' +
+      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
+      'Tap to retry'
+    );
+  }
+
+  update(time, delta) {
+    if (this.gameOver || !this.started || !this.movingVisual) return;
+    const dt = delta / 1000;
+    this.roundElapsed += dt;
+
+    const speed = SWING_BASE_SPEED + Math.min(this.totalBlocks * 0.03, 1.2);
+    this.currentSwingOffset = SWING_AMPLITUDE * Math.sin(this.roundElapsed * speed - Math.PI / 2);
+
+    const info = dirInfo(this.growthDir);
+    const growthPos = this[info.axis === 'x' ? 'prevX' : 'prevY'] + info.sign * BLOCK_THICKNESS;
+    const swingPos = this[info.swingAxis === 'x' ? 'prevX' : 'prevY'] + this.currentSwingOffset;
+
+    const movingX = info.axis === 'x' ? growthPos : swingPos;
+    const movingY = info.axis === 'y' ? growthPos : swingPos;
+    this.movingVisual.setPosition(movingX, movingY);
+
+    // Smooth camera follow — pans, never rotates, so a Shift reads as "the
+    // view is moving to the new direction," not "the world just spun."
+    const targetScrollX = movingX - GAME_WIDTH / 2;
+    const targetScrollY = movingY - GAME_HEIGHT / 2;
+    const lerp = Math.min(1, dt * 5);
+    this.cameras.main.scrollX += (targetScrollX - this.cameras.main.scrollX) * lerp;
+    this.cameras.main.scrollY += (targetScrollY - this.cameras.main.scrollY) * lerp;
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  resolution: window.devicePixelRatio || 1,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#431407',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
