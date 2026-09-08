@@ -192,6 +192,34 @@ class MainScene extends Phaser.Scene {
     }
   }
 
+  spawnTrimFall(px, py, pw, ph, info, awaySign) {
+    const piece = this.createIceVisual(pw, ph, false);
+    piece.setPosition(px, py);
+
+    const fallDist = 40 + Math.random() * 20;
+    const targetX = info.swingAxis === 'x' ? piece.x + awaySign * fallDist : piece.x;
+    const targetY = info.swingAxis === 'y' ? piece.y + awaySign * fallDist : piece.y + fallDist * 0.6;
+
+    // Start melting partway through the fall — a quick color swap rather than
+    // a smooth tween, since Phaser doesn't tween fillColor directly.
+    this.time.delayedCall(150, () => {
+      if (piece.list && piece.list[0]) piece.list[0].setFillStyle(COLOR_LAVA_GLOW);
+      if (piece.list && piece.list[1]) piece.list[1].setVisible(false);
+    });
+
+    this.tweens.add({
+      targets: piece,
+      x: targetX,
+      y: targetY,
+      scale: 0.3,
+      alpha: 0,
+      angle: awaySign * 35,
+      duration: 500,
+      ease: 'Quad.easeIn',
+      onComplete: () => piece.destroy()
+    });
+  }
+
   handleDrop() {
     const info = dirInfo(this.growthDir);
     const growthPos = this[info.axis === 'x' ? 'prevX' : 'prevY'] + info.sign * BLOCK_THICKNESS;
@@ -227,7 +255,30 @@ class MainScene extends Phaser.Scene {
     lockedVisual.setPosition(finalX, finalY);
     this.placedBlocks.push({ x: finalX, y: finalY, w, h });
 
-    if (!isPerfect) this.spawnBurst(finalX, finalY, COLOR_ICE_EDGE);
+    if (!isPerfect) {
+      this.spawnBurst(finalX, finalY, COLOR_ICE_EDGE);
+
+      const trimThickness = info.axis === 'y' ? BLOCK_THICKNESS : null;
+      const beforeSize = overlapMin - movMin;
+      const afterSize = movMax - overlapMax;
+
+      if (beforeSize > 1) {
+        const segCenter = (movMin + overlapMin) / 2;
+        const pw = info.axis === 'y' ? beforeSize : BLOCK_THICKNESS;
+        const ph = info.axis === 'y' ? BLOCK_THICKNESS : beforeSize;
+        const px = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? segCenter : this.prevX);
+        const py = info.axis === 'y' ? growthPos : (info.swingAxis === 'y' ? segCenter : this.prevY);
+        this.spawnTrimFall(px, py, pw, ph, info, -1);
+      }
+      if (afterSize > 1) {
+        const segCenter = (overlapMax + movMax) / 2;
+        const pw = info.axis === 'y' ? afterSize : BLOCK_THICKNESS;
+        const ph = info.axis === 'y' ? BLOCK_THICKNESS : afterSize;
+        const px = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? segCenter : this.prevX);
+        const py = info.axis === 'y' ? growthPos : (info.swingAxis === 'y' ? segCenter : this.prevY);
+        this.spawnTrimFall(px, py, pw, ph, info, 1);
+      }
+    }
 
     // Update state
     this.prevX = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? newSwingCenter : this.prevX);
