@@ -48,6 +48,13 @@ function getPitchDifficulty(hits) {
   return { duration: 520, label: 'Ace' };
 }
 
+const PHASE_VISUALS = {
+  'Warm-up':  { skyTop: 0x7dd3fc, skyBottom: 0xbae6fd, grass: 0x4d7c0f, crowdSpeed: 900, lights: false },
+  'Building': { skyTop: 0x60a5fa, skyBottom: 0xfde68a, grass: 0x4d7c0f, crowdSpeed: 650, lights: false },
+  'Heat':     { skyTop: 0xfb923c, skyBottom: 0xf87171, grass: 0x3f6212, crowdSpeed: 450, lights: true },
+  'Ace':      { skyTop: 0x1e1b4b, skyBottom: 0x312e81, grass: 0x1a2e05, crowdSpeed: 280, lights: true }
+};
+
 class MainScene extends Phaser.Scene {
   constructor() { super('MainScene'); }
 
@@ -58,6 +65,7 @@ class MainScene extends Phaser.Scene {
     this.hits = 0;
     this.strikes = 0;
     this.pitchCount = 0;
+    this.currentPhaseLabel = 'Warm-up';
     this.combo = 1;
     this.pitchElapsed = 0;
     this.pitchDuration = 900;
@@ -74,6 +82,7 @@ class MainScene extends Phaser.Scene {
     this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#f8fafc' }).setScrollFactor(0);
     this.hitsText = this.add.text(10, 34, 'Hits: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
     this.pitchText = this.add.text(10, 54, 'Pitch: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
+    this.phaseText = this.add.text(GAME_WIDTH / 2, 4, 'WARM-UP', { fontFamily: 'monospace', fontSize: '11px', color: '#e0f2fe' }).setOrigin(0.5, 0).setScrollFactor(0);
     this.bestText = this.add.text(10, 74, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
     this.bestDistText = this.add.text(10, 92, 'Best Dist: ' + this.bestDistance + ' FT', { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
 
@@ -105,11 +114,11 @@ class MainScene extends Phaser.Scene {
   }
 
   drawField() {
+    this.skyGraphics = this.add.graphics().setScrollFactor(0);
+    this.grassGraphics = this.add.graphics().setScrollFactor(0);
+    this.redrawSkyAndGrass(COLOR_SKY, 0xbae6fd, COLOR_GRASS);
+
     const g = this.add.graphics().setScrollFactor(0);
-    g.fillGradientStyle(COLOR_SKY, COLOR_SKY, 0xbae6fd, 0xbae6fd, 1);
-    g.fillRect(0, 0, GAME_WIDTH, 260);
-    g.fillStyle(COLOR_GRASS, 1);
-    g.fillRect(0, 260, GAME_WIDTH, GAME_HEIGHT - 260);
     g.fillStyle(COLOR_FENCE, 1);
     g.fillRect(0, 250, GAME_WIDTH, 12);
 
@@ -124,6 +133,42 @@ class MainScene extends Phaser.Scene {
     g.fillCircle(GAME_WIDTH / 2, PLATE_Y + 20, 40);
 
     this.add.polygon(GAME_WIDTH / 2, PLATE_Y + 40, [-14,-10, 14,-10, 14,4, 0,14, -14,4], 0xf8fafc).setScrollFactor(0);
+
+    this.stadiumLights = this.createStadiumLights();
+    this.crowdDots = this.createCrowd();
+  }
+
+  redrawSkyAndGrass(skyTop, skyBottom, grassColor) {
+    this.skyGraphics.clear();
+    this.skyGraphics.fillGradientStyle(skyTop, skyTop, skyBottom, skyBottom, 1);
+    this.skyGraphics.fillRect(0, 0, GAME_WIDTH, 260);
+
+    this.grassGraphics.clear();
+    this.grassGraphics.fillStyle(grassColor, 1);
+    this.grassGraphics.fillRect(0, 260, GAME_WIDTH, GAME_HEIGHT - 260);
+  }
+
+  createStadiumLights() {
+    const positions = [[30, 20], [GAME_WIDTH - 30, 20], [90, 45], [GAME_WIDTH - 90, 45]];
+    const lights = [];
+    positions.forEach(([x, y]) => {
+      const glow = this.add.circle(x, y, 14, 0xfef9c3, 0.25).setScrollFactor(0).setVisible(false);
+      const core = this.add.circle(x, y, 5, 0xfef9c3, 0.9).setScrollFactor(0).setVisible(false);
+      lights.push(glow, core);
+    });
+    return lights;
+  }
+
+  createCrowd() {
+    const dots = [];
+    const y = 244;
+    for (let i = 0; i < 16; i++) {
+      const x = 15 + i * ((GAME_WIDTH - 30) / 15);
+      const dot = this.add.circle(x, y, 3, 0x1e293b, 0.8).setScrollFactor(0);
+      dot.baseY = y;
+      dots.push(dot);
+    }
+    return dots;
   }
 
   drawTimingBar() {
@@ -205,6 +250,17 @@ class MainScene extends Phaser.Scene {
     this.pitchCount++;
     const diff = getPitchDifficulty(this.hits);
     this.pitchDuration = diff.duration;
+
+    if (diff.label !== this.currentPhaseLabel) {
+      this.currentPhaseLabel = diff.label;
+      this.applyPhaseVisuals(diff.label);
+      this.phaseText.setText(diff.label.toUpperCase());
+      if (diff.label !== 'Warm-up') {
+        this.showPhaseAnnouncement(diff.label);
+        SFX.powerup();
+      }
+    }
+
     if (this.ballVisual) this.ballVisual.destroy();
     this.ballVisual = this.createBallVisual();
     this.ballVisual.setPosition(GAME_WIDTH / 2, PITCH_SPAWN_Y);
@@ -217,6 +273,31 @@ class MainScene extends Phaser.Scene {
       arm.setAngle(-20);
       this.tweens.add({ targets: arm, angle: 55, duration: 180, yoyo: true, ease: 'Quad.easeInOut' });
     }
+  }
+
+  applyPhaseVisuals(label) {
+    const v = PHASE_VISUALS[label];
+    this.redrawSkyAndGrass(v.skyTop, v.skyBottom, v.grass);
+    this.stadiumLights.forEach(l => l.setVisible(v.lights));
+    this.crowdDots.forEach(dot => {
+      this.tweens.killTweensOf(dot);
+      this.tweens.add({
+        targets: dot,
+        y: dot.baseY - (v.lights ? 6 : 3),
+        duration: v.crowdSpeed,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+      });
+    });
+  }
+
+  showPhaseAnnouncement(label) {
+    const t = this.add.text(GAME_WIDTH / 2, 180, label.toUpperCase() + '!', {
+      fontFamily: 'monospace', fontSize: '28px', color: '#fde68a', align: 'center'
+    }).setOrigin(0.5).setScrollFactor(0).setAlpha(0).setScale(0.7);
+    this.tweens.add({ targets: t, alpha: 1, scale: 1, duration: 220, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: t, alpha: 0, duration: 400, delay: 700, onComplete: () => t.destroy() });
   }
 
   updateHud() {
