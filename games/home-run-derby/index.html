@@ -25,6 +25,7 @@ const GOOD_WINDOW = 100;
 const FOUL_WINDOW = 180;
 const MAX_STRIKES = 3;
 const BEST_KEY = 'homerunderby_best';
+const BEST_DISTANCE_KEY = 'homerunderby_best_distance';
 
 const COLOR_SKY = 0x7dd3fc;
 const COLOR_GRASS = 0x4d7c0f;
@@ -32,6 +33,13 @@ const COLOR_DIRT = 0xca8a04;
 const COLOR_FENCE = 0x365314;
 const COLOR_GOLD = 0xfacc15;
 const COLOR_STRIKE = 0xef4444;
+const COLOR_HIT = 0x4ade80;
+const COLOR_FOUL = 0xfb923c;
+
+// Timing bar: half-range of time (ms) shown on each side of the ideal moment.
+const BAR_HALF_RANGE = FOUL_WINDOW + 60;
+const BAR_WIDTH = 300;
+const BAR_Y = 615;
 
 function getPitchDifficulty(hits) {
   if (hits < 5)  return { duration: 900, label: 'Warm-up' };
@@ -49,21 +57,31 @@ class MainScene extends Phaser.Scene {
     this.score = 0;
     this.hits = 0;
     this.strikes = 0;
-    this.comboStreak = 0;
+    this.pitchCount = 0;
+    this.combo = 1;
     this.pitchElapsed = 0;
     this.pitchDuration = 900;
     this.swungThisPitch = true;
     this.ballVisual = null;
     this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+    this.bestDistance = parseInt(localStorage.getItem(BEST_DISTANCE_KEY) || '0', 10);
 
     this.drawField();
+    this.drawTimingBar();
     this.pitcherVisual = this.createPitcherVisual();
+    this.batVisual = this.createBatVisual();
 
     this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#f8fafc' }).setScrollFactor(0);
     this.hitsText = this.add.text(10, 34, 'Hits: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
-    this.bestText = this.add.text(10, 56, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '14px', color: '#cbd5e1' }).setScrollFactor(0);
+    this.pitchText = this.add.text(10, 54, 'Pitch: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
+    this.bestText = this.add.text(10, 74, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
+    this.bestDistText = this.add.text(10, 92, 'Best Dist: ' + this.bestDistance + ' FT', { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
+
     this.strikeText = this.add.text(GAME_WIDTH - 10, 10, 'Strikes: OOO', {
       fontFamily: 'monospace', fontSize: '16px', color: '#f8fafc'
+    }).setOrigin(1, 0).setScrollFactor(0);
+    this.comboText = this.add.text(GAME_WIDTH - 10, 34, 'Combo: x1', {
+      fontFamily: 'monospace', fontSize: '15px', color: COLOR_GOLD === 0xfacc15 ? '#facc15' : '#facc15'
     }).setOrigin(1, 0).setScrollFactor(0);
 
     this.startText = this.add.text(GAME_WIDTH / 2, 250, 'Tap to Swing', {
@@ -95,11 +113,9 @@ class MainScene extends Phaser.Scene {
     g.fillStyle(COLOR_FENCE, 1);
     g.fillRect(0, 250, GAME_WIDTH, 12);
 
-    // pitcher's mound
     g.fillStyle(COLOR_DIRT, 1);
     g.fillEllipse(GAME_WIDTH / 2, PITCH_SPAWN_Y + 20, 60, 22);
 
-    // dirt around home plate
     g.fillStyle(COLOR_DIRT, 1);
     g.fillCircle(GAME_WIDTH / 2, PLATE_Y + 20, 90);
     g.fillStyle(COLOR_GRASS, 1);
@@ -107,8 +123,39 @@ class MainScene extends Phaser.Scene {
     g.fillStyle(COLOR_DIRT, 1);
     g.fillCircle(GAME_WIDTH / 2, PLATE_Y + 20, 40);
 
-    // home plate (simple pentagon)
-    const plate = this.add.polygon(GAME_WIDTH / 2, PLATE_Y + 40, [-14,-10, 14,-10, 14,4, 0,14, -14,4], 0xf8fafc).setScrollFactor(0);
+    this.add.polygon(GAME_WIDTH / 2, PLATE_Y + 40, [-14,-10, 14,-10, 14,4, 0,14, -14,4], 0xf8fafc).setScrollFactor(0);
+  }
+
+  drawTimingBar() {
+    const g = this.add.graphics().setScrollFactor(0);
+    const halfW = BAR_WIDTH / 2;
+    const cx = GAME_WIDTH / 2;
+
+    const perfectHalf = (PERFECT_WINDOW / BAR_HALF_RANGE) * halfW;
+    const hitHalf = (GOOD_WINDOW / BAR_HALF_RANGE) * halfW;
+    const foulHalf = (FOUL_WINDOW / BAR_HALF_RANGE) * halfW;
+
+    // outer (strike) zone
+    g.fillStyle(0x64748b, 1);
+    g.fillRect(cx - halfW, BAR_Y - 8, BAR_WIDTH, 16);
+    // foul zone
+    g.fillStyle(COLOR_FOUL, 1);
+    g.fillRect(cx - foulHalf, BAR_Y - 8, foulHalf * 2, 16);
+    // hit zone
+    g.fillStyle(COLOR_HIT, 1);
+    g.fillRect(cx - hitHalf, BAR_Y - 8, hitHalf * 2, 16);
+    // perfect zone
+    g.fillStyle(COLOR_GOLD, 1);
+    g.fillRect(cx - perfectHalf, BAR_Y - 8, perfectHalf * 2, 16);
+
+    g.lineStyle(2, 0xf8fafc, 0.9);
+    g.strokeRect(cx - halfW, BAR_Y - 8, BAR_WIDTH, 16);
+
+    this.barLabel = this.add.text(cx, BAR_Y + 18, 'TIMING', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#e2e8f0'
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    this.barMarker = this.add.triangle(cx, BAR_Y - 16, 0, 10, 10, -6, -10, -6, 0xf8fafc).setScrollFactor(0);
   }
 
   createBallVisual() {
@@ -134,6 +181,18 @@ class MainScene extends Phaser.Scene {
     return c;
   }
 
+  createBatVisual() {
+    const bat = this.add.rectangle(GAME_WIDTH / 2 + 26, PLATE_Y + 8, 6, 50, 0x92400e).setOrigin(0.5, 1).setAngle(-70).setScrollFactor(0);
+    return bat;
+  }
+
+  swingBat() {
+    if (!this.batVisual) return;
+    this.tweens.killTweensOf(this.batVisual);
+    this.batVisual.setAngle(-70);
+    this.tweens.add({ targets: this.batVisual, angle: 40, duration: 140, yoyo: true, ease: 'Quad.easeOut' });
+  }
+
   startGame() {
     this.started = true;
     this.startText.setVisible(false);
@@ -143,41 +202,39 @@ class MainScene extends Phaser.Scene {
   spawnPitch() {
     this.pitchElapsed = 0;
     this.swungThisPitch = false;
+    this.pitchCount++;
     const diff = getPitchDifficulty(this.hits);
     this.pitchDuration = diff.duration;
     if (this.ballVisual) this.ballVisual.destroy();
     this.ballVisual = this.createBallVisual();
     this.ballVisual.setPosition(GAME_WIDTH / 2, PITCH_SPAWN_Y);
     this.ballVisual.setScale(BALL_MIN_RADIUS / BALL_MAX_RADIUS);
+    this.pitchText.setText('Pitch: ' + this.pitchCount);
 
     if (this.pitcherVisual && this.pitcherVisual.armThrow) {
       const arm = this.pitcherVisual.armThrow;
       this.tweens.killTweensOf(arm);
       arm.setAngle(-20);
-      this.tweens.add({
-        targets: arm,
-        angle: 55,
-        duration: 180,
-        yoyo: true,
-        ease: 'Quad.easeInOut'
-      });
+      this.tweens.add({ targets: arm, angle: 55, duration: 180, yoyo: true, ease: 'Quad.easeInOut' });
     }
   }
 
   updateHud() {
     this.scoreText.setText('Score: ' + this.score);
     this.hitsText.setText('Hits: ' + this.hits);
+    this.comboText.setText('Combo: x' + this.combo);
   }
 
   updateStrikeHud() {
-    this.strikeText.setText('Strikes: ' + 'X'.repeat(this.strikes) + 'O'.repeat(MAX_STRIKES - this.strikes));
+    this.strikeText.setText('Strikes: ' + '\u25CF'.repeat(this.strikes) + '\u25CB'.repeat(MAX_STRIKES - this.strikes));
   }
 
   showFloatingText(x, y, text, color) {
     const t = this.add.text(x, y, text, {
       fontFamily: 'monospace', fontSize: '18px', color: '#' + color.toString(16).padStart(6, '0'), align: 'center'
-    }).setOrigin(0.5).setScrollFactor(0);
-    this.tweens.add({ targets: t, y: y - 30, alpha: 0, duration: 600, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
+    }).setOrigin(0.5).setScrollFactor(0).setAlpha(0);
+    this.tweens.add({ targets: t, alpha: 1, y: y - 10, duration: 120, ease: 'Quad.easeOut' });
+    this.tweens.add({ targets: t, alpha: 0, y: y - 40, duration: 400, delay: 350, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
   }
 
   animateBallAway(mode) {
@@ -203,47 +260,71 @@ class MainScene extends Phaser.Scene {
     this.swungThisPitch = true;
     const diff = Math.abs(this.pitchElapsed - this.pitchDuration);
 
-    if (diff <= PERFECT_WINDOW) this.registerHomeRun();
+    if (diff <= PERFECT_WINDOW) this.registerHomeRun(diff);
     else if (diff <= GOOD_WINDOW) this.registerBaseHit();
     else if (diff <= FOUL_WINDOW) this.registerFoul();
-    else this.registerStrike('Strike!');
+    else this.registerStrike('STRIKE!', true);
   }
 
-  registerHomeRun() {
+  registerHomeRun(timingDiff) {
     this.hits++;
-    this.comboStreak++;
-    this.score += 100 + this.comboStreak * 20;
-    SFX.combo(this.comboStreak);
-    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 60, 'HOME RUN!', COLOR_GOLD);
+    this.combo++;
+    const distance = Math.round(380 + Math.random() * 20 + (1 - timingDiff / PERFECT_WINDOW) * 80);
+    const points = 100 + this.combo * 30;
+    this.score += points;
+
+    let isNewDistBest = false;
+    if (distance > this.bestDistance) {
+      this.bestDistance = distance;
+      localStorage.setItem(BEST_DISTANCE_KEY, String(this.bestDistance));
+      isNewDistBest = true;
+      this.bestDistText.setText('Best Dist: ' + this.bestDistance + ' FT');
+    }
+
+    SFX.combo(this.combo);
+    this.cameras.main.shake(180, 0.010);
+    this.swingBat();
     this.animateBallAway('homerun');
+
+    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, 'PERFECT!', COLOR_GOLD);
+    this.time.delayedCall(150, () => this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, 'HOME RUN!', COLOR_GOLD));
+    this.time.delayedCall(320, () => this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, distance + ' FT' + (isNewDistBest ? ' NEW BEST!' : ''), 0xffffff));
+    this.time.delayedCall(480, () => this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, '+' + points + '  COMBO x' + this.combo, COLOR_GOLD));
+
     this.updateHud();
     this.spawnPitch();
   }
 
   registerBaseHit() {
     this.hits++;
-    this.comboStreak++;
-    this.score += 40;
+    // combo maintained, not incremented, not reset
+    this.score += 40 + this.combo * 10;
     SFX.pickup();
-    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 60, 'Base Hit', 0xffffff);
+    this.swingBat();
+    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, 'Base Hit', 0xffffff);
     this.animateBallAway('hit');
     this.updateHud();
     this.spawnPitch();
   }
 
   registerFoul() {
+    this.combo = Math.max(1, this.combo - 1);
     SFX.blip();
-    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 60, 'Foul Ball', COLOR_DIRT);
+    this.swingBat();
+    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, 'Foul Ball', COLOR_FOUL);
     this.animateBallAway('foul');
+    this.updateHud();
     this.spawnPitch();
   }
 
-  registerStrike(label) {
+  registerStrike(label, wasSwing) {
     this.strikes++;
-    this.comboStreak = 0;
+    this.combo = 1;
     SFX.hit();
-    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 60, label, COLOR_STRIKE);
+    if (wasSwing) this.swingBat();
+    this.showFloatingText(GAME_WIDTH / 2, PLATE_Y - 70, label, COLOR_STRIKE);
     this.animateBallAway('strike');
+    this.updateHud();
     this.updateStrikeHud();
 
     if (this.strikes >= MAX_STRIKES) {
@@ -266,6 +347,8 @@ class MainScene extends Phaser.Scene {
       "STRUCK OUT\n" +
       'Score: ' + this.score + '\n' +
       'Hits: ' + this.hits + '\n' +
+      'Pitches: ' + this.pitchCount + '\n' +
+      'Best Dist: ' + this.bestDistance + ' FT\n' +
       'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
       'Tap to retry'
     );
@@ -281,11 +364,22 @@ class MainScene extends Phaser.Scene {
     if (this.ballVisual) {
       this.ballVisual.setPosition(GAME_WIDTH / 2, y);
       this.ballVisual.setScale(scale);
+
+      // Motion trail — makes the approach read as a moving pitch, not a
+      // static object that happens to be getting bigger.
+      if (Math.random() < 0.55) {
+        const trail = this.add.circle(this.ballVisual.x, this.ballVisual.y, Math.max(1, BALL_MAX_RADIUS * scale * 0.6), 0xffffff, 0.35);
+        this.tweens.add({ targets: trail, alpha: 0, scale: 0.4, duration: 200, onComplete: () => trail.destroy() });
+      }
     }
+
+    // Timing bar marker tracks elapsed time relative to the ideal moment.
+    const offset = Phaser.Math.Clamp(this.pitchElapsed - this.pitchDuration, -BAR_HALF_RANGE, BAR_HALF_RANGE);
+    this.barMarker.x = GAME_WIDTH / 2 + (offset / BAR_HALF_RANGE) * (BAR_WIDTH / 2);
 
     if (!this.swungThisPitch && this.pitchElapsed > this.pitchDuration + FOUL_WINDOW) {
       this.swungThisPitch = true;
-      this.registerStrike('Strike! (looking)');
+      this.registerStrike('STRIKE! (looking)', false);
     }
   }
 }
