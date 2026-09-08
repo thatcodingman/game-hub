@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Gem Merge</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const GRID_SIZE = 4;
+const CELL = 80;
+const GAP = 8;
+const BOARD_W = GRID_SIZE * CELL + (GRID_SIZE + 1) * GAP;
+const BOARD_X = (GAME_WIDTH - BOARD_W) / 2;
+const BOARD_Y = 190;
+const SWIPE_THRESHOLD = 24;
+const BEST_SCORE_KEY = 'gemmerge_best';
+const BEST_TILE_KEY = 'gemmerge_best_tile';
+
+const COLOR_BOARD_BG = 0x1e293b;
+const COLOR_CELL_BG = 0x334155;
+
+const TILE_COLORS = {
+  2: 0xf1f5f9, 4: 0xbae6fd, 8: 0x7dd3fc, 16: 0x38bdf8, 32: 0x4ade80,
+  64: 0xfacc15, 128: 0xfb923c, 256: 0xf87171, 512: 0xf472b6,
+  1024: 0xc084fc, 2048: 0xfbbf24
+};
+
+const TILE_LABELS = {
+  2: 'Quartz', 4: 'Quartz', 8: 'Topaz', 16: 'Topaz', 32: 'Emerald',
+  64: 'Emerald', 128: 'Sapphire', 256: 'Sapphire', 512: 'Ruby',
+  1024: 'Amethyst', 2048: 'Diamond'
+};
+
+const DIR_CYCLE = ['DOWN', 'RIGHT', 'UP', 'LEFT'];
+const DIR_ARROWS = { DOWN: '\u2193', RIGHT: '\u2192', UP: '\u2191', LEFT: '\u2190' };
+
+function nextGravityDir(dir) {
+  return DIR_CYCLE[(DIR_CYCLE.indexOf(dir) + 1) % DIR_CYCLE.length];
+}
+
+function getTileColor(value) { return TILE_COLORS[value] || 0xfde047; }
+function getTileLabel(value) { return TILE_LABELS[value] || 'Diamond'; }
+
+function cellPos(row, col) {
+  return {
+    x: BOARD_X + GAP + col * (CELL + GAP) + CELL / 2,
+    y: BOARD_Y + GAP + row * (CELL + GAP) + CELL / 2
+  };
+}
+
+function makeEmptyGrid() {
+  return [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+}
+
+function processLine(line) {
+  const nonZero = line.filter(v => v !== 0);
+  const result = [];
+  const merged = [];
+  let scoreGained = 0;
+  let i = 0;
+  while (i < nonZero.length) {
+    if (i + 1 < nonZero.length && nonZero[i] === nonZero[i + 1]) {
+      const newVal = nonZero[i] * 2;
+      result.push(newVal);
+      merged.push(true);
+      scoreGained += newVal;
+      i += 2;
+    } else {
+      result.push(nonZero[i]);
+      merged.push(false);
+      i += 1;
+    }
+  }
+  while (result.length < line.length) { result.push(0); merged.push(false); }
+  return { result, merged, scoreGained };
+}
+
+function getLines(grid, direction) {
+  const lines = [];
+  if (direction === 'LEFT' || direction === 'RIGHT') {
+    for (let r = 0; r < GRID_SIZE; r++) {
+      let line = grid[r].slice();
+      if (direction === 'RIGHT') line.reverse();
+      lines.push(line);
+    }
+  } else {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      let line = [grid[0][c], grid[1][c], grid[2][c], grid[3][c]];
+      if (direction === 'DOWN') line.reverse();
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+function writeLines(lines, direction) {
+  const newGrid = makeEmptyGrid();
+  if (direction === 'LEFT' || direction === 'RIGHT') {
+    for (let r = 0; r < GRID_SIZE; r++) {
+      let line = lines[r].slice();
+      if (direction === 'RIGHT') line.reverse();
+      newGrid[r] = line;
+    }
+  } else {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      let line = lines[c].slice();
+      if (direction === 'DOWN') line.reverse();
+      for (let r = 0; r < GRID_SIZE; r++) newGrid[r][c] = line[r];
+    }
+  }
+  return newGrid;
+}
+
+function attemptMove(grid, direction) {
+  const lines = getLines(grid, direction);
+  let totalScore = 0;
+  let mergeCount = 0;
+  let moved = false;
+  const processedLines = lines.map(line => {
+    const before = line.slice();
+    const { result, merged, scoreGained } = processLine(line);
+    if (JSON.stringify(before) !== JSON.stringify(result)) moved = true;
+    totalScore += scoreGained;
+    mergeCount += merged.filter(m => m).length;
+    return result;
+  });
+  const newGrid = writeLines(processedLines, direction);
+  return { newGrid, totalScore, mergeCount, moved };
+}
+
+function hasValidMoves(grid) {
+  // In Merge Shift only the current gravity direction is ever used, but a
+  // board can still be genuinely stuck (no empty cells, no adjacent matches
+  // in ANY direction) — check all four so we never falsely end a run early.
+  for (const dir of DIR_CYCLE) {
+    const { moved } = attemptMove(grid, dir);
+    if (moved) return true;
+  }
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (grid[r][c] === 0) return true;
+    }
+  }
+  return false;
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.gameOver = false;
+    this.score = 0;
+    this.bestScore = parseInt(localStorage.getItem(BEST_SCORE_KEY) || '0', 10);
+    this.bestTile = parseInt(localStorage.getItem(BEST_TILE_KEY) || '0', 10);
+    this.grid = makeEmptyGrid();
+    this.tileVisuals = [];
+
+    this.gravityDir = 'DOWN';
+    this.movesSinceShift = 0;
+    this.shiftInterval = 10;
+    this.shiftCount = 0;
+
+    this.drawBoardBackground();
+
+    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '20px', color: '#f8fafc' });
+    this.bestText = this.add.text(10, 36, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '13px', color: '#94a3b8' });
+    this.bestTileText = this.add.text(10, 54, 'Best Gem: ' + getTileLabel(this.bestTile || 2), { fontFamily: 'monospace', fontSize: '13px', color: '#94a3b8' });
+
+    this.dirText = this.add.text(GAME_WIDTH - 10, 10, 'Gravity ' + DIR_ARROWS[this.gravityDir], {
+      fontFamily: 'monospace', fontSize: '16px', color: '#f8fafc'
+    }).setOrigin(1, 0);
+    this.shiftCounterText = this.add.text(GAME_WIDTH - 10, 34, 'Shift in ' + this.shiftInterval, {
+      fontFamily: 'monospace', fontSize: '12px', color: '#94a3b8'
+    }).setOrigin(1, 0);
+
+    this.hintText = this.add.text(GAME_WIDTH / 2, 130, 'Swipe to move \u2014 gravity decides direction', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#94a3b8', align: 'center'
+    }).setOrigin(0.5);
+
+    this.gameOverText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 40, '', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#f8fafc', align: 'center'
+    }).setOrigin(0.5);
+
+    this.spawnRandomTile();
+    this.spawnRandomTile();
+    this.renderGrid();
+    this.updateDirHud();
+
+    this.swipeStartX = null;
+    this.swipeStartY = null;
+
+    this.input.on('pointerdown', (pointer) => {
+      if (this.gameOver) { this.scene.restart(); return; }
+      this.swipeStartX = pointer.x;
+      this.swipeStartY = pointer.y;
+    });
+
+    this.input.on('pointerup', (pointer) => {
+      if (this.gameOver || this.swipeStartX === null) return;
+      const dx = pointer.x - this.swipeStartX;
+      const dy = pointer.y - this.swipeStartY;
+      this.swipeStartX = null;
+      if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return;
+      // Merge Shift: any swipe, any direction — the move always resolves
+      // toward the current gravity direction, not the gesture direction.
+      this.handleMove();
+    });
+
+    this.input.keyboard.on('keydown-SPACE', () => { if (!this.gameOver) this.handleMove(); else this.scene.restart(); });
+  }
+
+  drawBoardBackground() {
+    const g = this.add.graphics();
+    g.fillStyle(COLOR_BOARD_BG, 1);
+    g.fillRoundedRect(BOARD_X, BOARD_Y, BOARD_W, BOARD_W, 10);
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const x = BOARD_X + GAP + c * (CELL + GAP);
+        const y = BOARD_Y + GAP + r * (CELL + GAP);
+        g.fillStyle(COLOR_CELL_BG, 1);
+        g.fillRoundedRect(x, y, CELL, CELL, 8);
+      }
+    }
+  }
+
+  spawnRandomTile() {
+    const empty = [];
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (this.grid[r][c] === 0) empty.push([r, c]);
+      }
+    }
+    if (empty.length === 0) return;
+    const [r, c] = Phaser.Utils.Array.GetRandom(empty);
+    this.grid[r][c] = Math.random() < 0.9 ? 2 : 4;
+  }
+
+  renderGrid() {
+    this.tileVisuals.forEach(t => t && t.destroy());
+    this.tileVisuals = [];
+
+    let highestOnBoard = 0;
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const value = this.grid[r][c];
+        if (value === 0) continue;
+        highestOnBoard = Math.max(highestOnBoard, value);
+        const pos = cellPos(r, c);
+        const container = this.add.container(pos.x, pos.y);
+        const body = this.add.rectangle(0, 0, CELL, CELL, getTileColor(value)).setStrokeStyle(2, 0xffffff, 0.25);
+        const text = this.add.text(0, 6, String(value), {
+          fontFamily: 'monospace', fontSize: value >= 128 ? '20px' : '24px',
+          color: value <= 4 ? '#1e293b' : '#ffffff'
+        }).setOrigin(0.5);
+        const label = this.add.text(0, -22, getTileLabel(value), {
+          fontFamily: 'monospace', fontSize: '9px',
+          color: value <= 4 ? '#334155' : '#f8fafc'
+        }).setOrigin(0.5);
+        container.add([body, text, label]);
+        container.setScale(0.7);
+        this.tweens.add({ targets: container, scale: 1, duration: 110, ease: 'Back.easeOut' });
+        this.tileVisuals.push(container);
+      }
+    }
+
+    if (highestOnBoard > this.bestTile) {
+      this.bestTile = highestOnBoard;
+      localStorage.setItem(BEST_TILE_KEY, String(this.bestTile));
+      this.bestTileText.setText('Best Gem: ' + getTileLabel(this.bestTile));
+    }
+  }
+
+  updateDirHud() {
+    this.dirText.setText('Gravity ' + DIR_ARROWS[this.gravityDir]);
+    const movesLeft = this.shiftInterval - this.movesSinceShift;
+    this.shiftCounterText.setText('Shift in ' + movesLeft);
+
+    if (movesLeft <= 2) {
+      this.tweens.killTweensOf(this.dirText);
+      this.dirText.setScale(1);
+      this.tweens.add({ targets: this.dirText, scale: 1.2, duration: 220, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    } else {
+      this.tweens.killTweensOf(this.dirText);
+      this.dirText.setScale(1);
+    }
+  }
+
+  showShiftAnnouncement(direction) {
+    const t = this.add.text(GAME_WIDTH / 2, 240, 'GRAVITY SHIFT \u2192 ' + direction, {
+      fontFamily: 'monospace', fontSize: '18px', color: '#fde68a', align: 'center'
+    }).setOrigin(0.5).setAlpha(0).setScale(0.8);
+    this.tweens.add({ targets: t, alpha: 1, scale: 1, duration: 200, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: t, alpha: 0, duration: 400, delay: 650, onComplete: () => t.destroy() });
+  }
+
+  performGravityShift() {
+    this.shiftCount++;
+    this.gravityDir = nextGravityDir(this.gravityDir);
+    this.movesSinceShift = 0;
+    this.shiftInterval = this.shiftCount < 2 ? 10 : Phaser.Math.Between(8, 12);
+    SFX.powerup();
+    this.showShiftAnnouncement(this.gravityDir);
+    this.updateDirHud();
+  }
+
+  handleMove() {
+    if (this.gameOver) return;
+    if (this.hintText) { this.hintText.destroy(); this.hintText = null; }
+
+    const { newGrid, totalScore, mergeCount, moved } = attemptMove(this.grid, this.gravityDir);
+    if (!moved) return;
+
+    this.grid = newGrid;
+    this.score += totalScore;
+    this.scoreText.setText('Score: ' + this.score);
+
+    if (mergeCount > 0) SFX.combo(mergeCount);
+    else SFX.blip();
+
+    this.spawnRandomTile();
+    this.renderGrid();
+
+    this.movesSinceShift++;
+    if (this.movesSinceShift >= this.shiftInterval) {
+      this.performGravityShift();
+    } else {
+      this.updateDirHud();
+    }
+
+    if (!hasValidMoves(this.grid)) {
+      this.triggerGameOver();
+    }
+  }
+
+  triggerGameOver() {
+    this.gameOver = true;
+    SFX.fail();
+    let isNewBest = false;
+    if (this.score > this.bestScore) {
+      this.bestScore = this.score;
+      localStorage.setItem(BEST_SCORE_KEY, String(this.bestScore));
+      isNewBest = true;
+    }
+    this.gameOverText.setText(
+      'BOARD FULL\n' +
+      'Score: ' + this.score + '\n' +
+      'Shifts: ' + this.shiftCount + '\n' +
+      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
+      'Tap to retry'
+    );
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  resolution: window.devicePixelRatio || 1,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#0f172a',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
