@@ -55,6 +55,44 @@ const PHASE_VISUALS = {
   'Ace':      { skyTop: 0x1e1b4b, skyBottom: 0x312e81, grass: 0x1a2e05, crowdSpeed: 280, lights: true }
 };
 
+const CURVE_AMPLITUDE = 70;
+
+// Pitch types phase in gradually — Warm-up is Fastball-only so the basic
+// timing loop gets learned first, exactly as the design spec calls for.
+function pickPitchType(hits) {
+  if (hits < 5) return 'FASTBALL';
+  const pool = hits < 12 ? ['FASTBALL', 'FASTBALL', 'CURVEBALL']
+             : hits < 20 ? ['FASTBALL', 'CURVEBALL', 'CHANGEUP']
+             : ['FASTBALL', 'CURVEBALL', 'CHANGEUP', 'RISER'];
+  return Phaser.Utils.Array.GetRandom(pool);
+}
+
+// rawProgress is real elapsed-time progress (0-1) — this drives ALL timing
+// math (hit windows, strikes). Only visualYProgress/xOffset/scaleProgress
+// below affect what's actually drawn, so pitch types change how a pitch
+// LOOKS without ever changing when it needs to be hit.
+function getPitchVisualState(type, rawProgress) {
+  let visualYProgress = rawProgress;
+  let scaleProgress = rawProgress;
+  let xOffset = 0;
+
+  if (type === 'CURVEBALL') {
+    xOffset = Math.pow(rawProgress, 2) * CURVE_AMPLITUDE;
+  } else if (type === 'CHANGEUP') {
+    visualYProgress = Math.pow(rawProgress, 2.3);
+    scaleProgress = visualYProgress;
+  } else if (type === 'RISER' && rawProgress > 0.82) {
+    const t = (rawProgress - 0.82) / 0.18;
+    visualYProgress = rawProgress - Math.sin(t * Math.PI) * 0.10;
+  }
+
+  return {
+    visualYProgress: Phaser.Math.Clamp(visualYProgress, 0, 1),
+    scaleProgress: Phaser.Math.Clamp(scaleProgress, 0, 1),
+    xOffset
+  };
+}
+
 class MainScene extends Phaser.Scene {
   constructor() { super('MainScene'); }
 
@@ -250,6 +288,8 @@ class MainScene extends Phaser.Scene {
     this.pitchCount++;
     const diff = getPitchDifficulty(this.hits);
     this.pitchDuration = diff.duration;
+    this.currentPitchType = pickPitchType(this.hits);
+    this.curveDirection = Math.random() < 0.5 ? -1 : 1;
 
     if (diff.label !== this.currentPhaseLabel) {
       this.currentPhaseLabel = diff.label;
@@ -440,10 +480,12 @@ class MainScene extends Phaser.Scene {
     this.pitchElapsed += delta;
 
     const progress = Math.min(1, this.pitchElapsed / this.pitchDuration);
-    const y = PITCH_SPAWN_Y + (PLATE_Y - PITCH_SPAWN_Y) * progress;
-    const scale = (BALL_MIN_RADIUS + (BALL_MAX_RADIUS - BALL_MIN_RADIUS) * progress) / BALL_MAX_RADIUS;
+    const visual = getPitchVisualState(this.currentPitchType, progress);
+    const y = PITCH_SPAWN_Y + (PLATE_Y - PITCH_SPAWN_Y) * visual.visualYProgress;
+    const x = GAME_WIDTH / 2 + visual.xOffset * this.curveDirection;
+    const scale = (BALL_MIN_RADIUS + (BALL_MAX_RADIUS - BALL_MIN_RADIUS) * visual.scaleProgress) / BALL_MAX_RADIUS;
     if (this.ballVisual) {
-      this.ballVisual.setPosition(GAME_WIDTH / 2, y);
+      this.ballVisual.setPosition(x, y);
       this.ballVisual.setScale(scale);
 
       // Motion trail — makes the approach read as a moving pitch, not a
