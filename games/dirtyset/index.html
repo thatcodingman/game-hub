@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>DirtySet</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const ROUND_DURATION = 60;
+const HOLE_RADIUS = 42;
+const BEST_KEY = 'dirtyset_best';
+
+const COL_XS = [90, 200, 310];
+const ROW_YS = [260, 390, 520];
+
+const GOOD_TYPES = ['SOAP', 'TOOTHPASTE', 'SPONGE', 'SPRAY', 'BUCKET'];
+
+const COLOR_TILE_LIGHT = 0xe0f2fe;
+const COLOR_TILE_DARK = 0xbae6fd;
+const COLOR_HOLE = 0x334155;
+const COLOR_HOLE_RIM = 0x1e293b;
+const COLOR_SPARKLE = 0xfacc15;
+const COLOR_DIRT = 0x78350f;
+const COLOR_DIRT_DARK = 0x422006;
+
+function getDifficultyPhase(elapsedSeconds) {
+  if (elapsedSeconds < 15) return { spawnInterval: 900, stayDuration: 1100, decoyChance: 0.10, label: 'Fresh Start' };
+  if (elapsedSeconds < 30) return { spawnInterval: 700, stayDuration: 900,  decoyChance: 0.18, label: 'Getting Busy' };
+  if (elapsedSeconds < 45) return { spawnInterval: 550, stayDuration: 750,  decoyChance: 0.25, label: 'Deep Clean' };
+  return { spawnInterval: 420, stayDuration: 600, decoyChance: 0.32, label: 'Final Scrub' };
+}
+
+function formatTime(seconds) {
+  const s = Math.max(0, Math.ceil(seconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ':' + String(r).padStart(2, '0');
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.started = false;
+    this.gameOver = false;
+    this.score = 0;
+    this.combo = 0;
+    this.timeRemaining = ROUND_DURATION;
+    this.spawnTimer = 0;
+    this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+
+    this.drawBackground();
+    this.buildSlots();
+
+    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#0f172a' });
+    this.comboText = this.add.text(10, 34, 'Combo: 0', { fontFamily: 'monospace', fontSize: '16px', color: '#0369a1' });
+    this.timerText = this.add.text(GAME_WIDTH - 10, 10, formatTime(this.timeRemaining), {
+      fontFamily: 'monospace', fontSize: '26px', color: '#0f172a'
+    }).setOrigin(1, 0);
+    this.bestText = this.add.text(GAME_WIDTH - 10, 44, 'Best: ' + this.bestScore, {
+      fontFamily: 'monospace', fontSize: '14px', color: '#475569'
+    }).setOrigin(1, 0);
+
+    this.startText = this.add.text(GAME_WIDTH / 2, 150, 'Tap to Clean', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#0f172a'
+    }).setOrigin(0.5);
+
+    this.gameOverText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, '', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#0f172a', align: 'center'
+    }).setOrigin(0.5);
+
+    this.input.on('pointerdown', () => {
+      if (!this.started) this.startGame();
+      else if (this.gameOver) this.scene.restart();
+    });
+  }
+
+  drawBackground() {
+    const g = this.add.graphics();
+    const tile = 50;
+    for (let y = 0; y < GAME_HEIGHT; y += tile) {
+      for (let x = 0; x < GAME_WIDTH; x += tile) {
+        const even = ((x / tile) + (y / tile)) % 2 === 0;
+        g.fillStyle(even ? COLOR_TILE_LIGHT : COLOR_TILE_DARK, 1);
+        g.fillRect(x, y, tile, tile);
+      }
+    }
+  }
+
+  buildSlots() {
+    this.slots = [];
+    for (const y of ROW_YS) {
+      for (const x of COL_XS) {
+        this.add.circle(x, y, HOLE_RADIUS + 4, COLOR_HOLE_RIM);
+        this.add.circle(x, y, HOLE_RADIUS, COLOR_HOLE);
+        this.slots.push({ x, y, occupied: false, target: null });
+      }
+    }
+  }
+
+  startGame() {
+    this.started = true;
+    this.startText.setVisible(false);
+  }
+
+  updateComboText() {
+    this.comboText.setText('Combo: ' + this.combo);
+  }
+
+  createTargetVisual(type) {
+    const c = this.add.container(0, 0);
+    if (type === 'SOAP') {
+      const body = this.add.ellipse(0, 0, 38, 22, 0xfca5a5);
+      const shine = this.add.ellipse(-8, -5, 12, 6, 0xffe4e6, 0.7);
+      c.add([body, shine]);
+    } else if (type === 'TOOTHPASTE') {
+      const body = this.add.rectangle(0, 4, 16, 30, 0x60a5fa);
+      const cap = this.add.rectangle(0, -14, 10, 8, 0xf1f5f9);
+      const stripe = this.add.rectangle(0, 8, 16, 4, 0xef4444);
+      c.add([body, stripe, cap]);
+    } else if (type === 'SPONGE') {
+      const body = this.add.rectangle(0, 0, 34, 22, 0xfde047);
+      const dot1 = this.add.circle(-8, -4, 2, 0xca8a04);
+      const dot2 = this.add.circle(6, 2, 2, 0xca8a04);
+      const dot3 = this.add.circle(2, -6, 2, 0xca8a04);
+      c.add([body, dot1, dot2, dot3]);
+    } else if (type === 'SPRAY') {
+      const body = this.add.rectangle(0, 6, 16, 26, 0x5eead4);
+      const nozzle = this.add.rectangle(0, -10, 6, 8, 0x0f766e);
+      const trigger = this.add.rectangle(10, -4, 10, 6, 0x0f766e);
+      c.add([body, nozzle, trigger]);
+    } else if (type === 'BUCKET') {
+      const body = this.add.polygon(0, 4, [-16,-12, 16,-12, 12,14, -12,14], 0xfb923c);
+      const handle = this.add.ellipse(0, -14, 20, 10, 0x9a3412, 0).setStrokeStyle(3, 0x9a3412);
+      c.add([body, handle]);
+    } else {
+      const blob = this.add.polygon(0, 0, [-16,-4, -8,-14, 6,-12, 16,-2, 12,10, -2,14, -14,8], COLOR_DIRT);
+      const spot = this.add.circle(-4, -2, 4, COLOR_DIRT_DARK);
+      c.add([blob, spot]);
+    }
+    return c;
+  }
+
+  spawnBurst(x, y, color) {
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI * 2 / 6) * i + Math.random() * 0.3;
+      const dist = 16 + Math.random() * 10;
+      const bit = this.add.circle(x, y, 3, color);
+      this.tweens.add({
+        targets: bit,
+        x: x + Math.cos(angle) * dist,
+        y: y + Math.sin(angle) * dist,
+        alpha: 0,
+        duration: 300,
+        ease: 'Quad.easeOut',
+        onComplete: () => bit.destroy()
+      });
+    }
+  }
+
+  trySpawnTarget(phase) {
+    const emptySlots = this.slots.filter(s => !s.occupied);
+    if (emptySlots.length === 0) return;
+    const slot = Phaser.Utils.Array.GetRandom(emptySlots);
+    const isDirt = Math.random() < phase.decoyChance;
+    const type = isDirt ? 'DIRT' : Phaser.Utils.Array.GetRandom(GOOD_TYPES);
+    this.spawnTargetAt(slot, type, phase.stayDuration);
+  }
+
+  spawnTargetAt(slot, type, stayDuration) {
+    slot.occupied = true;
+
+    const container = this.createTargetVisual(type);
+    container.setPosition(slot.x, slot.y);
+    container.setScale(0);
+    this.tweens.add({ targets: container, scale: 1, duration: 140, ease: 'Back.easeOut' });
+
+    const hitZone = this.add.zone(slot.x, slot.y, HOLE_RADIUS * 1.8, HOLE_RADIUS * 1.8).setInteractive();
+
+    const timeoutTimer = this.time.delayedCall(stayDuration, () => {
+      this.handleTimeout(slot, type, container, hitZone);
+    });
+
+    hitZone.on('pointerdown', () => {
+      this.handleTap(slot, type, container, hitZone, timeoutTimer);
+    });
+
+    slot.target = { container, hitZone, timeoutTimer };
+  }
+
+  handleTap(slot, type, container, hitZone, timeoutTimer) {
+    timeoutTimer.remove(false);
+    hitZone.destroy();
+    slot.occupied = false;
+    slot.target = null;
+
+    if (type === 'DIRT') {
+      this.combo = 0;
+      this.updateComboText();
+      this.timeRemaining = Math.max(0, this.timeRemaining - 3);
+      SFX.hit();
+      this.spawnBurst(slot.x, slot.y, COLOR_DIRT_DARK);
+    } else {
+      this.combo++;
+      this.updateComboText();
+      const points = 10 + this.combo * 2;
+      this.score += points;
+      this.scoreText.setText('Score: ' + this.score);
+      SFX.combo(this.combo);
+      this.spawnBurst(slot.x, slot.y, COLOR_SPARKLE);
+    }
+
+    this.tweens.add({ targets: container, scale: 0, duration: 120, onComplete: () => container.destroy() });
+  }
+
+  handleTimeout(slot, type, container, hitZone) {
+    hitZone.destroy();
+    slot.occupied = false;
+    slot.target = null;
+
+    if (type !== 'DIRT') {
+      this.combo = 0;
+      this.updateComboText();
+    }
+
+    this.tweens.add({ targets: container, scale: 0, duration: 120, onComplete: () => container.destroy() });
+  }
+
+  update(time, delta) {
+    if (this.gameOver || !this.started) return;
+    const dt = delta / 1000;
+
+    this.timeRemaining -= dt;
+    if (this.timeRemaining <= 0) {
+      this.timeRemaining = 0;
+      this.timerText.setText(formatTime(0));
+      this.triggerGameOver();
+      return;
+    }
+    this.timerText.setText(formatTime(this.timeRemaining));
+
+    const elapsed = ROUND_DURATION - this.timeRemaining;
+    const phase = getDifficultyPhase(elapsed);
+
+    this.spawnTimer += delta;
+    if (this.spawnTimer >= phase.spawnInterval) {
+      this.spawnTimer = 0;
+      this.trySpawnTarget(phase);
+    }
+  }
+
+  triggerGameOver() {
+    SFX.fail();
+    this.gameOver = true;
+
+    this.slots.forEach(s => {
+      if (s.target) {
+        s.target.timeoutTimer.remove(false);
+        s.target.hitZone.destroy();
+        s.target.container.destroy();
+        s.occupied = false;
+        s.target = null;
+      }
+    });
+
+    let isNewBest = false;
+    if (this.score > this.bestScore) {
+      this.bestScore = this.score;
+      localStorage.setItem(BEST_KEY, String(this.bestScore));
+      isNewBest = true;
+    }
+
+    this.gameOverText.setText(
+      "TIME'S UP\n" +
+      'Score: ' + this.score + '\n' +
+      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
+      'Tap to retry'
+    );
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#e0f2fe',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
