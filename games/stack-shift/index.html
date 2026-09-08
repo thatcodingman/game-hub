@@ -76,6 +76,7 @@ class MainScene extends Phaser.Scene {
     // Base platform (world space)
     this.baseVisual = this.createIceVisual(BASE_SIZE, BLOCK_THICKNESS, true);
     this.baseVisual.setPosition(0, 0);
+    this.placedBlocks = [{ x: 0, y: 0, w: BASE_SIZE, h: BLOCK_THICKNESS }];
 
     this.movingVisual = null;
 
@@ -218,6 +219,7 @@ class MainScene extends Phaser.Scene {
     const finalX = info.axis === 'x' ? growthPos : (info.swingAxis === 'x' ? newSwingCenter : this.prevX);
     const finalY = info.axis === 'y' ? growthPos : (info.swingAxis === 'y' ? newSwingCenter : this.prevY);
     lockedVisual.setPosition(finalX, finalY);
+    this.placedBlocks.push({ x: finalX, y: finalY, w, h });
 
     if (!isPerfect) this.spawnBurst(finalX, finalY, COLOR_ICE_EDGE);
 
@@ -292,8 +294,41 @@ class MainScene extends Phaser.Scene {
     }
   }
 
+  revealStructure() {
+    if (this.placedBlocks.length === 0) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    this.placedBlocks.forEach(b => {
+      minX = Math.min(minX, b.x - b.w / 2);
+      maxX = Math.max(maxX, b.x + b.w / 2);
+      minY = Math.min(minY, b.y - b.h / 2);
+      maxY = Math.max(maxY, b.y + b.h / 2);
+    });
+
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const structW = Math.max(maxX - minX, 40);
+    const structH = Math.max(maxY - minY, 40);
+    const PADDING = 1.35;
+
+    const zoomX = GAME_WIDTH / (structW * PADDING);
+    const zoomY = GAME_HEIGHT / (structH * PADDING);
+    const targetZoom = Phaser.Math.Clamp(Math.min(zoomX, zoomY), 0.15, 1.0);
+    const targetScrollX = centerX - (GAME_WIDTH / targetZoom) / 2;
+    const targetScrollY = centerY - (GAME_HEIGHT / targetZoom) / 2;
+
+    this.tweens.add({
+      targets: this.cameras.main,
+      zoom: targetZoom,
+      scrollX: targetScrollX,
+      scrollY: targetScrollY,
+      duration: 900,
+      ease: 'Quad.easeInOut'
+    });
+  }
+
   finishGameOver() {
     SFX.fail();
+    this.revealStructure();
     let isNewBest = false;
     if (this.score > this.bestScore) {
       this.bestScore = this.score;
