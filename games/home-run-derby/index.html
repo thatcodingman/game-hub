@@ -117,17 +117,18 @@ class MainScene extends Phaser.Scene {
     this.pitcherVisual = this.createPitcherVisual();
     this.batVisual = this.createBatVisual();
 
-    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#f8fafc' }).setScrollFactor(0);
-    this.hitsText = this.add.text(10, 34, 'Hits: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
-    this.pitchText = this.add.text(10, 54, 'Pitch: 0', { fontFamily: 'monospace', fontSize: '14px', color: '#e0f2fe' }).setScrollFactor(0);
+    this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '22px', color: '#f8fafc' }).setScrollFactor(0);
+    this.hitsText = this.add.text(10, 40, 'Hits: 0', { fontFamily: 'monospace', fontSize: '13px', color: '#e0f2fe' }).setScrollFactor(0);
+    this.pitchText = this.add.text(10, 58, 'Pitch: 0', { fontFamily: 'monospace', fontSize: '13px', color: '#e0f2fe' }).setScrollFactor(0);
     this.phaseText = this.add.text(GAME_WIDTH / 2, 4, 'WARM-UP', { fontFamily: 'monospace', fontSize: '11px', color: '#e0f2fe' }).setOrigin(0.5, 0).setScrollFactor(0);
-    this.bestText = this.add.text(10, 74, 'Best: ' + this.bestScore, { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
-    this.bestDistText = this.add.text(10, 92, 'Best Dist: ' + this.bestDistance + ' FT', { fontFamily: 'monospace', fontSize: '13px', color: '#cbd5e1' }).setScrollFactor(0);
+    this.recordsText = this.add.text(10, GAME_HEIGHT - 20, 'Best: ' + this.bestScore + '  \u00b7  ' + this.bestDistance + ' FT', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#94a3b8'
+    }).setScrollFactor(0);
 
     this.strikeText = this.add.text(GAME_WIDTH - 10, 10, 'Strikes: OOO', {
-      fontFamily: 'monospace', fontSize: '16px', color: '#f8fafc'
+      fontFamily: 'monospace', fontSize: '20px', color: '#f8fafc'
     }).setOrigin(1, 0).setScrollFactor(0);
-    this.comboText = this.add.text(GAME_WIDTH - 10, 34, 'Combo: x1', {
+    this.comboText = this.add.text(GAME_WIDTH - 10, 40, 'Combo: x1', {
       fontFamily: 'monospace', fontSize: '15px', color: COLOR_GOLD === 0xfacc15 ? '#facc15' : '#facc15'
     }).setOrigin(1, 0).setScrollFactor(0);
 
@@ -234,11 +235,16 @@ class MainScene extends Phaser.Scene {
     g.lineStyle(2, 0xf8fafc, 0.9);
     g.strokeRect(cx - halfW, BAR_Y - 8, BAR_WIDTH, 16);
 
+    this.add.text(cx, BAR_Y - 26, 'PERFECT', {
+      fontFamily: 'monospace', fontSize: '10px', color: '#facc15'
+    }).setOrigin(0.5).setScrollFactor(0);
+
     this.barLabel = this.add.text(cx, BAR_Y + 18, 'TIMING', {
       fontFamily: 'monospace', fontSize: '11px', color: '#e2e8f0'
     }).setOrigin(0.5).setScrollFactor(0);
 
     this.barMarker = this.add.triangle(cx, BAR_Y - 16, 0, 10, 10, -6, -10, -6, 0xf8fafc).setScrollFactor(0);
+    this.ballGuideLine = this.add.graphics().setScrollFactor(0);
   }
 
   createBallVisual() {
@@ -291,6 +297,10 @@ class MainScene extends Phaser.Scene {
     this.currentPitchType = pickPitchType(this.hits);
     this.curveDirection = Math.random() < 0.5 ? -1 : 1;
     this.markerSweepDirection = Math.random() < 0.5 ? -1 : 1;
+
+    if ([25, 50, 75, 100].includes(this.pitchCount) || (this.pitchCount > 100 && this.pitchCount % 50 === 0)) {
+      this.showFloatingText(GAME_WIDTH / 2, 200, 'PITCH ' + this.pitchCount + '!', 0xffffff);
+    }
 
     if (diff.label !== this.currentPhaseLabel) {
       this.currentPhaseLabel = diff.label;
@@ -351,6 +361,10 @@ class MainScene extends Phaser.Scene {
     this.strikeText.setText('Strikes: ' + '\u25CF'.repeat(this.strikes) + '\u25CB'.repeat(MAX_STRIKES - this.strikes));
   }
 
+  updateRecordsText() {
+    this.recordsText.setText('Best: ' + this.bestScore + '  \u00b7  ' + this.bestDistance + ' FT');
+  }
+
   showFloatingText(x, y, text, color) {
     const t = this.add.text(x, y, text, {
       fontFamily: 'monospace', fontSize: '18px', color: '#' + color.toString(16).padStart(6, '0'), align: 'center'
@@ -400,7 +414,7 @@ class MainScene extends Phaser.Scene {
       this.bestDistance = distance;
       localStorage.setItem(BEST_DISTANCE_KEY, String(this.bestDistance));
       isNewDistBest = true;
-      this.bestDistText.setText('Best Dist: ' + this.bestDistance + ' FT');
+      this.updateRecordsText();
     }
 
     SFX.combo(this.combo);
@@ -464,6 +478,7 @@ class MainScene extends Phaser.Scene {
       this.bestScore = this.score;
       localStorage.setItem(BEST_KEY, String(this.bestScore));
       isNewBest = true;
+      this.updateRecordsText();
     }
     this.gameOverText.setText(
       "STRUCK OUT\n" +
@@ -495,6 +510,12 @@ class MainScene extends Phaser.Scene {
         const trail = this.add.circle(this.ballVisual.x, this.ballVisual.y, Math.max(1, BALL_MAX_RADIUS * scale * 0.6), 0xffffff, 0.35);
         this.tweens.add({ targets: trail, alpha: 0, scale: 0.4, duration: 200, onComplete: () => trail.destroy() });
       }
+
+      // Light connector from the ball down to the timing bar — ties the two
+      // together visually so the relationship is obvious at a glance.
+      this.ballGuideLine.clear();
+      this.ballGuideLine.lineStyle(1, 0xf8fafc, 0.18);
+      this.ballGuideLine.lineBetween(this.ballVisual.x, this.ballVisual.y + 14, GAME_WIDTH / 2, BAR_Y - 20);
     }
 
     // Timing bar marker tracks elapsed time relative to the ideal moment.
@@ -506,7 +527,7 @@ class MainScene extends Phaser.Scene {
 
     if (!this.swungThisPitch && this.pitchElapsed > this.pitchDuration + FOUL_WINDOW) {
       this.swungThisPitch = true;
-      this.registerStrike('STRIKE! (looking)', false);
+      this.registerStrike('STRIKE!', false);
     }
   }
 }
