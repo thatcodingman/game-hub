@@ -19,6 +19,7 @@ const GAME_HEIGHT = 700;
 const ROUND_DURATION = 60;
 const HOLE_RADIUS = 42;
 const BEST_KEY = 'dirtyset_best';
+const BEST_REACTION_KEY = 'dirtyset_best_reaction';
 
 const COL_XS = [90, 200, 310];
 const ROW_YS = [260, 390, 520];
@@ -58,6 +59,10 @@ class MainScene extends Phaser.Scene {
     this.timeRemaining = ROUND_DURATION;
     this.spawnTimer = 0;
     this.spawnCount = 0;
+    this.reactionTimes = [];
+    this.bestReactionRun = null;
+    const storedReaction = localStorage.getItem(BEST_REACTION_KEY);
+    this.allTimeBestReaction = storedReaction ? parseInt(storedReaction, 10) : null;
     this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
 
     this.drawBackground();
@@ -65,6 +70,7 @@ class MainScene extends Phaser.Scene {
 
     this.scoreText = this.add.text(10, 10, 'Score: 0', { fontFamily: 'monospace', fontSize: '18px', color: '#0f172a' });
     this.comboText = this.add.text(10, 34, 'Combo: 0', { fontFamily: 'monospace', fontSize: '16px', color: '#0369a1' });
+    this.reactionText = this.add.text(10, 58, 'Reaction: --', { fontFamily: 'monospace', fontSize: '14px', color: '#059669' });
     this.timerText = this.add.text(GAME_WIDTH - 10, 10, formatTime(this.timeRemaining), {
       fontFamily: 'monospace', fontSize: '26px', color: '#0f172a'
     }).setOrigin(1, 0);
@@ -191,19 +197,20 @@ class MainScene extends Phaser.Scene {
     this.tweens.add({ targets: container, scale: 1, duration: 140, ease: 'Back.easeOut' });
 
     const hitZone = this.add.zone(slot.x, slot.y, HOLE_RADIUS * 1.8, HOLE_RADIUS * 1.8).setInteractive();
+    const spawnTime = this.time.now;
 
     const timeoutTimer = this.time.delayedCall(stayDuration, () => {
       this.handleTimeout(slot, type, container, hitZone);
     });
 
     hitZone.on('pointerdown', () => {
-      this.handleTap(slot, type, container, hitZone, timeoutTimer);
+      this.handleTap(slot, type, container, hitZone, timeoutTimer, spawnTime);
     });
 
     slot.target = { container, hitZone, timeoutTimer };
   }
 
-  handleTap(slot, type, container, hitZone, timeoutTimer) {
+  handleTap(slot, type, container, hitZone, timeoutTimer, spawnTime) {
     timeoutTimer.remove(false);
     hitZone.destroy();
     slot.occupied = false;
@@ -223,9 +230,16 @@ class MainScene extends Phaser.Scene {
       this.scoreText.setText('Score: ' + this.score);
       SFX.combo(this.combo);
       this.spawnBurst(slot.x, slot.y, COLOR_SPARKLE);
+      this.registerReaction(Math.round(this.time.now - spawnTime));
     }
 
     this.tweens.add({ targets: container, scale: 0, duration: 120, onComplete: () => container.destroy() });
+  }
+
+  registerReaction(ms) {
+    this.reactionTimes.push(ms);
+    this.reactionText.setText('Reaction: ' + ms + 'ms');
+    if (this.bestReactionRun === null || ms < this.bestReactionRun) this.bestReactionRun = ms;
   }
 
   handleTimeout(slot, type, container, hitZone) {
@@ -285,10 +299,23 @@ class MainScene extends Phaser.Scene {
       isNewBest = true;
     }
 
+    const avgReaction = this.reactionTimes.length
+      ? Math.round(this.reactionTimes.reduce((a, b) => a + b, 0) / this.reactionTimes.length)
+      : null;
+
+    let isNewReactionBest = false;
+    if (this.bestReactionRun !== null && (this.allTimeBestReaction === null || this.bestReactionRun < this.allTimeBestReaction)) {
+      this.allTimeBestReaction = this.bestReactionRun;
+      localStorage.setItem(BEST_REACTION_KEY, String(this.allTimeBestReaction));
+      isNewReactionBest = true;
+    }
+
     this.gameOverText.setText(
       "TIME'S UP\n" +
       'Score: ' + this.score + '\n' +
-      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n\n' +
+      'Best: ' + this.bestScore + (isNewBest ? '  NEW BEST!' : '') + '\n' +
+      'Avg Reaction: ' + (avgReaction !== null ? avgReaction + 'ms' : '--') + '\n' +
+      'Best Reaction: ' + (this.bestReactionRun !== null ? this.bestReactionRun + 'ms' : '--') + (isNewReactionBest ? '  NEW BEST!' : '') + '\n\n' +
       'Tap to retry'
     );
   }
