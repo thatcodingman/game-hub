@@ -119,6 +119,29 @@
     fail()      { this.tone(280, 0.35, 'sawtooth', 0.20, 70); }        // game over/lose
     countdown() { this.tone(500, 0.08, 'square', 0.10); }              // timer tick
 
+    // Comedic "falling scream" — quick upward yelp then a long descending
+    // wail. Fully synthesized (two-stage frequency sweep), not a sample.
+    // Good for dramatic fail/fall moments.
+    scream() {
+      if (this.muted || !this.ctx) return;
+      const ctx = this.ctx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      const now = ctx.currentTime;
+      osc.frequency.setValueAtTime(320, now);
+      osc.frequency.exponentialRampToValueAtTime(760, now + 0.09);
+      osc.frequency.exponentialRampToValueAtTime(110, now + 0.75);
+      const v = 0.16 * this.volume;
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(v, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(now + 0.82);
+    }
+
     // Escalating-pitch cue for streaks/combos — pitch rises with n (caps at 10).
     combo(n) {
       const freq = 440 + Math.min(n || 0, 10) * 40;
