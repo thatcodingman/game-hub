@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Crossword</title>
+<style>
+  html, body { margin:0; padding:0; background:#111; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const GRID_SIZE = 4;
+const CELL = 64;
+const GRID_X = (GAME_WIDTH - GRID_SIZE * CELL) / 2;
+const GRID_Y = 120;
+const BEST_TIME_KEY = 'crossword_best_time';
+
+const COLOR_BG = 0xfffbeb;
+const COLOR_CELL_BG = 0xffffff;
+const COLOR_CELL_SELECTED = 0xfde047;
+const COLOR_WORD_HIGHLIGHT = 0xbae6fd;
+const COLOR_BORDER = 0x1c1917;
+const COLOR_KEY_BG = 0xe7e5e4;
+const COLOR_KEY_TEXT = 0x1c1917;
+
+// Hand-verified 4x4 word square — every row and every column reads as a
+// real word. Original construction, original clues, not from any
+// published puzzle.
+const PUZZLE = {
+  grid: [
+    ['S','T','A','R'],
+    ['T','A','L','E'],
+    ['A','L','O','E'],
+    ['R','E','E','D']
+  ],
+  across: [
+    { row: 0, num: 1, clue: 'Point of light in the night sky' },
+    { row: 1, num: 5, clue: 'A story that may or may not be true' },
+    { row: 2, num: 6, clue: 'Succulent plant used to soothe burns' },
+    { row: 3, num: 7, clue: 'Slender plant that grows near water' }
+  ],
+  down: [
+    { col: 0, num: 1, clue: 'Someone famous, like a movie ___' },
+    { col: 1, num: 2, clue: "Fisherman's exaggerated story" },
+    { col: 2, num: 3, clue: 'Common skincare gel ingredient' },
+    { col: 3, num: 4, clue: 'Part of a woodwind mouthpiece' }
+  ]
+};
+
+const CELL_NUMBERS = { '0,0': 1, '0,1': 2, '0,2': 3, '0,3': 4, '1,0': 5, '2,0': 6, '3,0': 7 };
+
+const KEY_ROWS = [
+  ['Q','W','E','R','T','Y','U','I','O','P'],
+  ['A','S','D','F','G','H','J','K','L'],
+  ['Z','X','C','V','B','N','M']
+];
+
+function formatTime(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.solved = false;
+    this.elapsedMs = 0;
+    this.selectedRow = 0;
+    this.selectedCol = 0;
+    this.direction = 'ACROSS';
+    this.userGrid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
+    this.cellRects = [];
+    this.cellTexts = [];
+    this.bestTimeMs = parseInt(localStorage.getItem(BEST_TIME_KEY) || '0', 10);
+
+    this.cameras.main.setBackgroundColor(COLOR_BG);
+
+    this.clueText = this.add.text(GAME_WIDTH / 2, 20, '', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#1c1917', align: 'center', wordWrap: { width: 340 }
+    }).setOrigin(0.5, 0);
+
+    this.timerText = this.add.text(10, GRID_Y + GRID_SIZE * CELL + 14, 'Time: 0:00', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#57534e'
+    });
+    this.bestTimeText = this.add.text(GAME_WIDTH - 10, GRID_Y + GRID_SIZE * CELL + 14, 'Best: ' + (this.bestTimeMs ? formatTime(this.bestTimeMs) : '--:--'), {
+      fontFamily: 'monospace', fontSize: '13px', color: '#57534e'
+    }).setOrigin(1, 0);
+
+    this.solvedText = this.add.text(GAME_WIDTH / 2, GRID_Y + GRID_SIZE * CELL + 40, '', {
+      fontFamily: 'monospace', fontSize: '16px', color: '#166534', align: 'center'
+    }).setOrigin(0.5, 0);
+
+    this.drawGrid();
+    this.drawKeyboard();
+    this.refreshHighlights();
+    this.refreshClueText();
+
+    this.input.keyboard.on('keydown', (e) => {
+      if (this.solved) return;
+      if (/^[a-zA-Z]$/.test(e.key)) this.inputLetter(e.key.toUpperCase());
+      else if (e.key === 'Backspace') this.inputBackspace();
+    });
+  }
+
+  drawGrid() {
+    const border = this.add.graphics();
+    border.lineStyle(3, COLOR_BORDER, 1);
+    border.strokeRect(GRID_X, GRID_Y, GRID_SIZE * CELL, GRID_SIZE * CELL);
+
+    for (let r = 0; r < GRID_SIZE; r++) {
+      this.cellRects.push([]);
+      this.cellTexts.push([]);
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const x = GRID_X + c * CELL;
+        const y = GRID_Y + r * CELL;
+        const rect = this.add.rectangle(x + CELL / 2, y + CELL / 2, CELL - 2, CELL - 2, COLOR_CELL_BG)
+          .setStrokeStyle(1, COLOR_BORDER, 0.5)
+          .setInteractive();
+        rect.on('pointerdown', () => this.selectCell(r, c));
+        this.cellRects[r].push(rect);
+
+        const key = r + ',' + c;
+        if (CELL_NUMBERS[key]) {
+          this.add.text(x + 4, y + 2, String(CELL_NUMBERS[key]), {
+            fontFamily: 'monospace', fontSize: '10px', color: '#78716c'
+          });
+        }
+
+        const letterText = this.add.text(x + CELL / 2, y + CELL / 2 + 4, '', {
+          fontFamily: 'monospace', fontSize: '26px', color: '#1c1917'
+        }).setOrigin(0.5);
+        this.cellTexts[r].push(letterText);
+      }
+    }
+  }
+
+  drawKeyboard() {
+    const startY = GRID_Y + GRID_SIZE * CELL + 70;
+    const keyH = 36;
+    const rowGap = 6;
+
+    KEY_ROWS.forEach((row, rowIndex) => {
+      const keyW = 30;
+      const gap = 3;
+      const totalW = row.length * keyW + (row.length - 1) * gap;
+      const startX = (GAME_WIDTH - totalW) / 2;
+      const y = startY + rowIndex * (keyH + rowGap);
+
+      row.forEach((letter, i) => {
+        const x = startX + i * (keyW + gap) + keyW / 2;
+        const key = this.add.rectangle(x, y, keyW, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
+        this.add.text(x, y, letter, { fontFamily: 'monospace', fontSize: '13px', color: '#' + COLOR_KEY_TEXT.toString(16) }).setOrigin(0.5);
+        key.on('pointerdown', () => { if (!this.solved) this.inputLetter(letter); });
+      });
+    });
+
+    const lastRowY = startY + 3 * (keyH + rowGap);
+    const backKey = this.add.rectangle(GAME_WIDTH / 2, lastRowY, 100, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
+    this.add.text(GAME_WIDTH / 2, lastRowY, 'BACKSPACE', { fontFamily: 'monospace', fontSize: '11px', color: '#1c1917' }).setOrigin(0.5);
+    backKey.on('pointerdown', () => { if (!this.solved) this.inputBackspace(); });
+  }
+
+  selectCell(row, col) {
+    if (this.solved) return;
+    if (row === this.selectedRow && col === this.selectedCol) {
+      this.direction = this.direction === 'ACROSS' ? 'DOWN' : 'ACROSS';
+    } else {
+      this.selectedRow = row;
+      this.selectedCol = col;
+    }
+    this.refreshHighlights();
+    this.refreshClueText();
+  }
+
+  refreshHighlights() {
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const inWord = this.direction === 'ACROSS' ? r === this.selectedRow : c === this.selectedCol;
+        const isSelected = r === this.selectedRow && c === this.selectedCol;
+        this.cellRects[r][c].setFillStyle(isSelected ? COLOR_CELL_SELECTED : (inWord ? COLOR_WORD_HIGHLIGHT : COLOR_CELL_BG));
+      }
+    }
+  }
+
+  refreshClueText() {
+    const entry = this.direction === 'ACROSS'
+      ? PUZZLE.across[this.selectedRow]
+      : PUZZLE.down[this.selectedCol];
+    const label = this.direction === 'ACROSS' ? 'Across' : 'Down';
+    this.clueText.setText(entry.num + ' ' + label + ': ' + entry.clue);
+  }
+
+  inputLetter(letter) {
+    this.userGrid[this.selectedRow][this.selectedCol] = letter;
+    this.cellTexts[this.selectedRow][this.selectedCol].setText(letter);
+    SFX.blip();
+
+    if (this.direction === 'ACROSS' && this.selectedCol < GRID_SIZE - 1) {
+      this.selectedCol++;
+    } else if (this.direction === 'DOWN' && this.selectedRow < GRID_SIZE - 1) {
+      this.selectedRow++;
+    }
+    this.refreshHighlights();
+    this.refreshClueText();
+    this.checkCompletion();
+  }
+
+  inputBackspace() {
+    if (this.userGrid[this.selectedRow][this.selectedCol]) {
+      this.userGrid[this.selectedRow][this.selectedCol] = '';
+      this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+    } else {
+      if (this.direction === 'ACROSS' && this.selectedCol > 0) this.selectedCol--;
+      else if (this.direction === 'DOWN' && this.selectedRow > 0) this.selectedRow--;
+      this.userGrid[this.selectedRow][this.selectedCol] = '';
+      this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+    }
+    this.refreshHighlights();
+    this.refreshClueText();
+  }
+
+  checkCompletion() {
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (!this.userGrid[r][c]) return;
+      }
+    }
+    let correct = true;
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (this.userGrid[r][c] !== PUZZLE.grid[r][c]) correct = false;
+      }
+    }
+    if (correct) this.triggerSolved();
+    else SFX.hit();
+  }
+
+  triggerSolved() {
+    this.solved = true;
+    SFX.combo(3);
+    let isNewBest = false;
+    if (!this.bestTimeMs || this.elapsedMs < this.bestTimeMs) {
+      this.bestTimeMs = this.elapsedMs;
+      localStorage.setItem(BEST_TIME_KEY, String(this.bestTimeMs));
+      isNewBest = true;
+      this.bestTimeText.setText('Best: ' + formatTime(this.bestTimeMs));
+    }
+    this.solvedText.setText('SOLVED in ' + formatTime(this.elapsedMs) + (isNewBest ? '  NEW BEST!' : '') + '\ntap here to play again');
+    this.solvedText.setInteractive();
+    this.solvedText.on('pointerdown', () => this.scene.restart());
+  }
+
+  update(time, delta) {
+    if (this.solved) return;
+    this.elapsedMs += delta;
+    this.timerText.setText('Time: ' + formatTime(this.elapsedMs));
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  resolution: window.devicePixelRatio || 1,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#fffbeb',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
