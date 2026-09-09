@@ -26,6 +26,7 @@ const COLOR_BG = 0xfffbeb;
 const COLOR_CELL_BG = 0xffffff;
 const COLOR_CELL_SELECTED = 0xfde047;
 const COLOR_WORD_HIGHLIGHT = 0xbae6fd;
+const COLOR_WRONG = 0xfca5a5;
 const COLOR_BLACK = 0x1c1917;
 const COLOR_BORDER = 0x1c1917;
 const COLOR_KEY_BG = 0xe7e5e4;
@@ -156,6 +157,8 @@ class MainScene extends Phaser.Scene {
     this.userGrid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
     this.cellRects = [];
     this.cellTexts = [];
+    this.hintsUsed = 0;
+    this.wrongCells = new Set();
     this.bestTimeMs = parseInt(localStorage.getItem(this.bestTimeKey) || '0', 10);
 
     // start on the first white cell
@@ -253,8 +256,22 @@ class MainScene extends Phaser.Scene {
     });
 
     const lastRowY = startY + 3 * (keyH + rowGap);
-    const backKey = this.add.rectangle(GAME_WIDTH / 2, lastRowY, 100, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
-    this.add.text(GAME_WIDTH / 2, lastRowY, 'BACKSPACE', { fontFamily: 'monospace', fontSize: '11px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
+    const buttonW = 110, buttonGap = 8;
+    const totalBtnW = buttonW * 3 + buttonGap * 2;
+    const btnStartX = (GAME_WIDTH - totalBtnW) / 2 + buttonW / 2;
+
+    const hintKey = this.add.rectangle(btnStartX, lastRowY, buttonW, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
+    this.add.text(btnStartX, lastRowY, 'HINT', { fontFamily: 'monospace', fontSize: '11px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
+    hintKey.on('pointerdown', () => { if (!this.solved) this.useHint(); });
+
+    const checkX = btnStartX + buttonW + buttonGap;
+    const checkKey = this.add.rectangle(checkX, lastRowY, buttonW, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
+    this.add.text(checkX, lastRowY, 'CHECK', { fontFamily: 'monospace', fontSize: '11px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
+    checkKey.on('pointerdown', () => { if (!this.solved) this.checkEntries(); });
+
+    const backX = checkX + buttonW + buttonGap;
+    const backKey = this.add.rectangle(backX, lastRowY, buttonW, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
+    this.add.text(backX, lastRowY, 'BACK', { fontFamily: 'monospace', fontSize: '11px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
     backKey.on('pointerdown', () => { if (!this.solved) this.inputBackspace(); });
   }
 
@@ -297,9 +314,15 @@ class MainScene extends Phaser.Scene {
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
         if (PUZZLE.isBlack(r, c)) continue;
+        const key = r + ',' + c;
         const isSelected = r === this.selectedRow && c === this.selectedCol;
-        const inWord = wordCells.has(r + ',' + c);
-        this.cellRects[r][c].setFillStyle(isSelected ? COLOR_CELL_SELECTED : (inWord ? COLOR_WORD_HIGHLIGHT : COLOR_CELL_BG));
+        const inWord = wordCells.has(key);
+        const isWrong = this.wrongCells.has(key);
+        let color = COLOR_CELL_BG;
+        if (inWord) color = COLOR_WORD_HIGHLIGHT;
+        if (isWrong) color = COLOR_WRONG;
+        if (isSelected) color = COLOR_CELL_SELECTED;
+        this.cellRects[r][c].setFillStyle(color);
       }
     }
   }
@@ -314,6 +337,7 @@ class MainScene extends Phaser.Scene {
   inputLetter(letter) {
     this.userGrid[this.selectedRow][this.selectedCol] = letter;
     this.cellTexts[this.selectedRow][this.selectedCol].setText(letter);
+    this.wrongCells.delete(this.selectedRow + ',' + this.selectedCol);
     SFX.blip();
 
     const cells = this.currentWordCells();
@@ -330,6 +354,7 @@ class MainScene extends Phaser.Scene {
     if (this.userGrid[this.selectedRow][this.selectedCol]) {
       this.userGrid[this.selectedRow][this.selectedCol] = '';
       this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+      this.wrongCells.delete(this.selectedRow + ',' + this.selectedCol);
     } else {
       const cells = this.currentWordCells();
       const idx = cells.findIndex(([r, c]) => r === this.selectedRow && c === this.selectedCol);
@@ -337,10 +362,41 @@ class MainScene extends Phaser.Scene {
         [this.selectedRow, this.selectedCol] = cells[idx - 1];
         this.userGrid[this.selectedRow][this.selectedCol] = '';
         this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+        this.wrongCells.delete(this.selectedRow + ',' + this.selectedCol);
       }
     }
     this.refreshHighlights();
     this.refreshClueText();
+  }
+
+  useHint() {
+    const r = this.selectedRow, c = this.selectedCol;
+    const correct = PUZZLE.solution[r][c];
+    if (this.userGrid[r][c] !== correct) {
+      this.hintsUsed++;
+    }
+    this.userGrid[r][c] = correct;
+    this.cellTexts[r][c].setText(correct);
+    this.wrongCells.delete(r + ',' + c);
+    SFX.powerup();
+    this.refreshHighlights();
+    this.checkCompletion();
+  }
+
+  checkEntries() {
+    let anyWrong = false;
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (PUZZLE.isBlack(r, c)) continue;
+        const val = this.userGrid[r][c];
+        if (val && val !== PUZZLE.solution[r][c]) {
+          this.wrongCells.add(r + ',' + c);
+          anyWrong = true;
+        }
+      }
+    }
+    SFX[anyWrong ? 'hit' : 'blip']();
+    this.refreshHighlights();
   }
 
   checkCompletion() {
@@ -364,16 +420,42 @@ class MainScene extends Phaser.Scene {
   triggerSolved() {
     this.solved = true;
     SFX.combo(3);
+    this.burstConfetti();
     let isNewBest = false;
-    if (!this.bestTimeMs || this.elapsedMs < this.bestTimeMs) {
+    if (this.hintsUsed === 0 && (!this.bestTimeMs || this.elapsedMs < this.bestTimeMs)) {
       this.bestTimeMs = this.elapsedMs;
       localStorage.setItem(this.bestTimeKey, String(this.bestTimeMs));
       isNewBest = true;
       this.bestTimeText.setText('Best: ' + formatTime(this.bestTimeMs));
     }
-    this.solvedText.setText('SOLVED in ' + formatTime(this.elapsedMs) + (isNewBest ? '  NEW BEST!' : '') + '\ntap here to play again');
+    const hintNote = this.hintsUsed > 0 ? '  (' + this.hintsUsed + ' hint' + (this.hintsUsed > 1 ? 's' : '') + ' used)' : '';
+    this.solvedText.setText('SOLVED in ' + formatTime(this.elapsedMs) + (isNewBest ? '  NEW BEST!' : '') + hintNote + '\ntap here to play again');
     this.solvedText.setInteractive();
     this.solvedText.on('pointerdown', () => this.scene.restart());
+  }
+
+  burstConfetti() {
+    const centerX = GRID_X + GRID_SIZE * CELL / 2;
+    const centerY = GRID_Y + GRID_SIZE * CELL / 2;
+    const colors = [0xfde047, 0x60a5fa, 0xf472b6, 0x4ade80, 0xfb923c];
+    for (let i = 0; i < 28; i++) {
+      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
+      const piece = this.add.rectangle(centerX, centerY, 6, 6, color);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.Between(80, 220);
+      const targetX = centerX + Math.cos(angle) * dist;
+      const targetY = centerY + Math.sin(angle) * dist - 30;
+      this.tweens.add({
+        targets: piece,
+        x: targetX,
+        y: targetY + 160,
+        alpha: 0,
+        angle: Phaser.Math.Between(-180, 180),
+        duration: Phaser.Math.Between(700, 1100),
+        ease: 'Cubic.easeOut',
+        onComplete: () => piece.destroy()
+      });
+    }
   }
 
   update(time, delta) {
