@@ -16,45 +16,54 @@
 <script>
 const GAME_WIDTH = 400;
 const GAME_HEIGHT = 700;
-const GRID_SIZE = 4;
-const CELL = 64;
+const GRID_SIZE = 7;
+const CELL = 48;
 const GRID_X = (GAME_WIDTH - GRID_SIZE * CELL) / 2;
-const GRID_Y = 120;
-const BEST_TIME_KEY = 'crossword_best_time';
+const GRID_Y = 130;
+const BEST_TIME_KEY = 'crossword_best_time_v2';
 
 const COLOR_BG = 0xfffbeb;
 const COLOR_CELL_BG = 0xffffff;
 const COLOR_CELL_SELECTED = 0xfde047;
 const COLOR_WORD_HIGHLIGHT = 0xbae6fd;
+const COLOR_BLACK = 0x1c1917;
 const COLOR_BORDER = 0x1c1917;
 const COLOR_KEY_BG = 0xe7e5e4;
-const COLOR_KEY_TEXT = 0x1c1917;
+const COLOR_KEY_TEXT = '#1c1917';
 
-// Hand-verified 4x4 word square — every row and every column reads as a
-// real word. Original construction, original clues, not from any
-// published puzzle.
-const PUZZLE = {
-  grid: [
-    ['S','T','A','R'],
-    ['T','A','L','E'],
-    ['A','L','O','E'],
-    ['R','E','E','D']
-  ],
-  across: [
-    { row: 0, num: 1, clue: 'Point of light in the night sky' },
-    { row: 1, num: 5, clue: 'A story that may or may not be true' },
-    { row: 2, num: 6, clue: 'Succulent plant used to soothe burns' },
-    { row: 3, num: 7, clue: 'Slender plant that grows near water' }
-  ],
-  down: [
-    { col: 0, num: 1, clue: 'Someone famous, like a movie ___' },
-    { col: 1, num: 2, clue: "Fisherman's exaggerated story" },
-    { col: 2, num: 3, clue: 'Common skincare gel ingredient' },
-    { col: 3, num: 4, clue: 'Part of a woodwind mouthpiece' }
-  ]
+// Hand-verified 7x7, 14-entry crossword. Every row/column checked
+// programmatically, 180-degree symmetric black-square pattern confirmed,
+// common English words only, original clues.
+const RAW_GRID = [
+  '###BOTH',
+  '##RETRO',
+  '#RATHER',
+  'BETWEEN',
+  'OTHERS#',
+  'TREES##',
+  'HORN###'
+];
+
+const CLUES = {
+  across: {
+    1: 'The two considered together',
+    5: 'Having a deliberately old-fashioned style',
+    6: 'Somewhat; to a certain degree',
+    7: 'In the space separating two things',
+    8: 'People or things besides those already mentioned',
+    9: 'Tall plants with trunks and branches',
+    10: "An animal's pointed projection, or a brass instrument"
+  },
+  down: {
+    1: 'In the middle of two things',
+    2: 'Those not included in the group already named',
+    3: 'Wooded plants with trunks',
+    4: 'An animal projection used for defense, or an instrument you can blow',
+    5: 'To some extent, rather than completely',
+    6: 'A throwback style or look',
+    7: 'The pair as a whole'
+  }
 };
-
-const CELL_NUMBERS = { '0,0': 1, '0,1': 2, '0,2': 3, '0,3': 4, '1,0': 5, '2,0': 6, '3,0': 7 };
 
 const KEY_ROWS = [
   ['Q','W','E','R','T','Y','U','I','O','P'],
@@ -69,39 +78,70 @@ function formatTime(ms) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
+function buildPuzzleData() {
+  const solution = RAW_GRID.map(row => row.split(''));
+  const isBlack = (r, c) => solution[r][c] === '#';
+
+  const numbering = {};
+  const acrossStarts = {};
+  const downStarts = {};
+  let num = 0;
+
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (isBlack(r, c)) continue;
+      const startsAcross = (c === 0 || isBlack(r, c - 1)) && (c < GRID_SIZE - 1 && !isBlack(r, c + 1));
+      const startsDown = (r === 0 || isBlack(r - 1, c)) && (r < GRID_SIZE - 1 && !isBlack(r + 1, c));
+      if (startsAcross || startsDown) {
+        num++;
+        numbering[r + ',' + c] = num;
+        if (startsAcross) acrossStarts[num] = { row: r, col: c };
+        if (startsDown) downStarts[num] = { row: r, col: c };
+      }
+    }
+  }
+  return { solution, isBlack, numbering, acrossStarts, downStarts };
+}
+
+const PUZZLE = buildPuzzleData();
+
 class MainScene extends Phaser.Scene {
   constructor() { super('MainScene'); }
 
   create() {
     this.solved = false;
     this.elapsedMs = 0;
-    this.selectedRow = 0;
-    this.selectedCol = 0;
     this.direction = 'ACROSS';
     this.userGrid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(''));
     this.cellRects = [];
     this.cellTexts = [];
     this.bestTimeMs = parseInt(localStorage.getItem(BEST_TIME_KEY) || '0', 10);
 
+    // start on the first white cell
+    outer:
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (!PUZZLE.isBlack(r, c)) { this.selectedRow = r; this.selectedCol = c; break outer; }
+      }
+    }
+
     this.cameras.main.setBackgroundColor(COLOR_BG);
 
     this.clueText = this.add.text(GAME_WIDTH / 2, 20, '', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#1c1917', align: 'center', wordWrap: { width: 340 }
+      fontFamily: 'monospace', fontSize: '12px', color: '#1c1917', align: 'center', wordWrap: { width: 360 }
     }).setOrigin(0.5, 0);
 
-    this.timerText = this.add.text(10, GRID_Y + GRID_SIZE * CELL + 14, 'Time: 0:00', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#57534e'
-    });
-    this.bestTimeText = this.add.text(GAME_WIDTH - 10, GRID_Y + GRID_SIZE * CELL + 14, 'Best: ' + (this.bestTimeMs ? formatTime(this.bestTimeMs) : '--:--'), {
-      fontFamily: 'monospace', fontSize: '13px', color: '#57534e'
+    const belowGridY = GRID_Y + GRID_SIZE * CELL + 12;
+    this.timerText = this.add.text(10, belowGridY, 'Time: 0:00', { fontFamily: 'monospace', fontSize: '12px', color: '#57534e' });
+    this.bestTimeText = this.add.text(GAME_WIDTH - 10, belowGridY, 'Best: ' + (this.bestTimeMs ? formatTime(this.bestTimeMs) : '--:--'), {
+      fontFamily: 'monospace', fontSize: '12px', color: '#57534e'
     }).setOrigin(1, 0);
-
-    this.solvedText = this.add.text(GAME_WIDTH / 2, GRID_Y + GRID_SIZE * CELL + 40, '', {
-      fontFamily: 'monospace', fontSize: '16px', color: '#166534', align: 'center'
+    this.solvedText = this.add.text(GAME_WIDTH / 2, belowGridY + 20, '', {
+      fontFamily: 'monospace', fontSize: '15px', color: '#166534', align: 'center'
     }).setOrigin(0.5, 0);
 
     this.drawGrid();
-    this.drawKeyboard();
+    this.drawKeyboard(belowGridY + 60);
     this.refreshHighlights();
     this.refreshClueText();
 
@@ -123,6 +163,14 @@ class MainScene extends Phaser.Scene {
       for (let c = 0; c < GRID_SIZE; c++) {
         const x = GRID_X + c * CELL;
         const y = GRID_Y + r * CELL;
+
+        if (PUZZLE.isBlack(r, c)) {
+          this.add.rectangle(x + CELL / 2, y + CELL / 2, CELL - 1, CELL - 1, COLOR_BLACK);
+          this.cellRects[r].push(null);
+          this.cellTexts[r].push(null);
+          continue;
+        }
+
         const rect = this.add.rectangle(x + CELL / 2, y + CELL / 2, CELL - 2, CELL - 2, COLOR_CELL_BG)
           .setStrokeStyle(1, COLOR_BORDER, 0.5)
           .setInteractive();
@@ -130,27 +178,26 @@ class MainScene extends Phaser.Scene {
         this.cellRects[r].push(rect);
 
         const key = r + ',' + c;
-        if (CELL_NUMBERS[key]) {
-          this.add.text(x + 4, y + 2, String(CELL_NUMBERS[key]), {
-            fontFamily: 'monospace', fontSize: '10px', color: '#78716c'
+        if (PUZZLE.numbering[key]) {
+          this.add.text(x + 3, y + 1, String(PUZZLE.numbering[key]), {
+            fontFamily: 'monospace', fontSize: '8px', color: '#78716c'
           });
         }
 
         const letterText = this.add.text(x + CELL / 2, y + CELL / 2 + 4, '', {
-          fontFamily: 'monospace', fontSize: '26px', color: '#1c1917'
+          fontFamily: 'monospace', fontSize: '20px', color: '#1c1917'
         }).setOrigin(0.5);
         this.cellTexts[r].push(letterText);
       }
     }
   }
 
-  drawKeyboard() {
-    const startY = GRID_Y + GRID_SIZE * CELL + 70;
-    const keyH = 36;
-    const rowGap = 6;
+  drawKeyboard(startY) {
+    const keyH = 32;
+    const rowGap = 5;
 
     KEY_ROWS.forEach((row, rowIndex) => {
-      const keyW = 30;
+      const keyW = 28;
       const gap = 3;
       const totalW = row.length * keyW + (row.length - 1) * gap;
       const startX = (GAME_WIDTH - totalW) / 2;
@@ -159,19 +206,41 @@ class MainScene extends Phaser.Scene {
       row.forEach((letter, i) => {
         const x = startX + i * (keyW + gap) + keyW / 2;
         const key = this.add.rectangle(x, y, keyW, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
-        this.add.text(x, y, letter, { fontFamily: 'monospace', fontSize: '13px', color: '#' + COLOR_KEY_TEXT.toString(16) }).setOrigin(0.5);
+        this.add.text(x, y, letter, { fontFamily: 'monospace', fontSize: '12px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
         key.on('pointerdown', () => { if (!this.solved) this.inputLetter(letter); });
       });
     });
 
     const lastRowY = startY + 3 * (keyH + rowGap);
     const backKey = this.add.rectangle(GAME_WIDTH / 2, lastRowY, 100, keyH, COLOR_KEY_BG).setStrokeStyle(1, 0xd6d3d1).setInteractive();
-    this.add.text(GAME_WIDTH / 2, lastRowY, 'BACKSPACE', { fontFamily: 'monospace', fontSize: '11px', color: '#1c1917' }).setOrigin(0.5);
+    this.add.text(GAME_WIDTH / 2, lastRowY, 'BACKSPACE', { fontFamily: 'monospace', fontSize: '11px', color: COLOR_KEY_TEXT }).setOrigin(0.5);
     backKey.on('pointerdown', () => { if (!this.solved) this.inputBackspace(); });
   }
 
+  currentWordCells() {
+    const cells = [];
+    if (this.direction === 'ACROSS') {
+      let startC = this.selectedCol;
+      while (startC > 0 && !PUZZLE.isBlack(this.selectedRow, startC - 1)) startC--;
+      let c = startC;
+      while (c < GRID_SIZE && !PUZZLE.isBlack(this.selectedRow, c)) { cells.push([this.selectedRow, c]); c++; }
+    } else {
+      let startR = this.selectedRow;
+      while (startR > 0 && !PUZZLE.isBlack(startR - 1, this.selectedCol)) startR--;
+      let r = startR;
+      while (r < GRID_SIZE && !PUZZLE.isBlack(r, this.selectedCol)) { cells.push([r, this.selectedCol]); r++; }
+    }
+    return cells;
+  }
+
+  currentClueNumber() {
+    const cells = this.currentWordCells();
+    const [r, c] = cells[0];
+    return PUZZLE.numbering[r + ',' + c];
+  }
+
   selectCell(row, col) {
-    if (this.solved) return;
+    if (this.solved || PUZZLE.isBlack(row, col)) return;
     if (row === this.selectedRow && col === this.selectedCol) {
       this.direction = this.direction === 'ACROSS' ? 'DOWN' : 'ACROSS';
     } else {
@@ -183,21 +252,22 @@ class MainScene extends Phaser.Scene {
   }
 
   refreshHighlights() {
+    const wordCells = new Set(this.currentWordCells().map(([r, c]) => r + ',' + c));
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
-        const inWord = this.direction === 'ACROSS' ? r === this.selectedRow : c === this.selectedCol;
+        if (PUZZLE.isBlack(r, c)) continue;
         const isSelected = r === this.selectedRow && c === this.selectedCol;
+        const inWord = wordCells.has(r + ',' + c);
         this.cellRects[r][c].setFillStyle(isSelected ? COLOR_CELL_SELECTED : (inWord ? COLOR_WORD_HIGHLIGHT : COLOR_CELL_BG));
       }
     }
   }
 
   refreshClueText() {
-    const entry = this.direction === 'ACROSS'
-      ? PUZZLE.across[this.selectedRow]
-      : PUZZLE.down[this.selectedCol];
+    const num = this.currentClueNumber();
     const label = this.direction === 'ACROSS' ? 'Across' : 'Down';
-    this.clueText.setText(entry.num + ' ' + label + ': ' + entry.clue);
+    const clue = this.direction === 'ACROSS' ? CLUES.across[num] : CLUES.down[num];
+    this.clueText.setText(num + ' ' + label + ': ' + clue);
   }
 
   inputLetter(letter) {
@@ -205,10 +275,10 @@ class MainScene extends Phaser.Scene {
     this.cellTexts[this.selectedRow][this.selectedCol].setText(letter);
     SFX.blip();
 
-    if (this.direction === 'ACROSS' && this.selectedCol < GRID_SIZE - 1) {
-      this.selectedCol++;
-    } else if (this.direction === 'DOWN' && this.selectedRow < GRID_SIZE - 1) {
-      this.selectedRow++;
+    const cells = this.currentWordCells();
+    const idx = cells.findIndex(([r, c]) => r === this.selectedRow && c === this.selectedCol);
+    if (idx >= 0 && idx < cells.length - 1) {
+      [this.selectedRow, this.selectedCol] = cells[idx + 1];
     }
     this.refreshHighlights();
     this.refreshClueText();
@@ -220,10 +290,13 @@ class MainScene extends Phaser.Scene {
       this.userGrid[this.selectedRow][this.selectedCol] = '';
       this.cellTexts[this.selectedRow][this.selectedCol].setText('');
     } else {
-      if (this.direction === 'ACROSS' && this.selectedCol > 0) this.selectedCol--;
-      else if (this.direction === 'DOWN' && this.selectedRow > 0) this.selectedRow--;
-      this.userGrid[this.selectedRow][this.selectedCol] = '';
-      this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+      const cells = this.currentWordCells();
+      const idx = cells.findIndex(([r, c]) => r === this.selectedRow && c === this.selectedCol);
+      if (idx > 0) {
+        [this.selectedRow, this.selectedCol] = cells[idx - 1];
+        this.userGrid[this.selectedRow][this.selectedCol] = '';
+        this.cellTexts[this.selectedRow][this.selectedCol].setText('');
+      }
     }
     this.refreshHighlights();
     this.refreshClueText();
@@ -232,13 +305,15 @@ class MainScene extends Phaser.Scene {
   checkCompletion() {
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
+        if (PUZZLE.isBlack(r, c)) continue;
         if (!this.userGrid[r][c]) return;
       }
     }
     let correct = true;
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
-        if (this.userGrid[r][c] !== PUZZLE.grid[r][c]) correct = false;
+        if (PUZZLE.isBlack(r, c)) continue;
+        if (this.userGrid[r][c] !== PUZZLE.solution[r][c]) correct = false;
       }
     }
     if (correct) this.triggerSolved();
