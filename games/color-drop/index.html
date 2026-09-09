@@ -20,7 +20,7 @@ const LANE_X = [83, 200, 317];
 const BALL_Y = 560;
 const BALL_START_RADIUS = 22;
 const BALL_MIN_RADIUS = 9;
-const SHRINK_MULTIPLIER = 0.965;
+const SHRINK_MULTIPLIER = 0.95;
 
 const COLORS = [
   { name: 'RED', hex: 0xef4444 },
@@ -32,11 +32,11 @@ const BLOCKED_STRIPE = 0x44403c;
 const BEST_KEY = 'colordrop_best';
 
 function getPhase(score) {
-  if (score < 8) return { allOpenOnly: true, blockedWeights: [1, 0, 0], speed: 190, spawnMs: 1350, avoidRepeat: 0 };
-  if (score < 18) return { allOpenOnly: false, blockedWeights: [0.5, 0.5, 0], speed: 220, spawnMs: 1200, avoidRepeat: 0 };
-  if (score < 32) return { allOpenOnly: false, blockedWeights: [0.25, 0.55, 0.2], speed: 250, spawnMs: 1080, avoidRepeat: 0 };
-  if (score < 50) return { allOpenOnly: false, blockedWeights: [0.15, 0.5, 0.35], speed: 280, spawnMs: 980, avoidRepeat: 0.28 };
-  return { allOpenOnly: false, blockedWeights: [0.1, 0.42, 0.48], speed: 310, spawnMs: 900, avoidRepeat: 0.45 };
+  if (score < 5) return { allOpenOnly: true, blockedWeights: [1, 0, 0], speed: 230, spawnMs: 1050, avoidRepeat: 0 };
+  if (score < 14) return { allOpenOnly: false, blockedWeights: [0.35, 0.55, 0.1], speed: 260, spawnMs: 950, avoidRepeat: 0 };
+  if (score < 26) return { allOpenOnly: false, blockedWeights: [0.15, 0.55, 0.3], speed: 290, spawnMs: 850, avoidRepeat: 0 };
+  if (score < 42) return { allOpenOnly: false, blockedWeights: [0.08, 0.47, 0.45], speed: 320, spawnMs: 760, avoidRepeat: 0.32 };
+  return { allOpenOnly: false, blockedWeights: [0.05, 0.35, 0.6], speed: 350, spawnMs: 680, avoidRepeat: 0.5 };
 }
 
 function weightedPick(weights) {
@@ -220,13 +220,33 @@ class MainScene extends Phaser.Scene {
       this.endRun();
       return;
     }
+    const oldRadius = this.ball.radius;
     this.ball.fillColor = lane.color.hex;
     this.score++;
-    const newRadius = Math.max(BALL_MIN_RADIUS, this.ball.radius * SHRINK_MULTIPLIER);
-    this.ball.setRadius(newRadius);
-    SFX.blip();
-    this.tweens.add({ targets: this.ball, scale: 1.15, duration: 60, yoyo: true });
+    const newRadius = Math.max(BALL_MIN_RADIUS, oldRadius * SHRINK_MULTIPLIER);
 
+    // brief flash ring in the new color, marking the "you just became this
+    // color" moment distinctly before the shrink plays out
+    const flash = this.add.circle(this.ball.x, this.ball.y, oldRadius, lane.color.hex, 0.9)
+      .setStrokeStyle(3, 0xffffff, 0.9);
+    this.tweens.add({
+      targets: flash,
+      radius: oldRadius + 22,
+      alpha: 0,
+      duration: 260,
+      ease: 'Cubic.easeOut',
+      onComplete: () => flash.destroy()
+    });
+
+    // smooth, clearly visible shrink instead of an instant size snap
+    this.tweens.add({
+      targets: this.ball,
+      radius: newRadius,
+      duration: 180,
+      ease: 'Cubic.easeOut'
+    });
+
+    SFX.blip();
     if (this.score % 10 === 0) SFX.powerup();
   }
 
