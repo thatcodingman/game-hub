@@ -172,7 +172,7 @@ class MenuScene extends Phaser.Scene {
     });
 
     this.add.text(w/2, h - 40,
-      'Hold RIGHT to go  ·  LEFT to brake  ·  in the air LEFT/RIGHT (or UP/DOWN) spin for tricks  ·  R to restart',
+      'RIGHT to go · LEFT to brake · SPACE to jump · in the air LEFT/RIGHT (or UP/DOWN) spin for tricks · R to restart',
       { fontFamily: 'Arial', fontSize: '13px', color: '#6a7178' }).setOrigin(0.5);
   }
 }
@@ -244,8 +244,9 @@ class PlayScene extends Phaser.Scene {
       w: Phaser.Input.Keyboard.KeyCodes.W,
       s: Phaser.Input.Keyboard.KeyCodes.S,
       r: Phaser.Input.Keyboard.KeyCodes.R,
+      space: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
-    this.touch = { gas: false, brake: false, leanF: false, leanB: false };
+    this.touch = { gas: false, brake: false, leanF: false, leanB: false, jumpQueued: false };
     this.buildTouchControls();
 
     // ---- camera ----
@@ -386,6 +387,7 @@ class PlayScene extends Phaser.Scene {
     };
     mkBtn(w - 90, h - 90, 55, 'GAS', () => this.touch.gas = true, () => this.touch.gas = false);
     mkBtn(w - 190, h - 90, 40, 'BRK', () => this.touch.brake = true, () => this.touch.brake = false);
+    mkBtn(w - 190, h - 170, 40, 'JUMP', () => this.touch.jumpQueued = true, () => {});
     mkBtn(90, h - 140, 36, '▲', () => this.touch.leanB = true, () => this.touch.leanB = false);
     mkBtn(90, h - 60, 36, '▼', () => this.touch.leanF = true, () => this.touch.leanF = false);
   }
@@ -499,90 +501,106 @@ class PlayScene extends Phaser.Scene {
   }
 
   update(time, delta) {
-    if (window.SFX && SFX.ctx && SFX.ctx.state === 'suspended') { /* unlocked on first input elsewhere */ }
     if (this.crashed || this.finished) return;
 
-    const accel = this.keys.right.isDown || this.keys.d.isDown || this.touch.gas;
-    const brake = this.keys.left.isDown || this.keys.a.isDown || this.touch.brake;
-    const leanBack = this.keys.up.isDown || this.keys.w.isDown || this.touch.leanB;
-    const leanFwd = this.keys.down.isDown || this.keys.s.isDown || this.touch.leanF;
+    try {
+      const accel = this.keys.right.isDown || this.keys.d.isDown || this.touch.gas;
+      const brake = this.keys.left.isDown || this.keys.a.isDown || this.touch.brake;
+      const leanBack = this.keys.up.isDown || this.keys.w.isDown || this.touch.leanB;
+      const leanFwd = this.keys.down.isDown || this.keys.s.isDown || this.touch.leanF;
+      const jumpPressed = Phaser.Input.Keyboard.JustDown(this.keys.space) || this.touch.jumpQueued;
+      this.touch.jumpQueued = false;
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys.r)) {
-      this.spawnAt(this.checkpointX + 40, this.groundYAt(this.checkpointX + 40) - 100);
-      return;
-    }
-
-    if (this.awaitingStart) {
-      if (accel) {
-        this.awaitingStart = false;
-        this.matter.body.setStatic(this.chassisGO.body, false);
-        this.matter.body.setStatic(this.wheelF.body, false);
-        this.matter.body.setStatic(this.wheelR.body, false);
-        this.readyText.setVisible(false);
-        this.startTime = time;
-      } else {
-        this.timeText.setText('0.00s');
+      if (Phaser.Input.Keyboard.JustDown(this.keys.r)) {
+        this.spawnAt(this.checkpointX + 40, this.groundYAt(this.checkpointX + 40) - 100);
         return;
       }
-    }
 
-    // wheel motor — forward only; braking on the ground slows to a stop, never reverses
-    const grounded = this.grounded.f || this.grounded.r;
-    let avF = this.wheelF.body.angularVelocity;
-    let avR = this.wheelR.body.angularVelocity;
-    if (accel) {
-      avF = Math.min(avF + 0.05, MAX_WHEEL_SPIN);
-      avR = Math.min(avR + 0.05, MAX_WHEEL_SPIN);
-    } else if (brake && grounded) {
-      avF = Math.max(avF - 0.08, 0);
-      avR = Math.max(avR - 0.08, 0);
-    }
-    this.matter.body.setAngularVelocity(this.wheelF.body, avF);
-    this.matter.body.setAngularVelocity(this.wheelR.body, avR);
-
-    // in the air, left/right (and up/down) spin the bike for tricks —
-    // same keys as on the ground, different effect once you've left the terrain
-    if (!grounded) {
-      this.holdTime = 0;
-      let av = this.chassisGO.body.angularVelocity;
-      const inc = 0.022;
-      if (brake || leanBack) av = Math.max(av - inc, -MAX_LEAN);
-      if (accel || leanFwd) av = Math.min(av + inc, MAX_LEAN);
-      this.matter.body.setAngularVelocity(this.chassisGO.body, av);
-    } else {
-      if (leanBack || leanFwd) {
-        let av = this.chassisGO.body.angularVelocity;
-        const inc = 0.012;
-        if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
-        if (leanFwd) av = Math.min(av + inc, MAX_LEAN);
-        this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+      if (this.awaitingStart) {
+        if (accel) {
+          this.awaitingStart = false;
+          this.matter.body.setStatic(this.chassisGO.body, false);
+          this.matter.body.setStatic(this.wheelF.body, false);
+          this.matter.body.setStatic(this.wheelR.body, false);
+          this.readyText.setVisible(false);
+          this.startTime = time;
+        } else {
+          this.timeText.setText('0.00s');
+          return;
+        }
       }
 
-      // holding forward too long starts a wheelie that tips you over
+      // wheel motor — forward only; braking on the ground slows to a stop, never reverses
+      const grounded = this.grounded.f || this.grounded.r;
+      let avF = this.wheelF.body.angularVelocity;
+      let avR = this.wheelR.body.angularVelocity;
       if (accel) {
-        this.holdTime += delta;
-      } else {
-        this.holdTime = Math.max(0, this.holdTime - delta * 2); // settles back down when you ease off
+        avF = Math.min(avF + 0.05, MAX_WHEEL_SPIN);
+        avR = Math.min(avR + 0.05, MAX_WHEEL_SPIN);
+      } else if (brake && grounded) {
+        avF = Math.max(avF - 0.08, 0);
+        avR = Math.max(avR - 0.08, 0);
       }
-      if (this.holdTime > WHEELIE_HOLD_MS) {
-        const over = Math.min((this.holdTime - WHEELIE_HOLD_MS) / 1500, 1);
+      this.matter.body.setAngularVelocity(this.wheelF.body, avF);
+      this.matter.body.setAngularVelocity(this.wheelR.body, avR);
+
+      // jump — a clean vertical hop off the ground, to clear gaps/checkpoints
+      // on demand instead of relying purely on ramp momentum
+      if (jumpPressed && grounded && !this.awaitingStart) {
+        [this.chassisGO.body, this.wheelF.body, this.wheelR.body].forEach(b => {
+          this.matter.body.setVelocity(b, { x: b.velocity.x, y: -11 });
+        });
+        if (window.SFX) SFX.jump();
+      }
+
+      // in the air, left/right (and up/down) spin the bike for tricks —
+      // same keys as on the ground, different effect once you've left the terrain
+      if (!grounded) {
+        this.holdTime = 0;
         let av = this.chassisGO.body.angularVelocity;
-        av -= 0.008 + over * 0.02;
+        const inc = 0.022;
+        if (brake || leanBack) av = Math.max(av - inc, -MAX_LEAN);
+        if (accel || leanFwd) av = Math.min(av + inc, MAX_LEAN);
         this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+      } else {
+        if (leanBack || leanFwd) {
+          let av = this.chassisGO.body.angularVelocity;
+          const inc = 0.012;
+          if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
+          if (leanFwd) av = Math.min(av + inc, MAX_LEAN);
+          this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+        }
+
+        // holding forward too long starts a wheelie that tips you over
+        if (accel) {
+          this.holdTime += delta;
+        } else {
+          this.holdTime = Math.max(0, this.holdTime - delta * 2); // settles back down when you ease off
+        }
+        if (this.holdTime > WHEELIE_HOLD_MS) {
+          const over = Math.min((this.holdTime - WHEELIE_HOLD_MS) / 1500, 1);
+          let av = this.chassisGO.body.angularVelocity;
+          av -= 0.008 + over * 0.02;
+          this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+        }
       }
+
+      // engine sound feedback (cheap, throttled)
+      if (accel && window.SFX && !this._engineTick) {
+        this._engineTick = true;
+        this.time.delayedCall(220, () => this._engineTick = false);
+      }
+
+      // fell into a gap
+      if (this.chassisGO.body.position.y > FALL_Y) this.crash();
+
+      // HUD
+      this.timeText.setText(((time - this.startTime) / 1000).toFixed(2) + 's');
+    } catch (err) {
+      // never let a stray error freeze the whole game — recover to the last checkpoint instead
+      console.error('Trick or Die update error, recovering:', err);
+      if (!this.crashed && !this.finished) this.crash();
     }
-
-    // engine sound feedback (cheap, throttled)
-    if (accel && window.SFX && !this._engineTick) {
-      this._engineTick = true;
-      this.time.delayedCall(220, () => this._engineTick = false);
-    }
-
-    // fell into a gap
-    if (this.chassisGO.body.position.y > FALL_Y) this.crash();
-
-    // HUD
-    this.timeText.setText(((time - this.startTime) / 1000).toFixed(2) + 's');
   }
 
 }
