@@ -342,7 +342,7 @@ class PlayScene extends Phaser.Scene {
 
     this.chassisGO = this.matter.add.gameObject(
       this.add.rectangle(x, y, 62, 16, 0xff5a2b).setStrokeStyle(2, 0x8a2f10),
-      { density: 0.018, friction: 0.05, frictionAir: 0.025, restitution: 0,
+      { density: 0.018, friction: 0.05, frictionAir: 0.045, restitution: 0,
         label: 'chassis', chamfer: { radius: 4 } }
     );
     this.wheelF = this.matter.add.gameObject(
@@ -565,17 +565,23 @@ class PlayScene extends Phaser.Scene {
       }
       this.wasGrounded = grounded;
 
-      let avF = this.wheelF.body.angularVelocity;
+      // rear-wheel drive only — driving both wheels was adding a second forward
+      // ground-reaction force above the axle line, which stacks into a nose-up
+      // torque and makes the bike want to wheelie/flip almost immediately.
+      // The front wheel now free-spins (rolls naturally from ground contact),
+      // exactly like a real bike.
       let avR = this.wheelR.body.angularVelocity;
       if (accel) {
-        avF = Math.min(avF + 0.065, MAX_WHEEL_SPIN);
         avR = Math.min(avR + 0.065, MAX_WHEEL_SPIN);
       } else if (brake && grounded) {
-        avF = Math.max(avF - 0.1, 0);
         avR = Math.max(avR - 0.1, 0);
       }
-      this.matter.body.setAngularVelocity(this.wheelF.body, avF);
       this.matter.body.setAngularVelocity(this.wheelR.body, avR);
+      if (brake && grounded) {
+        // front brake still helps you stop, just doesn't drive
+        const avF = Math.max(this.wheelF.body.angularVelocity - 0.1, 0);
+        this.matter.body.setAngularVelocity(this.wheelF.body, avF);
+      }
 
       // jump — a clean vertical hop off the ground, to clear gaps/checkpoints
       // on demand instead of relying purely on ramp momentum
