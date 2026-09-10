@@ -26,7 +26,7 @@ const GROUND_Y = 480;
 const SEG_H = 26;           // terrain segment thickness
 const CRASH_ANGLE = 1.15;   // ~66 degrees — chassis-vs-ground hit beyond this = crash
 const FALL_Y = GROUND_Y + 900; // fall-into-gap death threshold
-const MAX_WHEEL_SPIN = 1.1;
+const MAX_WHEEL_SPIN = 1.4;
 const MAX_LEAN = 0.16;
 const WHEELIE_HOLD_MS = 3000;   // holding forward this long starts tipping the bike back
 
@@ -246,6 +246,7 @@ class PlayScene extends Phaser.Scene {
       r: Phaser.Input.Keyboard.KeyCodes.R,
       space: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
+    this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.touch = { gas: false, brake: false, leanF: false, leanB: false, jumpQueued: false };
     this.buildTouchControls();
 
@@ -259,6 +260,7 @@ class PlayScene extends Phaser.Scene {
     this.finished = false;
     this.crashed = false;
     this.deaths = 0;
+    this.score = 0;
     this.startTime = this.time.now;
     this.grounded = { f: false, r: false };
 
@@ -340,25 +342,25 @@ class PlayScene extends Phaser.Scene {
 
     this.chassisGO = this.matter.add.gameObject(
       this.add.rectangle(x, y, 62, 16, 0xff5a2b).setStrokeStyle(2, 0x8a2f10),
-      { density: 0.018, friction: 0.05, frictionAir: 0.018, restitution: 0.05,
+      { density: 0.018, friction: 0.05, frictionAir: 0.025, restitution: 0,
         label: 'chassis', chamfer: { radius: 4 } }
     );
     this.wheelF = this.matter.add.gameObject(
       this.add.circle(x + 26, y + 14, 15, 0x1a1a1a).setStrokeStyle(3, 0x555555),
-      { density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
-        restitution: 0.1, label: 'wheelF' }
+      { density: 0.045, friction: 0.8, frictionStatic: 0.9, frictionAir: 0.015,
+        restitution: 0, label: 'wheelF' }
     );
     this.wheelR = this.matter.add.gameObject(
       this.add.circle(x - 26, y + 14, 15, 0x1a1a1a).setStrokeStyle(3, 0x555555),
-      { density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
-        restitution: 0.1, label: 'wheelR' }
+      { density: 0.045, friction: 0.8, frictionStatic: 0.9, frictionAir: 0.015,
+        restitution: 0, label: 'wheelR' }
     );
 
-    this.axleF = this.matter.add.constraint(this.chassisGO.body, this.wheelF.body, 0, 0.5, {
-      pointA: { x: 26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
+    this.axleF = this.matter.add.constraint(this.chassisGO.body, this.wheelF.body, 0, 0.7, {
+      pointA: { x: 26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.4
     });
-    this.axleR = this.matter.add.constraint(this.chassisGO.body, this.wheelR.body, 0, 0.5, {
-      pointA: { x: -26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
+    this.axleR = this.matter.add.constraint(this.chassisGO.body, this.wheelR.body, 0, 0.7, {
+      pointA: { x: -26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.4
     });
 
     this.cameras.main.startFollow(this.chassisGO, true, 0.08, 0.08, -80, 0);
@@ -373,6 +375,9 @@ class PlayScene extends Phaser.Scene {
     this.grounded = { f: false, r: false };
     this.crashed = false;
     this.holdTime = 0;
+    this.wasGrounded = true;
+    this.airRotationAccum = 0;
+    this.airLastAngle = this.chassisGO.body.angle;
   }
 
   buildTouchControls() {
@@ -398,6 +403,9 @@ class PlayScene extends Phaser.Scene {
     }).setScrollFactor(0).setShadow(0,2,'#000',4,true,true);
     this.deathText = this.add.text(20, 50, 'Deaths: 0', {
       fontFamily: 'Arial', fontSize: '16px', color: '#ffd23f'
+    }).setScrollFactor(0).setShadow(0,2,'#000',3,true,true);
+    this.scoreText = this.add.text(20, 78, 'Score: 0', {
+      fontFamily: 'Arial', fontSize: '16px', color: '#7fd3ff'
     }).setScrollFactor(0).setShadow(0,2,'#000',3,true,true);
     this.toastText = this.add.text(this.scale.width/2, 90, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#2ecc71'
@@ -475,25 +483,28 @@ class PlayScene extends Phaser.Scene {
     if (isBest) localStorage.setItem(key, elapsed.toFixed(2));
 
     const w = this.scale.width, h = this.scale.height;
-    const panel = this.add.rectangle(w/2, h/2, 380, 220, 0x0d1117, 0.92)
+    const panel = this.add.rectangle(w/2, h/2, 380, 250, 0x0d1117, 0.92)
       .setScrollFactor(0).setStrokeStyle(2, 0x2ecc71);
-    this.add.text(w/2, h/2 - 70, 'FINISHED!', {
+    this.add.text(w/2, h/2 - 88, 'FINISHED!', {
       fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#2ecc71'
     }).setOrigin(0.5).setScrollFactor(0);
-    this.add.text(w/2, h/2 - 20, `Time: ${elapsed.toFixed(2)}s`, {
+    this.add.text(w/2, h/2 - 42, `Time: ${elapsed.toFixed(2)}s`, {
       fontFamily: 'Arial', fontSize: '20px', color: '#fff'
     }).setOrigin(0.5).setScrollFactor(0);
-    this.add.text(w/2, h/2 + 12, isBest ? 'New best time!' : `Best: ${prevBest.toFixed(2)}s`, {
+    this.add.text(w/2, h/2 - 8, isBest ? 'New best time!' : `Best: ${prevBest.toFixed(2)}s`, {
       fontFamily: 'Arial', fontSize: '15px', color: '#ffd23f'
     }).setOrigin(0.5).setScrollFactor(0);
-    this.add.text(w/2, h/2 + 50, `Deaths: ${this.deaths}`, {
+    this.add.text(w/2, h/2 + 24, `Trick Score: ${this.score}`, {
+      fontFamily: 'Arial', fontSize: '16px', color: '#7fd3ff'
+    }).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(w/2, h/2 + 52, `Deaths: ${this.deaths}`, {
       fontFamily: 'Arial', fontSize: '14px', color: '#9fa6ad'
     }).setOrigin(0.5).setScrollFactor(0);
 
-    const retryBtn = this.add.text(w/2 - 70, h/2 + 85, '[ RETRY ]', {
+    const retryBtn = this.add.text(w/2 - 70, h/2 + 100, '[ RETRY ]', {
       fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#fff'
     }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true });
-    const menuBtn = this.add.text(w/2 + 70, h/2 + 85, '[ MENU ]', {
+    const menuBtn = this.add.text(w/2 + 70, h/2 + 100, '[ MENU ]', {
       fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#fff'
     }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true });
     retryBtn.on('pointerdown', () => this.scene.restart({ levelIndex: this.levelIndex }));
@@ -532,14 +543,36 @@ class PlayScene extends Phaser.Scene {
 
       // wheel motor — forward only; braking on the ground slows to a stop, never reverses
       const grounded = this.grounded.f || this.grounded.r;
+
+      // trick scoring — track rotation while airborne, pay out on a clean landing
+      if (!grounded) {
+        const cur = this.chassisGO.body.angle;
+        this.airRotationAccum += Phaser.Math.Angle.Wrap(cur - this.airLastAngle);
+        this.airLastAngle = cur;
+      } else if (!this.wasGrounded) {
+        // just landed cleanly this frame (a crash-landing never reaches here —
+        // the update() early-return above already caught it)
+        const flips = Math.floor(Math.abs(this.airRotationAccum) / (Math.PI * 2));
+        if (flips > 0) {
+          const pts = flips * 150;
+          this.score += pts;
+          this.scoreText.setText('Score: ' + this.score);
+          const label = flips === 1 ? 'FLIP! +150' : (flips + 'x FLIP! +' + pts);
+          this.toast(label, '#ffd23f');
+          if (window.SFX) (SFX.combo ? SFX.combo(flips) : SFX.success());
+        }
+        this.airRotationAccum = 0;
+      }
+      this.wasGrounded = grounded;
+
       let avF = this.wheelF.body.angularVelocity;
       let avR = this.wheelR.body.angularVelocity;
       if (accel) {
-        avF = Math.min(avF + 0.05, MAX_WHEEL_SPIN);
-        avR = Math.min(avR + 0.05, MAX_WHEEL_SPIN);
+        avF = Math.min(avF + 0.065, MAX_WHEEL_SPIN);
+        avR = Math.min(avR + 0.065, MAX_WHEEL_SPIN);
       } else if (brake && grounded) {
-        avF = Math.max(avF - 0.08, 0);
-        avR = Math.max(avR - 0.08, 0);
+        avF = Math.max(avF - 0.1, 0);
+        avR = Math.max(avR - 0.1, 0);
       }
       this.matter.body.setAngularVelocity(this.wheelF.body, avF);
       this.matter.body.setAngularVelocity(this.wheelR.body, avR);
@@ -614,7 +647,10 @@ const config = {
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   physics: {
     default: 'matter',
-    matter: { gravity: { y: 1.15 }, debug: false }
+    matter: {
+      gravity: { y: 1.15 }, debug: false,
+      positionIterations: 12, velocityIterations: 10, constraintIterations: 6
+    }
   },
   scene: [MenuScene, PlayScene]
 };
