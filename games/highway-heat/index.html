@@ -41,6 +41,7 @@ const PRESSURE_DURATION_MS = 3800;
 const PRESSURE_EXTRA_DRAIN_RATE = 22;
 const CHECKPOINT_DISTANCE_INTERVAL = 25;
 const CHECKPOINT_GAP_BOOST = 70;
+const SPECIAL_SPAWN_MIN_GAP_MS = 900;
 
 const TRAFFIC_COLORS = [0x64748b, 0x94a3b8, 0xdc2626, 0x2563eb, 0xca8a04, 0x9333ea];
 const PLAYER_COLOR = 0xfbbf24;
@@ -52,6 +53,20 @@ function getPhase(dist) {
   if (dist < 40) return { trafficSpeed: 240, spawnMs: 750, gapCloseRate: 12, policeCount: 2, roadblockChance: 0.18, pressureEnabled: true };
   if (dist < 65) return { trafficSpeed: 270, spawnMs: 680, gapCloseRate: 16, policeCount: 2, roadblockChance: 0.28, pressureEnabled: true };
   return { trafficSpeed: 300, spawnMs: 620, gapCloseRate: 20, policeCount: 3, roadblockChance: 0.4, pressureEnabled: true };
+}
+
+function getHeatTier(dist) {
+  if (dist < 8) return 0;
+  if (dist < 20) return 1;
+  if (dist < 40) return 2;
+  if (dist < 65) return 3;
+  return 4;
+}
+
+function heatDots(tier) {
+  let s = '';
+  for (let i = 0; i < 5; i++) s += i <= tier ? '\u25cf' : '\u25cb';
+  return s;
 }
 
 function formatDist(n) {
@@ -244,12 +259,20 @@ class MainScene extends Phaser.Scene {
     this.gapLabel = this.add.text(GAME_WIDTH / 2, 52, 'DISTANCE FROM POLICE', {
       fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
     }).setOrigin(0.5, 0);
+    this.gapIcon = this.add.container(76, 38, [
+      this.add.rectangle(-5, 0, 9, 8, 0xef4444),
+      this.add.rectangle(5, 0, 9, 8, 0x3b82f6)
+    ]);
 
     this.fuelBarBg = this.add.rectangle(GAME_WIDTH / 2, 78, 220, 10, 0x000000, 0.4).setStrokeStyle(1, 0x3f3f46);
     this.fuelBarFill = this.add.rectangle(GAME_WIDTH / 2 - 110, 78, 220, 10, 0x38bdf8).setOrigin(0, 0.5);
     this.fuelLabel = this.add.text(GAME_WIDTH / 2, 92, 'FUEL', {
       fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
     }).setOrigin(0.5, 0);
+    this.fuelIcon = this.add.container(76, 78, [
+      this.add.rectangle(0, 1, 12, 15, 0xdc2626).setStrokeStyle(1, 0x1c1917),
+      this.add.rectangle(0, -7, 6, 4, 0x1c1917)
+    ]);
 
     this.scoreText = this.add.text(10, 108, '', {
       fontFamily: 'monospace', fontSize: '11px', color: '#fde047'
@@ -322,9 +345,11 @@ class MainScene extends Phaser.Scene {
     this.gapBarBg.setVisible(false);
     this.gapBarFill.setVisible(false);
     this.gapLabel.setVisible(false);
+    this.gapIcon.setVisible(false);
     this.fuelBarBg.setVisible(false);
     this.fuelBarFill.setVisible(false);
     this.fuelLabel.setVisible(false);
+    this.fuelIcon.setVisible(false);
     this.scoreText.setVisible(false);
     this.oilButtonBg.setVisible(false);
     this.oilButtonText.setVisible(false);
@@ -337,9 +362,11 @@ class MainScene extends Phaser.Scene {
     this.gapBarBg.setVisible(true);
     this.gapBarFill.setVisible(true);
     this.gapLabel.setVisible(true);
+    this.gapIcon.setVisible(true);
     this.fuelBarBg.setVisible(true);
     this.fuelBarFill.setVisible(true);
     this.fuelLabel.setVisible(true);
+    this.fuelIcon.setVisible(true);
     this.scoreText.setVisible(true);
     this.oilButtonBg.setVisible(true);
     this.oilButtonText.setVisible(true);
@@ -376,8 +403,9 @@ class MainScene extends Phaser.Scene {
     this.gasCans.forEach(g => g.container.destroy());
     this.gasCans = [];
     this.lastSpawn = 0;
+    this.lastSpecialSpawnElapsed = -9999;
     this.elapsed = 0;
-    this.distText.setText('0m');
+    this.distText.setText('0m  ' + heatDots(0));
     this.updateGapBar();
     this.updateFuelBar();
     this.scoreText.setText('SCORE: 0   x1');
@@ -433,6 +461,10 @@ class MainScene extends Phaser.Scene {
       this.taughtCheckpoint = true;
       this.showToast('DRIVE THROUGH FOR A BOOST');
     }
+  }
+
+  canSpawnSpecial() {
+    return this.elapsed - this.lastSpecialSpawnElapsed >= SPECIAL_SPAWN_MIN_GAP_MS;
   }
 
   showToast(text) {
@@ -532,7 +564,7 @@ class MainScene extends Phaser.Scene {
     }
 
     this.dist += dt * 9;
-    this.distText.setText(formatDist(this.dist));
+    this.distText.setText(formatDist(this.dist) + '  ' + heatDots(getHeatTier(this.dist)));
 
     this.fuel = Math.max(0, this.fuel - FUEL_DRAIN_RATE * dt);
     this.updateFuelBar();
@@ -580,7 +612,10 @@ class MainScene extends Phaser.Scene {
       this.roadblockTimer -= delta;
       if (this.roadblockTimer <= 0) {
         this.roadblockTimer = ROADBLOCK_CHECK_MS;
-        if (Math.random() < phase.roadblockChance) this.spawnRoadblock();
+        if (Math.random() < phase.roadblockChance && this.canSpawnSpecial()) {
+          this.spawnRoadblock();
+          this.lastSpecialSpawnElapsed = this.elapsed;
+        }
       }
     }
 
@@ -602,9 +637,10 @@ class MainScene extends Phaser.Scene {
       }
     }
 
-    if (this.dist >= this.nextCheckpointDist) {
+    if (this.dist >= this.nextCheckpointDist && this.canSpawnSpecial()) {
       this.nextCheckpointDist += CHECKPOINT_DISTANCE_INTERVAL;
       this.spawnCheckpoint();
+      this.lastSpecialSpawnElapsed = this.elapsed;
     }
 
     for (let i = this.checkpoints.length - 1; i >= 0; i--) {
@@ -626,7 +662,10 @@ class MainScene extends Phaser.Scene {
     this.gasTimer -= delta;
     if (this.gasTimer <= 0) {
       this.gasTimer = GAS_CHECK_MS;
-      if (Math.random() < getGasChance(this.dist)) this.spawnGasCan();
+      if (Math.random() < getGasChance(this.dist) && this.canSpawnSpecial()) {
+        this.spawnGasCan();
+        this.lastSpecialSpawnElapsed = this.elapsed;
+      }
     }
 
     for (let i = this.gasCans.length - 1; i >= 0; i--) {
