@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Color Drop</title>
+<title>Highway Heat</title>
 <style>
-  html, body { margin:0; padding:0; background:#0f172a; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  html, body { margin:0; padding:0; background:#18181b; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
   #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
 </style>
 </head>
@@ -16,41 +16,42 @@
 <script>
 const GAME_WIDTH = 400;
 const GAME_HEIGHT = 700;
-const LANE_X = [83, 200, 317];
-const BALL_Y = 560;
-const BALL_START_RADIUS = 22;
-const BALL_MIN_RADIUS = 9;
-const SHRINK_MULTIPLIER = 0.95;
+const LANE_X = [65, 155, 245, 335];
+const PLAYER_Y = 560;
+const CAR_W = 46;
+const CAR_H = 80;
+const ROAD_LEFT = 20;
+const ROAD_RIGHT = 380;
 
-const COLORS = [
-  { name: 'RED', hex: 0xef4444 },
-  { name: 'GREEN', hex: 0x22c55e },
-  { name: 'BLUE', hex: 0x3b82f6 }
-];
-const BLOCKED_COLOR = 0x1c1917;
-const BLOCKED_STRIPE = 0x44403c;
-const BEST_KEY = 'colordrop_best';
+const MAX_GAP = 220;
+const START_GAP = 220;
+const COLLISION_THRESHOLD = 16;
+const NEAR_MISS_ADJACENT_ONLY = true;
+const NEAR_MISS_GAP_BONUS = 38;
+const CRITICAL_GAP = 55;
 
-function getPhase(score) {
-  if (score < 5) return { allOpenOnly: true, blockedWeights: [1, 0, 0], speed: 230, spawnMs: 1050, avoidRepeat: 0 };
-  if (score < 14) return { allOpenOnly: false, blockedWeights: [0.35, 0.55, 0.1], speed: 260, spawnMs: 950, avoidRepeat: 0 };
-  if (score < 26) return { allOpenOnly: false, blockedWeights: [0.15, 0.55, 0.3], speed: 290, spawnMs: 850, avoidRepeat: 0 };
-  if (score < 42) return { allOpenOnly: false, blockedWeights: [0.08, 0.47, 0.45], speed: 320, spawnMs: 760, avoidRepeat: 0.32 };
-  return { allOpenOnly: false, blockedWeights: [0.05, 0.35, 0.6], speed: 350, spawnMs: 680, avoidRepeat: 0.5 };
-}
+const TRAFFIC_COLORS = [0x64748b, 0x94a3b8, 0xdc2626, 0x2563eb, 0xca8a04, 0x9333ea];
+const PLAYER_COLOR = 0xfbbf24;
+const BEST_KEY = 'highwayheat_best';
 
-function weightedPick(weights) {
-  const r = Math.random();
-  let acc = 0;
-  for (let i = 0; i < weights.length; i++) {
-    acc += weights[i];
-    if (r < acc) return i;
-  }
-  return weights.length - 1;
+function getPhase(dist) {
+  if (dist < 8) return { trafficSpeed: 180, spawnMs: 950, gapCloseRate: 6, policeCount: 1 };
+  if (dist < 20) return { trafficSpeed: 210, spawnMs: 850, gapCloseRate: 9, policeCount: 1 };
+  if (dist < 40) return { trafficSpeed: 240, spawnMs: 750, gapCloseRate: 12, policeCount: 2 };
+  if (dist < 65) return { trafficSpeed: 270, spawnMs: 680, gapCloseRate: 16, policeCount: 2 };
+  return { trafficSpeed: 300, spawnMs: 620, gapCloseRate: 20, policeCount: 3 };
 }
 
 function formatDist(n) {
   return Math.floor(n) + 'm';
+}
+
+function drawCarShape(scene, x, y, color, isPlayer) {
+  const body = scene.add.rectangle(x, y, CAR_W, CAR_H, color).setStrokeStyle(2, 0x000000, 0.35);
+  const windshield = scene.add.rectangle(x, y - CAR_H * 0.18, CAR_W * 0.72, CAR_H * 0.28, 0x0f172a, 0.55);
+  const container = scene.add.container(0, 0, [body, windshield]);
+  container.body = body;
+  return container;
 }
 
 class MainScene extends Phaser.Scene {
@@ -58,30 +59,47 @@ class MainScene extends Phaser.Scene {
 
   create() {
     this.state = 'START';
-    this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
-    this.cameras.main.setBackgroundColor(0x0f172a);
+    this.bestDist = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+    this.cameras.main.setBackgroundColor(0x27272a);
 
-    this.drawLaneTracks();
+    this.roadGraphics = this.add.graphics();
+    this.dashOffset = 0;
+    this.drawRoad();
 
-    this.ball = this.add.circle(LANE_X[1], BALL_Y, BALL_START_RADIUS, COLORS[Phaser.Math.Between(0, 2)].hex);
-    this.ball.setStrokeStyle(2, 0xffffff, 0.4);
+    this.player = drawCarShape(this, LANE_X[1], PLAYER_Y, PLAYER_COLOR);
+    this.currentLane = 1;
 
-    this.scoreText = this.add.text(10, 12, '', { fontFamily: 'monospace', fontSize: '16px', color: '#e2e8f0' });
-    this.bestText = this.add.text(GAME_WIDTH - 10, 12, 'Best: ' + formatDist(this.bestScore), {
-      fontFamily: 'monospace', fontSize: '13px', color: '#94a3b8'
+    this.policeCars = [];
+    for (let i = 0; i < 3; i++) {
+      const car = drawCarShape(this, LANE_X[1], GAME_HEIGHT + 200, 0x111827);
+      const lightBar = this.add.rectangle(0, -CAR_H * 0.4, CAR_W * 0.5, 6, 0xef4444);
+      car.add(lightBar);
+      car.lightBar = lightBar;
+      car.setVisible(false);
+      this.policeCars.push(car);
+    }
+
+    this.distText = this.add.text(10, 12, '', { fontFamily: 'monospace', fontSize: '16px', color: '#f4f4f5' });
+    this.bestText = this.add.text(GAME_WIDTH - 10, 12, 'Best: ' + formatDist(this.bestDist), {
+      fontFamily: 'monospace', fontSize: '13px', color: '#a1a1aa'
     }).setOrigin(1, 0);
 
+    this.gapBarBg = this.add.rectangle(GAME_WIDTH / 2, 38, 220, 10, 0x000000, 0.4).setStrokeStyle(1, 0x3f3f46);
+    this.gapBarFill = this.add.rectangle(GAME_WIDTH / 2 - 110, 38, 220, 10, 0x22c55e).setOrigin(0, 0.5);
+    this.gapLabel = this.add.text(GAME_WIDTH / 2, 52, 'DISTANCE FROM POLICE', {
+      fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
+    }).setOrigin(0.5, 0);
+
     this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '', {
-      fontFamily: 'monospace', fontSize: '26px', color: '#f8fafc', align: 'center', fontStyle: 'bold'
+      fontFamily: 'monospace', fontSize: '25px', color: '#f4f4f5', align: 'center', fontStyle: 'bold'
     }).setOrigin(0.5);
     this.subText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 10, '', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#cbd5e1', align: 'center', wordWrap: { width: 320 }
+      fontFamily: 'monospace', fontSize: '13px', color: '#d4d4d8', align: 'center', wordWrap: { width: 320 }
     }).setOrigin(0.5);
 
     this.showStartScreen();
 
-    this.currentLane = 1;
-    this.gates = [];
+    this.traffic = [];
 
     this.input.on('pointerdown', (p) => { this.dragStartX = p.x; });
     this.input.on('pointerup', (p) => {
@@ -101,170 +119,178 @@ class MainScene extends Phaser.Scene {
     });
   }
 
-  drawLaneTracks() {
-    const g = this.add.graphics();
-    g.lineStyle(1, 0x1e293b, 1);
-    for (let i = 0; i < LANE_X.length - 1; i++) {
-      const x = (LANE_X[i] + LANE_X[i + 1]) / 2;
-      g.lineBetween(x, 0, x, GAME_HEIGHT);
+  drawRoad() {
+    this.roadGraphics.clear();
+    this.roadGraphics.fillStyle(0x3f3f46, 1);
+    this.roadGraphics.fillRect(ROAD_LEFT, 0, ROAD_RIGHT - ROAD_LEFT, GAME_HEIGHT);
+    this.roadGraphics.lineStyle(4, 0xfacc15, 0.55);
+    for (let i = 1; i < LANE_X.length; i++) {
+      const x = (LANE_X[i - 1] + LANE_X[i]) / 2;
+      let y = (this.dashOffset % 56) - 56;
+      while (y < GAME_HEIGHT) {
+        this.roadGraphics.lineBetween(x, y, x, y + 28);
+        y += 56;
+      }
     }
   }
 
   showStartScreen() {
-    this.centerText.setText('COLOR DROP');
-    this.subText.setText('Swipe to pick your lane.\nWhatever color you pass through, you become.\nEvery success shrinks you a little more.\n\ntap to start');
-    this.scoreText.setText('');
+    this.centerText.setText('HIGHWAY HEAT');
+    this.subText.setText('Swipe to change lanes.\nCut close past traffic to buy distance from the cops.\nGet caught or crash and it\'s over.\n\ntap to start');
+    this.distText.setText('');
+    this.gapBarBg.setVisible(false);
+    this.gapBarFill.setVisible(false);
+    this.gapLabel.setVisible(false);
   }
 
   startRun() {
     this.state = 'PLAYING';
     this.centerText.setText('');
     this.subText.setText('');
-    this.score = 0;
+    this.gapBarBg.setVisible(true);
+    this.gapBarFill.setVisible(true);
+    this.gapLabel.setVisible(true);
+
+    this.dist = 0;
     this.currentLane = 1;
-    this.ball.setPosition(LANE_X[1], BALL_Y);
-    this.ball.setRadius(BALL_START_RADIUS);
-    this.ball.fillColor = COLORS[Phaser.Math.Between(0, 2)].hex;
-    this.gates.forEach(g => g.container.destroy());
-    this.gates = [];
+    this.player.setPosition(LANE_X[1], PLAYER_Y);
+    this.gap = START_GAP;
+
+    this.traffic.forEach(t => t.container.destroy());
+    this.traffic = [];
     this.lastSpawn = 0;
     this.elapsed = 0;
-    this.scoreText.setText('0m');
+    this.distText.setText('0m');
+    this.updateGapBar();
   }
 
   changeLane(dir) {
     if (this.state !== 'PLAYING') return;
-    const next = Phaser.Math.Clamp(this.currentLane + dir, 0, 2);
+    const next = Phaser.Math.Clamp(this.currentLane + dir, 0, LANE_X.length - 1);
     if (next === this.currentLane) return;
     this.currentLane = next;
-    this.tweens.add({ targets: this.ball, x: LANE_X[next], duration: 90, ease: 'Cubic.easeOut' });
+    this.tweens.add({ targets: this.player, x: LANE_X[next], duration: 100, ease: 'Cubic.easeOut' });
   }
 
-  spawnGate() {
-    const phase = getPhase(this.score);
-    const numBlocked = phase.allOpenOnly ? 0 : weightedPick(phase.blockedWeights);
-    const laneIdx = [0, 1, 2];
-    Phaser.Utils.Array.Shuffle(laneIdx);
-    let blockedSet = new Set(laneIdx.slice(0, numBlocked));
+  spawnTraffic() {
+    const lane = Phaser.Math.Between(0, LANE_X.length - 1);
+    const color = TRAFFIC_COLORS[Phaser.Math.Between(0, TRAFFIC_COLORS.length - 1)];
+    const container = drawCarShape(this, LANE_X[lane], -80, color);
+    this.traffic.push({ container, lane, prevY: -80, resolved: false });
+  }
 
-    if (!phase.allOpenOnly && Math.random() < phase.avoidRepeat && blockedSet.size < 2) {
-      const currentColorHex = this.ball.fillColor;
-      // force the lane that would keep the ball's current color to become blocked,
-      // if it isn't already and doing so still leaves at least one open lane
-      const candidateLanes = [0, 1, 2].filter(i => !blockedSet.has(i));
-      if (candidateLanes.length > 1) {
-        const forceLane = candidateLanes[Phaser.Math.Between(0, candidateLanes.length - 1)];
-        blockedSet.add(forceLane);
-      }
-    }
-
-    const lanes = [0, 1, 2].map(i => {
-      if (blockedSet.has(i)) return { blocked: true };
-      const color = phase.allOpenOnly
-        ? COLORS[i]
-        : COLORS[Phaser.Math.Between(0, 2)];
-      return { blocked: false, color };
-    });
-
-    const container = this.add.container(0, -40);
-    lanes.forEach((lane, i) => {
-      const w = 92, h = 20;
-      let shape;
-      if (lane.blocked) {
-        shape = this.add.rectangle(LANE_X[i], 0, w, h, BLOCKED_COLOR).setStrokeStyle(2, BLOCKED_STRIPE);
-        const x1 = this.add.line(0, 0, LANE_X[i] - w / 2 + 6, -h / 2 + 4, LANE_X[i] + w / 2 - 6, h / 2 - 4, 0x78716c).setLineWidth(2);
-        const x2 = this.add.line(0, 0, LANE_X[i] - w / 2 + 6, h / 2 - 4, LANE_X[i] + w / 2 - 6, -h / 2 + 4, 0x78716c).setLineWidth(2);
-        container.add([shape, x1, x2]);
-      } else {
-        shape = this.add.rectangle(LANE_X[i], 0, w, h, lane.color.hex).setStrokeStyle(2, 0xffffff, 0.5);
-        container.add(shape);
-      }
-    });
-
-    this.gates.push({ container, lanes, prevY: -40, passed: false });
+  updateGapBar() {
+    const ratio = Phaser.Math.Clamp(this.gap / MAX_GAP, 0, 1);
+    this.gapBarFill.width = 220 * ratio;
+    const color = this.gap < CRITICAL_GAP ? 0xef4444 : (ratio < 0.5 ? 0xf59e0b : 0x22c55e);
+    this.gapBarFill.fillColor = color;
   }
 
   update(time, delta) {
+    this.dashOffset += (delta / 1000) * 260;
+    this.drawRoad();
+
     if (this.state !== 'PLAYING') return;
     this.elapsed += delta;
-    const phase = getPhase(this.score);
+    const dt = delta / 1000;
+    const phase = getPhase(this.dist);
+
+    this.dist += dt * 9;
+    this.distText.setText(formatDist(this.dist));
 
     if (this.elapsed - this.lastSpawn > phase.spawnMs) {
       this.lastSpawn = this.elapsed;
-      this.spawnGate();
+      this.spawnTraffic();
     }
 
-    const dy = phase.speed * (delta / 1000);
-    for (let i = this.gates.length - 1; i >= 0; i--) {
-      const gate = this.gates[i];
-      gate.prevY = gate.container.y;
-      gate.container.y += dy;
+    const dy = phase.trafficSpeed * dt;
+    for (let i = this.traffic.length - 1; i >= 0; i--) {
+      const t = this.traffic[i];
+      t.prevY = t.container.y;
+      t.container.y += dy;
 
-      if (!gate.passed && gate.prevY < BALL_Y && gate.container.y >= BALL_Y) {
-        gate.passed = true;
-        this.resolveGate(gate);
+      if (!t.resolved && t.prevY < PLAYER_Y && t.container.y >= PLAYER_Y) {
+        t.resolved = true;
+        if (t.lane === this.currentLane) {
+          this.crash();
+        } else if (Math.abs(t.lane - this.currentLane) === 1) {
+          this.nearMiss();
+        }
       }
 
-      if (gate.container.y > GAME_HEIGHT + 60) {
-        gate.container.destroy();
-        this.gates.splice(i, 1);
+      if (t.container.y > GAME_HEIGHT + 80) {
+        t.container.destroy();
+        this.traffic.splice(i, 1);
       }
     }
 
-    this.scoreText.setText(formatDist(this.score));
+    if (this.state !== 'PLAYING') return;
+
+    this.gap = Math.max(0, this.gap - phase.gapCloseRate * dt);
+    this.updateGapBar();
+
+    if (this.gap < CRITICAL_GAP && !this.sirenPlayed) {
+      this.sirenPlayed = true;
+      SFX.alert();
+    } else if (this.gap >= CRITICAL_GAP) {
+      this.sirenPlayed = false;
+    }
+
+    this.updatePoliceVisuals(phase);
+
+    if (this.gap <= 0) {
+      this.busted();
+    }
   }
 
-  resolveGate(gate) {
-    const lane = gate.lanes[this.currentLane];
-    if (lane.blocked) {
-      this.endRun();
-      return;
+  updatePoliceVisuals(phase) {
+    const activeCount = phase.policeCount;
+    for (let i = 0; i < this.policeCars.length; i++) {
+      const car = this.policeCars[i];
+      if (i >= activeCount) { car.setVisible(false); continue; }
+      car.setVisible(true);
+      const laneOffset = i === 0 ? 0 : (i % 2 === 1 ? -1 : 1) * (i);
+      const targetLaneIdx = Phaser.Math.Clamp(this.currentLane + laneOffset, 0, LANE_X.length - 1);
+      const targetX = LANE_X[targetLaneIdx];
+      const targetY = PLAYER_Y + this.gap + i * 30;
+      car.x += (targetX - car.x) * 0.08;
+      car.y += (targetY - car.y) * 0.15;
+      const blink = Math.floor(this.elapsed / 150) % 2 === 0;
+      car.lightBar.fillColor = blink ? 0xef4444 : 0x3b82f6;
     }
-    const oldRadius = this.ball.radius;
-    this.ball.fillColor = lane.color.hex;
-    this.score++;
-    const newRadius = Math.max(BALL_MIN_RADIUS, oldRadius * SHRINK_MULTIPLIER);
+  }
 
-    // brief flash ring in the new color, marking the "you just became this
-    // color" moment distinctly before the shrink plays out
-    const flash = this.add.circle(this.ball.x, this.ball.y, oldRadius, lane.color.hex, 0.9)
-      .setStrokeStyle(3, 0xffffff, 0.9);
-    this.tweens.add({
-      targets: flash,
-      radius: oldRadius + 22,
-      alpha: 0,
-      duration: 260,
-      ease: 'Cubic.easeOut',
-      onComplete: () => flash.destroy()
-    });
-
-    // smooth, clearly visible shrink instead of an instant size snap
-    this.tweens.add({
-      targets: this.ball,
-      radius: newRadius,
-      duration: 180,
-      ease: 'Cubic.easeOut'
-    });
-
+  nearMiss() {
+    this.gap = Math.min(MAX_GAP, this.gap + NEAR_MISS_GAP_BONUS);
+    this.updateGapBar();
     SFX.blip();
-    if (this.score % 10 === 0) SFX.powerup();
+    this.cameras.main.shake(90, 0.004);
   }
 
-  endRun() {
+  crash() {
     this.state = 'OVER';
     SFX.explosion();
-    this.cameras.main.shake(160, 0.01);
+    this.cameras.main.shake(200, 0.012);
+    this.finishRun('CRASHED');
+  }
 
+  busted() {
+    this.state = 'OVER';
+    SFX.hit();
+    this.cameras.main.shake(160, 0.008);
+    this.finishRun('BUSTED');
+  }
+
+  finishRun(reason) {
     let isNewBest = false;
-    if (this.score > this.bestScore) {
-      this.bestScore = this.score;
-      localStorage.setItem(BEST_KEY, String(this.bestScore));
+    if (this.dist > this.bestDist) {
+      this.bestDist = this.dist;
+      localStorage.setItem(BEST_KEY, String(Math.floor(this.bestDist)));
       isNewBest = true;
-      this.bestText.setText('Best: ' + formatDist(this.bestScore));
+      this.bestText.setText('Best: ' + formatDist(this.bestDist));
     }
-
-    this.centerText.setText('RUN OVER');
-    this.subText.setText(formatDist(this.score) + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
+    this.centerText.setText(reason);
+    this.subText.setText(formatDist(this.dist) + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
   }
 }
 
@@ -275,7 +301,7 @@ const config = {
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
   parent: 'game-container',
-  backgroundColor: '#0f172a',
+  backgroundColor: '#27272a',
   scene: [MainScene]
 };
 
