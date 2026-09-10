@@ -36,16 +36,22 @@ const OIL_MATCH_Y_THRESHOLD = 18;
 const OIL_MATCH_X_THRESHOLD = 38;
 const OIL_GAP_BOOST = 90;
 
+const ROADBLOCK_CHECK_MS = 4200;
+const PRESSURE_DURATION_MS = 3800;
+const PRESSURE_EXTRA_DRAIN_RATE = 22;
+const CHECKPOINT_DISTANCE_INTERVAL = 25;
+const CHECKPOINT_GAP_BOOST = 70;
+
 const TRAFFIC_COLORS = [0x64748b, 0x94a3b8, 0xdc2626, 0x2563eb, 0xca8a04, 0x9333ea];
 const PLAYER_COLOR = 0xfbbf24;
 const BEST_KEY = 'highwayheat_best';
 
 function getPhase(dist) {
-  if (dist < 8) return { trafficSpeed: 180, spawnMs: 950, gapCloseRate: 6, policeCount: 1 };
-  if (dist < 20) return { trafficSpeed: 210, spawnMs: 850, gapCloseRate: 9, policeCount: 1 };
-  if (dist < 40) return { trafficSpeed: 240, spawnMs: 750, gapCloseRate: 12, policeCount: 2 };
-  if (dist < 65) return { trafficSpeed: 270, spawnMs: 680, gapCloseRate: 16, policeCount: 2 };
-  return { trafficSpeed: 300, spawnMs: 620, gapCloseRate: 20, policeCount: 3 };
+  if (dist < 8) return { trafficSpeed: 180, spawnMs: 950, gapCloseRate: 6, policeCount: 1, roadblockChance: 0, pressureEnabled: false };
+  if (dist < 20) return { trafficSpeed: 210, spawnMs: 850, gapCloseRate: 9, policeCount: 1, roadblockChance: 0, pressureEnabled: false };
+  if (dist < 40) return { trafficSpeed: 240, spawnMs: 750, gapCloseRate: 12, policeCount: 2, roadblockChance: 0.18, pressureEnabled: true };
+  if (dist < 65) return { trafficSpeed: 270, spawnMs: 680, gapCloseRate: 16, policeCount: 2, roadblockChance: 0.28, pressureEnabled: true };
+  return { trafficSpeed: 300, spawnMs: 620, gapCloseRate: 20, policeCount: 3, roadblockChance: 0.4, pressureEnabled: true };
 }
 
 function formatDist(n) {
@@ -221,6 +227,11 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.oilButtonBg.on('pointerdown', () => this.dropOilSlick());
 
+    this.pressureOverlay = this.add.rectangle(LANE_X[0], GAME_HEIGHT / 2, 82, GAME_HEIGHT, 0xef4444, 0.22).setVisible(false);
+    this.pressureText = this.add.text(GAME_WIDTH / 2, 68, '', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#fca5a5', fontStyle: 'bold', align: 'center'
+    }).setOrigin(0.5, 0).setVisible(false);
+
     this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '', {
       fontFamily: 'monospace', fontSize: '25px', color: '#f4f4f5', align: 'center', fontStyle: 'bold'
     }).setOrigin(0.5);
@@ -232,6 +243,8 @@ class MainScene extends Phaser.Scene {
 
     this.traffic = [];
     this.oilSlicks = [];
+    this.roadblocks = [];
+    this.checkpoints = [];
 
     this.input.on('pointerdown', (p) => { this.dragStartX = p.x; });
     this.input.on('pointerup', (p) => {
@@ -268,7 +281,7 @@ class MainScene extends Phaser.Scene {
 
   showStartScreen() {
     this.centerText.setText('HIGHWAY HEAT');
-    this.subText.setText('Swipe to change lanes.\nCut close past traffic to buy distance from the cops.\nDrop oil to spin out the lead cruiser.\nGet caught or crash and it\'s over.\n\ntap to start');
+    this.subText.setText('Swipe to change lanes. Cut close past traffic for distance.\nDrop oil to spin out the lead cruiser.\nAs heat rises: roadblocks, forced lanes, checkpoints.\nGet caught or crash and it\'s over.\n\ntap to start');
     this.distText.setText('');
     this.gapBarBg.setVisible(false);
     this.gapBarFill.setVisible(false);
@@ -296,10 +309,22 @@ class MainScene extends Phaser.Scene {
     this.music.stop();
     this.music.start();
 
+    this.roadblockTimer = ROADBLOCK_CHECK_MS;
+    this.pressureLane = null;
+    this.pressureTimer = 0;
+    this.pressureCheckTimer = Phaser.Math.Between(5000, 8000);
+    this.pressureOverlay.setVisible(false);
+    this.pressureText.setVisible(false);
+    this.nextCheckpointDist = CHECKPOINT_DISTANCE_INTERVAL;
+
     this.traffic.forEach(t => t.container.destroy());
     this.traffic = [];
     this.oilSlicks.forEach(s => s.shape.destroy());
     this.oilSlicks = [];
+    this.roadblocks.forEach(r => r.container.destroy());
+    this.roadblocks = [];
+    this.checkpoints.forEach(c => c.container.destroy());
+    this.checkpoints = [];
     this.lastSpawn = 0;
     this.elapsed = 0;
     this.distText.setText('0m');
@@ -320,6 +345,57 @@ class MainScene extends Phaser.Scene {
     const vType = pickTrafficType();
     const container = drawCarShape(this, LANE_X[lane], -80, color, vType.width, vType.height);
     this.traffic.push({ container, lane, prevY: -80, resolved: false, width: vType.width });
+  }
+
+  spawnRoadblock() {
+    const numBlocked = Phaser.Math.Between(1, 2);
+    const laneIdx = [0, 1, 2, 3];
+    Phaser.Utils.Array.Shuffle(laneIdx);
+    const blockedLanes = laneIdx.slice(0, numBlocked);
+
+    const container = this.add.container(0, -90);
+    blockedLanes.forEach(lane => {
+      const bar = this.add.rectangle(LANE_X[lane], 0, 84, 26, 0xf97316).setStrokeStyle(2, 0x1c1917);
+      const s1 = this.add.line(0, 0, LANE_X[lane] - 32, -9, LANE_X[lane] - 12, 9, 0x1c1917).setLineWidth(4);
+      const s2 = this.add.line(0, 0, LANE_X[lane] - 8, -9, LANE_X[lane] + 12, 9, 0x1c1917).setLineWidth(4);
+      const s3 = this.add.line(0, 0, LANE_X[lane] + 16, -9, LANE_X[lane] + 32, 9, 0x1c1917).setLineWidth(4);
+      container.add([bar, s1, s2, s3]);
+    });
+
+    this.roadblocks.push({ container, blockedLanes, prevY: -90, resolved: false });
+  }
+
+  spawnCheckpoint() {
+    const container = this.add.container(GAME_WIDTH / 2, -90);
+    const banner = this.add.rectangle(0, 0, ROAD_RIGHT - ROAD_LEFT, 30, 0x22c55e, 0.85).setStrokeStyle(3, 0xffffff, 0.7);
+    const label = this.add.text(0, 0, 'CHECKPOINT', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#052e16', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    container.add([banner, label]);
+    this.checkpoints.push({ container, prevY: -90, resolved: false });
+  }
+
+  hitCheckpoint() {
+    this.gap = Math.min(MAX_GAP, this.gap + CHECKPOINT_GAP_BOOST);
+    this.updateGapBar();
+    SFX.success();
+    this.cameras.main.flash(200, 34, 197, 94);
+  }
+
+  startPressureEvent() {
+    this.pressureLane = Phaser.Math.Between(0, LANE_X.length - 1);
+    this.pressureTimer = PRESSURE_DURATION_MS;
+    this.pressureOverlay.x = LANE_X[this.pressureLane];
+    this.pressureOverlay.setVisible(true);
+    this.pressureText.setText("POLICE ARE PUSHING YOU OUT OF THIS LANE");
+    this.pressureText.setVisible(true);
+    SFX.alert();
+  }
+
+  endPressureEvent() {
+    this.pressureLane = null;
+    this.pressureOverlay.setVisible(false);
+    this.pressureText.setVisible(false);
   }
 
   updateGapBar() {
@@ -380,6 +456,53 @@ class MainScene extends Phaser.Scene {
       }
     }
 
+    if (phase.roadblockChance > 0) {
+      this.roadblockTimer -= delta;
+      if (this.roadblockTimer <= 0) {
+        this.roadblockTimer = ROADBLOCK_CHECK_MS;
+        if (Math.random() < phase.roadblockChance) this.spawnRoadblock();
+      }
+    }
+
+    for (let i = this.roadblocks.length - 1; i >= 0; i--) {
+      const rb = this.roadblocks[i];
+      rb.prevY = rb.container.y;
+      rb.container.y += dy;
+
+      if (!rb.resolved && rb.prevY < PLAYER_Y && rb.container.y >= PLAYER_Y) {
+        rb.resolved = true;
+        if (rb.blockedLanes.includes(this.currentLane)) {
+          this.crash();
+        }
+      }
+
+      if (rb.container.y > GAME_HEIGHT + 80) {
+        rb.container.destroy();
+        this.roadblocks.splice(i, 1);
+      }
+    }
+
+    if (this.dist >= this.nextCheckpointDist) {
+      this.nextCheckpointDist += CHECKPOINT_DISTANCE_INTERVAL;
+      this.spawnCheckpoint();
+    }
+
+    for (let i = this.checkpoints.length - 1; i >= 0; i--) {
+      const cp = this.checkpoints[i];
+      cp.prevY = cp.container.y;
+      cp.container.y += dy;
+
+      if (!cp.resolved && cp.prevY < PLAYER_Y && cp.container.y >= PLAYER_Y) {
+        cp.resolved = true;
+        this.hitCheckpoint();
+      }
+
+      if (cp.container.y > GAME_HEIGHT + 80) {
+        cp.container.destroy();
+        this.checkpoints.splice(i, 1);
+      }
+    }
+
     if (this.state !== 'PLAYING') return;
 
     this.gap = Math.max(0, this.gap - phase.gapCloseRate * dt);
@@ -394,6 +517,25 @@ class MainScene extends Phaser.Scene {
       }
     } else {
       this.sirenTimer = 0;
+    }
+
+    if (phase.pressureEnabled) {
+      if (this.pressureLane === null) {
+        this.pressureCheckTimer -= delta;
+        if (this.pressureCheckTimer <= 0) {
+          this.pressureCheckTimer = Phaser.Math.Between(5000, 8000);
+          this.startPressureEvent();
+        }
+      } else {
+        this.pressureTimer -= delta;
+        if (this.currentLane === this.pressureLane) {
+          this.gap = Math.max(0, this.gap - PRESSURE_EXTRA_DRAIN_RATE * dt);
+          this.updateGapBar();
+        }
+        if (this.pressureTimer <= 0) {
+          this.endPressureEvent();
+        }
+      }
     }
 
     this.updatePoliceVisuals(phase);
@@ -483,6 +625,8 @@ class MainScene extends Phaser.Scene {
     this.cameras.main.shake(200, 0.012);
     this.spawnDebris();
     this.music.stop();
+    this.pressureOverlay.setVisible(false);
+    this.pressureText.setVisible(false);
     this.finishRun('CRASHED');
   }
 
@@ -492,6 +636,8 @@ class MainScene extends Phaser.Scene {
     this.cameras.main.shake(160, 0.008);
     this.spawnSirenWash();
     this.music.stop();
+    this.pressureOverlay.setVisible(false);
+    this.pressureText.setVisible(false);
     this.finishRun('BUSTED');
   }
 
