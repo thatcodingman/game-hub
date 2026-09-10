@@ -58,6 +58,31 @@ function formatDist(n) {
   return Math.floor(n) + 'm';
 }
 
+const MULTIPLIER_TIERS = [
+  { threshold: 25, mult: 5 },
+  { threshold: 10, mult: 3 },
+  { threshold: 5, mult: 2 },
+  { threshold: 0, mult: 1 }
+];
+
+function getMultiplier(carsPassed) {
+  for (const tier of MULTIPLIER_TIERS) {
+    if (carsPassed >= tier.threshold) return tier.mult;
+  }
+  return 1;
+}
+
+const FUEL_DRAIN_RATE = 1.8;
+const FUEL_REFILL_AMOUNT = 32;
+const GAS_CHECK_MS = 3500;
+
+function getGasChance(dist) {
+  if (dist < 20) return 0.55;
+  if (dist < 40) return 0.4;
+  if (dist < 65) return 0.28;
+  return 0.16;
+}
+
 function drawCarShape(scene, x, y, color, w, h) {
   w = w || CAR_W;
   h = h || CAR_H;
@@ -220,6 +245,16 @@ class MainScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
     }).setOrigin(0.5, 0);
 
+    this.fuelBarBg = this.add.rectangle(GAME_WIDTH / 2, 78, 220, 10, 0x000000, 0.4).setStrokeStyle(1, 0x3f3f46);
+    this.fuelBarFill = this.add.rectangle(GAME_WIDTH / 2 - 110, 78, 220, 10, 0x38bdf8).setOrigin(0, 0.5);
+    this.fuelLabel = this.add.text(GAME_WIDTH / 2, 92, 'FUEL', {
+      fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
+    }).setOrigin(0.5, 0);
+
+    this.scoreText = this.add.text(10, 108, '', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#fde047'
+    });
+
     this.oilButtonBg = this.add.rectangle(GAME_WIDTH - 46, GAME_HEIGHT - 54, 74, 46, 0x1c1917, 0.85)
       .setStrokeStyle(2, 0x44403c).setInteractive();
     this.oilButtonText = this.add.text(GAME_WIDTH - 46, GAME_HEIGHT - 54, 'OIL', {
@@ -245,6 +280,7 @@ class MainScene extends Phaser.Scene {
     this.oilSlicks = [];
     this.roadblocks = [];
     this.checkpoints = [];
+    this.gasCans = [];
 
     this.input.on('pointerdown', (p) => { this.dragStartX = p.x; });
     this.input.on('pointerup', (p) => {
@@ -281,11 +317,15 @@ class MainScene extends Phaser.Scene {
 
   showStartScreen() {
     this.centerText.setText('HIGHWAY HEAT');
-    this.subText.setText('Swipe to change lanes. Cut close past traffic for distance.\nDrop oil to spin out the lead cruiser.\nAs heat rises: roadblocks, forced lanes, checkpoints.\nGet caught or crash and it\'s over.\n\ntap to start');
+    this.subText.setText('Swipe lanes. Cut close for distance, drop oil to spin cops out.\nPass cars cleanly to build a score multiplier.\nGrab gas before you run dry \u2014 heat brings roadblocks, forced lanes, checkpoints.\nGet caught, crash, or run out of gas and it\'s over.\n\ntap to start');
     this.distText.setText('');
     this.gapBarBg.setVisible(false);
     this.gapBarFill.setVisible(false);
     this.gapLabel.setVisible(false);
+    this.fuelBarBg.setVisible(false);
+    this.fuelBarFill.setVisible(false);
+    this.fuelLabel.setVisible(false);
+    this.scoreText.setVisible(false);
     this.oilButtonBg.setVisible(false);
     this.oilButtonText.setVisible(false);
   }
@@ -297,10 +337,17 @@ class MainScene extends Phaser.Scene {
     this.gapBarBg.setVisible(true);
     this.gapBarFill.setVisible(true);
     this.gapLabel.setVisible(true);
+    this.fuelBarBg.setVisible(true);
+    this.fuelBarFill.setVisible(true);
+    this.fuelLabel.setVisible(true);
+    this.scoreText.setVisible(true);
     this.oilButtonBg.setVisible(true);
     this.oilButtonText.setVisible(true);
 
     this.dist = 0;
+    this.score = 0;
+    this.carsPassed = 0;
+    this.fuel = 100;
     this.currentLane = 1;
     this.player.setPosition(LANE_X[1], PLAYER_Y);
     this.gap = START_GAP;
@@ -310,6 +357,7 @@ class MainScene extends Phaser.Scene {
     this.music.start();
 
     this.roadblockTimer = ROADBLOCK_CHECK_MS;
+    this.gasTimer = GAS_CHECK_MS;
     this.pressureLane = null;
     this.pressureTimer = 0;
     this.pressureCheckTimer = Phaser.Math.Between(5000, 8000);
@@ -325,10 +373,14 @@ class MainScene extends Phaser.Scene {
     this.roadblocks = [];
     this.checkpoints.forEach(c => c.container.destroy());
     this.checkpoints = [];
+    this.gasCans.forEach(g => g.container.destroy());
+    this.gasCans = [];
     this.lastSpawn = 0;
     this.elapsed = 0;
     this.distText.setText('0m');
     this.updateGapBar();
+    this.updateFuelBar();
+    this.scoreText.setText('SCORE: 0   x1');
   }
 
   changeLane(dir) {
@@ -382,6 +434,16 @@ class MainScene extends Phaser.Scene {
     this.cameras.main.flash(200, 34, 197, 94);
   }
 
+  spawnGasCan() {
+    const lane = Phaser.Math.Between(0, LANE_X.length - 1);
+    const container = this.add.container(LANE_X[lane], -60);
+    const body = this.add.rectangle(0, 0, 22, 30, 0xdc2626).setStrokeStyle(2, 0x1c1917);
+    const cap = this.add.rectangle(0, -18, 10, 8, 0x1c1917);
+    const label = this.add.rectangle(0, 2, 14, 10, 0xfde047);
+    container.add([body, cap, label]);
+    this.gasCans.push({ container, lane, prevY: -60, resolved: false });
+  }
+
   startPressureEvent() {
     this.pressureLane = Phaser.Math.Between(0, LANE_X.length - 1);
     this.pressureTimer = PRESSURE_DURATION_MS;
@@ -403,6 +465,13 @@ class MainScene extends Phaser.Scene {
     this.gapBarFill.width = 220 * ratio;
     const color = this.gap < CRITICAL_GAP ? 0xef4444 : (ratio < 0.5 ? 0xf59e0b : 0x22c55e);
     this.gapBarFill.fillColor = color;
+  }
+
+  updateFuelBar() {
+    const ratio = Phaser.Math.Clamp(this.fuel / 100, 0, 1);
+    this.fuelBarFill.width = 220 * ratio;
+    const color = ratio < 0.2 ? 0xef4444 : (ratio < 0.45 ? 0xf59e0b : 0x38bdf8);
+    this.fuelBarFill.fillColor = color;
   }
 
   update(time, delta) {
@@ -428,6 +497,17 @@ class MainScene extends Phaser.Scene {
     this.dist += dt * 9;
     this.distText.setText(formatDist(this.dist));
 
+    this.fuel = Math.max(0, this.fuel - FUEL_DRAIN_RATE * dt);
+    this.updateFuelBar();
+    if (this.fuel <= 0) {
+      this.strand();
+      return;
+    }
+
+    const multiplier = getMultiplier(this.carsPassed);
+    this.score += dt * 10 * multiplier;
+    this.scoreText.setText('SCORE: ' + Math.floor(this.score) + '   x' + multiplier);
+
     if (this.elapsed - this.lastSpawn > phase.spawnMs) {
       this.lastSpawn = this.elapsed;
       this.spawnTraffic();
@@ -445,8 +525,11 @@ class MainScene extends Phaser.Scene {
         const threshold = (t.width + CAR_W) / 2 * 0.72;
         if (dx < threshold) {
           this.crash();
-        } else if (Math.abs(t.lane - this.currentLane) === 1) {
-          this.nearMiss();
+        } else {
+          this.carsPassed++;
+          if (Math.abs(t.lane - this.currentLane) === 1) {
+            this.nearMiss();
+          }
         }
       }
 
@@ -500,6 +583,35 @@ class MainScene extends Phaser.Scene {
       if (cp.container.y > GAME_HEIGHT + 80) {
         cp.container.destroy();
         this.checkpoints.splice(i, 1);
+      }
+    }
+
+    this.gasTimer -= delta;
+    if (this.gasTimer <= 0) {
+      this.gasTimer = GAS_CHECK_MS;
+      if (Math.random() < getGasChance(this.dist)) this.spawnGasCan();
+    }
+
+    for (let i = this.gasCans.length - 1; i >= 0; i--) {
+      const g = this.gasCans[i];
+      g.prevY = g.container.y;
+      g.container.y += dy;
+
+      if (!g.resolved && g.prevY < PLAYER_Y && g.container.y >= PLAYER_Y) {
+        g.resolved = true;
+        if (g.lane === this.currentLane) {
+          this.fuel = Math.min(100, this.fuel + FUEL_REFILL_AMOUNT);
+          this.updateFuelBar();
+          SFX.pickup();
+          g.container.destroy();
+          this.gasCans.splice(i, 1);
+          continue;
+        }
+      }
+
+      if (g.container.y > GAME_HEIGHT + 60) {
+        g.container.destroy();
+        this.gasCans.splice(i, 1);
       }
     }
 
@@ -641,6 +753,33 @@ class MainScene extends Phaser.Scene {
     this.finishRun('BUSTED');
   }
 
+  strand() {
+    this.state = 'OVER';
+    SFX.fail();
+    this.music.stop();
+    this.pressureOverlay.setVisible(false);
+    this.pressureText.setVisible(false);
+    this.spawnSmokePuffs();
+    this.finishRun('STRANDED');
+  }
+
+  spawnSmokePuffs() {
+    for (let i = 0; i < 6; i++) {
+      const puff = this.add.circle(this.player.x + Phaser.Math.Between(-10, 10), this.player.y - 20, Phaser.Math.Between(6, 11), 0x71717a, 0.6);
+      this.tweens.add({
+        targets: puff,
+        y: puff.y - Phaser.Math.Between(40, 80),
+        x: puff.x + Phaser.Math.Between(-20, 20),
+        alpha: 0,
+        scale: 1.8,
+        duration: Phaser.Math.Between(900, 1400),
+        delay: i * 90,
+        ease: 'Cubic.easeOut',
+        onComplete: () => puff.destroy()
+      });
+    }
+  }
+
   spawnDebris() {
     const colors = [0xf97316, 0x71717a, 0xfacc15, 0x27272a];
     for (let i = 0; i < 18; i++) {
@@ -685,7 +824,7 @@ class MainScene extends Phaser.Scene {
       this.bestText.setText('Best: ' + formatDist(this.bestDist));
     }
     this.centerText.setText(reason);
-    this.subText.setText(formatDist(this.dist) + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
+    this.subText.setText(formatDist(this.dist) + (isNewBest ? '  NEW BEST!' : '') + '\nScore: ' + Math.floor(this.score) + '\ntap to retry');
   }
 }
 
