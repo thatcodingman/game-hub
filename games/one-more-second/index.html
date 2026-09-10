@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>One More Second — The Arcade</title>
+<style>
+  html, body { margin:0; padding:0; background:#0b0e14; overflow:hidden; height:100%; }
+  #game-container { width:100vw; height:100vh; }
+  canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   ONE MORE SECOND
+   One-tap arcade game: tap freezes every obstacle for exactly 1 real second.
+   The player's own motion (a fixed, autonomous sine path) never stops —
+   freezing is purely a tool to let the player's path catch up to safety.
+   MVP scope per design doc: one screen, one movement pattern, 5 obstacle
+   types, limited freeze charges, instant restart.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const PLAYER_X = 200;
+const PLAYER_R = 11;
+const CENTER_Y = H / 2;
+const AMPLITUDE = 190;
+const ANGULAR_SPEED = 1.15; // rad/sec — player's autonomous vertical rhythm
+
+const FREEZE_MS = 1000;
+const MAX_CHARGES = 3;
+const CHARGE_REGEN_SEC = 12;        // passive trickle so a bad run isn't dead forever
+const PERFECT_MIN_DIST = 18;
+const PERFECT_MAX_DIST = 95;
+
+const BASE_SPEED = 210;             // px/sec, obstacle approach speed at t=0
+
+function speedMultiplier(t) {
+  if (t < 20) return 1.0;
+  if (t < 40) return 1.15;
+  if (t < 60) return 1.35;
+  return 1.35 + Math.min((t - 60) / 90, 0.5); // keeps creeping up slowly after 60s
+}
+
+function spawnInterval(t) {
+  if (t < 20) return Phaser.Math.FloatBetween(1.7, 2.3);
+  if (t < 40) return Phaser.Math.FloatBetween(1.2, 1.7);
+  if (t < 60) return Phaser.Math.FloatBetween(0.9, 1.3);
+  return Phaser.Math.FloatBetween(0.6, 1.0);
+}
+
+function typePool(t) {
+  if (t < 8) return ['wall'];
+  if (t < 20) return ['wall', 'proj'];
+  if (t < 40) return ['wall', 'proj', 'corridor'];
+  if (t < 60) return ['wall', 'proj', 'corridor', 'trap', 'crossing'];
+  return ['wall', 'proj', 'corridor', 'trap', 'crossing', 'chain'];
+}
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
+
+  create() {
+    this.cameras.main.setBackgroundColor('#0b0e14');
+    this.g = this.add.graphics();
+    this.bgFlash = this.add.rectangle(W/2, H/2, W, H, 0x2f7bff, 0).setDepth(-1);
+
+    this.state = 'ready';           // ready | playing | dead
+    this.playerClock = 0;
+    this.playerY = CENTER_Y;
+    this.trail = [];
+
+    this.obstacles = [];
+    this.spawnTimer = 0;
+    this.runTime = 0;
+    this.charges = MAX_CHARGES;
+    this.perfects = 0;
+    this.freezeActive = false;
+    this.freezeEndsAt = 0;
+    this.regenAccum = 0;
+    this.lastChargeUsed = 0;
+
+    this.buildHUD();
+
+    this.input.on('pointerdown', () => this.handleTap());
+    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+  }
+
+  buildHUD() {
+    this.timeText = this.add.text(W/2, 26, '0.0', {
+      fontFamily: 'Arial Black, Arial', fontSize: '40px', color: '#e8ecf1'
+    }).setOrigin(0.5, 0).setShadow(0, 2, '#000', 6, true, true);
+
+    this.chargeDots = [];
+    for (let i = 0; i < MAX_CHARGES; i++) {
+      const d = this.add.circle(W/2 - (MAX_CHARGES - 1) * 16 + i * 32, 86, 9, 0x2f7bff);
+      this.chargeDots.push(d);
+    }
+
+    this.perfectText = this.add.text(20, 20, '', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#ffd23f'
+    });
+
+    this.toastText = this.add.text(W/2, 150, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.centerText = this.add.text(W/2, H/2, 'TAP OR SPACE\nto start', {
+      fontFamily: 'Arial Black, Arial', fontSize: '28px', color: '#e8ecf1', align: 'center'
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
+
+    this.subText = this.add.text(W/2, H/2 + 60,
+      'Tap freezes every obstacle for 1 second — you keep moving', {
+      fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a'
+    }).setOrigin(0.5);
+  }
+
+  toast(msg, color) {
+    this.toastText.setText(msg).setColor(color).setAlpha(1).setScale(1);
+    this.tweens.add({ targets: this.toastText, alpha: 0, y: 130, duration: 700, delay: 250,
+      onComplete: () => this.toastText.setY(150) });
+  }
+
+  handleTap() {
+    if (this.state === 'ready') {
+      this.startRun();
+      return;
+    }
+    if (this.state === 'dead') {
+      this.scene.restart();
+      return;
+    }
+    if (this.state !== 'playing') return;
+    if (this.freezeActive) return;      // already frozen, can't stack
+    if (this.charges <= 0) {
+      if (window.SFX) SFX.fail();
+      this.toast('NO CHARGES', '#ff5a5a');
+      return;
+    }
+
+    this.charges--;
+    this.freezeActive = true;
+    this.freezeEndsAt = this.time.now + FREEZE_MS;
+    if (window.SFX) SFX.blip();
+
+    // Perfect Freeze — an obstacle was genuinely close when you committed
+    const isPerfect = this.obstacles.some(o =>
+      o.alive && !o.dormant && (o.x - PLAYER_X) > PERFECT_MIN_DIST && (o.x - PLAYER_X) < PERFECT_MAX_DIST
+    );
+    if (isPerfect) {
+      this.charges = Math.min(MAX_CHARGES, this.charges + 1);
+      this.perfects++;
+      this.toast('PERFECT!', '#5be37b');
+      if (window.SFX) SFX.combo ? SFX.combo(1) : SFX.success();
+    }
+  }
+
+  startRun() {
+    this.state = 'playing';
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    if (window.SFX) SFX.select();
+  }
+
+  update(time, delta) {
+    const dt = delta / 1000;
+
+    if (this.freezeActive && time >= this.freezeEndsAt) {
+      this.freezeActive = false;
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.handleTap();
+
+    // charge dots always reflect current state
+    this.chargeDots.forEach((d, i) => d.setFillStyle(i < this.charges ? 0x2f7bff : 0x2a2f3a));
+
+    // background freeze tint
+    this.bgFlash.setAlpha(this.freezeActive ? 0.10 : 0);
+
+    if (this.state !== 'playing') {
+      this.draw();
+      return;
+    }
+
+    // player motion — NEVER pauses, freeze or not
+    this.playerClock += dt;
+    this.playerY = CENTER_Y + AMPLITUDE * Math.sin(this.playerClock * ANGULAR_SPEED);
+    this.trail.push({ x: PLAYER_X, y: this.playerY, a: 1 });
+    if (this.trail.length > 16) this.trail.shift();
+    this.trail.forEach(p => p.a *= 0.9);
+
+    this.runTime += dt;
+    this.timeText.setText(this.runTime.toFixed(1));
+
+    // passive charge regen
+    this.regenAccum += dt;
+    if (this.regenAccum >= CHARGE_REGEN_SEC) {
+      this.regenAccum = 0;
+      this.charges = Math.min(MAX_CHARGES, this.charges + 1);
+    }
+
+    if (!this.freezeActive) {
+      this.spawnTimer -= dt;
+      if (this.spawnTimer <= 0) {
+        this.spawnWave();
+        this.spawnTimer = spawnInterval(this.runTime);
+      }
+      this.updateObstacles(dt);
+      if (this.checkCollisions()) {
+        this.die();
+        return;
+      }
+    }
+
+    this.obstacles = this.obstacles.filter(o => o.x > -80 && o.alive);
+    this.draw();
+  }
+
+  spawnWave() {
+    const pool = typePool(this.runTime);
+    const type = Phaser.Utils.Array.GetRandom(pool.filter(t => t !== 'chain'));
+    this.spawnOne(type);
+    if (pool.includes('chain') && Phaser.Math.Between(0, 100) < 35) {
+      // a second obstacle shortly after, forcing forward planning
+      this.time.delayedCall(280, () => {
+        if (this.state === 'playing') this.spawnOne(Phaser.Utils.Array.GetRandom(pool.filter(t => t !== 'chain')));
+      });
+    }
+  }
+
+  spawnOne(type) {
+    const speed = BASE_SPEED * speedMultiplier(this.runTime);
+    if (type === 'wall') {
+      const gapH = Phaser.Math.Between(140, 170);
+      this.obstacles.push({
+        type: 'wall', x: W + 40, w: 26, speed,
+        gapY: Phaser.Math.Between(80 + gapH/2, H - 80 - gapH/2), gapH, alive: true
+      });
+    } else if (type === 'proj') {
+      this.obstacles.push({
+        type: 'proj', x: W + 30, y: Phaser.Math.Between(70, H - 70),
+        vy: 0, speed: speed * 1.6, r: 10, alive: true
+      });
+    } else if (type === 'crossing') {
+      const s = speed * 1.5;
+      this.obstacles.push({ type: 'proj', x: W + 30, y: 90, vy: 140, speed: s, r: 9, alive: true });
+      this.obstacles.push({ type: 'proj', x: W + 30, y: H - 90, vy: -140, speed: s, r: 9, alive: true });
+    } else if (type === 'corridor') {
+      this.obstacles.push({
+        type: 'corridor', x: W + 40, w: 34, speed: speed * 0.85,
+        gapCenter: Phaser.Math.Between(150, H - 150), startGap: 300, minGap: 110,
+        shrinkClock: 0, alive: true
+      });
+    } else if (type === 'trap') {
+      this.obstacles.push({
+        type: 'trap', x: W + 30, y: Phaser.Math.Between(90, H - 90),
+        speed: speed * 1.1, armClock: 0, armDelay: Phaser.Math.FloatBetween(0.9, 1.3),
+        active: false, r: 14, alive: true
+      });
+    }
+  }
+
+  updateObstacles(dt) {
+    this.obstacles.forEach(o => {
+      if (o.type === 'wall') {
+        o.x -= o.speed * dt;
+      } else if (o.type === 'proj') {
+        o.x -= o.speed * dt;
+        o.y += o.vy * dt;
+      } else if (o.type === 'corridor') {
+        o.x -= o.speed * dt;
+        o.shrinkClock += dt;
+        const t = Math.min(o.shrinkClock / 2.4, 1);
+        o.gapH = o.startGap - (o.startGap - o.minGap) * t;
+      } else if (o.type === 'trap') {
+        o.x -= o.speed * dt;
+        o.armClock += dt;
+        o.active = o.armClock >= o.armDelay;
+      }
+    });
+  }
+
+  checkCollisions() {
+    for (const o of this.obstacles) {
+      if (o.type === 'wall') {
+        if (Math.abs(o.x - PLAYER_X) < o.w/2 + PLAYER_R) {
+          if (this.playerY - PLAYER_R < o.gapY - o.gapH/2 || this.playerY + PLAYER_R > o.gapY + o.gapH/2) return true;
+        }
+      } else if (o.type === 'proj') {
+        const dx = o.x - PLAYER_X, dy = o.y - this.playerY;
+        if (Math.sqrt(dx*dx + dy*dy) < o.r + PLAYER_R) return true;
+      } else if (o.type === 'corridor') {
+        if (Math.abs(o.x - PLAYER_X) < o.w/2 + PLAYER_R) {
+          if (this.playerY - PLAYER_R < o.gapCenter - o.gapH/2 || this.playerY + PLAYER_R > o.gapCenter + o.gapH/2) return true;
+        }
+      } else if (o.type === 'trap' && o.active) {
+        const dx = o.x - PLAYER_X, dy = o.y - this.playerY;
+        if (Math.sqrt(dx*dx + dy*dy) < o.r + PLAYER_R) return true;
+      }
+    }
+    return false;
+  }
+
+  die() {
+    this.state = 'dead';
+    if (window.SFX) SFX.hit();
+    this.cameras.main.shake(180, 0.008);
+    const key = 'oneMoreSecond_best';
+    const prevBest = parseFloat(localStorage.getItem(key));
+    const isBest = isNaN(prevBest) || this.runTime > prevBest;
+    if (isBest) localStorage.setItem(key, this.runTime.toFixed(1));
+
+    this.centerText.setText(
+      `${this.runTime.toFixed(1)}s\n` + (isBest ? 'NEW BEST' : `Best: ${prevBest.toFixed(1)}s`)
+    ).setVisible(true);
+    this.subText.setText(`${this.perfects} perfect freeze${this.perfects === 1 ? '' : 's'}  ·  tap to retry`).setVisible(true);
+  }
+
+  draw() {
+    const g = this.g;
+    g.clear();
+
+    // trail
+    this.trail.forEach(p => {
+      g.fillStyle(0x2f7bff, p.a * 0.35);
+      g.fillCircle(p.x, p.y, PLAYER_R * 1.6);
+    });
+
+    // obstacles
+    this.obstacles.forEach(o => {
+      const col = this.freezeActive ? 0x6fb8ff : 0xff5a5a;
+      const colAlt = this.freezeActive ? 0x89c8ff : 0xffb15a;
+      if (o.type === 'wall') {
+        g.fillStyle(col, 1);
+        g.fillRect(o.x - o.w/2, 0, o.w, o.gapY - o.gapH/2);
+        g.fillRect(o.x - o.w/2, o.gapY + o.gapH/2, o.w, H - (o.gapY + o.gapH/2));
+      } else if (o.type === 'proj') {
+        g.fillStyle(colAlt, 1);
+        g.fillCircle(o.x, o.y, o.r);
+      } else if (o.type === 'corridor') {
+        g.fillStyle(col, 1);
+        g.fillRect(o.x - o.w/2, 0, o.w, o.gapCenter - o.gapH/2);
+        g.fillRect(o.x - o.w/2, o.gapCenter + o.gapH/2, o.w, H - (o.gapCenter + o.gapH/2));
+      } else if (o.type === 'trap') {
+        if (o.active) {
+          g.fillStyle(col, 1);
+          g.fillCircle(o.x, o.y, o.r);
+          g.lineStyle(2, 0xffffff, 0.6);
+          g.strokeCircle(o.x, o.y, o.r + 3);
+        } else {
+          g.fillStyle(0xffd23f, 0.55);
+          g.fillCircle(o.x, o.y, 6);
+        }
+      }
+    });
+
+    // player
+    g.fillStyle(0xffffff, 0.25);
+    g.fillCircle(PLAYER_X, this.playerY, PLAYER_R * 2.1);
+    g.fillStyle(this.freezeActive ? 0x9fe3ff : 0xffffff, 1);
+    g.fillCircle(PLAYER_X, this.playerY, PLAYER_R);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  backgroundColor: '#0b0e14',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PlayScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
