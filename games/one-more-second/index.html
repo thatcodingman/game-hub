@@ -236,27 +236,27 @@ class PlayScene extends Phaser.Scene {
     if (type === 'wall') {
       const gapH = Phaser.Math.Between(165, 195);
       this.obstacles.push({
-        type: 'wall', x: W + 40, w: 26, speed,
+        type: 'wall', x: W + 40, w: 26, speed, age: 0,
         gapY: Phaser.Math.Between(80 + gapH/2, H - 80 - gapH/2), gapH, alive: true
       });
     } else if (type === 'proj') {
       this.obstacles.push({
-        type: 'proj', x: W + 30, y: Phaser.Math.Between(70, H - 70),
+        type: 'proj', x: W + 30, y: Phaser.Math.Between(70, H - 70), age: 0,
         vy: 0, speed: speed * 1.6, r: 10, alive: true
       });
     } else if (type === 'crossing') {
       const s = speed * 1.5;
-      this.obstacles.push({ type: 'proj', x: W + 30, y: 90, vy: 140, speed: s, r: 9, alive: true });
-      this.obstacles.push({ type: 'proj', x: W + 30, y: H - 90, vy: -140, speed: s, r: 9, alive: true });
+      this.obstacles.push({ type: 'proj', x: W + 30, y: 90, vy: 140, speed: s, r: 9, age: 0, alive: true });
+      this.obstacles.push({ type: 'proj', x: W + 30, y: H - 90, vy: -140, speed: s, r: 9, age: 0, alive: true });
     } else if (type === 'corridor') {
       this.obstacles.push({
-        type: 'corridor', x: W + 40, w: 34, speed: speed * 0.85,
+        type: 'corridor', x: W + 40, w: 34, speed: speed * 0.85, age: 0,
         gapCenter: Phaser.Math.Between(150, H - 150), startGap: 320, minGap: 140,
         shrinkClock: 0, alive: true
       });
     } else if (type === 'trap') {
       this.obstacles.push({
-        type: 'trap', x: W + 30, y: Phaser.Math.Between(90, H - 90),
+        type: 'trap', x: W + 30, y: Phaser.Math.Between(90, H - 90), age: 0,
         speed: speed * 1.1, armClock: 0, armDelay: Phaser.Math.FloatBetween(0.9, 1.3),
         active: false, r: 14, alive: true
       });
@@ -265,6 +265,7 @@ class PlayScene extends Phaser.Scene {
 
   updateObstacles(dt) {
     this.obstacles.forEach(o => {
+      o.age += dt;
       if (o.type === 'wall') {
         o.x -= o.speed * dt;
       } else if (o.type === 'proj') {
@@ -333,17 +334,36 @@ class PlayScene extends Phaser.Scene {
     this.obstacles.forEach(o => {
       const col = this.freezeActive ? 0x6fb8ff : 0xff5a5a;
       const colAlt = this.freezeActive ? 0x89c8ff : 0xffb15a;
+      const fadeIn = Math.min(o.age / 0.25, 1); // spawn telegraph — nothing appears at full opacity instantly
+
       if (o.type === 'wall') {
-        g.fillStyle(col, 1);
+        g.fillStyle(col, fadeIn);
         g.fillRect(o.x - o.w/2, 0, o.w, o.gapY - o.gapH/2);
         g.fillRect(o.x - o.w/2, o.gapY + o.gapH/2, o.w, H - (o.gapY + o.gapH/2));
+        // safe-zone glow through the gap, so the passage reads as clearly as the danger
+        g.fillStyle(0x5be37b, 0.16 * fadeIn);
+        g.fillRect(o.x - o.w, o.gapY - o.gapH/2, o.w * 2, o.gapH);
+
       } else if (o.type === 'proj') {
-        g.fillStyle(colAlt, 1);
+        g.fillStyle(colAlt, fadeIn);
         g.fillCircle(o.x, o.y, o.r);
+        if (o.age < 0.25) {
+          // expanding warning ping on spawn
+          g.lineStyle(2, colAlt, 1 - fadeIn);
+          g.strokeCircle(o.x, o.y, o.r + 14 * fadeIn);
+        }
+
       } else if (o.type === 'corridor') {
-        g.fillStyle(col, 1);
+        // colour drifts toward red as the gap closes in, telegraphing the urgency
+        const closeT = Phaser.Math.Clamp(o.shrinkClock / 2.4, 0, 1);
+        const gb = Math.round(Phaser.Math.Linear(90, 20, closeT));
+        const fillCol = this.freezeActive ? col : Phaser.Display.Color.GetColor(255, gb, gb);
+        g.fillStyle(fillCol, fadeIn);
         g.fillRect(o.x - o.w/2, 0, o.w, o.gapCenter - o.gapH/2);
         g.fillRect(o.x - o.w/2, o.gapCenter + o.gapH/2, o.w, H - (o.gapCenter + o.gapH/2));
+        g.fillStyle(0x5be37b, 0.16 * fadeIn);
+        g.fillRect(o.x - o.w, o.gapCenter - o.gapH/2, o.w * 2, o.gapH);
+
       } else if (o.type === 'trap') {
         if (o.active) {
           g.fillStyle(col, 1);
@@ -351,8 +371,20 @@ class PlayScene extends Phaser.Scene {
           g.lineStyle(2, 0xffffff, 0.6);
           g.strokeCircle(o.x, o.y, o.r + 3);
         } else {
-          g.fillStyle(0xffd23f, 0.55);
-          g.fillCircle(o.x, o.y, 6);
+          const armT = o.armClock / o.armDelay;
+          if (armT > 0.6) {
+            // pre-arm pulse — the last ~40% of the wait telegraphs the pop clearly
+            const p = (armT - 0.6) / 0.4;
+            const pulse = 0.5 + 0.5 * Math.sin(this.time.now / 90);
+            const rad = 6 + p * 7 * (0.6 + 0.4 * pulse);
+            g.fillStyle(0xff8a3d, 0.35 + 0.4 * p * pulse);
+            g.fillCircle(o.x, o.y, rad);
+            g.fillStyle(0xffd23f, 0.8);
+            g.fillCircle(o.x, o.y, 6);
+          } else {
+            g.fillStyle(0xffd23f, 0.55);
+            g.fillCircle(o.x, o.y, 6);
+          }
         }
       }
     });
