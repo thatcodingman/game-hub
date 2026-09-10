@@ -263,7 +263,7 @@ class MainScene extends Phaser.Scene {
     this.oilButtonBg.on('pointerdown', () => this.dropOilSlick());
 
     this.pressureOverlay = this.add.rectangle(LANE_X[0], GAME_HEIGHT / 2, 82, GAME_HEIGHT, 0xef4444, 0.22).setVisible(false);
-    this.pressureText = this.add.text(GAME_WIDTH / 2, 68, '', {
+    this.pressureText = this.add.text(GAME_WIDTH / 2, 126, '', {
       fontFamily: 'monospace', fontSize: '11px', color: '#fca5a5', fontStyle: 'bold', align: 'center'
     }).setOrigin(0.5, 0).setVisible(false);
 
@@ -317,7 +317,7 @@ class MainScene extends Phaser.Scene {
 
   showStartScreen() {
     this.centerText.setText('HIGHWAY HEAT');
-    this.subText.setText('Swipe lanes. Cut close for distance, drop oil to spin cops out.\nPass cars cleanly to build a score multiplier.\nGrab gas before you run dry \u2014 heat brings roadblocks, forced lanes, checkpoints.\nGet caught, crash, or run out of gas and it\'s over.\n\ntap to start');
+    this.subText.setText('Swipe to change lanes.\nAvoid traffic. Keep your distance from the cops.\nWatch your fuel.\n\ntap to start');
     this.distText.setText('');
     this.gapBarBg.setVisible(false);
     this.gapBarFill.setVisible(false);
@@ -415,6 +415,10 @@ class MainScene extends Phaser.Scene {
     });
 
     this.roadblocks.push({ container, blockedLanes, prevY: -90, resolved: false });
+    if (!this.taughtRoadblock) {
+      this.taughtRoadblock = true;
+      this.showToast('ROADBLOCK AHEAD \u2014 FIND AN OPEN LANE');
+    }
   }
 
   spawnCheckpoint() {
@@ -425,6 +429,25 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5);
     container.add([banner, label]);
     this.checkpoints.push({ container, prevY: -90, resolved: false });
+    if (!this.taughtCheckpoint) {
+      this.taughtCheckpoint = true;
+      this.showToast('DRIVE THROUGH FOR A BOOST');
+    }
+  }
+
+  showToast(text) {
+    const toast = this.add.text(GAME_WIDTH / 2, 150, text, {
+      fontFamily: 'monospace', fontSize: '13px', color: '#fde047', fontStyle: 'bold',
+      align: 'center', wordWrap: { width: 300 }, backgroundColor: '#000000'
+    }).setOrigin(0.5).setAlpha(0).setPadding(10, 6, 10, 6);
+    this.tweens.add({
+      targets: toast, alpha: 1, duration: 200,
+      onComplete: () => {
+        this.time.delayedCall(2200, () => {
+          this.tweens.add({ targets: toast, alpha: 0, duration: 400, onComplete: () => toast.destroy() });
+        });
+      }
+    });
   }
 
   hitCheckpoint() {
@@ -447,6 +470,10 @@ class MainScene extends Phaser.Scene {
     const label = this.add.rectangle(0, 2, 14, 10, 0xfde047);
     container.add([body, cap, label]);
     this.gasCans.push({ container, lane, prevY: -60, resolved: false });
+    if (!this.taughtGas) {
+      this.taughtGas = true;
+      this.showToast('GRAB FUEL BEFORE YOU RUN DRY');
+    }
   }
 
   startPressureEvent() {
@@ -497,6 +524,11 @@ class MainScene extends Phaser.Scene {
       this.oilButtonBg.fillColor = 0x1c1917;
       this.oilButtonBg.fillAlpha = 0.85;
       this.oilButtonText.setText('OIL');
+    }
+
+    if (!this.taughtOil && this.elapsed > 3000) {
+      this.taughtOil = true;
+      this.showToast('TAP OIL TO SPIN OUT THE LEAD COP');
     }
 
     this.dist += dt * 9;
@@ -716,6 +748,7 @@ class MainScene extends Phaser.Scene {
   dropOilSlick() {
     if (this.state !== 'PLAYING' || this.oilCooldownRemaining > 0) return;
     this.oilCooldownRemaining = OIL_COOLDOWN_MS;
+    this.taughtOil = true;
     const lane = this.currentLane;
     const shape = this.add.ellipse(LANE_X[lane], PLAYER_Y + 20, 40, 22, 0x18181b, 0.85).setStrokeStyle(2, 0x3f3f46);
     this.oilSlicks.push({ shape, lane, distanceBehind: 20 });
