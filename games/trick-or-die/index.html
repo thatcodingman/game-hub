@@ -215,7 +215,7 @@ class PlayScene extends Phaser.Scene {
       });
       const pole = this.add.rectangle(cx, gy - 80, 6, 160, 0xffd23f);
       const flag = this.add.triangle(cx + 14, gy - 140, 0, 0, 28, 8, 0, 16, 0xffd23f);
-      this.checkpointSensors.push({ sensor, cx, pole, flag, hit: false });
+      this.checkpointSensors.push({ sensor, cx, pole, flag, hit: false, label: 'checkpoint-' + idx });
     });
 
     // ---- finish flag ----
@@ -337,29 +337,28 @@ class PlayScene extends Phaser.Scene {
       [this.axleF, this.axleR].forEach(c => c && this.matter.world.removeConstraint(c));
     }
 
-    this.chassisGO = this.matter.add.rectangle(x, y, 62, 16, {
-      density: 0.018, friction: 0.05, frictionAir: 0.018, restitution: 0.05,
-      label: 'chassis', chamfer: { radius: 4 }
-    });
-    this.wheelF = this.matter.add.circle(x + 26, y + 14, 15, {
-      density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
-      restitution: 0.1, label: 'wheelF'
-    });
-    this.wheelR = this.matter.add.circle(x - 26, y + 14, 15, {
-      density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
-      restitution: 0.1, label: 'wheelR'
-    });
+    this.chassisGO = this.matter.add.gameObject(
+      this.add.rectangle(x, y, 62, 16, 0xff5a2b).setStrokeStyle(2, 0x8a2f10),
+      { density: 0.018, friction: 0.05, frictionAir: 0.018, restitution: 0.05,
+        label: 'chassis', chamfer: { radius: 4 } }
+    );
+    this.wheelF = this.matter.add.gameObject(
+      this.add.circle(x + 26, y + 14, 15, 0x1a1a1a).setStrokeStyle(3, 0x555555),
+      { density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
+        restitution: 0.1, label: 'wheelF' }
+    );
+    this.wheelR = this.matter.add.gameObject(
+      this.add.circle(x - 26, y + 14, 15, 0x1a1a1a).setStrokeStyle(3, 0x555555),
+      { density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
+        restitution: 0.1, label: 'wheelR' }
+    );
 
-    this.axleF = this.matter.add.constraint(this.chassisGO, this.wheelF, 0, 0.5, {
+    this.axleF = this.matter.add.constraint(this.chassisGO.body, this.wheelF.body, 0, 0.5, {
       pointA: { x: 26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
     });
-    this.axleR = this.matter.add.constraint(this.chassisGO, this.wheelR, 0, 0.5, {
+    this.axleR = this.matter.add.constraint(this.chassisGO.body, this.wheelR.body, 0, 0.5, {
       pointA: { x: -26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
     });
-
-    // simple bike visual riding along with the physics bodies
-    if (this.bikeGfx) this.bikeGfx.destroy();
-    this.bikeGfx = this.add.graphics();
 
     this.grounded = { f: false, r: false };
     this.crashed = false;
@@ -412,7 +411,7 @@ class PlayScene extends Phaser.Scene {
 
     if (active && !this.finished) {
       this.checkpointSensors.forEach((cp, idx) => {
-        if (!cp.hit && labels.includes(cp.sensor.body.label) && (labels.includes('chassis') || labels.includes('wheelF') || labels.includes('wheelR'))) {
+        if (!cp.hit && labels.includes(cp.sensor.label) && (labels.includes('chassis') || labels.includes('wheelF') || labels.includes('wheelR'))) {
           cp.hit = true;
           this.checkpointX = cp.cx;
           if (window.SFX) SFX.pickup();
@@ -518,51 +517,10 @@ class PlayScene extends Phaser.Scene {
     // fell into a gap
     if (this.chassisGO.body.position.y > FALL_Y) this.crash();
 
-    // draw bike
-    this.drawBike();
-
     // HUD
     this.timeText.setText(((time - this.startTime) / 1000).toFixed(2) + 's');
   }
 
-  drawBike() {
-    const g = this.bikeGfx;
-    g.clear();
-    const c = this.chassisGO.body;
-    const wf = this.wheelF.body, wr = this.wheelR.body;
-
-    // chassis body
-    g.fillStyle(0xff5a2b, 1);
-    const cos = Math.cos(c.angle), sin = Math.sin(c.angle);
-    const hw = 34, hh = 9;
-    const corners = [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([lx,ly]) => ({
-      x: c.position.x + lx*cos - ly*sin,
-      y: c.position.y + lx*sin + ly*cos
-    }));
-    g.beginPath();
-    g.moveTo(corners[0].x, corners[0].y);
-    corners.slice(1).forEach(p => g.lineTo(p.x, p.y));
-    g.closePath();
-    g.fillPath();
-
-    // rider blob (simple)
-    const seatX = c.position.x - 14*cos - (-14)*sin;
-    const seatY = c.position.y - 14*sin + (-14)*cos;
-    g.fillStyle(0x222834, 1);
-    g.fillCircle(c.position.x - 6*cos + 18*sin, c.position.y - 6*sin - 18*cos, 9);
-
-    // wheels
-    g.lineStyle(4, 0x111111, 1);
-    g.fillStyle(0x1a1a1a, 1);
-    [wf, wr].forEach(w => {
-      g.fillCircle(w.position.x, w.position.y, 15);
-      g.strokeCircle(w.position.x, w.position.y, 15);
-      g.lineStyle(2, 0x555555, 1);
-      g.lineBetween(w.position.x, w.position.y,
-        w.position.x + Math.cos(w.angle)*13, w.position.y + Math.sin(w.angle)*13);
-      g.lineStyle(4, 0x111111, 1);
-    });
-  }
 }
 
 const config = {
