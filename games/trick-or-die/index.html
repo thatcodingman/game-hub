@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Trick or Die</title>
+<style>
+  html, body { margin:0; padding:0; background:#0c0a09; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const BIKE_X = 200;
+const BIKE_Y = 300;
+const BAR_Y = 470;
+const BAR_WIDTH = 280;
+const BAR_CENTER_X = GAME_WIDTH / 2;
+
+const TRICK_NAMES = ['Backflip', '360', 'No-Hander', 'Superman', 'Tailwhip', 'Double Flip', 'Indian Air', 'Cliffhanger', 'Cordova', 'Rock Solid'];
+
+const HEAT_PER_TRICK = 15;
+const HEAT_MAX = 100;
+const HEAT_COOL_ON_LAND = 40;
+
+const BASE_ZONE_RATIO = 0.44;
+const ZONE_SHRINK_FACTOR = 0.82;
+const ZONE_MIN_PX = 10;
+const MARKER_SWEEP_SPEED = 2.6;
+const MARKER_AMPLITUDE = BAR_WIDTH / 2 - 6;
+
+const BEST_KEY = 'trickordie_best';
+
+const ORIENTATIONS = {
+  NORMAL: { label: 'WHEELS DOWN', arrow: '\u2191' },
+  UPSIDE_DOWN: { label: 'LAND UPSIDE DOWN', arrow: '\u2193' },
+  BACKWARDS: { label: 'LAND BACKWARDS', arrow: '\u2190' },
+  FRONT_WHEEL: { label: 'FRONT WHEEL FIRST', arrow: '\u2192' }
+};
+
+const SWIPE_TO_ORIENTATION = { up: 'NORMAL', down: 'UPSIDE_DOWN', left: 'BACKWARDS', right: 'FRONT_WHEEL' };
+
+function getOrientationPool(jumpsCompleted) {
+  if (jumpsCompleted < 2) return ['NORMAL'];
+  if (jumpsCompleted < 5) return ['NORMAL', 'BACKWARDS'];
+  if (jumpsCompleted < 9) return ['NORMAL', 'BACKWARDS', 'FRONT_WHEEL'];
+  return ['NORMAL', 'BACKWARDS', 'FRONT_WHEEL', 'UPSIDE_DOWN'];
+}
+
+function trickScore(count) {
+  const base = [500, 1200, 3500];
+  if (count <= 0) return 0;
+  if (count <= base.length) return base[count - 1];
+  let score = base[base.length - 1];
+  for (let i = base.length; i < count; i++) score = Math.floor(score * 1.9);
+  return score;
+}
+
+function zoneWidthForTricks(count) {
+  const w = BAR_WIDTH * BASE_ZONE_RATIO * Math.pow(ZONE_SHRINK_FACTOR, count);
+  return Math.max(ZONE_MIN_PX, w);
+}
+
+function formatScore(n) {
+  return Math.floor(n).toLocaleString();
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.state = 'START';
+    this.best = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+    this.cameras.main.setBackgroundColor(0x0c0a09);
+
+    this.drawSky();
+
+    const body = this.add.rectangle(0, 0, 46, 16, 0xfacc15).setStrokeStyle(2, 0x1c1917);
+    const wheelA = this.add.circle(-18, 10, 10, 0x1c1917);
+    const wheelB = this.add.circle(18, 10, 10, 0x1c1917);
+    const rider = this.add.rectangle(0, -18, 10, 22, 0xdc2626).setStrokeStyle(1, 0x1c1917);
+    this.bike = this.add.container(BIKE_X, BIKE_Y, [wheelA, wheelB, body, rider]);
+
+    this.orientationText = this.add.text(GAME_WIDTH / 2, 40, '', {
+      fontFamily: 'monospace', fontSize: '15px', color: '#fde047', fontStyle: 'bold', align: 'center'
+    }).setOrigin(0.5);
+    this.orientationArrow = this.add.text(GAME_WIDTH / 2, 66, '', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#fde047'
+    }).setOrigin(0.5);
+
+    this.trickText = this.add.text(GAME_WIDTH / 2, 150, '', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#e7e5e4', align: 'center'
+    }).setOrigin(0.5);
+    this.bankText = this.add.text(GAME_WIDTH / 2, 175, '', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#4ade80', fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    this.scoreText = this.add.text(10, 12, '', { fontFamily: 'monospace', fontSize: '15px', color: '#f4f4f5' });
+    this.bestText = this.add.text(GAME_WIDTH - 10, 12, 'Best: ' + formatScore(this.best), {
+      fontFamily: 'monospace', fontSize: '12px', color: '#a1a1aa'
+    }).setOrigin(1, 0);
+
+    this.heatBarBg = this.add.rectangle(GAME_WIDTH / 2, 40, 0, 0).setVisible(false);
+    this.heatLabel = this.add.text(GAME_WIDTH - 10, 34, 'HEAT', {
+      fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
+    }).setOrigin(1, 0);
+    this.heatBarOuter = this.add.rectangle(GAME_WIDTH - 10, 48, 90, 9, 0x000000, 0.4).setOrigin(1, 0.5).setStrokeStyle(1, 0x3f3f46);
+    this.heatBarFill = this.add.rectangle(GAME_WIDTH - 10, 48, 90, 9, 0xf97316).setOrigin(1, 0.5);
+
+    this.barOuter = this.add.rectangle(BAR_CENTER_X, BAR_Y, BAR_WIDTH, 14, 0x1c1917, 0.7).setStrokeStyle(2, 0x44403c);
+    this.zoneFill = this.add.rectangle(BAR_CENTER_X, BAR_Y, 120, 14, 0x4ade80, 0.55);
+    this.marker = this.add.rectangle(BAR_CENTER_X, BAR_Y, 4, 22, 0xf4f4f5);
+
+    this.hintText = this.add.text(GAME_WIDTH / 2, BAR_Y + 30, '', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#a1a1aa', align: 'center'
+    }).setOrigin(0.5);
+
+    this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 130, '', {
+      fontFamily: 'monospace', fontSize: '24px', color: '#f4f4f5', align: 'center', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.subText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 170, '', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#d4d4d8', align: 'center', wordWrap: { width: 320 }
+    }).setOrigin(0.5);
+
+    this.showStartScreen();
+
+    this.input.on('pointerdown', (p) => {
+      this.dragStartX = p.x;
+      this.dragStartY = p.y;
+    });
+    this.input.on('pointerup', (p) => {
+      if (this.state === 'START' || this.state === 'OVER') { this.startRun(); return; }
+      if (this.state !== 'AIRBORNE' || this.dragStartX === undefined) return;
+      const dx = p.x - this.dragStartX;
+      const dy = p.y - this.dragStartY;
+      if (Math.abs(dx) < 16 && Math.abs(dy) < 16) {
+        this.addTrick();
+      } else if (Math.abs(dx) > Math.abs(dy)) {
+        this.attemptLand(dx > 0 ? 'right' : 'left');
+      } else {
+        this.attemptLand(dy > 0 ? 'down' : 'up');
+      }
+    });
+
+    this.input.keyboard.on('keydown', (e) => {
+      if (this.state === 'START' || this.state === 'OVER') {
+        if (e.key === ' ' || e.key === 'Enter') this.startRun();
+        return;
+      }
+      if (this.state !== 'AIRBORNE') return;
+      if (e.key === ' ') this.addTrick();
+      else if (e.key === 'ArrowUp') this.attemptLand('up');
+      else if (e.key === 'ArrowDown') this.attemptLand('down');
+      else if (e.key === 'ArrowLeft') this.attemptLand('left');
+      else if (e.key === 'ArrowRight') this.attemptLand('right');
+    });
+  }
+
+  drawSky() {
+    const g = this.add.graphics();
+    g.fillStyle(0x1c1917, 1);
+    g.fillRect(0, GAME_HEIGHT - 60, GAME_WIDTH, 60);
+    g.fillStyle(0x292524, 1);
+    for (let x = 0; x < GAME_WIDTH; x += 40) {
+      g.fillTriangle(x, GAME_HEIGHT - 60, x + 20, GAME_HEIGHT - 90, x + 40, GAME_HEIGHT - 60);
+    }
+  }
+
+  showStartScreen() {
+    this.centerText.setText('TRICK OR DIE');
+    this.subText.setText('Tap to add a trick. Swipe to land \u2014 the direction sets your orientation.\nMore tricks = more points, but the landing window shrinks and heat builds.\nMatch the required landing or bank nothing. Miss the timing and it\'s over.\n\ntap to start');
+    this.scoreText.setText('');
+    this.orientationText.setText('');
+    this.orientationArrow.setText('');
+    this.trickText.setText('');
+    this.bankText.setText('');
+    this.hintText.setText('');
+    this.heatLabel.setVisible(false);
+    this.heatBarOuter.setVisible(false);
+    this.heatBarFill.setVisible(false);
+    this.barOuter.setVisible(false);
+    this.zoneFill.setVisible(false);
+    this.marker.setVisible(false);
+  }
+
+  startRun() {
+    this.state = 'AIRBORNE';
+    this.centerText.setText('');
+    this.subText.setText('');
+    this.heatLabel.setVisible(true);
+    this.heatBarOuter.setVisible(true);
+    this.heatBarFill.setVisible(true);
+    this.barOuter.setVisible(true);
+    this.zoneFill.setVisible(true);
+    this.marker.setVisible(true);
+
+    this.totalScore = 0;
+    this.jumpsCompleted = 0;
+    this.heat = 0;
+    this.trickCount = 0;
+    this.elapsed = 0;
+    this.scoreText.setText('0');
+    this.hintText.setText('tap: trick   swipe: land');
+    this.updateHeatBar();
+    this.nextJump();
+  }
+
+  nextJump() {
+    this.trickCount = 0;
+    this.bankText.setText('');
+    this.trickText.setText('Tap to start tricking');
+    const pool = getOrientationPool(this.jumpsCompleted);
+    this.requiredOrientation = pool[Phaser.Math.Between(0, pool.length - 1)];
+    const o = ORIENTATIONS[this.requiredOrientation];
+    this.orientationText.setText('REQUIRED: ' + o.label);
+    this.orientationArrow.setText(o.arrow);
+    this.updateZoneVisual();
+  }
+
+  addTrick() {
+    if (this.state !== 'AIRBORNE') return;
+    this.trickCount++;
+    const name = TRICK_NAMES[Math.min(this.trickCount - 1, TRICK_NAMES.length - 1)];
+    this.trickText.setText(name + '!');
+    this.bankText.setText(formatScore(trickScore(this.trickCount)) + ' pts');
+    this.heat = Math.min(HEAT_MAX, this.heat + HEAT_PER_TRICK);
+    this.updateHeatBar();
+    this.updateZoneVisual();
+    SFX.blip();
+    this.tweens.add({ targets: this.bike, angle: this.bike.angle + 360, duration: 320, ease: 'Cubic.easeOut' });
+
+    if (this.heat >= HEAT_MAX) {
+      this.overheat();
+    }
+  }
+
+  updateZoneVisual() {
+    const w = zoneWidthForTricks(this.trickCount);
+    this.zoneFill.width = w;
+    this.zoneFill.fillColor = this.trickCount === 0 ? 0x4ade80 : (w < 40 ? 0xef4444 : (w < 80 ? 0xf59e0b : 0x4ade80));
+  }
+
+  updateHeatBar() {
+    const ratio = this.heat / HEAT_MAX;
+    this.heatBarFill.width = 90 * ratio;
+    this.heatBarFill.fillColor = ratio > 0.75 ? 0xef4444 : (ratio > 0.45 ? 0xf59e0b : 0xf97316);
+  }
+
+  attemptLand(direction) {
+    if (this.state !== 'AIRBORNE') return;
+    if (this.trickCount === 0) {
+      SFX.blip();
+      return;
+    }
+    this.state = 'RESOLVING';
+
+    const markerX = BAR_CENTER_X + Math.sin(this.elapsed * MARKER_SWEEP_SPEED) * MARKER_AMPLITUDE;
+    const zoneW = zoneWidthForTricks(this.trickCount);
+    const goodTiming = Math.abs(markerX - BAR_CENTER_X) <= zoneW / 2;
+
+    if (!goodTiming) {
+      this.crash();
+      return;
+    }
+
+    const landedOrientation = SWIPE_TO_ORIENTATION[direction];
+    if (landedOrientation === this.requiredOrientation) {
+      const points = trickScore(this.trickCount);
+      this.totalScore += points;
+      this.scoreText.setText(formatScore(this.totalScore));
+      SFX.success();
+      this.cameras.main.flash(150, 74, 222, 128);
+      this.trickText.setText('LANDED CLEAN! +' + formatScore(points));
+    } else {
+      SFX.blip();
+      this.trickText.setText('Landed safe, wrong orientation \u2014 no points');
+    }
+
+    this.jumpsCompleted++;
+    this.heat = Math.max(0, this.heat - HEAT_COOL_ON_LAND);
+    this.updateHeatBar();
+
+    this.time.delayedCall(700, () => {
+      if (this.state !== 'RESOLVING') return;
+      this.state = 'AIRBORNE';
+      this.nextJump();
+    });
+  }
+
+  overheat() {
+    this.state = 'OVER';
+    SFX.explosion();
+    this.cameras.main.shake(200, 0.012);
+    this.spawnSmoke();
+    this.finishRun('ENGINE OVERHEATED');
+  }
+
+  crash() {
+    this.state = 'OVER';
+    SFX.hit();
+    this.cameras.main.shake(220, 0.015);
+    this.spawnDebris();
+    this.finishRun('WIPEOUT');
+  }
+
+  spawnDebris() {
+    const colors = [0xfacc15, 0xdc2626, 0x71717a, 0x1c1917];
+    for (let i = 0; i < 16; i++) {
+      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
+      const piece = this.add.rectangle(this.bike.x, this.bike.y, Phaser.Math.Between(4, 8), Phaser.Math.Between(4, 8), color);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.Between(50, 140);
+      this.tweens.add({
+        targets: piece,
+        x: piece.x + Math.cos(angle) * dist,
+        y: piece.y + Math.sin(angle) * dist,
+        alpha: 0,
+        angle: Phaser.Math.Between(-360, 360),
+        duration: Phaser.Math.Between(500, 800),
+        ease: 'Cubic.easeOut',
+        onComplete: () => piece.destroy()
+      });
+    }
+  }
+
+  spawnSmoke() {
+    for (let i = 0; i < 8; i++) {
+      const puff = this.add.circle(this.bike.x + Phaser.Math.Between(-14, 14), this.bike.y, Phaser.Math.Between(7, 12), 0x57534e, 0.65);
+      this.tweens.add({
+        targets: puff,
+        y: puff.y - Phaser.Math.Between(50, 90),
+        x: puff.x + Phaser.Math.Between(-25, 25),
+        alpha: 0,
+        scale: 1.9,
+        duration: Phaser.Math.Between(900, 1400),
+        delay: i * 80,
+        ease: 'Cubic.easeOut',
+        onComplete: () => puff.destroy()
+      });
+    }
+  }
+
+  finishRun(reason) {
+    let isNewBest = false;
+    if (this.totalScore > this.best) {
+      this.best = this.totalScore;
+      localStorage.setItem(BEST_KEY, String(Math.floor(this.best)));
+      isNewBest = true;
+      this.bestText.setText('Best: ' + formatScore(this.best));
+    }
+    this.orientationText.setText('');
+    this.orientationArrow.setText('');
+    this.hintText.setText('');
+    this.centerText.setText(reason);
+    this.subText.setText(formatScore(this.totalScore) + ' pts' + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
+  }
+
+  update(time, delta) {
+    if (this.state !== 'AIRBORNE') return;
+    this.elapsed += delta / 1000;
+    const markerX = BAR_CENTER_X + Math.sin(this.elapsed * MARKER_SWEEP_SPEED) * MARKER_AMPLITUDE;
+    this.marker.x = markerX;
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  resolution: window.devicePixelRatio || 1,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#0c0a09',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
