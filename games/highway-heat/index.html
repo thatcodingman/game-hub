@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Color Drop</title>
+<style>
+  html, body { margin:0; padding:0; background:#0f172a; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
+  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 700;
+const LANE_X = [83, 200, 317];
+const BALL_Y = 560;
+const BALL_START_RADIUS = 22;
+const BALL_MIN_RADIUS = 9;
+const SHRINK_MULTIPLIER = 0.95;
+
+const COLORS = [
+  { name: 'RED', hex: 0xef4444 },
+  { name: 'GREEN', hex: 0x22c55e },
+  { name: 'BLUE', hex: 0x3b82f6 }
+];
+const BLOCKED_COLOR = 0x1c1917;
+const BLOCKED_STRIPE = 0x44403c;
+const BEST_KEY = 'colordrop_best';
+
+function getPhase(score) {
+  if (score < 5) return { allOpenOnly: true, blockedWeights: [1, 0, 0], speed: 230, spawnMs: 1050, avoidRepeat: 0 };
+  if (score < 14) return { allOpenOnly: false, blockedWeights: [0.35, 0.55, 0.1], speed: 260, spawnMs: 950, avoidRepeat: 0 };
+  if (score < 26) return { allOpenOnly: false, blockedWeights: [0.15, 0.55, 0.3], speed: 290, spawnMs: 850, avoidRepeat: 0 };
+  if (score < 42) return { allOpenOnly: false, blockedWeights: [0.08, 0.47, 0.45], speed: 320, spawnMs: 760, avoidRepeat: 0.32 };
+  return { allOpenOnly: false, blockedWeights: [0.05, 0.35, 0.6], speed: 350, spawnMs: 680, avoidRepeat: 0.5 };
+}
+
+function weightedPick(weights) {
+  const r = Math.random();
+  let acc = 0;
+  for (let i = 0; i < weights.length; i++) {
+    acc += weights[i];
+    if (r < acc) return i;
+  }
+  return weights.length - 1;
+}
+
+function formatDist(n) {
+  return Math.floor(n) + 'm';
+}
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  create() {
+    this.state = 'START';
+    this.bestScore = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+    this.cameras.main.setBackgroundColor(0x0f172a);
+
+    this.drawLaneTracks();
+
+    this.ball = this.add.circle(LANE_X[1], BALL_Y, BALL_START_RADIUS, COLORS[Phaser.Math.Between(0, 2)].hex);
+    this.ball.setStrokeStyle(2, 0xffffff, 0.4);
+
+    this.scoreText = this.add.text(10, 12, '', { fontFamily: 'monospace', fontSize: '16px', color: '#e2e8f0' });
+    this.bestText = this.add.text(GAME_WIDTH - 10, 12, 'Best: ' + formatDist(this.bestScore), {
+      fontFamily: 'monospace', fontSize: '13px', color: '#94a3b8'
+    }).setOrigin(1, 0);
+
+    this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '', {
+      fontFamily: 'monospace', fontSize: '26px', color: '#f8fafc', align: 'center', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.subText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 10, '', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#cbd5e1', align: 'center', wordWrap: { width: 320 }
+    }).setOrigin(0.5);
+
+    this.showStartScreen();
+
+    this.currentLane = 1;
+    this.gates = [];
+
+    this.input.on('pointerdown', (p) => { this.dragStartX = p.x; });
+    this.input.on('pointerup', (p) => {
+      if (this.state === 'START' || this.state === 'OVER') { this.startRun(); return; }
+      if (this.dragStartX === undefined) return;
+      const dx = p.x - this.dragStartX;
+      if (Math.abs(dx) > 14) this.changeLane(dx > 0 ? 1 : -1);
+    });
+
+    this.input.keyboard.on('keydown', (e) => {
+      if (this.state === 'START' || this.state === 'OVER') {
+        if (e.key === ' ' || e.key === 'Enter') this.startRun();
+        return;
+      }
+      if (e.key === 'ArrowLeft') this.changeLane(-1);
+      else if (e.key === 'ArrowRight') this.changeLane(1);
+    });
+  }
+
+  drawLaneTracks() {
+    const g = this.add.graphics();
+    g.lineStyle(1, 0x1e293b, 1);
+    for (let i = 0; i < LANE_X.length - 1; i++) {
+      const x = (LANE_X[i] + LANE_X[i + 1]) / 2;
+      g.lineBetween(x, 0, x, GAME_HEIGHT);
+    }
+  }
+
+  showStartScreen() {
+    this.centerText.setText('COLOR DROP');
+    this.subText.setText('Swipe to pick your lane.\nWhatever color you pass through, you become.\nEvery success shrinks you a little more.\n\ntap to start');
+    this.scoreText.setText('');
+  }
+
+  startRun() {
+    this.state = 'PLAYING';
+    this.centerText.setText('');
+    this.subText.setText('');
+    this.score = 0;
+    this.currentLane = 1;
+    this.ball.setPosition(LANE_X[1], BALL_Y);
+    this.ball.setRadius(BALL_START_RADIUS);
+    this.ball.fillColor = COLORS[Phaser.Math.Between(0, 2)].hex;
+    this.gates.forEach(g => g.container.destroy());
+    this.gates = [];
+    this.lastSpawn = 0;
+    this.elapsed = 0;
+    this.scoreText.setText('0m');
+  }
+
+  changeLane(dir) {
+    if (this.state !== 'PLAYING') return;
+    const next = Phaser.Math.Clamp(this.currentLane + dir, 0, 2);
+    if (next === this.currentLane) return;
+    this.currentLane = next;
+    this.tweens.add({ targets: this.ball, x: LANE_X[next], duration: 90, ease: 'Cubic.easeOut' });
+  }
+
+  spawnGate() {
+    const phase = getPhase(this.score);
+    const numBlocked = phase.allOpenOnly ? 0 : weightedPick(phase.blockedWeights);
+    const laneIdx = [0, 1, 2];
+    Phaser.Utils.Array.Shuffle(laneIdx);
+    let blockedSet = new Set(laneIdx.slice(0, numBlocked));
+
+    if (!phase.allOpenOnly && Math.random() < phase.avoidRepeat && blockedSet.size < 2) {
+      const currentColorHex = this.ball.fillColor;
+      // force the lane that would keep the ball's current color to become blocked,
+      // if it isn't already and doing so still leaves at least one open lane
+      const candidateLanes = [0, 1, 2].filter(i => !blockedSet.has(i));
+      if (candidateLanes.length > 1) {
+        const forceLane = candidateLanes[Phaser.Math.Between(0, candidateLanes.length - 1)];
+        blockedSet.add(forceLane);
+      }
+    }
+
+    const lanes = [0, 1, 2].map(i => {
+      if (blockedSet.has(i)) return { blocked: true };
+      const color = phase.allOpenOnly
+        ? COLORS[i]
+        : COLORS[Phaser.Math.Between(0, 2)];
+      return { blocked: false, color };
+    });
+
+    const container = this.add.container(0, -40);
+    lanes.forEach((lane, i) => {
+      const w = 92, h = 20;
+      let shape;
+      if (lane.blocked) {
+        shape = this.add.rectangle(LANE_X[i], 0, w, h, BLOCKED_COLOR).setStrokeStyle(2, BLOCKED_STRIPE);
+        const x1 = this.add.line(0, 0, LANE_X[i] - w / 2 + 6, -h / 2 + 4, LANE_X[i] + w / 2 - 6, h / 2 - 4, 0x78716c).setLineWidth(2);
+        const x2 = this.add.line(0, 0, LANE_X[i] - w / 2 + 6, h / 2 - 4, LANE_X[i] + w / 2 - 6, -h / 2 + 4, 0x78716c).setLineWidth(2);
+        container.add([shape, x1, x2]);
+      } else {
+        shape = this.add.rectangle(LANE_X[i], 0, w, h, lane.color.hex).setStrokeStyle(2, 0xffffff, 0.5);
+        container.add(shape);
+      }
+    });
+
+    this.gates.push({ container, lanes, prevY: -40, passed: false });
+  }
+
+  update(time, delta) {
+    if (this.state !== 'PLAYING') return;
+    this.elapsed += delta;
+    const phase = getPhase(this.score);
+
+    if (this.elapsed - this.lastSpawn > phase.spawnMs) {
+      this.lastSpawn = this.elapsed;
+      this.spawnGate();
+    }
+
+    const dy = phase.speed * (delta / 1000);
+    for (let i = this.gates.length - 1; i >= 0; i--) {
+      const gate = this.gates[i];
+      gate.prevY = gate.container.y;
+      gate.container.y += dy;
+
+      if (!gate.passed && gate.prevY < BALL_Y && gate.container.y >= BALL_Y) {
+        gate.passed = true;
+        this.resolveGate(gate);
+      }
+
+      if (gate.container.y > GAME_HEIGHT + 60) {
+        gate.container.destroy();
+        this.gates.splice(i, 1);
+      }
+    }
+
+    this.scoreText.setText(formatDist(this.score));
+  }
+
+  resolveGate(gate) {
+    const lane = gate.lanes[this.currentLane];
+    if (lane.blocked) {
+      this.endRun();
+      return;
+    }
+    const oldRadius = this.ball.radius;
+    this.ball.fillColor = lane.color.hex;
+    this.score++;
+    const newRadius = Math.max(BALL_MIN_RADIUS, oldRadius * SHRINK_MULTIPLIER);
+
+    // brief flash ring in the new color, marking the "you just became this
+    // color" moment distinctly before the shrink plays out
+    const flash = this.add.circle(this.ball.x, this.ball.y, oldRadius, lane.color.hex, 0.9)
+      .setStrokeStyle(3, 0xffffff, 0.9);
+    this.tweens.add({
+      targets: flash,
+      radius: oldRadius + 22,
+      alpha: 0,
+      duration: 260,
+      ease: 'Cubic.easeOut',
+      onComplete: () => flash.destroy()
+    });
+
+    // smooth, clearly visible shrink instead of an instant size snap
+    this.tweens.add({
+      targets: this.ball,
+      radius: newRadius,
+      duration: 180,
+      ease: 'Cubic.easeOut'
+    });
+
+    SFX.blip();
+    if (this.score % 10 === 0) SFX.powerup();
+  }
+
+  endRun() {
+    this.state = 'OVER';
+    SFX.explosion();
+    this.cameras.main.shake(160, 0.01);
+
+    let isNewBest = false;
+    if (this.score > this.bestScore) {
+      this.bestScore = this.score;
+      localStorage.setItem(BEST_KEY, String(this.bestScore));
+      isNewBest = true;
+      this.bestText.setText('Best: ' + formatDist(this.bestScore));
+    }
+
+    this.centerText.setText('RUN OVER');
+    this.subText.setText(formatDist(this.score) + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  audio: { noAudio: true },
+  resolution: window.devicePixelRatio || 1,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
+  parent: 'game-container',
+  backgroundColor: '#0f172a',
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
