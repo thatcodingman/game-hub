@@ -26,7 +26,6 @@ const ROAD_RIGHT = 380;
 const MAX_GAP = 220;
 const START_GAP = 220;
 const COLLISION_THRESHOLD = 16;
-const CRASH_X_THRESHOLD = 40;
 const NEAR_MISS_ADJACENT_ONLY = true;
 const NEAR_MISS_GAP_BONUS = 38;
 const CRITICAL_GAP = 55;
@@ -53,12 +52,120 @@ function formatDist(n) {
   return Math.floor(n) + 'm';
 }
 
-function drawCarShape(scene, x, y, color) {
-  const body = scene.add.rectangle(0, 0, CAR_W, CAR_H, color).setStrokeStyle(2, 0x000000, 0.35);
-  const windshield = scene.add.rectangle(0, -CAR_H * 0.18, CAR_W * 0.72, CAR_H * 0.28, 0x0f172a, 0.55);
+function drawCarShape(scene, x, y, color, w, h) {
+  w = w || CAR_W;
+  h = h || CAR_H;
+  const body = scene.add.rectangle(0, 0, w, h, color).setStrokeStyle(2, 0x000000, 0.35);
+  const windshield = scene.add.rectangle(0, -h * 0.18, w * 0.72, h * 0.28, 0x0f172a, 0.55);
   const container = scene.add.container(x, y, [body, windshield]);
   container.body = body;
+  container.carW = w;
+  container.carH = h;
   return container;
+}
+
+const TRAFFIC_TYPES = [
+  { type: 'car', width: CAR_W, height: CAR_H, weight: 0.6 },
+  { type: 'truck', width: CAR_W * 1.35, height: CAR_H * 1.2, weight: 0.22 },
+  { type: 'motorcycle', width: CAR_W * 0.5, height: CAR_H * 0.7, weight: 0.18 }
+];
+
+function pickTrafficType() {
+  const r = Math.random();
+  let acc = 0;
+  for (const t of TRAFFIC_TYPES) {
+    acc += t.weight;
+    if (r < acc) return t;
+  }
+  return TRAFFIC_TYPES[0];
+}
+
+// Adaptive background audio: a continuous engine drone (pitch rises with
+// speed) plus a rhythmic pulse layer that accelerates as the police gap
+// closes. Built on SFX's shared AudioContext rather than a second one, and
+// polls SFX.muted/SFX.volume every frame since sfx.js has no change event.
+class MusicEngine {
+  constructor() {
+    this.running = false;
+    this.droneOsc = null;
+    this.droneFilter = null;
+    this.droneGain = null;
+    this.pulseNext = 0;
+  }
+
+  start() {
+    SFX.ensureContext();
+    if (!SFX.ctx) return;
+    const ctx = SFX.ctx;
+
+    this.droneOsc = ctx.createOscillator();
+    this.droneOsc.type = 'sawtooth';
+    this.droneOsc.frequency.value = 55;
+    this.droneFilter = ctx.createBiquadFilter();
+    this.droneFilter.type = 'lowpass';
+    this.droneFilter.frequency.value = 220;
+    this.droneGain = ctx.createGain();
+    this.droneGain.gain.value = 0;
+    this.droneOsc.connect(this.droneFilter);
+    this.droneFilter.connect(this.droneGain);
+    this.droneGain.connect(ctx.destination);
+    this.droneOsc.start();
+
+    this.running = true;
+    this.pulseNext = 0;
+  }
+
+  update(delta, speedRatio, gapRatio) {
+    if (!this.running || !SFX.ctx) return;
+    const now = SFX.ctx.currentTime;
+
+    const targetGain = SFX.muted ? 0 : 0.05 * SFX.volume;
+    this.droneGain.gain.setTargetAtTime(targetGain, now, 0.05);
+
+    const targetFreq = 55 + speedRatio * 22;
+    this.droneOsc.frequency.setTargetAtTime(targetFreq, now, 0.3);
+
+    this.pulseNext -= delta;
+    if (this.pulseNext <= 0) {
+      this.playPulse();
+      this.pulseNext = Phaser.Math.Linear(900, 260, 1 - gapRatio);
+    }
+  }
+
+  playPulse() {
+    if (SFX.muted || !SFX.ctx) return;
+    const ctx = SFX.ctx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(90, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.12);
+    const v = 0.09 * SFX.volume;
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(v, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.17);
+  }
+
+  stop() {
+    if (!this.running) return;
+    this.running = false;
+    if (this.droneOsc && SFX.ctx) {
+      const now = SFX.ctx.currentTime;
+      this.droneGain.gain.setTargetAtTime(0, now, 0.12);
+      const osc = this.droneOsc, filter = this.droneFilter, gain = this.droneGain;
+      setTimeout(() => {
+        try { osc.stop(); } catch (e) {}
+        osc.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      }, 500);
+    }
+    this.droneOsc = null;
+  }
 }
 
 class MainScene extends Phaser.Scene {
@@ -66,6 +173,7 @@ class MainScene extends Phaser.Scene {
 
   create() {
     this.state = 'START';
+    this.music = new MusicEngine();
     this.bestDist = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
     this.cameras.main.setBackgroundColor(0x27272a);
 
@@ -184,6 +292,9 @@ class MainScene extends Phaser.Scene {
     this.player.setPosition(LANE_X[1], PLAYER_Y);
     this.gap = START_GAP;
     this.oilCooldownRemaining = 0;
+    this.sirenTimer = 0;
+    this.music.stop();
+    this.music.start();
 
     this.traffic.forEach(t => t.container.destroy());
     this.traffic = [];
@@ -206,8 +317,9 @@ class MainScene extends Phaser.Scene {
   spawnTraffic() {
     const lane = Phaser.Math.Between(0, LANE_X.length - 1);
     const color = TRAFFIC_COLORS[Phaser.Math.Between(0, TRAFFIC_COLORS.length - 1)];
-    const container = drawCarShape(this, LANE_X[lane], -80, color);
-    this.traffic.push({ container, lane, prevY: -80, resolved: false });
+    const vType = pickTrafficType();
+    const container = drawCarShape(this, LANE_X[lane], -80, color, vType.width, vType.height);
+    this.traffic.push({ container, lane, prevY: -80, resolved: false, width: vType.width });
   }
 
   updateGapBar() {
@@ -254,7 +366,8 @@ class MainScene extends Phaser.Scene {
       if (!t.resolved && t.prevY < PLAYER_Y && t.container.y >= PLAYER_Y) {
         t.resolved = true;
         const dx = Math.abs(t.container.x - this.player.x);
-        if (dx < CRASH_X_THRESHOLD) {
+        const threshold = (t.width + CAR_W) / 2 * 0.72;
+        if (dx < threshold) {
           this.crash();
         } else if (Math.abs(t.lane - this.currentLane) === 1) {
           this.nearMiss();
@@ -272,14 +385,22 @@ class MainScene extends Phaser.Scene {
     this.gap = Math.max(0, this.gap - phase.gapCloseRate * dt);
     this.updateGapBar();
 
-    if (this.gap < CRITICAL_GAP && !this.sirenPlayed) {
-      this.sirenPlayed = true;
-      SFX.alert();
-    } else if (this.gap >= CRITICAL_GAP) {
-      this.sirenPlayed = false;
+    if (this.gap < CRITICAL_GAP) {
+      this.sirenTimer -= delta;
+      if (this.sirenTimer <= 0) {
+        SFX.alert();
+        const urgency = 1 - Phaser.Math.Clamp(this.gap / CRITICAL_GAP, 0, 1);
+        this.sirenTimer = Phaser.Math.Linear(650, 160, urgency);
+      }
+    } else {
+      this.sirenTimer = 0;
     }
 
     this.updatePoliceVisuals(phase);
+
+    const speedRatio = Phaser.Math.Clamp((phase.trafficSpeed - 180) / (300 - 180), 0, 1);
+    const gapRatio = Phaser.Math.Clamp(this.gap / MAX_GAP, 0, 1);
+    this.music.update(delta, speedRatio, gapRatio);
 
     for (let i = this.oilSlicks.length - 1; i >= 0; i--) {
       const slick = this.oilSlicks[i];
@@ -360,6 +481,8 @@ class MainScene extends Phaser.Scene {
     this.state = 'OVER';
     SFX.explosion();
     this.cameras.main.shake(200, 0.012);
+    this.spawnDebris();
+    this.music.stop();
     this.finishRun('CRASHED');
   }
 
@@ -367,7 +490,44 @@ class MainScene extends Phaser.Scene {
     this.state = 'OVER';
     SFX.hit();
     this.cameras.main.shake(160, 0.008);
+    this.spawnSirenWash();
+    this.music.stop();
     this.finishRun('BUSTED');
+  }
+
+  spawnDebris() {
+    const colors = [0xf97316, 0x71717a, 0xfacc15, 0x27272a];
+    for (let i = 0; i < 18; i++) {
+      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
+      const piece = this.add.rectangle(this.player.x, this.player.y, Phaser.Math.Between(4, 9), Phaser.Math.Between(4, 9), color);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.Between(50, 160);
+      this.tweens.add({
+        targets: piece,
+        x: piece.x + Math.cos(angle) * dist,
+        y: piece.y + Math.sin(angle) * dist,
+        alpha: 0,
+        angle: Phaser.Math.Between(-360, 360),
+        duration: Phaser.Math.Between(500, 850),
+        ease: 'Cubic.easeOut',
+        onComplete: () => piece.destroy()
+      });
+    }
+  }
+
+  spawnSirenWash() {
+    const wash = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0xef4444, 0.45);
+    let flips = 0;
+    const flip = () => {
+      flips++;
+      wash.fillColor = flips % 2 === 0 ? 0xef4444 : 0x3b82f6;
+      if (flips < 7) {
+        this.time.delayedCall(90, flip);
+      } else {
+        this.tweens.add({ targets: wash, alpha: 0, duration: 250, onComplete: () => wash.destroy() });
+      }
+    };
+    flip();
   }
 
   finishRun(reason) {
