@@ -1,12 +1,13 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Trick or Die</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Trick or Die — The Arcade</title>
 <style>
-  html, body { margin:0; padding:0; background:#0c0a09; overflow:hidden; height:100%; overscroll-behavior:none; touch-action:none; }
-  #game-container { display:flex; justify-content:center; align-items:center; height:100%; touch-action:none; -webkit-user-select:none; user-select:none; }
+  html, body { margin:0; padding:0; background:#0d1117; overflow:hidden; height:100%; }
+  #game-container { width:100vw; height:100vh; }
+  canvas { display:block; touch-action:none; }
 </style>
 </head>
 <body>
@@ -14,406 +15,568 @@
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
 <script src="../../assets/sfx.js"></script>
 <script>
-const GAME_WIDTH = 400;
-const GAME_HEIGHT = 700;
-const TRACK_X = 200;
-const TRACK_Y = 600;
-const TRACK_WIDTH = 150;
+/* =========================================================================
+   TRICK OR DIE v3 — Moto X3M-style side-scroller
+   Real 2-wheel Matter.js vehicle physics (via Phaser's built-in Matter),
+   hand-shaped terrain, hold-to-accelerate + lean controls, checkpoints,
+   crash-on-bad-landing, best-time tracking (localStorage).
+   ========================================================================= */
 
-const LAUNCH_VELOCITY = 480;
-const GRAVITY = 620;
-const TRICK_IMPULSE = 205;
-const SCROLL_SPEED = 200;
-const BASE_GAP_LENGTH = 110;
-const GAP_PER_TRICK = 60;
-const RAMP_LENGTH = 120;
+const GROUND_Y = 480;
+const SEG_H = 26;           // terrain segment thickness
+const CRASH_ANGLE = 1.15;   // ~66 degrees — chassis-vs-ground hit beyond this = crash
+const FALL_Y = GROUND_Y + 900; // fall-into-gap death threshold
+const MAX_WHEEL_SPIN = 1.6;
+const MAX_LEAN = 0.16;
 
-const TRICK_NAMES = ['Backflip', '360', 'No-Hander', 'Superman', 'Tailwhip', 'Double Flip', 'Indian Air', 'Cliffhanger', 'Cordova', 'Rock Solid'];
+// ---------------------------------------------------------------------
+// Terrain builder — turns a readable list of "features" into a smooth
+// point path, then into static Matter rectangle segments (with gaps
+// simply omitted so the bike can fall through).
+// ---------------------------------------------------------------------
+function buildTerrain(features, startX, startY) {
+  const points = [{ x: startX, y: startY, gap: false }];
+  let x = startX, y = startY;
 
-const HEAT_PER_TRICK = 15;
-const HEAT_MAX = 100;
-const HEAT_COOL_ON_LAND = 40;
+  features.forEach(f => {
+    if (f.type === 'flat') {
+      const steps = Math.max(1, Math.round(f.length / 60));
+      for (let i = 1; i <= steps; i++) {
+        x += f.length / steps;
+        points.push({ x, y, gap: false });
+      }
+    } else if (f.type === 'ramp') {
+      // f.length horizontal run, f.rise vertical change (negative = up)
+      const steps = Math.max(3, Math.round(f.length / 40));
+      const x0 = x, y0 = y;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const eased = 1 - Math.pow(1 - t, 2); // ease-out curve, feels like a ramp
+        x = x0 + f.length * t;
+        y = y0 + f.rise * eased;
+        points.push({ x, y, gap: false });
+      }
+    } else if (f.type === 'bump') {
+      // gentle sine hill, good for rolling terrain
+      const steps = Math.max(4, Math.round(f.length / 40));
+      const x0 = x, y0 = y;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        x = x0 + f.length * t;
+        y = y0 - Math.sin(t * Math.PI) * f.height;
+        points.push({ x, y, gap: false });
+      }
+      y = y0;
+      x = x0 + f.length;
+      points[points.length - 1].y = y0;
+    } else if (f.type === 'gap') {
+      const steps = Math.max(2, Math.round(f.length / 50));
+      for (let i = 1; i <= steps; i++) {
+        x += f.length / steps;
+        points.push({ x, y, gap: true });
+      }
+    }
+  });
 
-const BEST_KEY = 'trickordie_best';
-
-const ORIENTATIONS = {
-  NORMAL: { label: 'WHEELS DOWN', arrow: '\u2191' },
-  UPSIDE_DOWN: { label: 'LAND UPSIDE DOWN', arrow: '\u2193' },
-  BACKWARDS: { label: 'LAND BACKWARDS', arrow: '\u2190' },
-  FRONT_WHEEL: { label: 'FRONT WHEEL FIRST', arrow: '\u2192' }
-};
-
-const SWIPE_TO_ORIENTATION = { up: 'NORMAL', down: 'UPSIDE_DOWN', left: 'BACKWARDS', right: 'FRONT_WHEEL' };
-
-function getOrientationPool(jumpsCompleted) {
-  if (jumpsCompleted < 2) return ['NORMAL'];
-  if (jumpsCompleted < 5) return ['NORMAL', 'BACKWARDS'];
-  if (jumpsCompleted < 9) return ['NORMAL', 'BACKWARDS', 'FRONT_WHEEL'];
-  return ['NORMAL', 'BACKWARDS', 'FRONT_WHEEL', 'UPSIDE_DOWN'];
+  return points;
 }
 
-function trickScore(count) {
-  const base = [500, 1200, 3500];
-  if (count <= 0) return 0;
-  if (count <= base.length) return base[count - 1];
-  let score = base[base.length - 1];
-  for (let i = base.length; i < count; i++) score = Math.floor(score * 1.9);
-  return score;
+// Feature-based level design (hand-authored sequences, not random)
+const LEVELS = [
+  {
+    name: 'Backroad',
+    gravity: 1.15,
+    features: [
+      { type: 'flat', length: 500 },
+      { type: 'bump', length: 300, height: 40 },
+      { type: 'bump', length: 300, height: 60 },
+      { type: 'flat', length: 200 },
+      { type: 'ramp', length: 220, rise: -140 },
+      { type: 'gap', length: 260 },
+      { type: 'ramp', length: 220, rise: 140 },
+      { type: 'flat', length: 300 },
+      { type: 'bump', length: 400, height: 90 },
+      { type: 'flat', length: 250 },
+      { type: 'ramp', length: 260, rise: -180 },
+      { type: 'gap', length: 340 },
+      { type: 'ramp', length: 240, rise: 180 },
+      { type: 'flat', length: 400 },
+      { type: 'ramp', length: 200, rise: -100 },
+      { type: 'flat', length: 300 },
+    ],
+    checkpoints: [1400, 3200, 5200],
+  },
+  {
+    name: 'Canyon Run',
+    gravity: 1.2,
+    features: [
+      { type: 'flat', length: 400 },
+      { type: 'ramp', length: 200, rise: -160 },
+      { type: 'gap', length: 300 },
+      { type: 'ramp', length: 200, rise: 100 },
+      { type: 'bump', length: 250, height: 70 },
+      { type: 'ramp', length: 260, rise: -220 },
+      { type: 'gap', length: 400 },
+      { type: 'ramp', length: 220, rise: 220 },
+      { type: 'flat', length: 200 },
+      { type: 'bump', length: 300, height: 100 },
+      { type: 'bump', length: 300, height: 110 },
+      { type: 'ramp', length: 240, rise: -180 },
+      { type: 'gap', length: 340 },
+      { type: 'ramp', length: 220, rise: 100 },
+      { type: 'flat', length: 250 },
+      { type: 'ramp', length: 300, rise: -260 },
+      { type: 'gap', length: 380 },
+      { type: 'ramp', length: 260, rise: 260 },
+      { type: 'flat', length: 400 },
+    ],
+    checkpoints: [1300, 3000, 4600, 6400],
+  },
+];
+
+// ---------------------------------------------------------------------
+// Menu Scene
+// ---------------------------------------------------------------------
+class MenuScene extends Phaser.Scene {
+  constructor() { super('Menu'); }
+  create() {
+    const w = this.scale.width, h = this.scale.height;
+    this.cameras.main.setBackgroundColor('#0d1117');
+
+    this.add.text(w/2, h*0.22, 'TRICK OR DIE', {
+      fontFamily: 'Arial Black, Arial', fontSize: '54px', color: '#ff5a2b'
+    }).setOrigin(0.5).setShadow(0, 4, '#000', 8, true, true);
+
+    this.add.text(w/2, h*0.22 + 54, 'a Moto X3M-style physics run', {
+      fontFamily: 'Arial', fontSize: '18px', color: '#9fa6ad'
+    }).setOrigin(0.5);
+
+    LEVELS.forEach((lvl, i) => {
+      const y = h*0.45 + i*90;
+      const best = localStorage.getItem('trickOrDie_best_' + i);
+      const btn = this.add.rectangle(w/2, y, 340, 68, 0x1c2128, 1)
+        .setStrokeStyle(2, 0xff5a2b).setInteractive({ useHandCursor: true });
+      this.add.text(w/2, y - 12, lvl.name, {
+        fontFamily: 'Arial Black, Arial', fontSize: '24px', color: '#f0f3f6'
+      }).setOrigin(0.5);
+      this.add.text(w/2, y + 16, best ? `Best: ${parseFloat(best).toFixed(2)}s` : 'Not completed', {
+        fontFamily: 'Arial', fontSize: '14px', color: '#6a7178'
+      }).setOrigin(0.5);
+      btn.on('pointerover', () => btn.setFillStyle(0x262c34));
+      btn.on('pointerout', () => btn.setFillStyle(0x1c2128));
+      btn.on('pointerdown', () => {
+        if (window.SFX) SFX.select();
+        this.scene.start('Play', { levelIndex: i });
+      });
+    });
+
+    this.add.text(w/2, h - 40,
+      'Hold RIGHT to accelerate  ·  LEFT to brake/reverse  ·  UP/DOWN to lean  ·  R to restart',
+      { fontFamily: 'Arial', fontSize: '13px', color: '#6a7178' }).setOrigin(0.5);
+  }
 }
 
-function requiredGapDistance(trickCount) {
-  return BASE_GAP_LENGTH + GAP_PER_TRICK * trickCount;
-}
+// ---------------------------------------------------------------------
+// Play Scene
+// ---------------------------------------------------------------------
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
 
-function formatScore(n) {
-  return Math.floor(n).toLocaleString();
-}
-
-class MainScene extends Phaser.Scene {
-  constructor() { super('MainScene'); }
+  init(data) {
+    this.levelIndex = data.levelIndex || 0;
+    this.level = LEVELS[this.levelIndex];
+  }
 
   create() {
-    this.state = 'START';
-    this.best = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
-    this.cameras.main.setBackgroundColor(0x0c0a09);
+    const level = this.level;
+    this.matter.world.setGravity(0, level.gravity);
+    this.cameras.main.setBackgroundColor('#87b9e0');
 
-    this.drawSky();
+    // ---- background parallax hills ----
+    this.bg = this.add.graphics().setScrollFactor(0.25);
+    this.drawParallaxHills(this.bg, 0x6fa8d8, 60, 4000);
+    this.bg2 = this.add.graphics().setScrollFactor(0.5);
+    this.drawParallaxHills(this.bg2, 0x5a94c4, 40, 4000, 300);
 
-    this.trackBg = this.add.rectangle(TRACK_X, GAME_HEIGHT / 2, TRACK_WIDTH, GAME_HEIGHT, 0x1c1917, 0.55);
-    this.dangerTint = this.add.rectangle(TRACK_X, GAME_HEIGHT / 2, TRACK_WIDTH, GAME_HEIGHT, 0x7f1d1d, 0).setVisible(false);
-    this.rampVisual = this.add.rectangle(TRACK_X, -100, TRACK_WIDTH, RAMP_LENGTH, 0x57534e).setStrokeStyle(2, 0xfacc15);
+    // ---- terrain ----
+    this.terrainPoints = buildTerrain(level.features, 0, GROUND_Y);
+    this.levelEndX = this.terrainPoints[this.terrainPoints.length - 1].x;
+    this.terrainGraphics = this.add.graphics();
+    this.terrainBodies = [];
+    this.buildTerrainBodies();
 
-    this.shadow = this.add.ellipse(TRACK_X, TRACK_Y, 40, 14, 0x000000, 0.5);
-
-    const body = this.add.rectangle(0, 0, 46, 16, 0xfacc15).setStrokeStyle(2, 0x1c1917);
-    const wheelA = this.add.circle(-18, 10, 10, 0x1c1917);
-    const wheelB = this.add.circle(18, 10, 10, 0x1c1917);
-    const rider = this.add.rectangle(0, -18, 10, 22, 0xdc2626).setStrokeStyle(1, 0x1c1917);
-    this.bike = this.add.container(TRACK_X, TRACK_Y, [wheelA, wheelB, body, rider]);
-
-    this.orientationText = this.add.text(GAME_WIDTH / 2, 40, '', {
-      fontFamily: 'monospace', fontSize: '15px', color: '#fde047', fontStyle: 'bold', align: 'center'
-    }).setOrigin(0.5);
-    this.orientationArrow = this.add.text(GAME_WIDTH / 2, 66, '', {
-      fontFamily: 'monospace', fontSize: '22px', color: '#fde047'
-    }).setOrigin(0.5);
-
-    this.trickText = this.add.text(GAME_WIDTH / 2, 150, '', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#e7e5e4', align: 'center'
-    }).setOrigin(0.5);
-    this.bankText = this.add.text(GAME_WIDTH / 2, 175, '', {
-      fontFamily: 'monospace', fontSize: '22px', color: '#4ade80', fontStyle: 'bold'
-    }).setOrigin(0.5);
-
-    this.scoreText = this.add.text(10, 12, '', { fontFamily: 'monospace', fontSize: '15px', color: '#f4f4f5' });
-    this.bestText = this.add.text(GAME_WIDTH - 10, 12, 'Best: ' + formatScore(this.best), {
-      fontFamily: 'monospace', fontSize: '12px', color: '#a1a1aa'
-    }).setOrigin(1, 0);
-
-    this.heatLabel = this.add.text(GAME_WIDTH - 10, 34, 'HEAT', {
-      fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
-    }).setOrigin(1, 0);
-    this.heatBarOuter = this.add.rectangle(GAME_WIDTH - 10, 48, 90, 9, 0x000000, 0.4).setOrigin(1, 0.5).setStrokeStyle(1, 0x3f3f46);
-    this.heatBarFill = this.add.rectangle(GAME_WIDTH - 10, 48, 90, 9, 0xf97316).setOrigin(1, 0.5);
-
-    this.hintText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 30, '', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#a1a1aa', align: 'center'
-    }).setOrigin(0.5);
-
-    this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 60, '', {
-      fontFamily: 'monospace', fontSize: '24px', color: '#f4f4f5', align: 'center', fontStyle: 'bold'
-    }).setOrigin(0.5);
-    this.subText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 20, '', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#d4d4d8', align: 'center', wordWrap: { width: 320 }
-    }).setOrigin(0.5);
-
-    this.showStartScreen();
-
-    this.input.on('pointerdown', (p) => {
-      this.dragStartX = p.x;
-      this.dragStartY = p.y;
+    // ---- checkpoints ----
+    this.checkpointX = 0;
+    this.checkpointSensors = [];
+    (level.checkpoints || []).forEach((cx, idx) => {
+      const gy = this.groundYAt(cx);
+      const sensor = this.matter.add.rectangle(cx, gy - 80, 12, 160, {
+        isStatic: true, isSensor: true, label: 'checkpoint-' + idx
+      });
+      const pole = this.add.rectangle(cx, gy - 80, 6, 160, 0xffd23f);
+      const flag = this.add.triangle(cx + 14, gy - 140, 0, 0, 28, 8, 0, 16, 0xffd23f);
+      this.checkpointSensors.push({ sensor, cx, pole, flag, hit: false });
     });
-    this.input.on('pointerup', (p) => {
-      if (this.state === 'START' || this.state === 'OVER') { this.startRun(); return; }
-      if (this.state !== 'AIRBORNE' || this.dragStartX === undefined) return;
-      const dx = p.x - this.dragStartX;
-      const dy = p.y - this.dragStartY;
-      if (Math.abs(dx) < 16 && Math.abs(dy) < 16) {
-        this.addTrick();
-      } else if (Math.abs(dx) > Math.abs(dy)) {
-        this.attemptLand(dx > 0 ? 'right' : 'left');
-      } else {
-        this.attemptLand(dy > 0 ? 'down' : 'up');
+
+    // ---- finish flag ----
+    const fgy = this.groundYAt(this.levelEndX - 60);
+    this.finishSensor = this.matter.add.rectangle(this.levelEndX - 60, fgy - 90, 14, 180, {
+      isStatic: true, isSensor: true, label: 'finish'
+    });
+    this.add.rectangle(this.levelEndX - 60, fgy - 90, 6, 180, 0x2ecc71);
+    for (let i = 0; i < 6; i++) {
+      this.add.rectangle(this.levelEndX - 60 - 12 + (i%2)*16, fgy - 170 + i*8, 16, 8,
+        (i % 2 === 0) ? 0x111111 : 0xffffff);
+    }
+
+    // ---- bike ----
+    this.spawnAt(80, GROUND_Y - 100);
+
+    // ---- input ----
+    this.keys = this.input.keyboard.addKeys({
+      right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      up: Phaser.Input.Keyboard.KeyCodes.UP,
+      down: Phaser.Input.Keyboard.KeyCodes.DOWN,
+      d: Phaser.Input.Keyboard.KeyCodes.D,
+      a: Phaser.Input.Keyboard.KeyCodes.A,
+      w: Phaser.Input.Keyboard.KeyCodes.W,
+      s: Phaser.Input.Keyboard.KeyCodes.S,
+      r: Phaser.Input.Keyboard.KeyCodes.R,
+    });
+    this.touch = { gas: false, brake: false, leanF: false, leanB: false };
+    this.buildTouchControls();
+
+    // ---- camera ----
+    this.cameras.main.setBounds(0, -2000, this.levelEndX + 400, 4000 + GROUND_Y);
+    this.cameras.main.startFollow(this.chassisGO, true, 0.08, 0.08, -80, 0);
+
+    // ---- HUD ----
+    this.buildHUD();
+
+    // ---- state ----
+    this.finished = false;
+    this.crashed = false;
+    this.deaths = 0;
+    this.startTime = this.time.now;
+    this.grounded = { f: false, r: false };
+
+    // ---- collisions ----
+    this.matter.world.on('collisionstart', (event) => {
+      event.pairs.forEach(pair => this.onCollision(pair, true));
+    });
+    this.matter.world.on('collisionend', (event) => {
+      event.pairs.forEach(pair => this.onCollision(pair, false));
+    });
+  }
+
+  drawParallaxHills(g, color, height, spacing, seedOffset = 0) {
+    g.fillStyle(color, 1);
+    g.beginPath();
+    g.moveTo(0, GROUND_Y + 60);
+    for (let x = 0; x <= 8000; x += 40) {
+      const y = GROUND_Y - 40 + Math.sin((x + seedOffset) / spacing * Math.PI * 2) * height;
+      g.lineTo(x, y);
+    }
+    g.lineTo(8000, GROUND_Y + 400);
+    g.lineTo(0, GROUND_Y + 400);
+    g.closePath();
+    g.fillPath();
+  }
+
+  groundYAt(x) {
+    const pts = this.terrainPoints;
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (x >= pts[i].x && x <= pts[i+1].x) {
+        const t = (x - pts[i].x) / (pts[i+1].x - pts[i].x || 1);
+        return pts[i].y + (pts[i+1].y - pts[i].y) * t;
       }
+    }
+    return GROUND_Y;
+  }
+
+  buildTerrainBodies() {
+    const pts = this.terrainPoints;
+    this.terrainGraphics.clear();
+    this.terrainGraphics.fillStyle(0x3d2b1f, 1);
+    this.terrainGraphics.lineStyle(4, 0x6b8f3e, 1);
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p1 = pts[i], p2 = pts[i+1];
+      if (p1.gap || p2.gap) continue;
+
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len = Math.sqrt(dx*dx + dy*dy) + 2;
+      const angle = Math.atan2(dy, dx);
+      const midx = (p1.x + p2.x) / 2, midy = (p1.y + p2.y) / 2;
+
+      const body = this.matter.add.rectangle(midx, midy + SEG_H/2, len, SEG_H, {
+        isStatic: true, friction: 0.95, frictionStatic: 1, label: 'terrain', angle
+      });
+      this.terrainBodies.push(body);
+
+      // visual: filled quad down to a deep baseline
+      this.terrainGraphics.beginPath();
+      this.terrainGraphics.moveTo(p1.x, p1.y);
+      this.terrainGraphics.lineTo(p2.x, p2.y);
+      this.terrainGraphics.lineTo(p2.x, p2.y + 500);
+      this.terrainGraphics.lineTo(p1.x, p1.y + 500);
+      this.terrainGraphics.closePath();
+      this.terrainGraphics.fillPath();
+      this.terrainGraphics.beginPath();
+      this.terrainGraphics.moveTo(p1.x, p1.y);
+      this.terrainGraphics.lineTo(p2.x, p2.y);
+      this.terrainGraphics.strokePath();
+    }
+  }
+
+  spawnAt(x, y) {
+    // clean up old bike if respawning
+    if (this.chassisGO) {
+      [this.chassisGO, this.wheelF, this.wheelR].forEach(b => b && b.destroy());
+      [this.axleF, this.axleR].forEach(c => c && this.matter.world.removeConstraint(c));
+    }
+
+    this.chassisGO = this.matter.add.rectangle(x, y, 62, 16, {
+      density: 0.018, friction: 0.05, frictionAir: 0.018, restitution: 0.05,
+      label: 'chassis', chamfer: { radius: 4 }
+    });
+    this.wheelF = this.matter.add.circle(x + 26, y + 14, 15, {
+      density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
+      restitution: 0.1, label: 'wheelF'
+    });
+    this.wheelR = this.matter.add.circle(x - 26, y + 14, 15, {
+      density: 0.045, friction: 0.95, frictionStatic: 1, frictionAir: 0.012,
+      restitution: 0.1, label: 'wheelR'
     });
 
-    this.input.keyboard.on('keydown', (e) => {
-      if (this.state === 'START' || this.state === 'OVER') {
-        if (e.key === ' ' || e.key === 'Enter') this.startRun();
-        return;
+    this.axleF = this.matter.add.constraint(this.chassisGO, this.wheelF, 0, 0.5, {
+      pointA: { x: 26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
+    });
+    this.axleR = this.matter.add.constraint(this.chassisGO, this.wheelR, 0, 0.5, {
+      pointA: { x: -26, y: 8 }, pointB: { x: 0, y: 0 }, damping: 0.2
+    });
+
+    // simple bike visual riding along with the physics bodies
+    if (this.bikeGfx) this.bikeGfx.destroy();
+    this.bikeGfx = this.add.graphics();
+
+    this.grounded = { f: false, r: false };
+    this.crashed = false;
+  }
+
+  buildTouchControls() {
+    const h = this.scale.height, w = this.scale.width;
+    const mkBtn = (x, y, r, label, onDown, onUp) => {
+      const c = this.add.circle(x, y, r, 0x1c2128, 0.55).setScrollFactor(0)
+        .setStrokeStyle(2, 0xffffff, 0.5).setInteractive();
+      const t = this.add.text(x, y, label, { fontFamily: 'Arial', fontSize: '13px', color: '#fff' })
+        .setOrigin(0.5).setScrollFactor(0);
+      c.on('pointerdown', onDown); c.on('pointerup', onUp); c.on('pointerout', onUp);
+      return c;
+    };
+    mkBtn(w - 90, h - 90, 55, 'GAS', () => this.touch.gas = true, () => this.touch.gas = false);
+    mkBtn(w - 190, h - 90, 40, 'BRK', () => this.touch.brake = true, () => this.touch.brake = false);
+    mkBtn(90, h - 140, 36, '▲', () => this.touch.leanB = true, () => this.touch.leanB = false);
+    mkBtn(90, h - 60, 36, '▼', () => this.touch.leanF = true, () => this.touch.leanF = false);
+  }
+
+  buildHUD() {
+    this.timeText = this.add.text(20, 16, '0.00s', {
+      fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffffff'
+    }).setScrollFactor(0).setShadow(0,2,'#000',4,true,true);
+    this.deathText = this.add.text(20, 50, 'Deaths: 0', {
+      fontFamily: 'Arial', fontSize: '16px', color: '#ffd23f'
+    }).setScrollFactor(0).setShadow(0,2,'#000',3,true,true);
+    this.toastText = this.add.text(this.scale.width/2, 90, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#2ecc71'
+    }).setOrigin(0.5).setScrollFactor(0).setAlpha(0);
+  }
+
+  toast(msg, color = '#2ecc71') {
+    this.toastText.setText(msg).setColor(color).setAlpha(1);
+    this.tweens.add({ targets: this.toastText, alpha: 0, delay: 900, duration: 500 });
+  }
+
+  onCollision(pair, active) {
+    const labels = [pair.bodyA.label, pair.bodyB.label];
+    const other = (a, b) => (labels.includes(a) && labels.includes(b));
+
+    if (other('wheelF', 'terrain')) this.grounded.f = active;
+    if (other('wheelR', 'terrain')) this.grounded.r = active;
+
+    if (active && other('chassis', 'terrain') && !this.crashed && !this.finished) {
+      const ang = Phaser.Math.Angle.Wrap(this.chassisGO.body.angle);
+      if (Math.abs(ang) > CRASH_ANGLE) this.crash();
+    }
+
+    if (active && !this.finished) {
+      this.checkpointSensors.forEach((cp, idx) => {
+        if (!cp.hit && labels.includes(cp.sensor.label) && (labels.includes('chassis') || labels.includes('wheelF') || labels.includes('wheelR'))) {
+          cp.hit = true;
+          this.checkpointX = cp.cx;
+          if (window.SFX) SFX.pickup();
+          this.toast('CHECKPOINT');
+        }
+      });
+      if (labels.includes('finish') && (labels.includes('chassis') || labels.includes('wheelF') || labels.includes('wheelR'))) {
+        this.finish();
       }
-      if (this.state !== 'AIRBORNE') return;
-      if (e.key === ' ') this.addTrick();
-      else if (e.key === 'ArrowUp') this.attemptLand('up');
-      else if (e.key === 'ArrowDown') this.attemptLand('down');
-      else if (e.key === 'ArrowLeft') this.attemptLand('left');
-      else if (e.key === 'ArrowRight') this.attemptLand('right');
-    });
-  }
-
-  drawSky() {
-    const g = this.add.graphics();
-    g.fillStyle(0x1c1917, 1);
-    g.fillRect(0, GAME_HEIGHT - 40, GAME_WIDTH, 40);
-    g.fillStyle(0x292524, 1);
-    for (let x = 0; x < GAME_WIDTH; x += 40) {
-      g.fillTriangle(x, GAME_HEIGHT - 40, x + 20, GAME_HEIGHT - 70, x + 40, GAME_HEIGHT - 40);
     }
-  }
-
-  showStartScreen() {
-    this.centerText.setText('TRICK OR DIE');
-    this.subText.setText('Tap to launch and add tricks \u2014 each one boosts you higher and pushes the landing ramp further away.\nSwipe to land: the direction sets your orientation.\nGravity never stops pulling. Match the required landing or bank nothing. Miss the ramp and it\'s over.\n\ntap to start');
-    this.scoreText.setText('');
-    this.orientationText.setText('');
-    this.orientationArrow.setText('');
-    this.trickText.setText('');
-    this.bankText.setText('');
-    this.hintText.setText('');
-    this.heatLabel.setVisible(false);
-    this.heatBarOuter.setVisible(false);
-    this.heatBarFill.setVisible(false);
-    this.trackBg.setVisible(false);
-    this.dangerTint.setVisible(false);
-    this.rampVisual.setVisible(false);
-    this.shadow.setVisible(false);
-    this.bike.setVisible(false);
-  }
-
-  startRun() {
-    this.state = 'AIRBORNE';
-    this.centerText.setText('');
-    this.subText.setText('');
-    this.heatLabel.setVisible(true);
-    this.heatBarOuter.setVisible(true);
-    this.heatBarFill.setVisible(true);
-    this.trackBg.setVisible(true);
-    this.dangerTint.setVisible(true);
-    this.rampVisual.setVisible(true);
-    this.shadow.setVisible(true);
-    this.bike.setVisible(true);
-
-    this.totalScore = 0;
-    this.jumpsCompleted = 0;
-    this.heat = 0;
-    this.scoreText.setText('0');
-    this.hintText.setText('tap: trick   swipe: land');
-    this.updateHeatBar();
-    this.nextJump();
-  }
-
-  nextJump() {
-    this.trickCount = 0;
-    this.launched = false;
-    this.height = 0;
-    this.vy = 0;
-    this.distanceCovered = 0;
-    this.bankText.setText('');
-    this.trickText.setText('Tap to launch');
-    this.bike.setPosition(TRACK_X, TRACK_Y);
-    this.bike.angle = 0;
-    this.shadow.setScale(1).setAlpha(0.5);
-    this.dangerTint.setAlpha(0);
-    const pool = getOrientationPool(this.jumpsCompleted);
-    this.requiredOrientation = pool[Phaser.Math.Between(0, pool.length - 1)];
-    const o = ORIENTATIONS[this.requiredOrientation];
-    this.orientationText.setText('REQUIRED: ' + o.label);
-    this.orientationArrow.setText(o.arrow);
-    this.updateRampVisual();
-  }
-
-  addTrick() {
-    if (this.state !== 'AIRBORNE') return;
-    this.trickCount++;
-    if (!this.launched) {
-      this.launched = true;
-      this.vy = LAUNCH_VELOCITY;
-      this.height = 0;
-      this.distanceCovered = 0;
-    }
-    this.vy += TRICK_IMPULSE;
-
-    const name = TRICK_NAMES[Math.min(this.trickCount - 1, TRICK_NAMES.length - 1)];
-    this.trickText.setText(name + '!');
-    this.bankText.setText(formatScore(trickScore(this.trickCount)) + ' pts');
-    this.heat = Math.min(HEAT_MAX, this.heat + HEAT_PER_TRICK);
-    this.updateHeatBar();
-    SFX.blip();
-    this.tweens.add({ targets: this.bike, angle: this.bike.angle + 360, duration: 320, ease: 'Cubic.easeOut' });
-
-    if (this.heat >= HEAT_MAX) {
-      this.overheat();
-    }
-  }
-
-  updateRampVisual() {
-    const targetCenterDist = requiredGapDistance(this.trickCount) + RAMP_LENGTH / 2;
-    const rampY = TRACK_Y - (targetCenterDist - this.distanceCovered);
-    this.rampVisual.y = rampY;
-    this.dangerTint.setAlpha(this.trickCount > 0 ? Math.min(0.35, 0.08 * this.trickCount) : 0);
-  }
-
-  updateHeatBar() {
-    const ratio = this.heat / HEAT_MAX;
-    this.heatBarFill.width = 90 * ratio;
-    this.heatBarFill.fillColor = ratio > 0.75 ? 0xef4444 : (ratio > 0.45 ? 0xf59e0b : 0xf97316);
-  }
-
-  attemptLand(direction) {
-    if (this.state !== 'AIRBORNE' || !this.launched) {
-      SFX.blip();
-      return;
-    }
-    this.resolveLanding(direction);
-  }
-
-  resolveLanding(direction) {
-    this.state = 'RESOLVING';
-    const nearEdge = requiredGapDistance(this.trickCount);
-    const farEdge = nearEdge + RAMP_LENGTH;
-    const onTarget = this.distanceCovered >= nearEdge && this.distanceCovered <= farEdge;
-
-    if (!onTarget) {
-      this.crash();
-      return;
-    }
-
-    const landedOrientation = SWIPE_TO_ORIENTATION[direction] || 'NORMAL';
-    if (landedOrientation === this.requiredOrientation) {
-      const points = trickScore(this.trickCount);
-      this.totalScore += points;
-      this.scoreText.setText(formatScore(this.totalScore));
-      SFX.success();
-      this.cameras.main.flash(150, 74, 222, 128);
-      this.trickText.setText('LANDED CLEAN! +' + formatScore(points));
-    } else {
-      SFX.blip();
-      this.trickText.setText('Landed safe, wrong orientation \u2014 no points');
-    }
-
-    this.jumpsCompleted++;
-    this.heat = Math.max(0, this.heat - HEAT_COOL_ON_LAND);
-    this.updateHeatBar();
-
-    this.time.delayedCall(700, () => {
-      if (this.state !== 'RESOLVING') return;
-      this.state = 'AIRBORNE';
-      this.nextJump();
-    });
-  }
-
-  overheat() {
-    this.state = 'OVER';
-    SFX.explosion();
-    this.cameras.main.shake(200, 0.012);
-    this.spawnSmoke();
-    this.finishRun('ENGINE OVERHEATED');
   }
 
   crash() {
-    this.state = 'OVER';
-    SFX.hit();
-    this.cameras.main.shake(220, 0.015);
-    this.spawnDebris();
-    this.finishRun('WIPEOUT');
+    if (this.crashed || this.finished) return;
+    this.crashed = true;
+    this.deaths++;
+    this.deathText.setText('Deaths: ' + this.deaths);
+    if (window.SFX) SFX.hit();
+    this.cameras.main.shake(200, 0.01);
+    this.toast('CRASHED', '#ff5a5a');
+    this.time.delayedCall(500, () => {
+      this.spawnAt(this.checkpointX + 40, this.groundYAt(this.checkpointX + 40) - 100);
+    });
   }
 
-  spawnDebris() {
-    const colors = [0xfacc15, 0xdc2626, 0x71717a, 0x1c1917];
-    for (let i = 0; i < 16; i++) {
-      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
-      const piece = this.add.rectangle(this.bike.x, this.bike.y, Phaser.Math.Between(4, 8), Phaser.Math.Between(4, 8), color);
-      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      const dist = Phaser.Math.Between(50, 140);
-      this.tweens.add({
-        targets: piece,
-        x: piece.x + Math.cos(angle) * dist,
-        y: piece.y + Math.sin(angle) * dist,
-        alpha: 0,
-        angle: Phaser.Math.Between(-360, 360),
-        duration: Phaser.Math.Between(500, 800),
-        ease: 'Cubic.easeOut',
-        onComplete: () => piece.destroy()
-      });
-    }
-  }
+  finish() {
+    this.finished = true;
+    const elapsed = (this.time.now - this.startTime) / 1000;
+    if (window.SFX) SFX.success();
+    const key = 'trickOrDie_best_' + this.levelIndex;
+    const prevBest = parseFloat(localStorage.getItem(key));
+    const isBest = isNaN(prevBest) || elapsed < prevBest;
+    if (isBest) localStorage.setItem(key, elapsed.toFixed(2));
 
-  spawnSmoke() {
-    for (let i = 0; i < 8; i++) {
-      const puff = this.add.circle(this.bike.x + Phaser.Math.Between(-14, 14), this.bike.y, Phaser.Math.Between(7, 12), 0x57534e, 0.65);
-      this.tweens.add({
-        targets: puff,
-        y: puff.y - Phaser.Math.Between(50, 90),
-        x: puff.x + Phaser.Math.Between(-25, 25),
-        alpha: 0,
-        scale: 1.9,
-        duration: Phaser.Math.Between(900, 1400),
-        delay: i * 80,
-        ease: 'Cubic.easeOut',
-        onComplete: () => puff.destroy()
-      });
-    }
-  }
+    const w = this.scale.width, h = this.scale.height;
+    const panel = this.add.rectangle(w/2, h/2, 380, 220, 0x0d1117, 0.92)
+      .setScrollFactor(0).setStrokeStyle(2, 0x2ecc71);
+    this.add.text(w/2, h/2 - 70, 'FINISHED!', {
+      fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#2ecc71'
+    }).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(w/2, h/2 - 20, `Time: ${elapsed.toFixed(2)}s`, {
+      fontFamily: 'Arial', fontSize: '20px', color: '#fff'
+    }).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(w/2, h/2 + 12, isBest ? 'New best time!' : `Best: ${prevBest.toFixed(2)}s`, {
+      fontFamily: 'Arial', fontSize: '15px', color: '#ffd23f'
+    }).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(w/2, h/2 + 50, `Deaths: ${this.deaths}`, {
+      fontFamily: 'Arial', fontSize: '14px', color: '#9fa6ad'
+    }).setOrigin(0.5).setScrollFactor(0);
 
-  finishRun(reason) {
-    let isNewBest = false;
-    if (this.totalScore > this.best) {
-      this.best = this.totalScore;
-      localStorage.setItem(BEST_KEY, String(Math.floor(this.best)));
-      isNewBest = true;
-      this.bestText.setText('Best: ' + formatScore(this.best));
-    }
-    this.orientationText.setText('');
-    this.orientationArrow.setText('');
-    this.hintText.setText('');
-    this.centerText.setText(reason);
-    this.subText.setText(formatScore(this.totalScore) + ' pts' + (isNewBest ? '  NEW BEST!' : '') + '\ntap to retry');
+    const retryBtn = this.add.text(w/2 - 70, h/2 + 85, '[ RETRY ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#fff'
+    }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true });
+    const menuBtn = this.add.text(w/2 + 70, h/2 + 85, '[ MENU ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#fff'
+    }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true });
+    retryBtn.on('pointerdown', () => this.scene.restart({ levelIndex: this.levelIndex }));
+    menuBtn.on('pointerdown', () => this.scene.start('Menu'));
   }
 
   update(time, delta) {
-    if (this.state !== 'AIRBORNE' || !this.launched) return;
-    const dt = delta / 1000;
+    if (window.SFX && SFX.ctx && SFX.ctx.state === 'suspended') { /* unlocked on first input elsewhere */ }
+    if (this.crashed || this.finished) return;
 
-    this.vy -= GRAVITY * dt;
-    this.height += this.vy * dt;
-    this.distanceCovered += SCROLL_SPEED * dt;
+    const accel = this.keys.right.isDown || this.keys.d.isDown || this.touch.gas;
+    const brake = this.keys.left.isDown || this.keys.a.isDown || this.touch.brake;
+    const leanBack = this.keys.up.isDown || this.keys.w.isDown || this.touch.leanB;
+    const leanFwd = this.keys.down.isDown || this.keys.s.isDown || this.touch.leanF;
 
-    if (this.height <= 0) {
-      this.height = 0;
-      this.state = 'RESOLVING';
-      this.trickText.setText('Lost control \u2014 gravity landed you');
-      this.crash();
+    if (Phaser.Input.Keyboard.JustDown(this.keys.r)) {
+      this.spawnAt(this.checkpointX + 40, this.groundYAt(this.checkpointX + 40) - 100);
       return;
     }
 
-    this.bike.y = TRACK_Y - this.height;
-    const shadowScale = Math.max(0.35, 1 - this.height / 320);
-    this.shadow.setScale(shadowScale);
-    this.shadow.setAlpha(0.5 * shadowScale);
+    // wheel motor
+    let avF = this.wheelF.body.angularVelocity;
+    let avR = this.wheelR.body.angularVelocity;
+    if (accel) {
+      avF = Math.min(avF + 0.12, MAX_WHEEL_SPIN);
+      avR = Math.min(avR + 0.12, MAX_WHEEL_SPIN);
+    } else if (brake) {
+      avF = Math.max(avF - 0.12, -MAX_WHEEL_SPIN * 0.5);
+      avR = Math.max(avR - 0.12, -MAX_WHEEL_SPIN * 0.5);
+    }
+    this.matter.body.setAngularVelocity(this.wheelF.body, avF);
+    this.matter.body.setAngularVelocity(this.wheelR.body, avR);
 
-    this.updateRampVisual();
+    // lean (chassis torque)
+    if (leanBack || leanFwd) {
+      let av = this.chassisGO.body.angularVelocity;
+      const inc = 0.012;
+      if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
+      if (leanFwd) av = Math.min(av + inc, MAX_LEAN);
+      this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+    }
+
+    // engine sound feedback (cheap, throttled)
+    if (accel && window.SFX && !this._engineTick) {
+      this._engineTick = true;
+      this.time.delayedCall(220, () => this._engineTick = false);
+    }
+
+    // fell into a gap
+    if (this.chassisGO.body.position.y > FALL_Y) this.crash();
+
+    // draw bike
+    this.drawBike();
+
+    // HUD
+    this.timeText.setText(((time - this.startTime) / 1000).toFixed(2) + 's');
+  }
+
+  drawBike() {
+    const g = this.bikeGfx;
+    g.clear();
+    const c = this.chassisGO.body;
+    const wf = this.wheelF.body, wr = this.wheelR.body;
+
+    // chassis body
+    g.fillStyle(0xff5a2b, 1);
+    const cos = Math.cos(c.angle), sin = Math.sin(c.angle);
+    const hw = 34, hh = 9;
+    const corners = [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([lx,ly]) => ({
+      x: c.position.x + lx*cos - ly*sin,
+      y: c.position.y + lx*sin + ly*cos
+    }));
+    g.beginPath();
+    g.moveTo(corners[0].x, corners[0].y);
+    corners.slice(1).forEach(p => g.lineTo(p.x, p.y));
+    g.closePath();
+    g.fillPath();
+
+    // rider blob (simple)
+    const seatX = c.position.x - 14*cos - (-14)*sin;
+    const seatY = c.position.y - 14*sin + (-14)*cos;
+    g.fillStyle(0x222834, 1);
+    g.fillCircle(c.position.x - 6*cos + 18*sin, c.position.y - 6*sin - 18*cos, 9);
+
+    // wheels
+    g.lineStyle(4, 0x111111, 1);
+    g.fillStyle(0x1a1a1a, 1);
+    [wf, wr].forEach(w => {
+      g.fillCircle(w.position.x, w.position.y, 15);
+      g.strokeCircle(w.position.x, w.position.y, 15);
+      g.lineStyle(2, 0x555555, 1);
+      g.lineBetween(w.position.x, w.position.y,
+        w.position.x + Math.cos(w.angle)*13, w.position.y + Math.sin(w.angle)*13);
+      g.lineStyle(4, 0x111111, 1);
+    });
   }
 }
 
 const config = {
   type: Phaser.AUTO,
-  audio: { noAudio: true },
-  resolution: window.devicePixelRatio || 1,
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
   parent: 'game-container',
-  backgroundColor: '#0c0a09',
-  scene: [MainScene]
+  width: 960,
+  height: 540,
+  backgroundColor: '#87b9e0',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  physics: {
+    default: 'matter',
+    matter: { gravity: { y: 1.15 }, debug: false }
+  },
+  scene: [MenuScene, PlayScene]
 };
 
 new Phaser.Game(config);
