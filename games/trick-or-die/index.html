@@ -171,7 +171,7 @@ class MenuScene extends Phaser.Scene {
     });
 
     this.add.text(w/2, h - 40,
-      'Hold RIGHT to accelerate  ·  LEFT to brake/reverse  ·  UP/DOWN to lean  ·  R to restart',
+      'Hold RIGHT to go  ·  LEFT to brake  ·  in the air LEFT/RIGHT (or UP/DOWN) spin for tricks  ·  R to restart',
       { fontFamily: 'Arial', fontSize: '13px', color: '#6a7178' }).setOrigin(0.5);
   }
 }
@@ -511,21 +511,29 @@ class PlayScene extends Phaser.Scene {
       }
     }
 
-    // wheel motor
+    // wheel motor — forward only; braking on the ground slows to a stop, never reverses
+    const grounded = this.grounded.f || this.grounded.r;
     let avF = this.wheelF.body.angularVelocity;
     let avR = this.wheelR.body.angularVelocity;
     if (accel) {
       avF = Math.min(avF + 0.12, MAX_WHEEL_SPIN);
       avR = Math.min(avR + 0.12, MAX_WHEEL_SPIN);
-    } else if (brake) {
-      avF = Math.max(avF - 0.12, -MAX_WHEEL_SPIN * 0.5);
-      avR = Math.max(avR - 0.12, -MAX_WHEEL_SPIN * 0.5);
+    } else if (brake && grounded) {
+      avF = Math.max(avF - 0.15, 0);
+      avR = Math.max(avR - 0.15, 0);
     }
     this.matter.body.setAngularVelocity(this.wheelF.body, avF);
     this.matter.body.setAngularVelocity(this.wheelR.body, avR);
 
-    // lean (chassis torque)
-    if (leanBack || leanFwd) {
+    // in the air, left/right (and up/down) spin the bike for tricks —
+    // same keys as on the ground, different effect once you've left the terrain
+    if (!grounded) {
+      let av = this.chassisGO.body.angularVelocity;
+      const inc = 0.022;
+      if (brake || leanBack) av = Math.max(av - inc, -MAX_LEAN);
+      if (accel || leanFwd) av = Math.min(av + inc, MAX_LEAN);
+      this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+    } else if (leanBack || leanFwd) {
       let av = this.chassisGO.body.angularVelocity;
       const inc = 0.012;
       if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
