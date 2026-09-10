@@ -31,6 +31,12 @@ const NEAR_MISS_ADJACENT_ONLY = true;
 const NEAR_MISS_GAP_BONUS = 38;
 const CRITICAL_GAP = 55;
 
+const OIL_COOLDOWN_MS = 6000;
+const OIL_RECEDE_SPEED = 230;
+const OIL_MATCH_Y_THRESHOLD = 18;
+const OIL_MATCH_X_THRESHOLD = 38;
+const OIL_GAP_BOOST = 90;
+
 const TRAFFIC_COLORS = [0x64748b, 0x94a3b8, 0xdc2626, 0x2563eb, 0xca8a04, 0x9333ea];
 const PLAYER_COLOR = 0xfbbf24;
 const BEST_KEY = 'highwayheat_best';
@@ -100,6 +106,13 @@ class MainScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '9px', color: '#a1a1aa'
     }).setOrigin(0.5, 0);
 
+    this.oilButtonBg = this.add.rectangle(GAME_WIDTH - 46, GAME_HEIGHT - 54, 74, 46, 0x1c1917, 0.85)
+      .setStrokeStyle(2, 0x44403c).setInteractive();
+    this.oilButtonText = this.add.text(GAME_WIDTH - 46, GAME_HEIGHT - 54, 'OIL', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#fbbf24', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.oilButtonBg.on('pointerdown', () => this.dropOilSlick());
+
     this.centerText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '', {
       fontFamily: 'monospace', fontSize: '25px', color: '#f4f4f5', align: 'center', fontStyle: 'bold'
     }).setOrigin(0.5);
@@ -110,6 +123,7 @@ class MainScene extends Phaser.Scene {
     this.showStartScreen();
 
     this.traffic = [];
+    this.oilSlicks = [];
 
     this.input.on('pointerdown', (p) => { this.dragStartX = p.x; });
     this.input.on('pointerup', (p) => {
@@ -146,11 +160,13 @@ class MainScene extends Phaser.Scene {
 
   showStartScreen() {
     this.centerText.setText('HIGHWAY HEAT');
-    this.subText.setText('Swipe to change lanes.\nCut close past traffic to buy distance from the cops.\nGet caught or crash and it\'s over.\n\ntap to start');
+    this.subText.setText('Swipe to change lanes.\nCut close past traffic to buy distance from the cops.\nDrop oil to spin out the lead cruiser.\nGet caught or crash and it\'s over.\n\ntap to start');
     this.distText.setText('');
     this.gapBarBg.setVisible(false);
     this.gapBarFill.setVisible(false);
     this.gapLabel.setVisible(false);
+    this.oilButtonBg.setVisible(false);
+    this.oilButtonText.setVisible(false);
   }
 
   startRun() {
@@ -160,14 +176,19 @@ class MainScene extends Phaser.Scene {
     this.gapBarBg.setVisible(true);
     this.gapBarFill.setVisible(true);
     this.gapLabel.setVisible(true);
+    this.oilButtonBg.setVisible(true);
+    this.oilButtonText.setVisible(true);
 
     this.dist = 0;
     this.currentLane = 1;
     this.player.setPosition(LANE_X[1], PLAYER_Y);
     this.gap = START_GAP;
+    this.oilCooldownRemaining = 0;
 
     this.traffic.forEach(t => t.container.destroy());
     this.traffic = [];
+    this.oilSlicks.forEach(s => s.shape.destroy());
+    this.oilSlicks = [];
     this.lastSpawn = 0;
     this.elapsed = 0;
     this.distText.setText('0m');
@@ -204,6 +225,17 @@ class MainScene extends Phaser.Scene {
     this.elapsed += delta;
     const dt = delta / 1000;
     const phase = getPhase(this.dist);
+
+    if (this.oilCooldownRemaining > 0) {
+      this.oilCooldownRemaining = Math.max(0, this.oilCooldownRemaining - delta);
+      this.oilButtonBg.fillColor = 0x1c1917;
+      this.oilButtonBg.fillAlpha = 0.4;
+      this.oilButtonText.setText(Math.ceil(this.oilCooldownRemaining / 1000) + 's');
+    } else {
+      this.oilButtonBg.fillColor = 0x1c1917;
+      this.oilButtonBg.fillAlpha = 0.85;
+      this.oilButtonText.setText('OIL');
+    }
 
     this.dist += dt * 9;
     this.distText.setText(formatDist(this.dist));
@@ -249,6 +281,27 @@ class MainScene extends Phaser.Scene {
 
     this.updatePoliceVisuals(phase);
 
+    for (let i = this.oilSlicks.length - 1; i >= 0; i--) {
+      const slick = this.oilSlicks[i];
+      slick.distanceBehind += dt * OIL_RECEDE_SPEED;
+      slick.shape.y = PLAYER_Y + slick.distanceBehind;
+
+      const leadCar = this.policeCars[0];
+      const yHit = Math.abs(this.gap - slick.distanceBehind) < OIL_MATCH_Y_THRESHOLD;
+      const xHit = Math.abs(leadCar.x - LANE_X[slick.lane]) < OIL_MATCH_X_THRESHOLD;
+      if (leadCar.visible && yHit && xHit) {
+        this.spinOutLeadPolice(slick);
+        slick.shape.destroy();
+        this.oilSlicks.splice(i, 1);
+        continue;
+      }
+
+      if (slick.distanceBehind > MAX_GAP + 60 || slick.shape.y > GAME_HEIGHT + 40) {
+        slick.shape.destroy();
+        this.oilSlicks.splice(i, 1);
+      }
+    }
+
     if (this.gap <= 0) {
       this.busted();
     }
@@ -278,6 +331,29 @@ class MainScene extends Phaser.Scene {
     this.updateGapBar();
     SFX.blip();
     this.cameras.main.shake(90, 0.004);
+  }
+
+  dropOilSlick() {
+    if (this.state !== 'PLAYING' || this.oilCooldownRemaining > 0) return;
+    this.oilCooldownRemaining = OIL_COOLDOWN_MS;
+    const lane = this.currentLane;
+    const shape = this.add.ellipse(LANE_X[lane], PLAYER_Y + 20, 40, 22, 0x18181b, 0.85).setStrokeStyle(2, 0x3f3f46);
+    this.oilSlicks.push({ shape, lane, distanceBehind: 20 });
+    SFX.swoosh();
+  }
+
+  spinOutLeadPolice(slick) {
+    this.gap = Math.min(MAX_GAP, this.gap + OIL_GAP_BOOST);
+    this.updateGapBar();
+    SFX.scream();
+    this.cameras.main.shake(140, 0.006);
+    const car = this.policeCars[0];
+    this.tweens.add({
+      targets: car,
+      angle: car.angle + 360,
+      duration: 500,
+      ease: 'Cubic.easeOut'
+    });
   }
 
   crash() {
