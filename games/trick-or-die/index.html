@@ -26,8 +26,9 @@ const GROUND_Y = 480;
 const SEG_H = 26;           // terrain segment thickness
 const CRASH_ANGLE = 1.15;   // ~66 degrees — chassis-vs-ground hit beyond this = crash
 const FALL_Y = GROUND_Y + 900; // fall-into-gap death threshold
-const MAX_WHEEL_SPIN = 1.6;
+const MAX_WHEEL_SPIN = 1.1;
 const MAX_LEAN = 0.16;
+const WHEELIE_HOLD_MS = 3000;   // holding forward this long starts tipping the bike back
 
 // ---------------------------------------------------------------------
 // Terrain builder — turns a readable list of "features" into a smooth
@@ -370,6 +371,7 @@ class PlayScene extends Phaser.Scene {
 
     this.grounded = { f: false, r: false };
     this.crashed = false;
+    this.holdTime = 0;
   }
 
   buildTouchControls() {
@@ -401,6 +403,18 @@ class PlayScene extends Phaser.Scene {
     this.readyText = this.add.text(this.scale.width/2, this.scale.height/2 - 40, 'HOLD RIGHT TO GO', {
       fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#ffffff'
     }).setOrigin(0.5).setScrollFactor(0).setShadow(0,2,'#000',4,true,true);
+
+    this.replayBtn = this.add.text(this.scale.width - 20, 16, '\u21BB Replay', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#ffffff'
+    }).setOrigin(1, 0).setScrollFactor(0).setPadding(8, 4, 8, 4)
+      .setBackgroundColor('#1c2128').setInteractive({ useHandCursor: true });
+    this.replayBtn.on('pointerover', () => this.replayBtn.setBackgroundColor('#262c34'));
+    this.replayBtn.on('pointerout', () => this.replayBtn.setBackgroundColor('#1c2128'));
+    this.replayBtn.on('pointerdown', () => {
+      if (this.finished) return;
+      if (window.SFX) SFX.select();
+      this.spawnAt(this.checkpointX + 40, this.groundYAt(this.checkpointX + 40) - 100);
+    });
   }
 
   toast(msg, color = '#2ecc71') {
@@ -450,6 +464,7 @@ class PlayScene extends Phaser.Scene {
 
   finish() {
     this.finished = true;
+    if (this.replayBtn) this.replayBtn.setVisible(false);
     const elapsed = (this.time.now - this.startTime) / 1000;
     if (window.SFX) SFX.success();
     const key = 'trickOrDie_best_' + this.levelIndex;
@@ -516,11 +531,11 @@ class PlayScene extends Phaser.Scene {
     let avF = this.wheelF.body.angularVelocity;
     let avR = this.wheelR.body.angularVelocity;
     if (accel) {
-      avF = Math.min(avF + 0.12, MAX_WHEEL_SPIN);
-      avR = Math.min(avR + 0.12, MAX_WHEEL_SPIN);
+      avF = Math.min(avF + 0.05, MAX_WHEEL_SPIN);
+      avR = Math.min(avR + 0.05, MAX_WHEEL_SPIN);
     } else if (brake && grounded) {
-      avF = Math.max(avF - 0.15, 0);
-      avR = Math.max(avR - 0.15, 0);
+      avF = Math.max(avF - 0.08, 0);
+      avR = Math.max(avR - 0.08, 0);
     }
     this.matter.body.setAngularVelocity(this.wheelF.body, avF);
     this.matter.body.setAngularVelocity(this.wheelR.body, avR);
@@ -528,17 +543,33 @@ class PlayScene extends Phaser.Scene {
     // in the air, left/right (and up/down) spin the bike for tricks —
     // same keys as on the ground, different effect once you've left the terrain
     if (!grounded) {
+      this.holdTime = 0;
       let av = this.chassisGO.body.angularVelocity;
       const inc = 0.022;
       if (brake || leanBack) av = Math.max(av - inc, -MAX_LEAN);
       if (accel || leanFwd) av = Math.min(av + inc, MAX_LEAN);
       this.matter.body.setAngularVelocity(this.chassisGO.body, av);
-    } else if (leanBack || leanFwd) {
-      let av = this.chassisGO.body.angularVelocity;
-      const inc = 0.012;
-      if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
-      if (leanFwd) av = Math.min(av + inc, MAX_LEAN);
-      this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+    } else {
+      if (leanBack || leanFwd) {
+        let av = this.chassisGO.body.angularVelocity;
+        const inc = 0.012;
+        if (leanBack) av = Math.max(av - inc, -MAX_LEAN);
+        if (leanFwd) av = Math.min(av + inc, MAX_LEAN);
+        this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+      }
+
+      // holding forward too long starts a wheelie that tips you over
+      if (accel) {
+        this.holdTime += delta;
+      } else {
+        this.holdTime = Math.max(0, this.holdTime - delta * 2); // settles back down when you ease off
+      }
+      if (this.holdTime > WHEELIE_HOLD_MS) {
+        const over = Math.min((this.holdTime - WHEELIE_HOLD_MS) / 1500, 1);
+        let av = this.chassisGO.body.angularVelocity;
+        av -= 0.008 + over * 0.02;
+        this.matter.body.setAngularVelocity(this.chassisGO.body, av);
+      }
     }
 
     // engine sound feedback (cheap, throttled)
