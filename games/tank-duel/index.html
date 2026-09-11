@@ -36,6 +36,12 @@ const CARVE_RADIUS = 58;
 const ROUNDS_TO_WIN = 2;
 const ROUND_TIME = 40;
 
+const DIFFICULTIES = {
+  easy:   { label: 'EASY',   aimJitter: 0.22, fireMin: 1.7, fireMax: 2.9, retarget: [1.9, 3.3], moveSpeed: 95,  lead: 0 },
+  normal: { label: 'NORMAL', aimJitter: 0.06, fireMin: 0.9, fireMax: 1.8, retarget: [1.4, 2.6], moveSpeed: 120, lead: 0 },
+  hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.5, fireMax: 1.0, retarget: [1.0, 1.8], moveSpeed: 148, lead: 0.16 },
+};
+
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
 class PlayScene extends Phaser.Scene {
@@ -51,13 +57,49 @@ class PlayScene extends Phaser.Scene {
 
     this.playerWins = 0;
     this.aiWins = 0;
+    this.difficulty = 'normal';
 
     this.buildHUD();
     this.setupInput();
-
+    this.buildDifficultyMenu();
+    this.showMenu();
     this.centerText.setText('TANK DUEL').setVisible(true);
-    this.subText.setText('WASD to move \u00b7 mouse to aim \u00b7 click to fire \u00b7 tap to start').setVisible(true);
-    this.input.once('pointerdown', () => { if (this.state === 'ready') this.startMatch(); });
+    this.subText.setText('WASD to move \u00b7 mouse to aim \u00b7 click to fire \u00b7 choose a difficulty').setVisible(true);
+  }
+
+  buildDifficultyMenu() {
+    this.diffButtons = [];
+    const keys = ['easy', 'normal', 'hard'];
+    keys.forEach((key, i) => {
+      const x = W/2 + (i - 1) * 170;
+      const y = H/2 + 40;
+      const btn = this.add.text(x, y, DIFFICULTIES[key].label, {
+        fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#e8ecf1'
+      }).setOrigin(0.5).setPadding(18, 12, 18, 12).setBackgroundColor('#1c2128')
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerover', () => btn.setBackgroundColor('#262c34'));
+      btn.on('pointerout', () => btn.setBackgroundColor('#1c2128'));
+      btn.on('pointerdown', () => {
+        if (this.state !== 'ready') return;
+        this.difficulty = key;
+        if (window.SFX) SFX.select();
+        this.hideMenu();
+        this.state = 'transitioning'; // blocks the scene-wide fire handler for this same click event
+        this.time.delayedCall(0, () => this.startMatch());
+      });
+      this.diffButtons.push(btn);
+    });
+  }
+
+  showMenu() {
+    this.state = 'ready';
+    this.diffButtons.forEach(b => b.setVisible(true));
+  }
+
+  hideMenu() {
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    this.diffButtons.forEach(b => b.setVisible(false));
   }
 
   // ---------------------------------------------------------------------
@@ -135,19 +177,18 @@ class PlayScene extends Phaser.Scene {
     this.aiWins = 0;
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
-    if (window.SFX) SFX.select();
     this.startRound();
   }
 
   startRound() {
     this.state = 'playing';
     this.buildArena();
-    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0 };
+    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0 };
     this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0,
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
     this.roundTime = ROUND_TIME;
-    this.roundText.setText(`YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
     this.drawArena();
   }
 
@@ -229,11 +270,12 @@ class PlayScene extends Phaser.Scene {
   updateAI(dt) {
     const ai = this.ai;
     if (!ai.alive) return;
+    const diff = DIFFICULTIES[this.difficulty];
 
     // movement — wander toward open waypoints, occasionally biasing toward/away from the player
     ai.retargetIn -= dt;
     if (ai.retargetIn <= 0) {
-      ai.retargetIn = Phaser.Math.FloatBetween(1.4, 2.6);
+      ai.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
       let tries = 0, c, r;
       do {
         c = Phaser.Math.Between(2, COLS - 3);
@@ -245,20 +287,23 @@ class PlayScene extends Phaser.Scene {
     const dx = ai.target.x - ai.x, dy = ai.target.y - ai.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist > 6) {
-      const mv = 120 * dt;
+      const mv = diff.moveSpeed * dt;
       this.moveTank(ai, (dx / dist) * mv, (dy / dist) * mv);
     }
 
-    // aim — lead the player slightly, with some human-ish inaccuracy
+    // aim — lead the player based on their current velocity (Hard only), with
+    // human-ish inaccuracy that shrinks as difficulty rises
     if (this.player.alive) {
-      const targetAngle = Math.atan2(this.player.y - ai.y, this.player.x - ai.x);
-      ai.angle = targetAngle + Phaser.Math.FloatBetween(-0.05, 0.05);
+      const aimX = this.player.x + (this.player.vx || 0) * diff.lead;
+      const aimY = this.player.y + (this.player.vy || 0) * diff.lead;
+      const targetAngle = Math.atan2(aimY - ai.y, aimX - ai.x);
+      ai.angle = targetAngle + Phaser.Math.FloatBetween(-diff.aimJitter * 0.5, diff.aimJitter * 0.5);
 
       ai.fireGate -= dt;
       if (ai.reload <= 0 && ai.fireGate <= 0) {
         if (this.hasLineOfSight(ai.x, ai.y, this.player.x, this.player.y)) {
-          this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-0.06, 0.06), 'ai');
-          ai.fireGate = Phaser.Math.FloatBetween(0.9, 1.8);
+          this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
+          ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
         } else {
           ai.fireGate = 0.3;
         }
@@ -360,7 +405,7 @@ class PlayScene extends Phaser.Scene {
       this.toast('AI WINS THE ROUND', '#ff5a5a');
       if (window.SFX) SFX.fail();
     }
-    this.roundText.setText(`YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
 
     if (this.playerWins >= ROUNDS_TO_WIN || this.aiWins >= ROUNDS_TO_WIN) {
       this.state = 'matchEnd';
@@ -373,10 +418,11 @@ class PlayScene extends Phaser.Scene {
 
   endMatch() {
     const won = this.playerWins > this.aiWins;
-    this.centerText.setText(won ? 'MATCH WON!' : 'MATCH LOST').setVisible(true);
-    this.subText.setText(`Final: You ${this.playerWins} \u2014 AI ${this.aiWins}  \u00b7  tap to play again`).setVisible(true);
-    this.state = 'ready';
-    this.input.once('pointerdown', () => { if (this.state === 'ready') this.startMatch(); });
+    this.showMenu();
+    this.centerText.setText((won ? 'MATCH WON!' : 'MATCH LOST') + '\n\nTANK DUEL').setVisible(true);
+    this.subText.setText(
+      `Final (${DIFFICULTIES[this.difficulty].label}): You ${this.playerWins} \u2014 AI ${this.aiWins}  \u00b7  choose a difficulty to play again`
+    ).setVisible(true);
   }
 
   // ---------------------------------------------------------------------
@@ -402,7 +448,12 @@ class PlayScene extends Phaser.Scene {
     const mag = Math.sqrt(mx * mx + my * my);
     if (mag > 0.05) {
       const speed = 160 * dt;
+      const beforeX = this.player.x, beforeY = this.player.y;
       this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
+      this.player.vx = (this.player.x - beforeX) / dt;
+      this.player.vy = (this.player.y - beforeY) / dt;
+    } else {
+      this.player.vx = 0; this.player.vy = 0;
     }
     this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
 
