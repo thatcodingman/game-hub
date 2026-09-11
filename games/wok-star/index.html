@@ -138,8 +138,11 @@ class PlayScene extends Phaser.Scene {
 
     // ---- plate area ----
     this.plateBg = this.add.circle(W/2, 275, 110, 0xf5f0e1).setStrokeStyle(3, 0x2a1c10);
-    this.baseLabel = this.add.text(W/2, 275, '', { fontSize: '40px' }).setOrigin(0.5);
+    this.baseLabel = this.add.text(W/2, 275, '', { fontSize: '86px' }).setOrigin(0.5).setAlpha(0.9);
     this.sauceOverlay = this.add.circle(W/2, 275, 108, 0x000000, 0).setBlendMode(Phaser.BlendModes.MULTIPLY);
+    this.buildCheck = this.add.text(W/2, 175, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#5be37b'
+    }).setOrigin(0.5);
 
     // ---- serve button ----
     this.serveBtn = this.add.text(W - 90, 275, '[ SERVE ]', {
@@ -151,6 +154,17 @@ class PlayScene extends Phaser.Scene {
     // ---- ingredient panel labels ----
     this.proteinLabel = this.add.text(20, 360, 'PROTEIN', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
     this.veggieLabel = this.add.text(20, 430, 'VEGGIES', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
+
+    // sauce/garnish aren't player choices, but they still get their own
+    // visible station so the build reads as 4 stages, not 2 buttons + magic
+    this.sauceStationLabel = this.add.text(20, 495, 'SAUCE', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
+    this.sauceStationChip = this.add.text(90, 495, '', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#5a4530'
+    }).setOrigin(0, 0.5).setPadding(8, 4, 8, 4).setBackgroundColor('#2a2118').setAlpha(0.5);
+    this.garnishStationLabel = this.add.text(350, 495, 'GARNISH', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
+    this.garnishStationChip = this.add.text(440, 495, '', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#5a4530'
+    }).setOrigin(0, 0.5).setPadding(8, 4, 8, 4).setBackgroundColor('#2a2118').setAlpha(0.5);
 
     this.toastText = this.add.text(W/2, 200, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
@@ -170,7 +184,8 @@ class PlayScene extends Phaser.Scene {
   setBuildVisible(v) {
     [this.ticketBg, this.ticketDish, this.ticketDetail, this.patienceBg, this.patienceBar,
      this.customerFace, this.customerLabel, this.plateBg, this.baseLabel, this.sauceOverlay,
-     this.proteinLabel, this.veggieLabel].forEach(o => o.setVisible(v));
+     this.proteinLabel, this.veggieLabel, this.sauceStationLabel, this.sauceStationChip,
+     this.garnishStationLabel, this.garnishStationChip, this.buildCheck].forEach(o => o.setVisible(v));
   }
 
   toast(msg, color) {
@@ -214,6 +229,12 @@ class PlayScene extends Phaser.Scene {
     this.plateBg.setFillStyle(dish.plateColor);
     this.sauceOverlay.setFillStyle(0x000000, 0);
     this.serveBtn.setVisible(false);
+    this.buildCheck.setText('');
+
+    this.sauceStationChip.setText(dish.sauceName).setAlpha(0.5).setBackgroundColor('#2a2118');
+    const garnishNames = dish.garnish.map(g => g.n).join(' + ');
+    this.garnishStationChip.setText(garnishNames).setAlpha(0.5).setBackgroundColor('#2a2118');
+
     this.clearPlateItems();
     this.buildIngredientButtons();
   }
@@ -289,6 +310,8 @@ class PlayScene extends Phaser.Scene {
       onStart: () => this.sauceOverlay.setFillStyle(this.order.dish.sauceColor, 0.001),
       onUpdate: (tw, target) => this.sauceOverlay.setFillStyle(this.order.dish.sauceColor, tw.progress * 0.55)
     });
+    this.sauceStationChip.setAlpha(1).setBackgroundColor('#3a6b4a').setColor('#9fffc0');
+    this.garnishStationChip.setAlpha(1).setBackgroundColor('#3a6b4a').setColor('#9fffc0');
     if (window.SFX) SFX.pickup();
   }
 
@@ -313,6 +336,11 @@ class PlayScene extends Phaser.Scene {
         this.plateItems.push(t);
       });
     }
+
+    const proteinDone = this.selectedProtein && this.selectedProtein.n === this.order.protein.n;
+    const orderVeggieNames = new Set(this.order.veggies.map(v => v.n));
+    const veggiesDone = setsEqual(this.selectedVeggies, orderVeggieNames);
+    this.buildCheck.setText(proteinDone && veggiesDone ? 'BUILD COMPLETE \u2713' : '');
   }
 
   serveOrder() {
