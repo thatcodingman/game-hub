@@ -90,12 +90,111 @@ function setsEqual(a, b) {
   return true;
 }
 
+class IntroScene extends Phaser.Scene {
+  constructor() { super('Intro'); }
+
+  init(data) { this.day = (data && data.day) || 1; }
+
+  preload() {
+    this.load.image('chef', 'assets/chef.png');
+  }
+
+  create() {
+    const cam = this.cameras.main;
+    cam.setBackgroundColor('#c96b4a');
+
+    // ---- flat-vector shop front, drawn to match the character art's palette ----
+    const g = this.add.graphics();
+    // brick side walls
+    g.fillStyle(0xb85a3e, 1);
+    g.fillRect(0, 0, W, H);
+    g.fillStyle(0x000000, 0.08);
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 20; col++) {
+        const offset = (row % 2) * 24;
+        g.fillRect(col * 48 - offset, row * 34, 44, 30);
+      }
+    }
+    // storefront frame
+    g.fillStyle(0x7a3826, 1);
+    g.fillRect(W/2 - 260, 60, 520, H - 60);
+    // awnings
+    g.fillStyle(0x2f6b3f, 1);
+    g.fillRect(W/2 - 260, 60, 180, 40);
+    g.fillRect(W/2 + 80, 60, 180, 40);
+    g.fillStyle(0x1f4a2b, 1);
+    for (let i = 0; i < 5; i++) {
+      g.fillTriangle(
+        W/2 - 260 + i * 36, 100, W/2 - 260 + i * 36 + 36, 100, W/2 - 260 + i * 36 + 18, 116
+      );
+      g.fillTriangle(
+        W/2 + 80 + i * 36, 100, W/2 + 80 + i * 36 + 36, 100, W/2 + 80 + i * 36 + 18, 116
+      );
+    }
+    // windows
+    g.fillStyle(0xcfe9e0, 0.9);
+    g.fillRect(W/2 - 250, 115, 160, 200);
+    g.fillRect(W/2 + 90, 115, 160, 200);
+    // door
+    g.fillStyle(0x3a4a4a, 1);
+    g.fillRect(W/2 - 70, 140, 140, H - 140);
+    g.fillStyle(0xcfe9e0, 0.9);
+    g.fillRect(W/2 - 55, 155, 110, 170);
+
+    this.add.text(W/2, 30, 'WOK STAR', {
+      fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#fff8e7'
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 4, true, true);
+
+    // OPEN sign, matches the beat from the reference screenshot
+    this.signText = this.add.text(W/2, 210, 'OPEN', {
+      fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#ffffff'
+    }).setOrigin(0.5).setBackgroundColor('#2f6b3f').setPadding(14, 8, 14, 8).setAlpha(0);
+
+    // character, tweened in from the doorway
+    const chef = this.add.image(W/2 + 40, H + 200, 'chef').setOrigin(0.5, 1).setScale(0.62).setAlpha(0);
+    this.tweens.add({
+      targets: chef, y: H - 10, alpha: 1, duration: 650, ease: 'Back.Out', delay: 200,
+      onComplete: () => {
+        if (window.SFX) SFX.swoosh ? SFX.swoosh() : SFX.select();
+        this.tweens.add({ targets: this.signText, alpha: 1, duration: 250 });
+      }
+    });
+
+    // DAY N title card
+    this.dayCard = this.add.container(W/2, H/2).setAlpha(0);
+    const dayBg = this.add.rectangle(0, 0, 220, 130, 0x0d0d0d, 0.72);
+    const dayLabel = this.add.text(0, -30, 'DAY', { fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#e8ecf1' }).setOrigin(0.5);
+    const dayNum = this.add.text(0, 20, String(this.day), { fontFamily: 'Arial Black, Arial', fontSize: '56px', color: '#ffd23f' }).setOrigin(0.5);
+    this.dayCard.add([dayBg, dayLabel, dayNum]);
+
+    this.time.delayedCall(750, () => {
+      this.tweens.add({ targets: this.dayCard, alpha: 1, scale: { from: 0.7, to: 1 }, duration: 350, ease: 'Back.Out' });
+      if (window.SFX) SFX.countdown ? SFX.countdown() : SFX.select();
+    });
+
+    this.subText = this.add.text(W/2, H - 24, 'tap to start the shift', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#f0e6d2aa'
+    }).setOrigin(0.5).setAlpha(0);
+    this.time.delayedCall(1400, () => this.tweens.add({ targets: this.subText, alpha: 1, duration: 400 }));
+
+    this.time.delayedCall(1400, () => {
+      this.input.once('pointerdown', () => this.scene.start('Play', { day: this.day }));
+    });
+    // auto-advance too, so it never blocks someone who forgets to tap
+    this.time.delayedCall(4200, () => {
+      if (this.scene.isActive()) this.scene.start('Play', { day: this.day });
+    });
+  }
+}
+
 class PlayScene extends Phaser.Scene {
   constructor() { super('Play'); }
 
+  init(data) { this.day = (data && data.day) || 1; }
+
   create() {
     this.cameras.main.setBackgroundColor('#1a1210');
-    this.state = 'ready';
+    this.state = 'playing';
     this.served = 0;
     this.totalTip = 0;
     this.strikes = 0;
@@ -103,8 +202,8 @@ class PlayScene extends Phaser.Scene {
     this.ingredientButtons = [];
 
     this.buildHUD();
-
-    this.input.once('pointerdown', () => { if (this.state === 'ready') this.startShift(); });
+    this.setBuildVisible(true);
+    this.newCustomer();
   }
 
   buildHUD() {
@@ -170,15 +269,12 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
     }).setOrigin(0.5).setAlpha(0);
 
-    this.centerText = this.add.text(W/2, H/2, 'TAP TO OPEN\nfor business', {
+    this.centerText = this.add.text(W/2, H/2, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#f0e6d2', align: 'center'
-    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
-    this.subText = this.add.text(W/2, H/2 + 60,
-      'Read the ticket \u2014 pick the right protein and veggies \u2014 serve before patience runs out', {
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true).setVisible(false);
+    this.subText = this.add.text(W/2, H/2 + 60, '', {
       fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 500 }
-    }).setOrigin(0.5);
-
-    this.setBuildVisible(false);
+    }).setOrigin(0.5).setVisible(false);
   }
 
   setBuildVisible(v) {
@@ -191,15 +287,6 @@ class PlayScene extends Phaser.Scene {
   toast(msg, color) {
     this.toastText.setText(msg).setColor(color).setAlpha(1).setY(200);
     this.tweens.add({ targets: this.toastText, alpha: 0, y: 175, duration: 700, delay: 400 });
-  }
-
-  startShift() {
-    this.state = 'playing';
-    this.centerText.setVisible(false);
-    this.subText.setVisible(false);
-    this.setBuildVisible(true);
-    if (window.SFX) SFX.select();
-    this.newCustomer();
   }
 
   newCustomer() {
@@ -397,10 +484,10 @@ class PlayScene extends Phaser.Scene {
       `Shift over!\n$${this.totalTip} in tips` + (isBest ? '  (NEW BEST)' : '')
     ).setVisible(true);
     this.subText.setText(
-      `${this.served} customers served \u00b7 best: $${Math.max(prevBest, this.totalTip)} \u00b7 tap to reopen`
+      `${this.served} customers served \u00b7 best: $${Math.max(prevBest, this.totalTip)} \u00b7 tap for a new day`
     ).setVisible(true);
 
-    this.input.once('pointerdown', () => this.scene.restart());
+    this.input.once('pointerdown', () => this.scene.start('Intro', { day: this.day + 1 }));
   }
 
   update(time, delta) {
@@ -426,7 +513,7 @@ const config = {
   height: H,
   backgroundColor: '#1a1210',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [PlayScene]
+  scene: [IntroScene, PlayScene]
 };
 
 new Phaser.Game(config);
