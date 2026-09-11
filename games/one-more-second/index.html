@@ -61,6 +61,27 @@ function typePool(t) {
   return ['wall', 'proj', 'corridor', 'trap', 'crossing', 'chain'];
 }
 
+// Curated multi-step sequences for the 75s+ phase — each teaches a specific
+// "plan two moves ahead" lesson rather than just being two random obstacles
+// dumped close together. delay is ms after the pattern triggers.
+const CHAIN_PATTERNS = [
+  // Freeze the wall to line up your pass, then you're already mid-freeze
+  // decision-making when the crossing pair arrives right after.
+  { steps: [{ type: 'wall', delay: 0 }, { type: 'crossing', delay: 900 }] },
+  // The corridor's gap is actively closing — freezing to hold it open costs
+  // you the freeze you'd want for the projectile right behind it.
+  { steps: [{ type: 'corridor', delay: 0 }, { type: 'proj', delay: 700 }] },
+  // The trap is still arming when the wall shows up — do you freeze early
+  // for the wall's gap, or hold out to catch the trap's pop?
+  { steps: [{ type: 'trap', delay: 0 }, { type: 'wall', delay: 650 }] },
+  // Two gaps in different places, close enough together that one freeze
+  // can't cover both — a genuine back-to-back read.
+  { steps: [{ type: 'wall', delay: 0 }, { type: 'wall', delay: 750 }] },
+  // Fast projectile first, then a corridor already closing by the time
+  // you've dealt with it.
+  { steps: [{ type: 'proj', delay: 0 }, { type: 'corridor', delay: 550 }] },
+];
+
 class PlayScene extends Phaser.Scene {
   constructor() { super('Play'); }
 
@@ -297,14 +318,21 @@ class PlayScene extends Phaser.Scene {
 
   spawnWave() {
     const pool = typePool(this.runTime);
+    if (pool.includes('chain') && Phaser.Math.Between(0, 100) < 40) {
+      this.spawnChainPattern();
+      return;
+    }
     const type = Phaser.Utils.Array.GetRandom(pool.filter(t => t !== 'chain'));
     this.spawnOne(type);
-    if (pool.includes('chain') && Phaser.Math.Between(0, 100) < 35) {
-      // a second obstacle shortly after, forcing forward planning
-      this.time.delayedCall(280, () => {
-        if (this.state === 'playing') this.spawnOne(Phaser.Utils.Array.GetRandom(pool.filter(t => t !== 'chain')));
+  }
+
+  spawnChainPattern() {
+    const pattern = Phaser.Utils.Array.GetRandom(CHAIN_PATTERNS);
+    pattern.steps.forEach(step => {
+      this.time.delayedCall(step.delay, () => {
+        if (this.state === 'playing') this.spawnOne(step.type);
       });
-    }
+    });
   }
 
   spawnOne(type) {
