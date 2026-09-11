@@ -111,6 +111,16 @@ class PlayScene extends Phaser.Scene {
 
     this.input.on('pointerdown', () => this.handleTap());
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
+    // auto-pause if the player alt-tabs or switches apps mid-run
+    this._onBlur = () => { if (this.state === 'playing') this.pauseGame(); };
+    this._onVisChange = () => { if (document.hidden && this.state === 'playing') this.pauseGame(); };
+    window.addEventListener('blur', this._onBlur);
+    document.addEventListener('visibilitychange', this._onVisChange);
+    this.events.once('shutdown', () => {
+      window.removeEventListener('blur', this._onBlur);
+      document.removeEventListener('visibilitychange', this._onVisChange);
+    });
   }
 
   buildHUD() {
@@ -156,6 +166,10 @@ class PlayScene extends Phaser.Scene {
     if (window.SFX && SFX.ctx && SFX.ctx.state === 'suspended') SFX.ctx.resume();
     if (this.state === 'ready') {
       this.startRun();
+      return;
+    }
+    if (this.state === 'paused') {
+      this.resumeGame();
       return;
     }
     if (this.state === 'dead') {
@@ -260,6 +274,21 @@ class PlayScene extends Phaser.Scene {
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
     if (window.SFX) SFX.select();
+  }
+
+  pauseGame() {
+    this._wasFrozen = this.freezeActive;
+    this.state = 'paused';
+    this.centerText.setText('PAUSED').setVisible(true);
+    this.subText.setText('tap or press space to resume').setVisible(true);
+  }
+
+  resumeGame() {
+    this.state = 'playing';
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    // don't let time spent away silently expire a freeze window mid-return
+    if (this._wasFrozen) this.freezeEndsAt = this.time.now + FREEZE_MS;
   }
 
   update(time, delta) {
@@ -501,11 +530,24 @@ class PlayScene extends Phaser.Scene {
       }
     });
 
-    // player
-    g.fillStyle(0xffffff, 0.25);
+    // player — layered glow + squash/stretch tied to actual vertical speed,
+    // so the constant motion the whole game hinges on reads as more alive
+    const vy = AMPLITUDE * ANGULAR_SPEED * Math.cos(this.playerClock * ANGULAR_SPEED);
+    const speedNorm = Phaser.Math.Clamp(Math.abs(vy) / (AMPLITUDE * ANGULAR_SPEED), 0, 1);
+    const stretch = 0.22 * speedNorm;
+    const rw = PLAYER_R * (2 - stretch);
+    const rh = PLAYER_R * (2 + stretch);
+    const coreCol = this.freezeActive ? 0x9fe3ff : 0xffffff;
+    const rimCol = this.freezeActive ? 0x2f7bff : 0xffd23f;
+
+    g.fillStyle(coreCol, 0.10);
+    g.fillCircle(PLAYER_X, this.playerY, PLAYER_R * 3.2);
+    g.fillStyle(coreCol, 0.22);
     g.fillCircle(PLAYER_X, this.playerY, PLAYER_R * 2.1);
-    g.fillStyle(this.freezeActive ? 0x9fe3ff : 0xffffff, 1);
-    g.fillCircle(PLAYER_X, this.playerY, PLAYER_R);
+    g.lineStyle(2, rimCol, 0.85);
+    g.strokeEllipse(PLAYER_X, this.playerY, rw + 4, rh + 4);
+    g.fillStyle(coreCol, 1);
+    g.fillEllipse(PLAYER_X, this.playerY, rw, rh);
   }
 }
 
