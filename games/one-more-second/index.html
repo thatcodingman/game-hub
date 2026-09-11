@@ -145,7 +145,7 @@ class PlayScene extends Phaser.Scene {
     this.charges--;
     this.freezeActive = true;
     this.freezeEndsAt = this.time.now + FREEZE_MS;
-    if (window.SFX) SFX.blip();
+    this.playFreezeSound('in');
 
     // Perfect Freeze — an obstacle was genuinely close when you committed
     const isPerfect = this.obstacles.some(o =>
@@ -156,6 +156,63 @@ class PlayScene extends Phaser.Scene {
       this.perfects++;
       this.toast('PERFECT!', '#5be37b');
       if (window.SFX) SFX.combo ? SFX.combo(1) : SFX.success();
+    }
+  }
+
+  // Dedicated freeze/unfreeze audio — sfx.js has nothing freeze-shaped built in,
+  // so this synthesizes directly through the shared AudioContext, respecting the
+  // same mute/volume controls as the rest of the hub's sound.
+  playFreezeSound(direction) {
+    try {
+      if (!window.SFX || !SFX.ctx || SFX.muted) return;
+      const ctx = SFX.ctx;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.5;
+      const t0 = ctx.currentTime;
+      const dur = direction === 'in' ? 0.26 : 0.20;
+
+      // tonal sweep — descending for freeze-in, ascending for unfreeze
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = direction === 'in' ? 'sine' : 'triangle';
+      if (direction === 'in') {
+        osc.frequency.setValueAtTime(920, t0);
+        osc.frequency.exponentialRampToValueAtTime(150, t0 + dur);
+      } else {
+        osc.frequency.setValueAtTime(200, t0);
+        osc.frequency.exponentialRampToValueAtTime(1100, t0 + dur);
+      }
+      oscGain.gain.setValueAtTime(0, t0);
+      oscGain.gain.linearRampToValueAtTime(vol, t0 + 0.015);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      osc.connect(oscGain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+
+      // filtered noise whoosh layer for texture
+      const bufSize = Math.max(1, Math.floor(ctx.sampleRate * dur));
+      const buffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      if (direction === 'in') {
+        filter.frequency.setValueAtTime(4000, t0);
+        filter.frequency.exponentialRampToValueAtTime(300, t0 + dur);
+      } else {
+        filter.frequency.setValueAtTime(300, t0);
+        filter.frequency.exponentialRampToValueAtTime(5000, t0 + dur);
+      }
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0, t0);
+      noiseGain.gain.linearRampToValueAtTime(vol * 0.35, t0 + 0.02);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      noise.connect(filter).connect(noiseGain).connect(ctx.destination);
+      noise.start(t0);
+      noise.stop(t0 + dur + 0.02);
+    } catch (err) {
+      console.error('freeze sound error (non-fatal):', err);
     }
   }
 
@@ -171,6 +228,7 @@ class PlayScene extends Phaser.Scene {
 
     if (this.freezeActive && time >= this.freezeEndsAt) {
       this.freezeActive = false;
+      this.playFreezeSound('out');
     }
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.handleTap();
 
