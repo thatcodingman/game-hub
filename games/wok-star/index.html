@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Wok Star — The Arcade</title>
+<style>
+  html, body { margin:0; padding:0; background:#1a1210; overflow:hidden; height:100%; }
+  #game-container { width:100vw; height:100vh; }
+  canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   WOK STAR — v1
+   Papa's-style order/build/serve loop, Chinese takeout theme.
+   Scope for v1 (per plan): order ticket -> pick protein + veggies -> sauce
+   and garnish auto-apply (not real choices, same as a pizza's crust/sauce
+   base) -> serve. No oven/timing layer yet — that's the next pass.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const MAX_STRIKES = 3;
+const BASE_TIP = 6;
+
+const DISHES = [
+  { name: 'Chicken Fried Rice', baseName: 'Fried Rice', baseEmoji: '\ud83c\udf5a', plateColor: 0xd9b25c,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Beef',e:'\ud83e\udd69'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Peas & Carrots',e:'\ud83d\udfe2'},{n:'Corn',e:'\ud83c\udf3d'},{n:'Onion',e:'\ud83e\uddc5'},{n:'Bean Sprouts',e:'\ud83c\udf31'}],
+    sauceName: 'House Soy', sauceColor: 0x4a2e12,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'},{n:'Sesame',e:'\u26aa'}] },
+
+  { name: 'Dragon Lo Mein', baseName: 'Lo Mein Noodles', baseEmoji: '\ud83c\udf5c', plateColor: 0xe8d29a,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Beef',e:'\ud83e\udd69'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Cabbage',e:'\ud83e\udd6c'},{n:'Carrots',e:'\ud83e\udd55'},{n:'Bell Pepper',e:'\ud83e\uded1'},{n:'Bean Sprouts',e:'\ud83c\udf31'},{n:'Onion',e:'\ud83e\uddc5'}],
+    sauceName: 'Lo Mein Sauce', sauceColor: 0x3b2410,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'},{n:'Sesame',e:'\u26aa'}] },
+
+  { name: 'Sweet & Sour Bowl', baseName: 'White Rice', baseEmoji: '\ud83c\udf5a', plateColor: 0xf5f0e1,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Bell Pepper',e:'\ud83e\uded1'},{n:'Onion',e:'\ud83e\uddc5'},{n:'Pineapple',e:'\ud83c\udf4d'},{n:'Carrots',e:'\ud83e\udd55'}],
+    sauceName: 'Sweet & Sour', sauceColor: 0xe8531f,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'}] },
+
+  { name: 'Kung Pao Bowl', baseName: 'White Rice', baseEmoji: '\ud83c\udf5a', plateColor: 0xf5f0e1,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Beef',e:'\ud83e\udd69'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Bell Pepper',e:'\ud83e\uded1'},{n:'Onion',e:'\ud83e\uddc5'},{n:'Zucchini',e:'\ud83e\udd52'},{n:'Peanuts',e:'\ud83e\udd5c'}],
+    sauceName: 'Kung Pao Sauce', sauceColor: 0x5a2213,
+    garnish: [{n:'Peanuts',e:'\ud83e\udd5c'},{n:'Scallions',e:'\ud83c\udf3f'}] },
+
+  { name: 'Mongolian Beef Bowl', baseName: 'White Rice', baseEmoji: '\ud83c\udf5a', plateColor: 0xf5f0e1,
+    proteins: [{n:'Beef',e:'\ud83e\udd69'},{n:'Chicken',e:'\ud83c\udf57'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Onion',e:'\ud83e\uddc5'},{n:'Bell Pepper',e:'\ud83e\uded1'},{n:'Broccoli',e:'\ud83e\udd66'},{n:'Mushrooms',e:'\ud83c\udf44'}],
+    sauceName: 'Mongolian Glaze', sauceColor: 0x2e1a0a,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'},{n:'Sesame',e:'\u26aa'}] },
+
+  { name: 'Orange Chicken Bowl', baseName: 'White Rice', baseEmoji: '\ud83c\udf5a', plateColor: 0xf5f0e1,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Tofu',e:'\ud83e\uddc8'},{n:'Shrimp',e:'\ud83c\udf64'}],
+    veggies: [{n:'Broccoli',e:'\ud83e\udd66'},{n:'Bell Pepper',e:'\ud83e\uded1'},{n:'Carrots',e:'\ud83e\udd55'},{n:'Onion',e:'\ud83e\uddc5'}],
+    sauceName: 'Orange Sauce', sauceColor: 0xff8c1a,
+    garnish: [{n:'Orange Zest',e:'\ud83c\udf4a'},{n:'Scallions',e:'\ud83c\udf3f'}] },
+
+  { name: 'Vegetable Chow Mein', baseName: 'Chow Mein Noodles', baseEmoji: '\ud83c\udf5d', plateColor: 0xe8d29a,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Beef',e:'\ud83e\udd69'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Tofu',e:'\ud83e\uddc8'}],
+    veggies: [{n:'Cabbage',e:'\ud83e\udd6c'},{n:'Carrots',e:'\ud83e\udd55'},{n:'Onion',e:'\ud83e\uddc5'},{n:'Bean Sprouts',e:'\ud83c\udf31'},{n:'Bell Pepper',e:'\ud83e\uded1'}],
+    sauceName: 'Chow Mein Sauce', sauceColor: 0x3b2410,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'},{n:'Sesame',e:'\u26aa'}] },
+
+  { name: 'Crispy Dumpling Box', baseName: 'Dumpling Wrappers', baseEmoji: '\ud83e\udd5f', plateColor: 0xf0e6d2,
+    proteins: [{n:'Chicken',e:'\ud83c\udf57'},{n:'Pork',e:'\ud83e\udd53'},{n:'Shrimp',e:'\ud83c\udf64'},{n:'Vegetable',e:'\ud83e\udd6c'}],
+    veggies: [{n:'Cabbage',e:'\ud83e\udd6c'},{n:'Carrots',e:'\ud83e\udd55'},{n:'Scallions',e:'\ud83c\udf3f'},{n:'Mushrooms',e:'\ud83c\udf44'}],
+    sauceName: 'Dumpling Sauce', sauceColor: 0x5a2213,
+    garnish: [{n:'Scallions',e:'\ud83c\udf3f'},{n:'Sesame',e:'\u26aa'}] },
+];
+
+const CUSTOMER_TYPES = [
+  { label: 'Office Worker', note: 'On lunch break \u2014 in a hurry', patienceMult: 0.82, veggieCount: null, face: '\ud83d\ude10' },
+  { label: 'Delivery Regular', note: 'Orders the same thing every time', patienceMult: 1.0, veggieCount: null, face: '\ud83d\ude0a' },
+  { label: 'First-Timer', note: 'Still deciding what they like', patienceMult: 1.25, veggieCount: null, face: '\ud83e\udd14' },
+  { label: 'Big Family Order', note: 'Wants extra veggies piled in', patienceMult: 1.05, veggieCount: 3, face: '\ud83d\ude00' },
+];
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
+
+  create() {
+    this.cameras.main.setBackgroundColor('#1a1210');
+    this.state = 'ready';
+    this.served = 0;
+    this.totalTip = 0;
+    this.strikes = 0;
+    this.plateItems = [];
+    this.ingredientButtons = [];
+
+    this.buildHUD();
+
+    this.input.once('pointerdown', () => { if (this.state === 'ready') this.startShift(); });
+  }
+
+  buildHUD() {
+    // ---- top: customer + ticket ----
+    this.customerFace = this.add.text(50, 40, '', { fontSize: '48px' }).setOrigin(0.5);
+    this.customerLabel = this.add.text(50, 84, '', {
+      fontFamily: 'Arial', fontSize: '12px', color: '#c9b28a'
+    }).setOrigin(0.5);
+
+    this.ticketBg = this.add.rectangle(340, 55, 480, 90, 0xfff8e7).setStrokeStyle(2, 0x2a1c10);
+    this.ticketDish = this.add.text(120, 22, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#2a1c10'
+    });
+    this.ticketDetail = this.add.text(120, 48, '', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#5a4530', wordWrap: { width: 420 }
+    });
+
+    this.patienceBg = this.add.rectangle(640, 55, 220, 16, 0x3a2a1a).setStrokeStyle(2, 0x000000);
+    this.patienceBar = this.add.rectangle(640 - 108, 55, 216, 12, 0x5be37b).setOrigin(0, 0.5);
+
+    // ---- score row ----
+    this.tipText = this.add.text(20, 120, 'Tips: $0', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#ffd23f'
+    });
+    this.servedText = this.add.text(180, 120, 'Served: 0', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#c9b28a'
+    });
+    this.strikeText = this.add.text(320, 120, '', {
+      fontFamily: 'Arial', fontSize: '16px', color: '#ff5a5a'
+    });
+
+    // ---- plate area ----
+    this.plateBg = this.add.circle(W/2, 275, 110, 0xf5f0e1).setStrokeStyle(3, 0x2a1c10);
+    this.baseLabel = this.add.text(W/2, 275, '', { fontSize: '40px' }).setOrigin(0.5);
+    this.sauceOverlay = this.add.circle(W/2, 275, 108, 0x000000, 0).setBlendMode(Phaser.BlendModes.MULTIPLY);
+
+    // ---- serve button ----
+    this.serveBtn = this.add.text(W - 90, 275, '[ SERVE ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#5be37b'
+    }).setOrigin(0.5).setPadding(10, 8, 10, 8).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.serveBtn.on('pointerdown', () => this.serveOrder());
+
+    // ---- ingredient panel labels ----
+    this.proteinLabel = this.add.text(20, 360, 'PROTEIN', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
+    this.veggieLabel = this.add.text(20, 430, 'VEGGIES', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a' });
+
+    this.toastText = this.add.text(W/2, 200, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.centerText = this.add.text(W/2, H/2, 'TAP TO OPEN\nfor business', {
+      fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#f0e6d2', align: 'center'
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
+    this.subText = this.add.text(W/2, H/2 + 60,
+      'Read the ticket \u2014 pick the right protein and veggies \u2014 serve before patience runs out', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 500 }
+    }).setOrigin(0.5);
+
+    this.setBuildVisible(false);
+  }
+
+  setBuildVisible(v) {
+    [this.ticketBg, this.ticketDish, this.ticketDetail, this.patienceBg, this.patienceBar,
+     this.customerFace, this.customerLabel, this.plateBg, this.baseLabel, this.sauceOverlay,
+     this.proteinLabel, this.veggieLabel].forEach(o => o.setVisible(v));
+  }
+
+  toast(msg, color) {
+    this.toastText.setText(msg).setColor(color).setAlpha(1).setY(200);
+    this.tweens.add({ targets: this.toastText, alpha: 0, y: 175, duration: 700, delay: 400 });
+  }
+
+  startShift() {
+    this.state = 'playing';
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    this.setBuildVisible(true);
+    if (window.SFX) SFX.select();
+    this.newCustomer();
+  }
+
+  newCustomer() {
+    const dish = Phaser.Utils.Array.GetRandom(DISHES);
+    const custType = Phaser.Utils.Array.GetRandom(CUSTOMER_TYPES);
+    const protein = Phaser.Utils.Array.GetRandom(dish.proteins);
+    const count = custType.veggieCount || Phaser.Math.Between(2, Math.min(3, dish.veggies.length));
+    const veggies = Phaser.Utils.Array.Shuffle(dish.veggies.slice()).slice(0, count);
+
+    this.order = { dish, custType, protein, veggies };
+    this.selectedProtein = null;
+    this.selectedVeggies = new Set();
+    this.sauceApplied = false;
+
+    const basePatience = 17 - Math.min(this.served * 0.25, 6); // ramps down slowly, floors around 11s
+    this.patienceMax = basePatience * custType.patienceMult;
+    this.patienceLeft = this.patienceMax;
+
+    this.customerFace.setText(custType.face);
+    this.customerLabel.setText(custType.label);
+    this.ticketDish.setText(dish.name);
+    this.ticketDetail.setText(
+      `Protein: ${protein.n}\nVeggies: ${veggies.map(v => v.n).join(', ')}`
+    );
+
+    this.baseLabel.setText(dish.baseEmoji);
+    this.plateBg.setFillStyle(dish.plateColor);
+    this.sauceOverlay.setFillStyle(0x000000, 0);
+    this.serveBtn.setVisible(false);
+    this.clearPlateItems();
+    this.buildIngredientButtons();
+  }
+
+  clearPlateItems() {
+    this.plateItems.forEach(t => t.destroy());
+    this.plateItems = [];
+  }
+
+  buildIngredientButtons() {
+    this.ingredientButtons.forEach(b => b.destroy());
+    this.ingredientButtons = [];
+
+    const dish = this.order.dish;
+    dish.proteins.forEach((p, i) => {
+      const btn = this.makeChip(50 + i * 110, 390, `${p.e} ${p.n}`, () => this.selectProtein(p));
+      btn.setData('kind', 'protein').setData('name', p.n);
+      this.ingredientButtons.push(btn);
+    });
+    dish.veggies.forEach((v, i) => {
+      const btn = this.makeChip(50 + i * 110, 460, `${v.e} ${v.n}`, () => this.toggleVeggie(v));
+      btn.setData('kind', 'veggie').setData('name', v.n);
+      this.ingredientButtons.push(btn);
+    });
+  }
+
+  makeChip(x, y, label, onClick) {
+    const chip = this.add.text(x, y, label, {
+      fontFamily: 'Arial', fontSize: '14px', color: '#e8ecf1'
+    }).setOrigin(0, 0.5).setPadding(8, 6, 8, 6).setBackgroundColor('#2a2118')
+      .setInteractive({ useHandCursor: true });
+    chip.on('pointerdown', () => { onClick(); this.refreshChipStyles(); });
+    return chip;
+  }
+
+  refreshChipStyles() {
+    this.ingredientButtons.forEach(b => {
+      const kind = b.getData('kind'), name = b.getData('name');
+      const active = kind === 'protein'
+        ? (this.selectedProtein && this.selectedProtein.n === name)
+        : this.selectedVeggies.has(name);
+      b.setBackgroundColor(active ? '#3a6b4a' : '#2a2118');
+      b.setColor(active ? '#9fffc0' : '#e8ecf1');
+    });
+  }
+
+  selectProtein(p) {
+    if (this.state !== 'playing') return;
+    const firstPick = !this.selectedProtein;
+    this.selectedProtein = p;
+    if (window.SFX) SFX.click();
+    this.serveBtn.setVisible(true);
+    if (firstPick) this.applySauceAndGarnish();
+    this.renderPlate();
+  }
+
+  toggleVeggie(v) {
+    if (this.state !== 'playing') return;
+    if (this.selectedVeggies.has(v.n)) this.selectedVeggies.delete(v.n);
+    else this.selectedVeggies.add(v.n);
+    if (window.SFX) SFX.click();
+    this.renderPlate();
+  }
+
+  applySauceAndGarnish() {
+    // sauce and garnish aren't real choices — same as a pizza's crust/sauce
+    // base — they land automatically once you've started building
+    this.sauceApplied = true;
+    this.tweens.add({
+      targets: this.sauceOverlay,
+      alpha: 1,
+      duration: 300,
+      onStart: () => this.sauceOverlay.setFillStyle(this.order.dish.sauceColor, 0.001),
+      onUpdate: (tw, target) => this.sauceOverlay.setFillStyle(this.order.dish.sauceColor, tw.progress * 0.55)
+    });
+    if (window.SFX) SFX.pickup();
+  }
+
+  renderPlate() {
+    this.clearPlateItems();
+    const cx = W/2, cy = 275;
+    if (this.selectedProtein) {
+      const t = this.add.text(cx, cy - 20, this.selectedProtein.e, { fontSize: '30px' }).setOrigin(0.5);
+      this.plateItems.push(t);
+    }
+    const veggieList = [...this.selectedVeggies];
+    const dishVeggies = this.order.dish.veggies;
+    veggieList.forEach((name, i) => {
+      const v = dishVeggies.find(x => x.n === name);
+      const angle = (i / Math.max(veggieList.length, 1)) * Math.PI * 2;
+      const t = this.add.text(cx + Math.cos(angle) * 55, cy + 25 + Math.sin(angle) * 30, v.e, { fontSize: '22px' }).setOrigin(0.5);
+      this.plateItems.push(t);
+    });
+    if (this.sauceApplied) {
+      this.order.dish.garnish.forEach((g, i) => {
+        const t = this.add.text(cx - 40 + i * 40, cy + 60, g.e, { fontSize: '16px' }).setOrigin(0.5);
+        this.plateItems.push(t);
+      });
+    }
+  }
+
+  serveOrder() {
+    if (this.state !== 'playing') return;
+    const proteinCorrect = this.selectedProtein && this.selectedProtein.n === this.order.protein.n;
+    const orderVeggieNames = new Set(this.order.veggies.map(v => v.n));
+    const veggiesCorrect = setsEqual(this.selectedVeggies, orderVeggieNames);
+    const componentsCorrect = (proteinCorrect ? 1 : 0) + (veggiesCorrect ? 1 : 0);
+
+    const speedBonus = 0.6 + 0.4 * Phaser.Math.Clamp(this.patienceLeft / this.patienceMax, 0, 1);
+    const tip = Math.round(BASE_TIP * (componentsCorrect / 2) * speedBonus);
+    this.totalTip += tip;
+    this.served++;
+    this.tipText.setText('Tips: $' + this.totalTip);
+    this.servedText.setText('Served: ' + this.served);
+
+    if (componentsCorrect === 2) {
+      this.toast(`PERFECT! +$${tip}`, '#5be37b');
+      if (window.SFX) SFX.success();
+    } else if (componentsCorrect === 1) {
+      this.toast(`CLOSE ENOUGH +$${tip}`, '#ffd23f');
+      if (window.SFX) SFX.coin();
+    } else {
+      this.toast('WRONG ORDER', '#ff5a5a');
+      if (window.SFX) SFX.fail();
+      this.registerStrike();
+      if (this.state !== 'playing') return;
+    }
+
+    this.newCustomer();
+  }
+
+  registerStrike() {
+    this.strikes++;
+    this.strikeText.setText('\u2716'.repeat(this.strikes));
+    if (this.strikes >= MAX_STRIKES) this.endShift();
+  }
+
+  endShift() {
+    this.state = 'dead';
+    this.cameras.main.shake(180, 0.006);
+    const key = 'wokStar_bestTip';
+    const prevBest = parseFloat(localStorage.getItem(key)) || 0;
+    const isBest = this.totalTip > prevBest;
+    if (isBest) localStorage.setItem(key, String(this.totalTip));
+
+    this.setBuildVisible(false);
+    this.serveBtn.setVisible(false);
+    this.ingredientButtons.forEach(b => b.destroy());
+    this.ingredientButtons = [];
+    this.clearPlateItems();
+
+    this.centerText.setText(
+      `Shift over!\n$${this.totalTip} in tips` + (isBest ? '  (NEW BEST)' : '')
+    ).setVisible(true);
+    this.subText.setText(
+      `${this.served} customers served \u00b7 best: $${Math.max(prevBest, this.totalTip)} \u00b7 tap to reopen`
+    ).setVisible(true);
+
+    this.input.once('pointerdown', () => this.scene.restart());
+  }
+
+  update(time, delta) {
+    if (this.state !== 'playing' || !this.order) return;
+    this.patienceLeft -= delta / 1000;
+    const pct = Phaser.Math.Clamp(this.patienceLeft / this.patienceMax, 0, 1);
+    this.patienceBar.width = 216 * pct;
+    this.patienceBar.setFillStyle(pct > 0.4 ? 0x5be37b : (pct > 0.18 ? 0xffd23f : 0xff5a5a));
+
+    if (this.patienceLeft <= 0) {
+      this.toast('CUSTOMER LEFT', '#ff5a5a');
+      if (window.SFX) SFX.fail();
+      this.registerStrike();
+      if (this.state === 'playing') this.newCustomer();
+    }
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  backgroundColor: '#1a1210',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PlayScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
