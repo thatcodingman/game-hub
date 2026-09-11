@@ -79,6 +79,8 @@ class PlayScene extends Phaser.Scene {
     this.runTime = 0;
     this.charges = MAX_CHARGES;
     this.perfects = 0;
+    this.perfectStreak = 0;
+    this.score = 0;
     this.freezeActive = false;
     this.freezeEndsAt = 0;
     this.regenAccum = 0;
@@ -105,6 +107,10 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial', fontSize: '14px', color: '#ffd23f'
     });
 
+    this.scoreText = this.add.text(20, 44, 'Score: 0', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#e8ecf1'
+    });
+
     this.toastText = this.add.text(W/2, 150, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
     }).setOrigin(0.5).setAlpha(0);
@@ -115,7 +121,7 @@ class PlayScene extends Phaser.Scene {
 
     this.subText = this.add.text(W/2, H/2 + 60,
       'Tap freezes every obstacle for 1 second — you keep moving', {
-      fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a'
+      fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a', align: 'center'
     }).setOrigin(0.5);
   }
 
@@ -153,10 +159,20 @@ class PlayScene extends Phaser.Scene {
       o.alive && !o.dormant && (o.x - PLAYER_X) > PERFECT_MIN_DIST && (o.x - PLAYER_X) < PERFECT_MAX_DIST
     );
     if (isPerfect) {
+      this.perfectStreak++;
+      const bonus = 50 * this.perfectStreak;
+      this.score += bonus;
+      this.scoreText.setText('Score: ' + this.score);
       this.charges = Math.min(MAX_CHARGES, this.charges + 1);
       this.perfects++;
-      this.toast('PERFECT!', '#5be37b');
-      if (window.SFX) SFX.combo ? SFX.combo(1) : SFX.success();
+      const label = this.perfectStreak > 1 ? `PERFECT x${this.perfectStreak}! +${bonus}` : `PERFECT! +${bonus}`;
+      this.toast(label, '#5be37b');
+      this.perfectText.setText(this.perfectStreak > 1 ? `Streak: ${this.perfectStreak}` : '').setColor('#ffd23f');
+      if (window.SFX) (SFX.combo ? SFX.combo(Math.min(this.perfectStreak, 5)) : SFX.success());
+    } else {
+      if (this.perfectStreak > 1) this.toast('STREAK LOST', '#ff8a3d');
+      this.perfectStreak = 0;
+      this.perfectText.setText('');
     }
   }
 
@@ -374,10 +390,18 @@ class PlayScene extends Phaser.Scene {
     const isBest = isNaN(prevBest) || this.runTime > prevBest;
     if (isBest) localStorage.setItem(key, this.runTime.toFixed(1));
 
+    const scoreKey = 'oneMoreSecond_bestScore';
+    const prevBestScore = parseFloat(localStorage.getItem(scoreKey)) || 0;
+    const isBestScore = this.score > prevBestScore;
+    if (isBestScore) localStorage.setItem(scoreKey, String(this.score));
+
     this.centerText.setText(
       `${this.runTime.toFixed(1)}s\n` + (isBest ? 'NEW BEST' : `Best: ${prevBest.toFixed(1)}s`)
     ).setVisible(true);
-    this.subText.setText(`${this.perfects} perfect freeze${this.perfects === 1 ? '' : 's'}  ·  tap to retry`).setVisible(true);
+    const scoreLine = `Score: ${this.score}` + (isBestScore && this.score > 0 ? ' (NEW BEST)' : ` (best: ${Math.max(prevBestScore, this.score)})`);
+    this.subText.setText(
+      `${scoreLine}\n${this.perfects} perfect freeze${this.perfects === 1 ? '' : 's'}  \u00b7  tap to retry`
+    ).setVisible(true);
   }
 
   draw() {
