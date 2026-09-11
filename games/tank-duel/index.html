@@ -293,11 +293,31 @@ class PlayScene extends Phaser.Scene {
     this.drawArena();
   }
 
-  explode(x, y) {
-    this.fxGraphics.fillStyle(0xffb15a, 0.8);
-    this.fxGraphics.fillCircle(x, y, 4);
+  explode(x, y, big) {
+    const flashR = big ? 26 : 14;
+    const flash = this.add.circle(x, y, flashR, 0xfff2c9, 0.95);
+    this.tweens.add({ targets: flash, alpha: 0, scale: 1.6, duration: 140, onComplete: () => flash.destroy() });
+
     const ring = this.add.circle(x, y, 6, 0xffd23f, 0.5).setStrokeStyle(2, 0xff8a3d);
-    this.tweens.add({ targets: ring, radius: CARVE_RADIUS, alpha: 0, duration: 260, onUpdate: () => ring.setStrokeStyle(2, 0xff8a3d, ring.alpha), onComplete: () => ring.destroy() });
+    this.tweens.add({
+      targets: ring, radius: big ? CARVE_RADIUS * 1.2 : CARVE_RADIUS, alpha: 0, duration: big ? 380 : 260,
+      onUpdate: () => ring.setStrokeStyle(2, 0xff8a3d, ring.alpha), onComplete: () => ring.destroy()
+    });
+
+    // debris — a handful of small chunks flung outward and settling
+    const debrisCount = big ? 10 : 6;
+    for (let i = 0; i < debrisCount; i++) {
+      const a = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.FloatBetween(20, big ? 55 : 36);
+      const chunk = this.add.rectangle(x, y, Phaser.Math.Between(3, 6), Phaser.Math.Between(3, 6), 0x8a6a4a);
+      this.tweens.add({
+        targets: chunk, x: x + Math.cos(a) * dist, y: y + Math.sin(a) * dist,
+        rotation: Phaser.Math.FloatBetween(-3, 3), alpha: 0, duration: Phaser.Math.Between(300, 500),
+        ease: 'Cubic.Out', onComplete: () => chunk.destroy()
+      });
+    }
+
+    this.cameras.main.shake(big ? 220 : 110, big ? 0.012 : 0.006);
     if (window.SFX) SFX.explosion();
   }
 
@@ -320,7 +340,7 @@ class PlayScene extends Phaser.Scene {
       if (target.alive) {
         const d = Phaser.Math.Distance.Between(s.x, s.y, target.x, target.y);
         if (d < TANK_R + SHELL_R) {
-          this.explode(s.x, s.y);
+          this.explode(s.x, s.y, true);
           this.carveTerrain(s.x, s.y);
           this.shells.splice(i, 1);
           this.killTank(target, s.side);
@@ -331,7 +351,6 @@ class PlayScene extends Phaser.Scene {
 
   killTank(tank, killerSide) {
     tank.alive = false;
-    this.cameras.main.shake(200, 0.01);
     if (killerSide === 'player') {
       this.playerWins++;
       this.toast('ROUND WIN!', '#5be37b');
@@ -402,20 +421,58 @@ class PlayScene extends Phaser.Scene {
     this.draw();
   }
 
+  drawTank(g, t, bodyCol, trackCol) {
+    if (!t || !t.alive) return;
+    const cos = Math.cos(t.angle), sin = Math.sin(t.angle);
+    // body oriented along the aim direction, with tracks on either flank
+    const hw = TANK_R + 4, hh = TANK_R - 3;
+    const corner = (lx, ly) => ({ x: t.x + lx * cos - ly * sin, y: t.y + lx * sin + ly * cos });
+    const bodyPts = [corner(-hw, -hh), corner(hw, -hh), corner(hw, hh), corner(-hw, hh)];
+    g.fillStyle(bodyCol, 1);
+    g.beginPath();
+    g.moveTo(bodyPts[0].x, bodyPts[0].y);
+    bodyPts.slice(1).forEach(p => g.lineTo(p.x, p.y));
+    g.closePath();
+    g.fillPath();
+    g.lineStyle(2, 0x111111, 0.7);
+    g.strokePath();
+
+    // tracks — two dark bars along the sides, perpendicular to the aim direction
+    [-1, 1].forEach(side => {
+      const p1 = corner(-hw, (hh + 5) * side);
+      const p2 = corner(hw, (hh + 5) * side);
+      g.lineStyle(5, trackCol, 1);
+      g.lineBetween(p1.x, p1.y, p2.x, p2.y);
+    });
+
+    // turret + barrel
+    g.fillStyle(bodyCol, 1);
+    g.fillCircle(t.x, t.y, TANK_R * 0.62);
+    g.lineStyle(2, 0x111111, 0.7);
+    g.strokeCircle(t.x, t.y, TANK_R * 0.62);
+    g.lineStyle(5, 0x2a2a2a, 1);
+    g.lineBetween(t.x, t.y, t.x + cos * (TANK_R + 14), t.y + sin * (TANK_R + 14));
+  }
+
   draw() {
     const g = this.fxGraphics;
     g.clear();
-    [{ t: this.player, col: 0x5be37b }, { t: this.ai, col: 0xff5a5a }].forEach(({ t, col }) => {
-      if (!t || !t.alive) return;
-      g.fillStyle(col, 1);
-      g.fillCircle(t.x, t.y, TANK_R);
-      g.lineStyle(2, 0x111111, 0.6);
-      g.strokeCircle(t.x, t.y, TANK_R);
-      g.lineStyle(4, 0x222222, 1);
-      g.lineBetween(t.x, t.y, t.x + Math.cos(t.angle) * (TANK_R + 12), t.y + Math.sin(t.angle) * (TANK_R + 12));
+
+    this.drawTank(g, this.player, 0x5be37b, 0x2f5a3a);
+    this.drawTank(g, this.ai, 0xff5a5a, 0x7a2f2f);
+
+    // shell trails, then the shell itself on top
+    (this.shells || []).forEach(s => {
+      if (!s.trail) s.trail = [];
+      s.trail.push({ x: s.x, y: s.y });
+      if (s.trail.length > 8) s.trail.shift();
+      s.trail.forEach((p, i) => {
+        g.fillStyle(0xffb15a, (i / s.trail.length) * 0.5);
+        g.fillCircle(p.x, p.y, SHELL_R * (i / s.trail.length));
+      });
+      g.fillStyle(0xffe08a, 1);
+      g.fillCircle(s.x, s.y, SHELL_R);
     });
-    g.fillStyle(0xffe08a, 1);
-    (this.shells || []).forEach(s => g.fillCircle(s.x, s.y, SHELL_R));
   }
 }
 
