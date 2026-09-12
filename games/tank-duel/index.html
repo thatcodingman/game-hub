@@ -730,87 +730,93 @@ class PlayScene extends Phaser.Scene {
     if (this.state !== 'playing') { this.draw(); return; }
     const dt = delta / 1000;
 
-    if (this.player.reload > 0) this.player.reload -= delta;
-    if (this.ai.reload > 0) this.ai.reload -= delta;
-    this.reloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.player.reload / RELOAD_MS, 0, 1));
-    this.aiReloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.ai.reload / RELOAD_MS, 0, 1));
-    const upgradeLabels = { rapid: 'RAPID READY', breaker: 'BREAKER READY', bounce: 'BOUNCE READY' };
-    this.upgradeText.setText(this.player.upgrade ? upgradeLabels[this.player.upgrade] : '');
+    try {
+      if (this.player.reload > 0) this.player.reload -= delta;
+      if (this.ai.reload > 0) this.ai.reload -= delta;
+      this.reloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.player.reload / RELOAD_MS, 0, 1));
+      this.aiReloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.ai.reload / RELOAD_MS, 0, 1));
+      const upgradeLabels = { rapid: 'RAPID READY', breaker: 'BREAKER READY', bounce: 'BOUNCE READY' };
+      this.upgradeText.setText(this.player.upgrade ? upgradeLabels[this.player.upgrade] : '');
 
-    // player movement
-    let mx = 0, my = 0, usingArrows = false;
-    if (this.joystick && this.joystick.active) {
-      mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
-    } else {
-      if (this.keys.a.isDown) mx -= 1;
-      if (this.keys.d.isDown) mx += 1;
-      if (this.keys.w.isDown) my -= 1;
-      if (this.keys.s.isDown) my += 1;
-      if (this.cursors.left.isDown) { mx -= 1; usingArrows = true; }
-      if (this.cursors.right.isDown) { mx += 1; usingArrows = true; }
-      if (this.cursors.up.isDown) { my -= 1; usingArrows = true; }
-      if (this.cursors.down.isDown) { my += 1; usingArrows = true; }
-    }
-    const mag = Math.sqrt(mx * mx + my * my);
-    if (mag > 0.05) {
-      const speed = 160 * dt;
-      const beforeX = this.player.x, beforeY = this.player.y;
-      this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
-      this.player.vx = (this.player.x - beforeX) / dt;
-      this.player.vy = (this.player.y - beforeY) / dt;
-    } else {
-      this.player.vx = 0; this.player.vy = 0;
-    }
-    this.player.angle = (usingArrows && mag > 0.05)
-      ? Math.atan2(my, mx)
-      : Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
-
-    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
-
-    this.updateAI(dt);
-    this.updateShells(dt);
-    this.updatePickups(dt);
-
-    this.roundTime -= dt;
-    if (this.roundTime <= 0) {
-      this.roundTime = 0;
-      this.state = 'roundEnd';
-      this.toast('TIME UP \u2014 DRAW', '#7f8a9a');
-      this.time.delayedCall(1000, () => this.startRound());
-    }
-    const displaySecs = Math.ceil(this.roundTime);
-    this.timerText.setText(displaySecs + 's');
-
-    // final-10 tension beat — a one-time warning, then a pulsing countdown
-    // for the last 5 seconds so a close match still feels winnable
-    if (this.state === 'playing') {
-      if (!this.warnedFinalTen && this.roundTime <= 10) {
-        this.warnedFinalTen = true;
-        this.setMusicState('final10');
-        this.toast('\u26a0 FINAL 10', '#ff8a3d');
-        if (window.SFX) SFX.alert();
-      }
-      if (this.roundTime <= 5 && this.roundTime > 0) {
-        this.timerText.setColor('#ff5a5a').setFontSize('20px');
-        if (displaySecs !== this.lastCountdownTick) {
-          this.lastCountdownTick = displaySecs;
-          this.tweens.add({ targets: this.timerText, scale: { from: 1.6, to: 1 }, duration: 300, ease: 'Cubic.Out' });
-          if (window.SFX) SFX.countdown();
-        }
+      // player movement
+      let mx = 0, my = 0, usingArrows = false;
+      if (this.joystick && this.joystick.active) {
+        mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
       } else {
-        this.timerText.setColor('#7f8a9a').setFontSize('13px');
+        if (this.keys.a.isDown) mx -= 1;
+        if (this.keys.d.isDown) mx += 1;
+        if (this.keys.w.isDown) my -= 1;
+        if (this.keys.s.isDown) my += 1;
+        if (this.cursors.left.isDown) { mx -= 1; usingArrows = true; }
+        if (this.cursors.right.isDown) { mx += 1; usingArrows = true; }
+        if (this.cursors.up.isDown) { my -= 1; usingArrows = true; }
+        if (this.cursors.down.isDown) { my += 1; usingArrows = true; }
       }
-    }
-
-    if (this.currentMapKey === 'killbox' && this.state === 'playing') {
-      this.shrinkTimer -= dt;
-      if (this.shrinkTimer <= 0) {
-        this.shrinkTimer = SHRINK_INTERVAL;
-        this.shrinkZone();
+      const mag = Math.sqrt(mx * mx + my * my);
+      if (mag > 0.05) {
+        const speed = 160 * dt;
+        const beforeX = this.player.x, beforeY = this.player.y;
+        this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
+        this.player.vx = (this.player.x - beforeX) / dt;
+        this.player.vy = (this.player.y - beforeY) / dt;
+      } else {
+        this.player.vx = 0; this.player.vy = 0;
       }
-    }
+      this.player.angle = (usingArrows && mag > 0.05)
+        ? Math.atan2(my, mx)
+        : Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
 
-    this.draw();
+      if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
+
+      this.updateAI(dt);
+      this.updateShells(dt);
+      this.updatePickups(dt);
+
+      this.roundTime -= dt;
+      if (this.roundTime <= 0) {
+        this.roundTime = 0;
+        this.state = 'roundEnd';
+        this.toast('TIME UP \u2014 DRAW', '#7f8a9a');
+        this.time.delayedCall(1000, () => this.startRound());
+      }
+      const displaySecs = Math.ceil(this.roundTime);
+      this.timerText.setText(displaySecs + 's');
+
+      // final-10 tension beat — a one-time warning, then a pulsing countdown
+      // for the last 5 seconds so a close match still feels winnable
+      if (this.state === 'playing') {
+        if (!this.warnedFinalTen && this.roundTime <= 10) {
+          this.warnedFinalTen = true;
+          this.setMusicState('final10');
+          this.toast('\u26a0 FINAL 10', '#ff8a3d');
+          if (window.SFX) SFX.alert();
+        }
+        if (this.roundTime <= 5 && this.roundTime > 0) {
+          this.timerText.setColor('#ff5a5a').setFontSize('20px');
+          if (displaySecs !== this.lastCountdownTick) {
+            this.lastCountdownTick = displaySecs;
+            this.tweens.add({ targets: this.timerText, scale: { from: 1.6, to: 1 }, duration: 300, ease: 'Cubic.Out' });
+            if (window.SFX) SFX.countdown();
+          }
+        } else {
+          this.timerText.setColor('#7f8a9a').setFontSize('13px');
+        }
+      }
+
+      if (this.currentMapKey === 'killbox' && this.state === 'playing') {
+        this.shrinkTimer -= dt;
+        if (this.shrinkTimer <= 0) {
+          this.shrinkTimer = SHRINK_INTERVAL;
+          this.shrinkZone();
+        }
+      }
+
+      this.draw();
+    } catch (err) {
+      // never let a stray error freeze the whole game — recover to the menu instead
+      console.error('Tank Duel update error, recovering:', err);
+      if (this.state !== 'ready') this.returnToMenu();
+    }
   }
 
   drawTank(g, t, bodyCol, trackCol) {
@@ -897,12 +903,22 @@ const game = new Phaser.Game(config);
 // intercept the browser back button so it reopens this game's own menu
 // instead of navigating away to the hub — re-push our own history entry
 // every time so back stays "trapped" on this page until the tab is closed
-// or the hub link is clicked directly
-history.pushState({ tankDuel: true }, '', location.href);
+// or the hub link is clicked directly.
+// The initial pushState is deferred slightly (setTimeout 0) rather than run
+// at script-parse time — pushing immediately during page load is a known
+// flaky pattern in some browsers where the navigation hasn't fully settled
+// yet, which can make the very first back-press slip through unintercepted.
+setTimeout(() => {
+  history.pushState({ tankDuel: true }, '', location.href);
+}, 0);
 window.addEventListener('popstate', () => {
   history.pushState({ tankDuel: true }, '', location.href);
-  const scene = game.scene.getScene('Play');
-  if (scene && scene.scene.isActive()) scene.returnToMenu();
+  try {
+    const scene = game.scene.getScene('Play');
+    if (scene) scene.returnToMenu();
+  } catch (err) {
+    console.error('back-button handler error:', err);
+  }
 });
 </script>
 </body>
