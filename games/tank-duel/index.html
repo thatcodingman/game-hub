@@ -48,9 +48,18 @@ const MAPS = [
   { key: 'fortress',   label: 'FORTRESS' },
   { key: 'crossroads', label: 'CROSSROADS' },
   { key: 'killbox',    label: 'KILL BOX' },
+  { key: 'random',     label: 'RANDOM' },
 ];
+const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox'];
 const SHRINK_RING_CAP = 5;
 const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box only
+
+const PICKUP_TYPES = [
+  { key: 'rapid',   label: 'RAPID',   color: 0x4fd1ff, desc: 'no reload on your next shot' },
+  { key: 'breaker', label: 'BREAKER', color: 0xff8a3d, desc: 'next shot carves a huge crater' },
+  { key: 'bounce',  label: 'BOUNCE',  color: 0xb37aff, desc: 'next shot ricochets off one wall' },
+];
+const PICKUP_INTERVAL = 9; // seconds between drops, only one live on the field at a time
 
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
@@ -78,13 +87,73 @@ class PlayScene extends Phaser.Scene {
     this.centerText.setText('TANK DUEL').setVisible(true);
   }
 
+  // ---------------------------------------------------------------------
+  // Adaptive music — sfx.js only has short one-shots, so this synthesizes a
+  // continuous drone + pulse directly through the shared AudioContext and
+  // just retunes it (frequency/pulse-rate/volume) per game state, matching
+  // the same technique used for the freeze sound in One More Second.
+  ensureMusicNodes() {
+    if (this.musicNodes || !window.SFX || !SFX.ctx) return;
+    try {
+      const ctx = SFX.ctx;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = 90;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.value = 0.25;
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 0.04;
+      lfo.connect(lfoGain);
+      lfoGain.connect(gain.gain);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      lfo.start();
+      this.musicNodes = { osc, gain, lfo, lfoGain };
+    } catch (err) {
+      console.error('music init error (non-fatal):', err);
+    }
+  }
+
+  setMusicState(state) {
+    if (this.musicState === state) return;
+    this.musicState = state;
+    if (window.SFX && SFX.ctx && SFX.ctx.state === 'suspended') SFX.ctx.resume();
+    this.ensureMusicNodes();
+    if (!this.musicNodes) return;
+    try {
+      const ctx = SFX.ctx;
+      const t = ctx.currentTime;
+      const { osc, gain, lfo } = this.musicNodes;
+      if (!window.SFX || SFX.muted) { gain.gain.setTargetAtTime(0, t, 0.3); return; }
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.1;
+      if (state === 'menu') {
+        osc.frequency.setTargetAtTime(90, t, 0.6);
+        lfo.frequency.setTargetAtTime(0.25, t, 0.6);
+        gain.gain.setTargetAtTime(vol * 0.6, t, 0.6);
+      } else if (state === 'playing') {
+        osc.frequency.setTargetAtTime(110, t, 0.6);
+        lfo.frequency.setTargetAtTime(1.3, t, 0.6);
+        gain.gain.setTargetAtTime(vol, t, 0.6);
+      } else if (state === 'final10') {
+        osc.frequency.setTargetAtTime(165, t, 0.4);
+        lfo.frequency.setTargetAtTime(3.2, t, 0.4);
+        gain.gain.setTargetAtTime(vol * 1.3, t, 0.4);
+      }
+    } catch (err) {
+      console.error('music state error (non-fatal):', err);
+    }
+  }
+
   buildMapMenu() {
     this.mapButtons = [];
     this.mapLabel = this.add.text(W/2, H/2 - 105, 'CHOOSE A MAP', {
       fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     MAPS.forEach((m, i) => {
-      const x = W/2 + (i - 2) * 155;
+      const x = W/2 + (i - (MAPS.length - 1) / 2) * 135;
       const y = H/2 - 70;
       const btn = this.add.text(x, y, m.label, {
         fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
@@ -146,6 +215,7 @@ class PlayScene extends Phaser.Scene {
     this.diffLabel.setVisible(true);
     this.mapButtons.forEach(b => b.setVisible(true));
     this.diffButtons.forEach(b => b.setVisible(true));
+    this.setMusicState('menu');
   }
 
   hideMenu() {
@@ -171,6 +241,7 @@ class PlayScene extends Phaser.Scene {
     this.reloadBarBg = this.add.rectangle(70, 26, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
     this.reloadBar = this.add.rectangle(70 - 49, 26, 98, 8, 0x4fd1ff).setOrigin(0, 0.5);
     this.reloadLabel = this.add.text(20, 8, 'YOU \u00b7 reload', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
+    this.upgradeText = this.add.text(20, 40, '', { fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#b37aff' });
 
     this.aiReloadBarBg = this.add.rectangle(W - 70, 26, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
     this.aiReloadBar = this.add.rectangle(W - 70 - 49, 26, 98, 8, 0xffa64f).setOrigin(0, 0.5);
@@ -245,15 +316,20 @@ class PlayScene extends Phaser.Scene {
 
   startRound() {
     this.state = 'playing';
+    this.setMusicState('playing');
     this.buildArena();
-    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0 };
-    this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0,
+    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null };
+    this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0, upgrade: null,
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
+    this.pickups = [];
+    this.pickupTimer = PICKUP_INTERVAL;
     this.roundTime = ROUND_TIME;
     this.warnedFinalTen = false;
     this.lastCountdownTick = null;
-    this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    const mapLabel = MAPS.find(m => m.key === this.currentMapKey).label;
+    const mapTag = this.mapKey === 'random' ? `${mapLabel} \u00b7 ` : '';
+    this.roundText.setText(`${mapTag}${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
     this.drawArena();
   }
 
@@ -278,7 +354,8 @@ class PlayScene extends Phaser.Scene {
       crossroads: () => this.buildMapCrossroads(),
       killbox: () => this.buildMapKillbox(),
     };
-    (builders[this.mapKey] || builders.divide)();
+    this.currentMapKey = this.mapKey === 'random' ? Phaser.Utils.Array.GetRandom(REAL_MAP_KEYS) : this.mapKey;
+    (builders[this.currentMapKey] || builders.divide)();
   }
 
   // MAP 1 — The Divide: long central wall + small symmetric cover blocks.
@@ -299,16 +376,15 @@ class PlayScene extends Phaser.Scene {
 
   // MAP 2 — The Maze: staggered walls that break the direct spawn-to-spawn
   // sightline entirely, forcing routing through alternating high/low gaps.
+  // MAP 2 — The Maze: three real lanes (upper, center, lower), each
+  // independently walkable end-to-end, with staggered cover inside the
+  // upper/lower lanes for tactical interest. The center lane (the spawn
+  // row) stays fully clear as a genuine option, not just a token gap.
   buildMapMaze() {
     const grid = this.emptyGrid();
-    const segs = [
-      { c: 7, r0: 2, r1: 9 }, { c: 11, r0: 9, r1: 16 }, { c: 15, r0: 2, r1: 9 },
-    ];
-    segs.forEach(({ c, r0, r1 }) => {
-      for (let r = r0; r <= r1; r++) grid[r][c] = true;
-      const mc = COLS - 1 - c;
-      for (let r = r0; r <= r1; r++) grid[r][mc] = true;
-    });
+    [9, 22].forEach(c => { for (let r = 3; r <= 6; r++) grid[r][c] = true; });
+    [15, 16].forEach(c => { for (let r = 3; r <= 6; r++) grid[r][c] = true; });
+    [12, 19].forEach(c => { for (let r = 11; r <= 14; r++) grid[r][c] = true; });
     this.grid = grid;
   }
 
@@ -389,20 +465,27 @@ class PlayScene extends Phaser.Scene {
   // ---------------------------------------------------------------------
   tryPlayerFire() {
     if (this.state !== 'playing' || !this.player.alive || this.player.reload > 0) return;
-    const angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
-    this.fireShell(this.player, angle, 'player');
+    // fire wherever the tank is currently facing — matches the mouse when
+    // aiming normally, and matches your travel direction when auto-turned
+    // by the arrow keys, so the barrel never lies about where the shot goes
+    this.fireShell(this.player, this.player.angle, 'player');
   }
 
   fireShell(owner, angle, side) {
-    owner.reload = RELOAD_MS;
+    const upgrade = owner.upgrade;
+    owner.upgrade = null;
+    owner.reload = (upgrade === 'rapid') ? 0 : RELOAD_MS;
     const spawnDist = TANK_R + 8;
     this.shells.push({
       x: owner.x + Math.cos(angle) * spawnDist,
       y: owner.y + Math.sin(angle) * spawnDist,
       vx: Math.cos(angle) * SHELL_SPEED,
       vy: Math.sin(angle) * SHELL_SPEED,
-      side
+      side,
+      carveMult: upgrade === 'breaker' ? 1.8 : 1,
+      bouncesLeft: upgrade === 'bounce' ? 1 : 0,
     });
+    if (upgrade && side === 'player') this.toast(upgrade.toUpperCase() + ' FIRED', '#b37aff');
     if (window.SFX) SFX.shoot();
   }
 
@@ -427,13 +510,18 @@ class PlayScene extends Phaser.Scene {
     ai.retargetIn -= dt;
     if (ai.retargetIn <= 0) {
       ai.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
-      let tries = 0, c, r;
-      do {
-        c = Phaser.Math.Between(2, COLS - 3);
-        r = Phaser.Math.Between(2, ROWS - 3);
-        tries++;
-      } while (this.isSolid(c, r) && tries < 20);
-      ai.target = { x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 };
+      const livePickup = this.pickups.find(p => p.alive);
+      if (livePickup && Phaser.Math.Between(0, 100) < 70) {
+        ai.target = { x: livePickup.x, y: livePickup.y };
+      } else {
+        let tries = 0, c, r;
+        do {
+          c = Phaser.Math.Between(2, COLS - 3);
+          r = Phaser.Math.Between(2, ROWS - 3);
+          tries++;
+        } while (this.isSolid(c, r) && tries < 20);
+        ai.target = { x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 };
+      }
     }
     const dx = ai.target.x - ai.x, dy = ai.target.y - ai.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -462,6 +550,41 @@ class PlayScene extends Phaser.Scene {
     }
   }
 
+  // ---------------------------------------------------------------------
+  updatePickups(dt) {
+    this.pickupTimer -= dt;
+    if (this.pickupTimer <= 0 && this.pickups.length === 0) {
+      this.pickupTimer = PICKUP_INTERVAL;
+      this.spawnPickup();
+    }
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const p = this.pickups[i];
+      [this.player, this.ai].forEach(tank => {
+        if (!p.alive || !tank.alive) return;
+        const d = Phaser.Math.Distance.Between(p.x, p.y, tank.x, tank.y);
+        if (d < TANK_R + 10) {
+          p.alive = false;
+          tank.upgrade = p.type.key;
+          if (tank === this.player) this.toast(`${p.type.label} READY`, '#4fd1ff');
+          if (window.SFX) SFX.powerup ? SFX.powerup() : SFX.pickup();
+        }
+      });
+      if (!p.alive) this.pickups.splice(i, 1);
+    }
+  }
+
+  spawnPickup() {
+    let tries = 0, c, r;
+    do {
+      c = Phaser.Math.Between(3, COLS - 4);
+      r = Phaser.Math.Between(3, ROWS - 4);
+      tries++;
+    } while (this.isSolid(c, r) && tries < 30);
+    if (this.isSolid(c, r)) return; // arena too full (heavy Kill Box shrink), just skip this drop
+    const type = Phaser.Utils.Array.GetRandom(PICKUP_TYPES);
+    this.pickups.push({ x: c * CELL + CELL / 2, y: r * CELL + CELL / 2, type, alive: true, age: 0 });
+  }
+
   moveTank(tank, dx, dy) {
     // axis-separated so sliding along a wall still works
     const tryMove = (nx, ny) => {
@@ -476,36 +599,39 @@ class PlayScene extends Phaser.Scene {
   }
 
   // ---------------------------------------------------------------------
-  carveTerrain(px, py) {
+  carveTerrain(px, py, sizeMult) {
+    sizeMult = sizeMult || 1;
+    const radius = CARVE_RADIUS * sizeMult;
     const { c: cc, r: cr } = cellIndex(px, py);
-    const span = Math.ceil(CARVE_RADIUS / CELL) + 1;
+    const span = Math.ceil(radius / CELL) + 1;
     for (let r = cr - span; r <= cr + span; r++) {
       for (let c = cc - span; c <= cc + span; c++) {
         if (r <= 0 || r >= ROWS - 1 || c <= 0 || c >= COLS - 1) continue; // keep the border sealed
-        if (this.mapKey === 'killbox' && this.ringDistance(r, c) <= this.shrinkRing) continue; // shrink zone is permanent
+        if (this.currentMapKey === 'killbox' && this.ringDistance(r, c) <= this.shrinkRing) continue; // shrink zone is permanent
         const dx = (c * CELL + CELL / 2) - px, dy = (r * CELL + CELL / 2) - py;
-        if (Math.sqrt(dx * dx + dy * dy) <= CARVE_RADIUS) this.grid[r][c] = false;
+        if (Math.sqrt(dx * dx + dy * dy) <= radius) this.grid[r][c] = false;
       }
     }
     this.drawArena();
   }
 
-  explode(x, y, big) {
-    const flashR = big ? 26 : 14;
+  explode(x, y, big, sizeMult) {
+    sizeMult = sizeMult || 1;
+    const flashR = (big ? 26 : 14) * sizeMult;
     const flash = this.add.circle(x, y, flashR, 0xfff2c9, 0.95);
     this.tweens.add({ targets: flash, alpha: 0, scale: 1.6, duration: 140, onComplete: () => flash.destroy() });
 
     const ring = this.add.circle(x, y, 6, 0xffd23f, 0.5).setStrokeStyle(2, 0xff8a3d);
     this.tweens.add({
-      targets: ring, radius: big ? CARVE_RADIUS * 1.2 : CARVE_RADIUS, alpha: 0, duration: big ? 380 : 260,
+      targets: ring, radius: (big ? CARVE_RADIUS * 1.2 : CARVE_RADIUS) * sizeMult, alpha: 0, duration: big ? 380 : 260,
       onUpdate: () => ring.setStrokeStyle(2, 0xff8a3d, ring.alpha), onComplete: () => ring.destroy()
     });
 
     // debris — a handful of small chunks flung outward and settling
-    const debrisCount = big ? 10 : 6;
+    const debrisCount = Math.round((big ? 10 : 6) * sizeMult);
     for (let i = 0; i < debrisCount; i++) {
       const a = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      const dist = Phaser.Math.FloatBetween(20, big ? 55 : 36);
+      const dist = Phaser.Math.FloatBetween(20, (big ? 55 : 36) * sizeMult);
       const chunk = this.add.rectangle(x, y, Phaser.Math.Between(3, 6), Phaser.Math.Between(3, 6), 0x8a6a4a);
       this.tweens.add({
         targets: chunk, x: x + Math.cos(a) * dist, y: y + Math.sin(a) * dist,
@@ -521,24 +647,37 @@ class PlayScene extends Phaser.Scene {
   updateShells(dt) {
     for (let i = this.shells.length - 1; i >= 0; i--) {
       const s = this.shells[i];
-      s.x += s.vx * dt; s.y += s.vy * dt;
 
-      if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) { this.shells.splice(i, 1); continue; }
+      // axis-separated stepping so a bounce shell can reflect off just the
+      // wall it actually hit, instead of reversing direction outright
+      const tryX = s.x + s.vx * dt, tryY = s.y + s.vy * dt;
+      const blockedX = this.isSolid(cellIndex(tryX, s.y).c, cellIndex(tryX, s.y).r);
+      const blockedY = this.isSolid(cellIndex(s.x, tryY).c, cellIndex(s.x, tryY).r);
 
-      const { c, r } = cellIndex(s.x, s.y);
-      if (this.isSolid(c, r)) {
-        this.explode(s.x, s.y);
-        this.carveTerrain(s.x, s.y);
+      if (blockedX || blockedY) {
+        if (s.bouncesLeft > 0) {
+          s.bouncesLeft--;
+          if (blockedX) s.vx = -s.vx;
+          if (blockedY) s.vy = -s.vy;
+          s.x += s.vx * dt; s.y += s.vy * dt;
+          if (window.SFX) SFX.blip();
+          continue;
+        }
+        this.explode(s.x, s.y, false, s.carveMult);
+        this.carveTerrain(s.x, s.y, s.carveMult);
         this.shells.splice(i, 1);
         continue;
       }
+      s.x = tryX; s.y = tryY;
+
+      if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) { this.shells.splice(i, 1); continue; }
 
       const target = s.side === 'player' ? this.ai : this.player;
       if (target.alive) {
         const d = Phaser.Math.Distance.Between(s.x, s.y, target.x, target.y);
         if (d < TANK_R + SHELL_R) {
-          this.explode(s.x, s.y, true);
-          this.carveTerrain(s.x, s.y);
+          this.explode(s.x, s.y, true, s.carveMult);
+          this.carveTerrain(s.x, s.y, s.carveMult);
           this.shells.splice(i, 1);
           this.killTank(target, s.side);
         }
@@ -557,7 +696,7 @@ class PlayScene extends Phaser.Scene {
       this.toast('AI WINS THE ROUND', '#ff5a5a');
       if (window.SFX) SFX.fail();
     }
-    this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`); // map tag re-added next round via startRound()
 
     if (this.playerWins >= ROUNDS_TO_WIN || this.aiWins >= ROUNDS_TO_WIN) {
       this.state = 'matchEnd';
@@ -577,6 +716,15 @@ class PlayScene extends Phaser.Scene {
     ).setVisible(true);
   }
 
+  // called when the browser back button fires mid-match — bail out to the
+  // main menu instead of letting the page navigate away
+  returnToMenu() {
+    if (this.state === 'ready') return;
+    this.showMenu();
+    this.centerText.setText('TANK DUEL').setColor('#f0e6d2').setVisible(true);
+    this.subText.setText('Match ended \u2014 choose a difficulty to start a new one').setVisible(true);
+  }
+
   // ---------------------------------------------------------------------
   update(time, delta) {
     if (this.state !== 'playing') { this.draw(); return; }
@@ -586,16 +734,22 @@ class PlayScene extends Phaser.Scene {
     if (this.ai.reload > 0) this.ai.reload -= delta;
     this.reloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.player.reload / RELOAD_MS, 0, 1));
     this.aiReloadBar.width = 98 * (1 - Phaser.Math.Clamp(this.ai.reload / RELOAD_MS, 0, 1));
+    const upgradeLabels = { rapid: 'RAPID READY', breaker: 'BREAKER READY', bounce: 'BOUNCE READY' };
+    this.upgradeText.setText(this.player.upgrade ? upgradeLabels[this.player.upgrade] : '');
 
     // player movement
-    let mx = 0, my = 0;
+    let mx = 0, my = 0, usingArrows = false;
     if (this.joystick && this.joystick.active) {
       mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
     } else {
-      if (this.keys.a.isDown || this.cursors.left.isDown) mx -= 1;
-      if (this.keys.d.isDown || this.cursors.right.isDown) mx += 1;
-      if (this.keys.w.isDown || this.cursors.up.isDown) my -= 1;
-      if (this.keys.s.isDown || this.cursors.down.isDown) my += 1;
+      if (this.keys.a.isDown) mx -= 1;
+      if (this.keys.d.isDown) mx += 1;
+      if (this.keys.w.isDown) my -= 1;
+      if (this.keys.s.isDown) my += 1;
+      if (this.cursors.left.isDown) { mx -= 1; usingArrows = true; }
+      if (this.cursors.right.isDown) { mx += 1; usingArrows = true; }
+      if (this.cursors.up.isDown) { my -= 1; usingArrows = true; }
+      if (this.cursors.down.isDown) { my += 1; usingArrows = true; }
     }
     const mag = Math.sqrt(mx * mx + my * my);
     if (mag > 0.05) {
@@ -607,12 +761,15 @@ class PlayScene extends Phaser.Scene {
     } else {
       this.player.vx = 0; this.player.vy = 0;
     }
-    this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
+    this.player.angle = (usingArrows && mag > 0.05)
+      ? Math.atan2(my, mx)
+      : Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
 
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
 
     this.updateAI(dt);
     this.updateShells(dt);
+    this.updatePickups(dt);
 
     this.roundTime -= dt;
     if (this.roundTime <= 0) {
@@ -629,6 +786,7 @@ class PlayScene extends Phaser.Scene {
     if (this.state === 'playing') {
       if (!this.warnedFinalTen && this.roundTime <= 10) {
         this.warnedFinalTen = true;
+        this.setMusicState('final10');
         this.toast('\u26a0 FINAL 10', '#ff8a3d');
         if (window.SFX) SFX.alert();
       }
@@ -644,7 +802,7 @@ class PlayScene extends Phaser.Scene {
       }
     }
 
-    if (this.mapKey === 'killbox' && this.state === 'playing') {
+    if (this.currentMapKey === 'killbox' && this.state === 'playing') {
       this.shrinkTimer -= dt;
       if (this.shrinkTimer <= 0) {
         this.shrinkTimer = SHRINK_INTERVAL;
@@ -692,6 +850,19 @@ class PlayScene extends Phaser.Scene {
     const g = this.fxGraphics;
     g.clear();
 
+    // pickups — a pulsing diamond so they read clearly against the terrain
+    const pulse = 0.75 + 0.25 * Math.sin(this.time.now / 180);
+    (this.pickups || []).forEach(p => {
+      const r = 9 * pulse;
+      g.fillStyle(p.type.color, 0.9);
+      g.beginPath();
+      g.moveTo(p.x, p.y - r); g.lineTo(p.x + r, p.y); g.lineTo(p.x, p.y + r); g.lineTo(p.x - r, p.y);
+      g.closePath();
+      g.fillPath();
+      g.lineStyle(2, 0xffffff, 0.7);
+      g.strokePath();
+    });
+
     this.drawTank(g, this.player, 0x5be37b, 0x2f5a3a);
     this.drawTank(g, this.ai, 0xff5a5a, 0x7a2f2f);
 
@@ -704,7 +875,7 @@ class PlayScene extends Phaser.Scene {
         g.fillStyle(0xffb15a, (i / s.trail.length) * 0.5);
         g.fillCircle(p.x, p.y, SHELL_R * (i / s.trail.length));
       });
-      g.fillStyle(0xffe08a, 1);
+      g.fillStyle(s.bouncesLeft > 0 ? 0xb37aff : 0xffe08a, 1);
       g.fillCircle(s.x, s.y, SHELL_R);
     });
   }
@@ -721,7 +892,18 @@ const config = {
   scene: [PlayScene]
 };
 
-new Phaser.Game(config);
+const game = new Phaser.Game(config);
+
+// intercept the browser back button so it reopens this game's own menu
+// instead of navigating away to the hub — re-push our own history entry
+// every time so back stays "trapped" on this page until the tab is closed
+// or the hub link is clicked directly
+history.pushState({ tankDuel: true }, '', location.href);
+window.addEventListener('popstate', () => {
+  history.pushState({ tankDuel: true }, '', location.href);
+  const scene = game.scene.getScene('Play');
+  if (scene && scene.scene.isActive()) scene.returnToMenu();
+});
 </script>
 </body>
 </html>
