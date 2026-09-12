@@ -168,13 +168,13 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5, 0);
 
-    this.reloadBarBg = this.add.rectangle(70, 20, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
-    this.reloadBar = this.add.rectangle(70 - 49, 20, 98, 8, 0x5be37b).setOrigin(0, 0.5);
-    this.reloadLabel = this.add.text(20, 8, 'YOU', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
+    this.reloadBarBg = this.add.rectangle(70, 26, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
+    this.reloadBar = this.add.rectangle(70 - 49, 26, 98, 8, 0x4fd1ff).setOrigin(0, 0.5);
+    this.reloadLabel = this.add.text(20, 8, 'YOU \u00b7 reload', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
 
-    this.aiReloadBarBg = this.add.rectangle(W - 70, 20, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
-    this.aiReloadBar = this.add.rectangle(W - 70 - 49, 20, 98, 8, 0xff5a5a).setOrigin(0, 0.5);
-    this.aiReloadLabel = this.add.text(W - 60, 8, 'AI', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
+    this.aiReloadBarBg = this.add.rectangle(W - 70, 26, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
+    this.aiReloadBar = this.add.rectangle(W - 70 - 49, 26, 98, 8, 0xffa64f).setOrigin(0, 0.5);
+    this.aiReloadLabel = this.add.text(W - 118, 8, 'AI \u00b7 reload', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
 
     this.toastText = this.add.text(W/2, H/2 - 80, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
@@ -251,6 +251,8 @@ class PlayScene extends Phaser.Scene {
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
     this.roundTime = ROUND_TIME;
+    this.warnedFinalTen = false;
+    this.lastCountdownTick = null;
     this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
     this.drawArena();
   }
@@ -287,6 +289,11 @@ class PlayScene extends Phaser.Scene {
     for (let c = 10; c <= 21; c++) grid[midRow][c] = true;
     [[6, 4], [6, 5], [ROWS - 8, COLS - 6], [ROWS - 8, COLS - 5]].forEach(([r, c]) => { grid[r][c] = true; });
     [[ROWS - 7, 4], [ROWS - 7, 5], [7, COLS - 6], [7, COLS - 5]].forEach(([r, c]) => { grid[r][c] = true; });
+    // small center-column cover above/below the divider, so the open space
+    // top and bottom isn't completely bare — inherently symmetric since
+    // it straddles the arena's true center column (15.5)
+    [[3, 15], [3, 16], [4, 15], [4, 16]].forEach(([r, c]) => { grid[r][c] = true; });
+    [[13, 15], [13, 16], [14, 15], [14, 16]].forEach(([r, c]) => { grid[r][c] = true; });
     this.grid = grid;
   }
 
@@ -508,7 +515,7 @@ class PlayScene extends Phaser.Scene {
     }
 
     this.cameras.main.shake(big ? 220 : 110, big ? 0.012 : 0.006);
-    if (window.SFX) SFX.explosion();
+    if (window.SFX) (big ? SFX.explosion() : SFX.hit());
   }
 
   updateShells(dt) {
@@ -614,7 +621,28 @@ class PlayScene extends Phaser.Scene {
       this.toast('TIME UP \u2014 DRAW', '#7f8a9a');
       this.time.delayedCall(1000, () => this.startRound());
     }
-    this.timerText.setText(Math.ceil(this.roundTime) + 's');
+    const displaySecs = Math.ceil(this.roundTime);
+    this.timerText.setText(displaySecs + 's');
+
+    // final-10 tension beat — a one-time warning, then a pulsing countdown
+    // for the last 5 seconds so a close match still feels winnable
+    if (this.state === 'playing') {
+      if (!this.warnedFinalTen && this.roundTime <= 10) {
+        this.warnedFinalTen = true;
+        this.toast('\u26a0 FINAL 10', '#ff8a3d');
+        if (window.SFX) SFX.alert();
+      }
+      if (this.roundTime <= 5 && this.roundTime > 0) {
+        this.timerText.setColor('#ff5a5a').setFontSize('20px');
+        if (displaySecs !== this.lastCountdownTick) {
+          this.lastCountdownTick = displaySecs;
+          this.tweens.add({ targets: this.timerText, scale: { from: 1.6, to: 1 }, duration: 300, ease: 'Cubic.Out' });
+          if (window.SFX) SFX.countdown();
+        }
+      } else {
+        this.timerText.setColor('#7f8a9a').setFontSize('13px');
+      }
+    }
 
     if (this.mapKey === 'killbox' && this.state === 'playing') {
       this.shrinkTimer -= dt;
