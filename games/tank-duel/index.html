@@ -42,6 +42,16 @@ const DIFFICULTIES = {
   hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.5, fireMax: 1.0, retarget: [1.0, 1.8], moveSpeed: 148, lead: 0.16 },
 };
 
+const MAPS = [
+  { key: 'divide',     label: 'DIVIDE' },
+  { key: 'maze',       label: 'MAZE' },
+  { key: 'fortress',   label: 'FORTRESS' },
+  { key: 'crossroads', label: 'CROSSROADS' },
+  { key: 'killbox',    label: 'KILL BOX' },
+];
+const SHRINK_RING_CAP = 5;
+const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box only
+
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
 class PlayScene extends Phaser.Scene {
@@ -58,20 +68,59 @@ class PlayScene extends Phaser.Scene {
     this.playerWins = 0;
     this.aiWins = 0;
     this.difficulty = 'normal';
+    this.mapKey = 'divide';
 
     this.buildHUD();
     this.setupInput();
+    this.buildMapMenu();
     this.buildDifficultyMenu();
     this.showMenu();
     this.centerText.setText('TANK DUEL').setVisible(true);
   }
 
+  buildMapMenu() {
+    this.mapButtons = [];
+    this.mapLabel = this.add.text(W/2, H/2 - 105, 'CHOOSE A MAP', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
+    MAPS.forEach((m, i) => {
+      const x = W/2 + (i - 2) * 155;
+      const y = H/2 - 70;
+      const btn = this.add.text(x, y, m.label, {
+        fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
+      }).setOrigin(0.5).setPadding(12, 9, 12, 9).setBackgroundColor('#1c2128')
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerover', () => { if (this.mapKey !== m.key) btn.setBackgroundColor('#262c34'); });
+      btn.on('pointerout', () => this.refreshMapButtonStyles());
+      btn.on('pointerdown', () => {
+        if (this.state !== 'ready') return;
+        this.mapKey = m.key;
+        if (window.SFX) SFX.click();
+        this.refreshMapButtonStyles();
+      });
+      btn.setData('key', m.key);
+      this.mapButtons.push(btn);
+    });
+    this.refreshMapButtonStyles();
+  }
+
+  refreshMapButtonStyles() {
+    this.mapButtons.forEach(b => {
+      const selected = b.getData('key') === this.mapKey;
+      b.setBackgroundColor(selected ? '#3a6b4a' : '#1c2128');
+      b.setColor(selected ? '#9fffc0' : '#e8ecf1');
+    });
+  }
+
   buildDifficultyMenu() {
     this.diffButtons = [];
+    this.diffLabel = this.add.text(W/2, H/2 - 20, 'CHOOSE A DIFFICULTY TO START', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
     const keys = ['easy', 'normal', 'hard'];
     keys.forEach((key, i) => {
       const x = W/2 + (i - 1) * 170;
-      const y = H/2 + 12;
+      const y = H/2 + 15;
       const btn = this.add.text(x, y, DIFFICULTIES[key].label, {
         fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#e8ecf1'
       }).setOrigin(0.5).setPadding(18, 12, 18, 12).setBackgroundColor('#1c2128')
@@ -93,6 +142,9 @@ class PlayScene extends Phaser.Scene {
   showMenu() {
     this.state = 'ready';
     this.hintText.setVisible(true);
+    this.mapLabel.setVisible(true);
+    this.diffLabel.setVisible(true);
+    this.mapButtons.forEach(b => b.setVisible(true));
     this.diffButtons.forEach(b => b.setVisible(true));
   }
 
@@ -100,6 +152,9 @@ class PlayScene extends Phaser.Scene {
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
     this.hintText.setVisible(false);
+    this.mapLabel.setVisible(false);
+    this.diffLabel.setVisible(false);
+    this.mapButtons.forEach(b => b.setVisible(false));
     this.diffButtons.forEach(b => b.setVisible(false));
   }
 
@@ -125,14 +180,14 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
     }).setOrigin(0.5).setAlpha(0);
 
-    this.centerText = this.add.text(W/2, H/2 - 120, '', {
+    this.centerText = this.add.text(W/2, H/2 - 175, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '34px', color: '#f0e6d2', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true).setVisible(false);
-    this.subText = this.add.text(W/2, H/2 - 62, '', {
+    this.subText = this.add.text(W/2, H/2 - 135, '', {
       fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
-    this.hintText = this.add.text(W/2, H/2 + 92,
-      'WASD to move \u00b7 mouse or drag to aim \u00b7 click or SPACE to fire', {
+    this.hintText = this.add.text(W/2, H/2 + 80,
+      'WASD or arrows to move \u00b7 mouse or drag to aim \u00b7 click or SPACE to fire', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
   }
@@ -145,6 +200,7 @@ class PlayScene extends Phaser.Scene {
   // ---------------------------------------------------------------------
   setupInput() {
     this.keys = this.input.keyboard.addKeys({ w: 'W', a: 'A', s: 'S', d: 'D' });
+    this.cursors = this.input.keyboard.createCursorKeys();
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.pointerWorld = { x: W * 0.75, y: H / 2 };
@@ -200,7 +256,7 @@ class PlayScene extends Phaser.Scene {
   }
 
   // ---------------------------------------------------------------------
-  buildArena() {
+  emptyGrid() {
     const grid = [];
     for (let r = 0; r < ROWS; r++) {
       const row = [];
@@ -209,13 +265,94 @@ class PlayScene extends Phaser.Scene {
       }
       grid.push(row);
     }
-    // symmetric central wall, mirrored so neither side starts with an advantage
+    return grid;
+  }
+
+  buildArena() {
+    const builders = {
+      divide: () => this.buildMapDivide(),
+      maze: () => this.buildMapMaze(),
+      fortress: () => this.buildMapFortress(),
+      crossroads: () => this.buildMapCrossroads(),
+      killbox: () => this.buildMapKillbox(),
+    };
+    (builders[this.mapKey] || builders.divide)();
+  }
+
+  // MAP 1 — The Divide: long central wall + small symmetric cover blocks.
+  // Baseline map — peek, shoot, retreat.
+  buildMapDivide() {
+    const grid = this.emptyGrid();
     const midRow = Math.floor(ROWS / 2);
     for (let c = 10; c <= 21; c++) grid[midRow][c] = true;
-    // a couple of small symmetric cover blocks
     [[6, 4], [6, 5], [ROWS - 8, COLS - 6], [ROWS - 8, COLS - 5]].forEach(([r, c]) => { grid[r][c] = true; });
     [[ROWS - 7, 4], [ROWS - 7, 5], [7, COLS - 6], [7, COLS - 5]].forEach(([r, c]) => { grid[r][c] = true; });
     this.grid = grid;
+  }
+
+  // MAP 2 — The Maze: staggered walls that break the direct spawn-to-spawn
+  // sightline entirely, forcing routing through alternating high/low gaps.
+  buildMapMaze() {
+    const grid = this.emptyGrid();
+    const segs = [
+      { c: 7, r0: 2, r1: 9 }, { c: 11, r0: 9, r1: 16 }, { c: 15, r0: 2, r1: 9 },
+    ];
+    segs.forEach(({ c, r0, r1 }) => {
+      for (let r = r0; r <= r1; r++) grid[r][c] = true;
+      const mc = COLS - 1 - c;
+      for (let r = r0; r <= r1; r++) grid[r][mc] = true;
+    });
+    this.grid = grid;
+  }
+
+  // MAP 3 — The Fortress: each tank gets a defended box with one narrow
+  // opening facing the center — safe start, but you have to push out eventually.
+  buildMapFortress() {
+    const grid = this.emptyGrid();
+    const buildBox = (c0, c1) => {
+      for (let c = c0; c <= c1; c++) { grid[6][c] = true; grid[12][c] = true; }
+      for (let r = 6; r <= 12; r++) { if (r < 8 || r > 10) grid[r][c1] = true; }
+    };
+    buildBox(3, 9);                               // player-side box, opening faces right (center)
+    const mc0 = COLS - 1 - 9, mc1 = COLS - 1 - 3;  // mirrored box, opening faces left (center)
+    for (let c = mc0; c <= mc1; c++) { grid[6][c] = true; grid[12][c] = true; }
+    for (let r = 6; r <= 12; r++) { if (r < 8 || r > 10) grid[r][mc0] = true; }
+    this.grid = grid;
+  }
+
+  // MAP 4 — The Crossroads: high, low, and center lanes, each gated by cover,
+  // so the fight is about which route to commit to, not just aim.
+  buildMapCrossroads() {
+    const grid = this.emptyGrid();
+    for (let c = 9; c <= 14; c++) { grid[5][c] = true; grid[12][c] = true; }
+    for (let c = 17; c <= 22; c++) { grid[5][c] = true; grid[12][c] = true; }
+    this.grid = grid;
+  }
+
+  // MAP 5 — The Kill Box: minimal cover, small exposed arena, and a battle
+  // zone that seals inward in rings over time — see shrinkZone().
+  buildMapKillbox() {
+    const grid = this.emptyGrid();
+    grid[Math.floor(ROWS/2)][Math.floor(COLS/2) - 1] = true;
+    grid[Math.floor(ROWS/2)][Math.floor(COLS/2)] = true;
+    this.grid = grid;
+    this.shrinkRing = 0;
+    this.shrinkTimer = SHRINK_INTERVAL;
+  }
+
+  ringDistance(r, c) { return Math.min(r, ROWS - 1 - r, c, COLS - 1 - c); }
+
+  shrinkZone() {
+    if (this.shrinkRing >= SHRINK_RING_CAP) return;
+    this.shrinkRing++;
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (this.ringDistance(r, c) === this.shrinkRing) this.grid[r][c] = true;
+      }
+    }
+    this.drawArena();
+    this.toast('ZONE CLOSING', '#ff8a3d');
+    if (window.SFX) SFX.alert();
   }
 
   isSolid(c, r) {
@@ -338,6 +475,7 @@ class PlayScene extends Phaser.Scene {
     for (let r = cr - span; r <= cr + span; r++) {
       for (let c = cc - span; c <= cc + span; c++) {
         if (r <= 0 || r >= ROWS - 1 || c <= 0 || c >= COLS - 1) continue; // keep the border sealed
+        if (this.mapKey === 'killbox' && this.ringDistance(r, c) <= this.shrinkRing) continue; // shrink zone is permanent
         const dx = (c * CELL + CELL / 2) - px, dy = (r * CELL + CELL / 2) - py;
         if (Math.sqrt(dx * dx + dy * dy) <= CARVE_RADIUS) this.grid[r][c] = false;
       }
@@ -447,10 +585,10 @@ class PlayScene extends Phaser.Scene {
     if (this.joystick && this.joystick.active) {
       mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
     } else {
-      if (this.keys.a.isDown) mx -= 1;
-      if (this.keys.d.isDown) mx += 1;
-      if (this.keys.w.isDown) my -= 1;
-      if (this.keys.s.isDown) my += 1;
+      if (this.keys.a.isDown || this.cursors.left.isDown) mx -= 1;
+      if (this.keys.d.isDown || this.cursors.right.isDown) mx += 1;
+      if (this.keys.w.isDown || this.cursors.up.isDown) my -= 1;
+      if (this.keys.s.isDown || this.cursors.down.isDown) my += 1;
     }
     const mag = Math.sqrt(mx * mx + my * my);
     if (mag > 0.05) {
@@ -477,6 +615,14 @@ class PlayScene extends Phaser.Scene {
       this.time.delayedCall(1000, () => this.startRound());
     }
     this.timerText.setText(Math.ceil(this.roundTime) + 's');
+
+    if (this.mapKey === 'killbox' && this.state === 'playing') {
+      this.shrinkTimer -= dt;
+      if (this.shrinkTimer <= 0) {
+        this.shrinkTimer = SHRINK_INTERVAL;
+        this.shrinkZone();
+      }
+    }
 
     this.draw();
   }
