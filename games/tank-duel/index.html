@@ -31,6 +31,7 @@ const COLS = W / CELL, ROWS = H / CELL;
 const TANK_R = 14;
 const SHELL_R = 5;
 const SHELL_SPEED = 480;
+const TURN_SPEED = 7; // rad/sec — how fast arrow-key auto-turn sweeps between angles
 const RELOAD_MS = 1300;
 const CARVE_RADIUS = 58;
 const ROUNDS_TO_WIN = 2;
@@ -149,8 +150,8 @@ class PlayScene extends Phaser.Scene {
 
   buildMapMenu() {
     this.mapButtons = [];
-    this.mapLabel = this.add.text(W/2, H/2 - 105, 'CHOOSE A MAP', {
-      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    this.mapLabel = this.add.text(W/2, H/2 - 105, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
+      fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     MAPS.forEach((m, i) => {
       const x = W/2 + (i - (MAPS.length - 1) / 2) * 135;
@@ -215,6 +216,7 @@ class PlayScene extends Phaser.Scene {
     this.diffLabel.setVisible(true);
     this.mapButtons.forEach(b => b.setVisible(true));
     this.diffButtons.forEach(b => b.setVisible(true));
+    this.menuBtn.setVisible(false);
     this.setMusicState('menu');
   }
 
@@ -246,6 +248,16 @@ class PlayScene extends Phaser.Scene {
     this.aiReloadBarBg = this.add.rectangle(W - 70, 26, 100, 10, 0x2a2118).setStrokeStyle(1, 0x000000);
     this.aiReloadBar = this.add.rectangle(W - 70 - 49, 26, 98, 8, 0xffa64f).setOrigin(0, 0.5);
     this.aiReloadLabel = this.add.text(W - 118, 8, 'AI \u00b7 reload', { fontFamily: 'Arial Black, Arial', fontSize: '11px', color: '#7f8a9a' });
+
+    // reliable, click-based way back to the menu — doesn't depend on the
+    // browser back button working correctly, only shown during a match
+    this.menuBtn = this.add.text(W - 12, H - 12, '\u2630 MENU', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#e8ecf1'
+    }).setOrigin(1, 1).setPadding(10, 6, 10, 6).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.menuBtn.on('pointerover', () => this.menuBtn.setBackgroundColor('#262c34'));
+    this.menuBtn.on('pointerout', () => this.menuBtn.setBackgroundColor('#1c2128'));
+    this.menuBtn.on('pointerdown', () => this.returnToMenu());
 
     this.toastText = this.add.text(W/2, H/2 - 80, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
@@ -316,6 +328,7 @@ class PlayScene extends Phaser.Scene {
 
   startRound() {
     this.state = 'playing';
+    this.menuBtn.setVisible(true);
     this.setMusicState('playing');
     this.buildArena();
     this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null };
@@ -698,7 +711,10 @@ class PlayScene extends Phaser.Scene {
     }
     this.roundText.setText(`${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`); // map tag re-added next round via startRound()
 
-    if (this.playerWins >= ROUNDS_TO_WIN || this.aiWins >= ROUNDS_TO_WIN) {
+    // Random is its own endless game mode, not just a map picker within the
+    // usual best-of-3 — it never hits a match-end, only Quit/Menu ends it
+    const endless = this.mapKey === 'random';
+    if (!endless && (this.playerWins >= ROUNDS_TO_WIN || this.aiWins >= ROUNDS_TO_WIN)) {
       this.state = 'matchEnd';
       this.time.delayedCall(1300, () => this.endMatch());
     } else {
@@ -762,9 +778,15 @@ class PlayScene extends Phaser.Scene {
       } else {
         this.player.vx = 0; this.player.vy = 0;
       }
-      this.player.angle = (usingArrows && mag > 0.05)
-        ? Math.atan2(my, mx)
-        : Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
+      // mouse aim stays instant (precision matters for aiming); arrow-key
+      // auto-turn sweeps through the rotation over real time instead of
+      // teleporting straight to N/S/E/W/diagonals
+      if (usingArrows && mag > 0.05) {
+        const targetAngle = Math.atan2(my, mx);
+        this.player.angle = Phaser.Math.Angle.RotateTo(this.player.angle, targetAngle, TURN_SPEED * dt);
+      } else {
+        this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
+      }
 
       if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
 
