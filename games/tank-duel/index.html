@@ -38,9 +38,9 @@ const ROUNDS_TO_WIN = 2;
 const ROUND_TIME = 40;
 
 const DIFFICULTIES = {
-  easy:   { label: 'EASY',   aimJitter: 0.22, fireMin: 1.7, fireMax: 2.9, retarget: [1.9, 3.3], moveSpeed: 95,  lead: 0 },
-  normal: { label: 'NORMAL', aimJitter: 0.06, fireMin: 0.9, fireMax: 1.8, retarget: [1.4, 2.6], moveSpeed: 120, lead: 0 },
-  hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.5, fireMax: 1.0, retarget: [1.0, 1.8], moveSpeed: 148, lead: 0.16 },
+  easy:   { label: 'EASY',   aimJitter: 0.22, fireMin: 1.7, fireMax: 2.9, retarget: [1.9, 3.3], moveSpeed: 95,  lead: 0,    turnSpeed: 5.5 },
+  normal: { label: 'NORMAL', aimJitter: 0.06, fireMin: 0.9, fireMax: 1.8, retarget: [1.4, 2.6], moveSpeed: 120, lead: 0,    turnSpeed: 7.5 },
+  hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.5, fireMax: 1.0, retarget: [1.0, 1.8], moveSpeed: 148, lead: 0.16, turnSpeed: 9.5 },
 };
 
 const MAPS = [
@@ -405,7 +405,7 @@ class PlayScene extends Phaser.Scene {
     this.setMusicState('playing');
     this.buildArena();
     this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null };
-    this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0, upgrade: null,
+    this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0, upgrade: null, aiming: false,
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
     this.pickups = [];
@@ -593,7 +593,8 @@ class PlayScene extends Phaser.Scene {
     if (!ai.alive) return;
     const diff = DIFFICULTIES[this.difficulty];
 
-    // movement — wander toward open waypoints, occasionally biasing toward/away from the player
+    // periodically pick a movement target — either a live pickup or a
+    // random open waypoint
     ai.retargetIn -= dt;
     if (ai.retargetIn <= 0) {
       ai.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
@@ -610,29 +611,42 @@ class PlayScene extends Phaser.Scene {
         ai.target = { x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 };
       }
     }
-    const dx = ai.target.x - ai.x, dy = ai.target.y - ai.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 6) {
-      const mv = diff.moveSpeed * dt;
-      this.moveTank(ai, (dx / dist) * mv, (dy / dist) * mv);
+
+    // periodically decide whether to commit to an attack — turning to aim
+    // takes real time now, so this is a real "tell" the player can react to,
+    // not an instant snap
+    ai.fireGate -= dt;
+    if (!ai.aiming && ai.reload <= 0 && ai.fireGate <= 0 && this.player.alive
+        && this.hasLineOfSight(ai.x, ai.y, this.player.x, this.player.y)) {
+      ai.aiming = true;
     }
 
-    // aim — lead the player based on their current velocity (Hard only), with
-    // human-ish inaccuracy that shrinks as difficulty rises
-    if (this.player.alive) {
+    let desiredAngle;
+    if (ai.aiming && this.player.alive) {
       const aimX = this.player.x + (this.player.vx || 0) * diff.lead;
       const aimY = this.player.y + (this.player.vy || 0) * diff.lead;
-      const targetAngle = Math.atan2(aimY - ai.y, aimX - ai.x);
-      ai.angle = targetAngle + Phaser.Math.FloatBetween(-diff.aimJitter * 0.5, diff.aimJitter * 0.5);
+      desiredAngle = Math.atan2(aimY - ai.y, aimX - ai.x);
+    } else {
+      desiredAngle = Math.atan2(ai.target.y - ai.y, ai.target.x - ai.x);
+    }
+    ai.angle = Phaser.Math.Angle.RotateTo(ai.angle, desiredAngle, diff.turnSpeed * dt);
+    const angleDiff = Math.abs(Phaser.Math.Angle.Wrap(desiredAngle - ai.angle));
 
-      ai.fireGate -= dt;
-      if (ai.reload <= 0 && ai.fireGate <= 0) {
-        if (this.hasLineOfSight(ai.x, ai.y, this.player.x, this.player.y)) {
-          this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
-          ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
-        } else {
-          ai.fireGate = 0.3;
-        }
+    if (ai.aiming) {
+      // hold still to line up the shot, like a real tank — no strafing while aiming
+      if (angleDiff < diff.aimJitter + 0.06 || !this.player.alive || !ai.alive) {
+        if (this.player.alive) this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
+        ai.aiming = false;
+        ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
+      }
+    } else {
+      // drive forward toward the target — can't strafe, has to be roughly
+      // facing the right way first, exactly like the player's arrow controls
+      const dist = Phaser.Math.Distance.Between(ai.x, ai.y, ai.target.x, ai.target.y);
+      if (dist > 6 && angleDiff < Math.PI / 2) {
+        const speedScale = 1 - (angleDiff / (Math.PI / 2)) * 0.6;
+        const mv = diff.moveSpeed * dt * speedScale;
+        this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
       }
     }
   }
