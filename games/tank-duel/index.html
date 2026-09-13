@@ -38,9 +38,9 @@ const ROUNDS_TO_WIN = 2;
 const ROUND_TIME = 40;
 
 const DIFFICULTIES = {
-  easy:   { label: 'EASY',   aimJitter: 0.22, fireMin: 1.7, fireMax: 2.9, retarget: [1.9, 3.3], moveSpeed: 95,  lead: 0,    turnSpeed: 5.5 },
-  normal: { label: 'NORMAL', aimJitter: 0.06, fireMin: 0.9, fireMax: 1.8, retarget: [1.4, 2.6], moveSpeed: 120, lead: 0,    turnSpeed: 7.5 },
-  hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.5, fireMax: 1.0, retarget: [1.0, 1.8], moveSpeed: 148, lead: 0.16, turnSpeed: 9.5 },
+  easy:   { label: 'EASY',   aimJitter: 0.22, fireMin: 1.5, fireMax: 2.5, retarget: [1.1, 1.8], moveSpeed: 145, lead: 0,    turnSpeed: 6.5 },
+  normal: { label: 'NORMAL', aimJitter: 0.06, fireMin: 0.8, fireMax: 1.5, retarget: [0.8, 1.4], moveSpeed: 185, lead: 0,    turnSpeed: 8.5 },
+  hard:   { label: 'HARD',   aimJitter: 0.02, fireMin: 0.4, fireMax: 0.9, retarget: [0.6, 1.1], moveSpeed: 225, lead: 0.16, turnSpeed: 10.5 },
 };
 
 const MAPS = [
@@ -602,13 +602,23 @@ class PlayScene extends Phaser.Scene {
       if (livePickup && Phaser.Math.Between(0, 100) < 70) {
         ai.target = { x: livePickup.x, y: livePickup.y };
       } else {
-        let tries = 0, c, r;
-        do {
+        // require real distance so every retarget produces visible movement,
+        // and prefer a spot out of the player's sightline when reloading —
+        // simple cover-seeking instead of pure random wander
+        const wantCover = this.player.alive && this.ai.reload > 0;
+        let best = null, bestTries = 0, c, r, cx, cy;
+        while (bestTries < 25) {
           c = Phaser.Math.Between(2, COLS - 3);
           r = Phaser.Math.Between(2, ROWS - 3);
-          tries++;
-        } while (this.isSolid(c, r) && tries < 20);
-        ai.target = { x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 };
+          cx = c * CELL + CELL / 2; cy = r * CELL + CELL / 2;
+          bestTries++;
+          if (this.isSolid(c, r)) continue;
+          if (Phaser.Math.Distance.Between(ai.x, ai.y, cx, cy) < 180) continue;
+          const covered = wantCover && !this.hasLineOfSight(cx, cy, this.player.x, this.player.y);
+          if (!best) best = { x: cx, y: cy };
+          if (!wantCover || covered) { best = { x: cx, y: cy }; break; }
+        }
+        ai.target = best || { x: ai.x, y: ai.y };
       }
     }
 
@@ -633,18 +643,24 @@ class PlayScene extends Phaser.Scene {
     const angleDiff = Math.abs(Phaser.Math.Angle.Wrap(desiredAngle - ai.angle));
 
     if (ai.aiming) {
-      // hold still to line up the shot, like a real tank — no strafing while aiming
+      // still creeps forward slowly while lining up, instead of freezing
+      // completely — reads more like a real player adjusting their angle
+      if (angleDiff < Math.PI * 0.65) {
+        const mv = diff.moveSpeed * dt * 0.35;
+        this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
+      }
       if (angleDiff < diff.aimJitter + 0.06 || !this.player.alive || !ai.alive) {
         if (this.player.alive) this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
         ai.aiming = false;
         ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
       }
     } else {
-      // drive forward toward the target — can't strafe, has to be roughly
-      // facing the right way first, exactly like the player's arrow controls
+      // drive forward toward the target — can't strafe, but only needs to be
+      // roughly facing the right way rather than perfectly aligned, so it
+      // keeps moving smoothly through a turn instead of stopping to pivot
       const dist = Phaser.Math.Distance.Between(ai.x, ai.y, ai.target.x, ai.target.y);
-      if (dist > 6 && angleDiff < Math.PI / 2) {
-        const speedScale = 1 - (angleDiff / (Math.PI / 2)) * 0.6;
+      if (dist > 6 && angleDiff < Math.PI * 0.65) {
+        const speedScale = Math.max(0.55, 1 - (angleDiff / (Math.PI * 0.65)) * 0.35);
         const mv = diff.moveSpeed * dt * speedScale;
         this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
       }
@@ -905,7 +921,7 @@ class PlayScene extends Phaser.Scene {
       } else {
         const mag = Math.sqrt(mx * mx + my * my);
         if (mag > 0.05) {
-          const speed = 160 * dt;
+          const speed = 135 * dt; // slightly slower free-movement strafing (was 160)
           const beforeX = this.player.x, beforeY = this.player.y;
           this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
           this.player.vx = (this.player.x - beforeX) / dt;
