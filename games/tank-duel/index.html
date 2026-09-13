@@ -74,7 +74,9 @@ const CRITTER_POOLS = {
 };
 const CRITTER_INTERVAL = [1.5, 3.2]; // seconds between spawns
 const SHRINK_RING_CAP = 5;
-const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box only
+const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box's own continuous shrink
+const ENDGAME_SHRINK_START = 20; // seconds remaining when the zone starts closing on EVERY map
+const ENDGAME_SHRINK_INTERVAL = 4; // faster cadence than Kill Box's own, to actually force a finish
 
 const PICKUP_TYPES = [
   { key: 'rapid',   label: 'RAPID',   color: 0x4fd1ff, desc: 'no reload on your next shot' },
@@ -664,7 +666,10 @@ class PlayScene extends Phaser.Scene {
     this.pickupTimer = PICKUP_FIRST_DELAY;
     this.roundTime = ROUND_TIME;
     this.warnedFinalTen = false;
+    this.warnedZoneClosing = false;
     this.lastCountdownTick = null;
+    this.shrinkRing = 0;
+    this.shrinkTimer = SHRINK_INTERVAL;
     const mapLabel = MAPS.find(m => m.key === this.currentMapKey).label;
     const mapTag = this.mapKey === 'random' ? `${mapLabel} \u00b7 ` : '';
     const modeTag = this.gameMode === 'ricochet' ? 'RICOCHET \u00b7 ' : '';
@@ -761,8 +766,6 @@ class PlayScene extends Phaser.Scene {
     grid[Math.floor(ROWS/2)][Math.floor(COLS/2) - 1] = true;
     grid[Math.floor(ROWS/2)][Math.floor(COLS/2)] = true;
     this.grid = grid;
-    this.shrinkRing = 0;
-    this.shrinkTimer = SHRINK_INTERVAL;
   }
 
   // MAP 6 — Desert: wide open terrain, sparse rock-cluster cover. A genuine
@@ -1182,7 +1185,7 @@ class PlayScene extends Phaser.Scene {
     for (let r = cr - span; r <= cr + span; r++) {
       for (let c = cc - span; c <= cc + span; c++) {
         if (r <= 0 || r >= ROWS - 1 || c <= 0 || c >= COLS - 1) continue; // keep the border sealed
-        if (this.currentMapKey === 'killbox' && this.ringDistance(r, c) <= this.shrinkRing) continue; // shrink zone is permanent
+        if (this.shrinkRing > 0 && this.ringDistance(r, c) <= this.shrinkRing) continue; // shrink zone is permanent
         const dx = (c * CELL + CELL / 2) - px, dy = (r * CELL + CELL / 2) - py;
         if (Math.sqrt(dx * dx + dy * dy) <= radius) this.grid[r][c] = false;
       }
@@ -1443,11 +1446,20 @@ class PlayScene extends Phaser.Scene {
         }
       }
 
-      if (this.currentMapKey === 'killbox' && this.state === 'playing') {
-        this.shrinkTimer -= dt;
-        if (this.shrinkTimer <= 0) {
-          this.shrinkTimer = SHRINK_INTERVAL;
-          this.shrinkZone();
+      if (this.state === 'playing') {
+        const isKillbox = this.currentMapKey === 'killbox';
+        const inEndgame = this.roundTime <= ENDGAME_SHRINK_START;
+        if (!this.warnedZoneClosing && inEndgame) {
+          this.warnedZoneClosing = true;
+          this.toast('\u26a0 BATTLE ZONE CLOSING', '#ff5a5a');
+          if (window.SFX) SFX.alert();
+        }
+        if (isKillbox || inEndgame) {
+          this.shrinkTimer -= dt;
+          if (this.shrinkTimer <= 0) {
+            this.shrinkTimer = inEndgame ? ENDGAME_SHRINK_INTERVAL : SHRINK_INTERVAL;
+            this.shrinkZone();
+          }
         }
       }
 
