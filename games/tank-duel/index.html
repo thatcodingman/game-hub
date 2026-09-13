@@ -51,9 +51,20 @@ const MAPS = [
   { key: 'fortress',   label: 'FORTRESS' },
   { key: 'crossroads', label: 'CROSSROADS' },
   { key: 'killbox',    label: 'KILL BOX' },
+  { key: 'desert',     label: 'DESERT' },
   { key: 'random',     label: 'RANDOM' },
 ];
-const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox'];
+const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'desert'];
+
+// per-map visual identity — a lightweight theme baked into each map rather
+// than a separate theme-picker, so new locations (beach, battleship, etc.)
+// can just be added here later with their own palette + layout together
+const MAP_THEMES = {
+  desert: { bg: 0x3a2f1a, wall: 0xc9a05a, stroke: 0x8a6a30 },
+};
+const DEFAULT_THEME = { bg: 0x1c1814, wall: 0x4a3a2a, stroke: 0x2a2118 };
+const CRITTER_TYPES = ['bird', 'scorpion', 'tumbleweed'];
+const CRITTER_INTERVAL = [3, 6]; // seconds between spawns, Desert only
 const SHRINK_RING_CAP = 5;
 const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box only
 
@@ -589,6 +600,8 @@ class PlayScene extends Phaser.Scene {
     this.shells = [];
     this.pickups = [];
     this.bumpCooldown = 0;
+    this.critters = [];
+    this.critterTimer = Phaser.Math.FloatBetween(1, 3);
     this.pickupTimer = PICKUP_FIRST_DELAY;
     this.roundTime = ROUND_TIME;
     this.warnedFinalTen = false;
@@ -620,6 +633,7 @@ class PlayScene extends Phaser.Scene {
       fortress: () => this.buildMapFortress(),
       crossroads: () => this.buildMapCrossroads(),
       killbox: () => this.buildMapKillbox(),
+      desert: () => this.buildMapDesert(),
     };
     this.currentMapKey = this.mapKey === 'random' ? Phaser.Utils.Array.GetRandom(REAL_MAP_KEYS) : this.mapKey;
     (builders[this.currentMapKey] || builders.divide)();
@@ -690,6 +704,22 @@ class PlayScene extends Phaser.Scene {
     this.shrinkTimer = SHRINK_INTERVAL;
   }
 
+  // MAP 6 — Desert: wide open terrain, sparse rock-cluster cover. A genuine
+  // "sniper's map" — long sightlines dominate, cover is scarce and has to be
+  // actively used rather than something you're constantly ducking behind.
+  buildMapDesert() {
+    const grid = this.emptyGrid();
+    const rocks = [
+      [4, 10], [4, 11], [5, 10],           // small cluster, upper-left of center
+      [12, 8], [12, 9], [13, 8],           // small cluster, lower-left
+      [8, 15], [9, 15],                    // lone rock, dead center (self-mirrored column)
+    ];
+    rocks.forEach(([r, c]) => { grid[r][c] = true; });
+    // mirror every cluster horizontally so neither spawn side is favored
+    rocks.forEach(([r, c]) => { grid[r][COLS - 1 - c] = true; });
+    this.grid = grid;
+  }
+
   ringDistance(r, c) { return Math.min(r, ROWS - 1 - r, c, COLS - 1 - c); }
 
   shrinkZone() {
@@ -711,17 +741,18 @@ class PlayScene extends Phaser.Scene {
   }
 
   drawArena() {
+    const theme = MAP_THEMES[this.currentMapKey] || DEFAULT_THEME;
     const g = this.g;
     g.clear();
-    g.fillStyle(0x1c1814, 1);
+    g.fillStyle(theme.bg, 1);
     g.fillRect(0, 0, W, H);
-    g.fillStyle(0x4a3a2a, 1);
+    g.fillStyle(theme.wall, 1);
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (this.grid[r][c]) g.fillRect(c * CELL, r * CELL, CELL, CELL);
       }
     }
-    g.lineStyle(1, 0x2a2118, 0.5);
+    g.lineStyle(1, theme.stroke, 0.5);
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (this.grid[r][c]) g.strokeRect(c * CELL, r * CELL, CELL, CELL);
@@ -852,6 +883,70 @@ class PlayScene extends Phaser.Scene {
   }
 
   // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // Desert ambient critters — purely decorative background flavor, no
+  // gameplay interaction. Only active on the Desert map.
+  updateCritters(dt) {
+    if (this.currentMapKey !== 'desert') {
+      if (this.critters.length) this.critters = [];
+      return;
+    }
+    this.critterTimer -= dt;
+    if (this.critterTimer <= 0) {
+      this.critterTimer = Phaser.Math.FloatBetween(CRITTER_INTERVAL[0], CRITTER_INTERVAL[1]);
+      this.spawnCritter();
+    }
+    for (let i = this.critters.length - 1; i >= 0; i--) {
+      const c = this.critters[i];
+      c.x += c.vx * dt;
+      c.y += c.vy * dt;
+      c.rotation += c.spin * dt;
+      if (c.x < -40 || c.x > W + 40) this.critters.splice(i, 1);
+    }
+  }
+
+  spawnCritter() {
+    const type = Phaser.Utils.Array.GetRandom(CRITTER_TYPES);
+    const dir = Phaser.Math.Between(0, 1) ? 1 : -1;
+    const startX = dir > 0 ? -30 : W + 30;
+    if (type === 'bird') {
+      this.critters.push({ type, x: startX, y: Phaser.Math.Between(25, 75),
+        vx: dir * Phaser.Math.FloatBetween(40, 65), vy: 0, rotation: 0, spin: 0 });
+    } else if (type === 'scorpion') {
+      this.critters.push({ type, x: startX, y: Phaser.Math.Between(H - 60, H - 20),
+        vx: dir * Phaser.Math.FloatBetween(18, 30), vy: 0, rotation: 0, spin: 0 });
+    } else {
+      this.critters.push({ type, x: startX, y: Phaser.Math.Between(H * 0.3, H * 0.85),
+        vx: dir * Phaser.Math.FloatBetween(50, 90), vy: 0, rotation: 0, spin: dir * 3 });
+    }
+  }
+
+  drawCritters(g) {
+    if (!this.critters) return;
+    this.critters.forEach(c => {
+      if (c.type === 'bird') {
+        g.lineStyle(2, 0x2a2118, 0.55);
+        g.beginPath();
+        g.moveTo(c.x - 8, c.y);
+        g.lineTo(c.x, c.y - 4);
+        g.lineTo(c.x + 8, c.y);
+        g.strokePath();
+      } else if (c.type === 'scorpion') {
+        g.fillStyle(0x2a2118, 0.5);
+        g.fillEllipse(c.x, c.y, 10, 5);
+        g.lineStyle(2, 0x2a2118, 0.5);
+        g.lineBetween(c.x + 5, c.y, c.x + 10, c.y - 4);
+      } else {
+        g.lineStyle(1.5, 0x8a6a30, 0.45);
+        for (let i = 0; i < 3; i++) {
+          const a = c.rotation + i * (Math.PI / 3);
+          g.lineBetween(c.x - Math.cos(a) * 6, c.y - Math.sin(a) * 6, c.x + Math.cos(a) * 6, c.y + Math.sin(a) * 6);
+        }
+        g.strokeCircle(c.x, c.y, 6);
+      }
+    });
+  }
+
   updatePickups(dt) {
     this.pickupTimer -= dt;
     if (this.pickupTimer <= 0 && this.pickups.length === 0) {
@@ -1169,6 +1264,7 @@ class PlayScene extends Phaser.Scene {
       this.updateEngineSound('aiEngineNodes', this.ai);
       this.updateShells(dt);
       this.updatePickups(dt);
+      this.updateCritters(dt);
 
       this.roundTime -= dt;
       if (this.roundTime <= 0) {
@@ -1265,6 +1361,8 @@ class PlayScene extends Phaser.Scene {
   draw() {
     const g = this.fxGraphics;
     g.clear();
+
+    this.drawCritters(g);
 
     // pickups — a pulsing diamond so they read clearly against the terrain
     const pulse = 0.75 + 0.25 * Math.sin(this.time.now / 180);
