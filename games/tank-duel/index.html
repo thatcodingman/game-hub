@@ -789,16 +789,36 @@ class PlayScene extends Phaser.Scene {
 
   drawArena() {
     const theme = MAP_THEMES[this.currentMapKey] || DEFAULT_THEME;
+    const isShip = this.currentMapKey === 'battleship';
     const g = this.g;
     g.clear();
     g.fillStyle(theme.bg, 1);
     g.fillRect(0, 0, W, H);
-    g.fillStyle(theme.wall, 1);
+
+    // subtle deck-plating seams, purely decorative
+    if (isShip) {
+      g.lineStyle(1, 0x1a1e21, 0.4);
+      for (let c = 0; c <= COLS; c += 3) g.lineBetween(c * CELL, 0, c * CELL, H);
+      for (let r = 0; r <= ROWS; r += 3) g.lineBetween(0, r * CELL, W, r * CELL);
+    }
+
+    const waterCol = 0x0d2438; // border reads as open sea around the deck — also permanently indestructible
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        if (this.grid[r][c]) g.fillRect(c * CELL, r * CELL, CELL, CELL);
+        if (!this.grid[r][c]) continue;
+        const border = r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1;
+        g.fillStyle(isShip && border ? waterCol : theme.wall, 1);
+        g.fillRect(c * CELL, r * CELL, CELL, CELL);
+        if (isShip && !border) {
+          g.fillStyle(0x2a2f33, 0.8);
+          const cx = c * CELL, cy = r * CELL;
+          [[4, 4], [CELL - 4, 4], [4, CELL - 4], [CELL - 4, CELL - 4]].forEach(([ox, oy]) => {
+            g.fillCircle(cx + ox, cy + oy, 1.6);
+          });
+        }
       }
     }
+
     g.lineStyle(1, theme.stroke, 0.5);
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
@@ -969,7 +989,12 @@ class PlayScene extends Phaser.Scene {
       this.critters.push({ ...base, y: Phaser.Math.Between(H * 0.3, H * 0.85),
         vx: dir * Phaser.Math.FloatBetween(50, 90), vy: 0, spin: dir * 3 });
     } else if (type === 'fish') {
-      this.critters.push({ ...base, y: Phaser.Math.Between(H * 0.35, H * 0.55),
+      // on Battleship, swim near the water border rather than mid-deck;
+      // on Beach, stay near the lagoon band
+      const fishY = this.currentMapKey === 'battleship'
+        ? (Phaser.Math.Between(0, 1) ? Phaser.Math.Between(20, 50) : Phaser.Math.Between(H - 50, H - 20))
+        : Phaser.Math.Between(H * 0.35, H * 0.55);
+      this.critters.push({ ...base, y: fishY,
         vx: dir * Phaser.Math.FloatBetween(60, 90), vy: 0 });
     }
   }
