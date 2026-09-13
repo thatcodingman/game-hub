@@ -31,7 +31,7 @@ const COLS = W / CELL, ROWS = H / CELL;
 const TANK_R = 14;
 const SHELL_R = 5;
 const SHELL_SPEED = 480;
-const TURN_SPEED = 9.5; // rad/sec — how fast the arrow-key tank rotates in place
+const TURN_SPEED = 9.0; // rad/sec — how fast the arrow-key tank rotates in place (~5% slower than before)
 const TREAD_MIN_DIST = 10; // px moved before laying down another tread mark
 const TREAD_LIFETIME = 2.2; // seconds before a tread mark fully fades
 const RELOAD_MS = 1300;
@@ -71,6 +71,33 @@ const MODES = [
 ];
 const RICOCHET_BOUNCES = 6; // caps chaos so a shell doesn't ricochet forever
 
+const TUTORIAL_STEPS = [
+  { title: 'MOVE', lines: [
+    'WASD: free movement, your tank always faces the mouse.',
+    'Arrows: real tank controls \u2014 Up/Down drive, Left/Right turn.'
+  ] },
+  { title: 'AIM & FIRE', lines: [
+    'Click or SPACE fires toward your aim.',
+    'One shell at a time \u2014 watch your reload bar before firing again.'
+  ] },
+  { title: 'DESTRUCTIBLE TERRAIN', lines: [
+    'Every shell that hits a wall carves a permanent crater.',
+    'Use it to open new sightlines or carve yourself an escape route.'
+  ] },
+  { title: 'PICKUPS', lines: [
+    'Grab a pulsing diamond for a one-shot upgrade on your next shell:',
+    'RAPID (skip reload)  \u00b7  BREAKER (bigger crater)  \u00b7  BOUNCE (ricochets off a wall).'
+  ] },
+  { title: 'WIN THE ROUND', lines: [
+    'One hit destroys a tank and wins the round.',
+    'Best of 3 wins the match \u2014 except Random mode, which never ends until you quit.'
+  ] },
+  { title: "YOU'RE READY", lines: [
+    'Pick a map, a game mode, and a difficulty to start.',
+    'Good luck out there.'
+  ] },
+];
+
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
 class PlayScene extends Phaser.Scene {
@@ -95,8 +122,14 @@ class PlayScene extends Phaser.Scene {
     this.buildMapMenu();
     this.buildModeMenu();
     this.buildDifficultyMenu();
-    this.showMenu();
-    this.centerText.setText('TANK DUEL').setVisible(true);
+    this.buildTutorial();
+
+    if (localStorage.getItem('tankDuel_tutorialSeen')) {
+      this.showMenu();
+      this.centerText.setText('TANK DUEL').setVisible(true);
+    } else {
+      this.showTutorial();
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -264,6 +297,7 @@ class PlayScene extends Phaser.Scene {
     this.modeButtons.forEach(b => b.setVisible(true));
     this.diffButtons.forEach(b => b.setVisible(true));
     this.menuBtn.setVisible(false);
+    if (this.helpBtn) this.helpBtn.setVisible(true);
     this.setMusicState('menu');
   }
 
@@ -277,6 +311,83 @@ class PlayScene extends Phaser.Scene {
     this.mapButtons.forEach(b => b.setVisible(false));
     this.modeButtons.forEach(b => b.setVisible(false));
     this.diffButtons.forEach(b => b.setVisible(false));
+    if (this.helpBtn) this.helpBtn.setVisible(false);
+  }
+
+  // ---------------------------------------------------------------------
+  // First-match tutorial — a short skippable walkthrough shown once
+  // automatically, reopenable anytime from the menu's "HOW TO PLAY" button
+  buildTutorial() {
+    this.tutorialIndex = 0;
+    this.tutorialBg = this.add.rectangle(W/2, H/2, 640, 260, 0x0d0d0d, 0.95)
+      .setStrokeStyle(2, 0xffd23f).setVisible(false);
+    this.tutorialStep = this.add.text(W/2, H/2 - 105, '', {
+      fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
+    this.tutorialTitle = this.add.text(W/2, H/2 - 78, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '24px', color: '#ffd23f'
+    }).setOrigin(0.5).setVisible(false);
+    this.tutorialBody = this.add.text(W/2, H/2 - 15, '', {
+      fontFamily: 'Arial', fontSize: '15px', color: '#f0e6d2', align: 'center', wordWrap: { width: 580 }
+    }).setOrigin(0.5).setVisible(false);
+    this.tutorialNextBtn = this.add.text(W/2 + 60, H/2 + 95, '[ NEXT ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#5be37b'
+    }).setOrigin(0.5).setPadding(14, 8, 14, 8).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.tutorialNextBtn.on('pointerover', () => this.tutorialNextBtn.setBackgroundColor('#262c34'));
+    this.tutorialNextBtn.on('pointerout', () => this.tutorialNextBtn.setBackgroundColor('#1c2128'));
+    this.tutorialNextBtn.on('pointerdown', () => this.nextTutorialStep());
+    this.tutorialSkipBtn = this.add.text(W/2 - 60, H/2 + 95, '[ SKIP ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a'
+    }).setOrigin(0.5).setPadding(12, 8, 12, 8).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.tutorialSkipBtn.on('pointerover', () => this.tutorialSkipBtn.setBackgroundColor('#262c34'));
+    this.tutorialSkipBtn.on('pointerout', () => this.tutorialSkipBtn.setBackgroundColor('#1c2128'));
+    this.tutorialSkipBtn.on('pointerdown', () => this.closeTutorial());
+
+    // reopenable anytime from the menu
+    this.helpBtn = this.add.text(20, H - 12, '? HOW TO PLAY', {
+      fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
+    }).setOrigin(0, 1).setPadding(8, 5, 8, 5).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.helpBtn.on('pointerover', () => this.helpBtn.setBackgroundColor('#262c34'));
+    this.helpBtn.on('pointerout', () => this.helpBtn.setBackgroundColor('#1c2128'));
+    this.helpBtn.on('pointerdown', () => this.showTutorial());
+  }
+
+  showTutorial() {
+    this.hideMenu();
+    this.tutorialIndex = 0;
+    this.renderTutorialStep();
+    [this.tutorialBg, this.tutorialStep, this.tutorialTitle, this.tutorialBody,
+     this.tutorialNextBtn, this.tutorialSkipBtn].forEach(o => o.setVisible(true));
+  }
+
+  renderTutorialStep() {
+    const step = TUTORIAL_STEPS[this.tutorialIndex];
+    this.tutorialStep.setText(`${this.tutorialIndex + 1} / ${TUTORIAL_STEPS.length}`);
+    this.tutorialTitle.setText(step.title);
+    this.tutorialBody.setText(step.lines.join('\n\n'));
+    const last = this.tutorialIndex === TUTORIAL_STEPS.length - 1;
+    this.tutorialNextBtn.setText(last ? '[ LET\'S GO ]' : '[ NEXT ]');
+  }
+
+  nextTutorialStep() {
+    if (window.SFX) SFX.click();
+    this.tutorialIndex++;
+    if (this.tutorialIndex >= TUTORIAL_STEPS.length) {
+      this.closeTutorial();
+      return;
+    }
+    this.renderTutorialStep();
+  }
+
+  closeTutorial() {
+    localStorage.setItem('tankDuel_tutorialSeen', '1');
+    [this.tutorialBg, this.tutorialStep, this.tutorialTitle, this.tutorialBody,
+     this.tutorialNextBtn, this.tutorialSkipBtn].forEach(o => o.setVisible(false));
+    this.showMenu();
+    this.centerText.setText('TANK DUEL').setVisible(true);
   }
 
   // ---------------------------------------------------------------------
