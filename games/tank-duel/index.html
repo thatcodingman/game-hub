@@ -192,6 +192,71 @@ class PlayScene extends Phaser.Scene {
     }
   }
 
+  // Engine hum — a separate, distinct sound layer from the ambient music,
+  // pitch/volume tied to each tank's actual current speed, with basic
+  // stereo panning based on screen position. Nodes are created once and
+  // persist for the scene's lifetime (not per-round) so restarting a round
+  // never orphans a still-running oscillator.
+  ensureEngineNodes(key) {
+    if (this[key] || !window.SFX || !SFX.ctx) return;
+    try {
+      const ctx = SFX.ctx;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = 42;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 260;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      let panner = null;
+      osc.connect(filter).connect(gain);
+      if (ctx.createStereoPanner) {
+        panner = ctx.createStereoPanner();
+        gain.connect(panner);
+        panner.connect(ctx.destination);
+      } else {
+        gain.connect(ctx.destination);
+      }
+      osc.start();
+      this[key] = { osc, filter, gain, panner };
+    } catch (err) {
+      console.error('engine sound init error (non-fatal):', err);
+    }
+  }
+
+  updateEngineSound(key, tank) {
+    this.ensureEngineNodes(key);
+    const nodes = this[key];
+    if (!nodes || !window.SFX || !SFX.ctx) return;
+    try {
+      const ctx = SFX.ctx;
+      const t = ctx.currentTime;
+      if (SFX.muted || !tank.alive) { nodes.gain.gain.setTargetAtTime(0, t, 0.2); return; }
+      const speed = Math.sqrt((tank.vx || 0) ** 2 + (tank.vy || 0) ** 2);
+      const norm = Phaser.Math.Clamp(speed / 220, 0, 1);
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.045;
+      nodes.gain.gain.setTargetAtTime((0.12 + norm * 0.88) * vol, t, 0.08);
+      nodes.osc.frequency.setTargetAtTime(38 + norm * 50, t, 0.1);
+      nodes.filter.frequency.setTargetAtTime(240 + norm * 460, t, 0.1);
+      if (nodes.panner) {
+        const pan = Phaser.Math.Clamp((tank.x - W / 2) / (W / 2), -1, 1);
+        nodes.panner.pan.setTargetAtTime(pan, t, 0.3);
+      }
+    } catch (err) {
+      console.error('engine sound update error (non-fatal):', err);
+    }
+  }
+
+  silenceEngines() {
+    ['playerEngineNodes', 'aiEngineNodes'].forEach(key => {
+      const nodes = this[key];
+      if (nodes && window.SFX && SFX.ctx) {
+        try { nodes.gain.gain.setTargetAtTime(0, SFX.ctx.currentTime, 0.15); } catch (err) { /* non-fatal */ }
+      }
+    });
+  }
+
   buildMapMenu() {
     this.mapButtons = [];
     this.mapLabel = this.add.text(W/2, H/2 - 118, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
@@ -299,6 +364,7 @@ class PlayScene extends Phaser.Scene {
     this.menuBtn.setVisible(false);
     if (this.helpBtn) this.helpBtn.setVisible(true);
     this.setMusicState('menu');
+    this.silenceEngines();
   }
 
   hideMenu() {
@@ -706,6 +772,7 @@ class PlayScene extends Phaser.Scene {
     const ai = this.ai;
     if (!ai.alive) return;
     const diff = DIFFICULTIES[this.difficulty];
+    const beforeX = ai.x, beforeY = ai.y;
 
     // periodically pick a movement target — either a live pickup or a
     // random open waypoint
@@ -779,6 +846,9 @@ class PlayScene extends Phaser.Scene {
         this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
       }
     }
+
+    ai.vx = (ai.x - beforeX) / dt;
+    ai.vy = (ai.y - beforeY) / dt;
   }
 
   // ---------------------------------------------------------------------
@@ -1005,6 +1075,7 @@ class PlayScene extends Phaser.Scene {
     this.pausedFrom = 'playing';
     this.state = 'paused';
     this.menuBtn.setVisible(false);
+    this.silenceEngines();
     [this.pauseBg, this.pauseTitle, this.resumeBtn, this.quitBtn].forEach(o => o.setVisible(true));
   }
 
@@ -1094,6 +1165,8 @@ class PlayScene extends Phaser.Scene {
       this.resolveTankCollision(dt);
       this.ageTread(this.player, dt);
       this.ageTread(this.ai, dt);
+      this.updateEngineSound('playerEngineNodes', this.player);
+      this.updateEngineSound('aiEngineNodes', this.ai);
       this.updateShells(dt);
       this.updatePickups(dt);
 
