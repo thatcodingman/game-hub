@@ -653,6 +653,7 @@ class PlayScene extends Phaser.Scene {
     this.setMusicState('playing');
     this.buildArena();
     this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null };
+    this.controlMode = 'free'; // resets each round; switches the moment either scheme is actually used
     this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0, upgrade: null, aiming: false,
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
@@ -1356,13 +1357,21 @@ class PlayScene extends Phaser.Scene {
       // Arrows — real tank controls: Up/Down drive forward/backward along
       // wherever the tank is currently facing, Left/Right rotate it. Holding
       // forward while turning arcs you in a circle, same as classic tank games.
-      let forwardInput = 0, turnInput = 0, usingArrows = false;
-      if (this.cursors.up.isDown) { forwardInput += 1; usingArrows = true; }
-      if (this.cursors.down.isDown) { forwardInput -= 1; usingArrows = true; }
-      if (this.cursors.left.isDown) { turnInput -= 1; usingArrows = true; }
-      if (this.cursors.right.isDown) { turnInput += 1; usingArrows = true; }
+      let forwardInput = 0, turnInput = 0;
+      if (this.cursors.up.isDown) forwardInput += 1;
+      if (this.cursors.down.isDown) forwardInput -= 1;
+      if (this.cursors.left.isDown) turnInput -= 1;
+      if (this.cursors.right.isDown) turnInput += 1;
+      const arrowActive = forwardInput !== 0 || turnInput !== 0;
+      const wasdActive = this.keys.w.isDown || this.keys.a.isDown || this.keys.s.isDown || this.keys.d.isDown;
 
-      if (usingArrows) {
+      // control mode only switches when the OTHER scheme is actually used —
+      // releasing arrow keys should hold your current facing, not snap back
+      // to mouse-aim just because no arrow happens to be held this frame
+      if (arrowActive) this.controlMode = 'tank';
+      else if (wasdActive) this.controlMode = 'free';
+
+      if (this.controlMode === 'tank') {
         this.player.angle += turnInput * TURN_SPEED * dt;
         if (forwardInput !== 0) {
           const speed = 160 * dt * (forwardInput > 0 ? 1 : 0.6); // reverse is slower, like a real tank
