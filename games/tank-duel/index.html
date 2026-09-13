@@ -31,7 +31,7 @@ const COLS = W / CELL, ROWS = H / CELL;
 const TANK_R = 14;
 const SHELL_R = 5;
 const SHELL_SPEED = 480;
-const TURN_SPEED = 7; // rad/sec — how fast arrow-key auto-turn sweeps between angles
+const TURN_SPEED = 9.5; // rad/sec — how fast the arrow-key tank rotates in place
 const RELOAD_MS = 1300;
 const CARVE_RADIUS = 58;
 const ROUNDS_TO_WIN = 2;
@@ -343,7 +343,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
     this.hintText = this.add.text(W/2, H/2 + 110,
-      'WASD or arrows to move \u00b7 mouse or drag to aim \u00b7 click or SPACE to fire', {
+      'WASD + mouse to move/aim freely \u00b7 or arrows: Up/Down drive, Left/Right turn \u00b7 click or SPACE to fire', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
   }
@@ -854,8 +854,9 @@ class PlayScene extends Phaser.Scene {
       const upgradeLabels = { rapid: 'RAPID READY', breaker: 'BREAKER READY', bounce: 'BOUNCE READY' };
       this.upgradeText.setText(this.player.upgrade ? upgradeLabels[this.player.upgrade] : '');
 
-      // player movement
-      let mx = 0, my = 0, usingArrows = false;
+      // WASD (or the touch joystick) — free 8-directional movement,
+      // facing follows the mouse independently (twin-stick style)
+      let mx = 0, my = 0;
       if (this.joystick && this.joystick.active) {
         mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
       } else {
@@ -863,28 +864,43 @@ class PlayScene extends Phaser.Scene {
         if (this.keys.d.isDown) mx += 1;
         if (this.keys.w.isDown) my -= 1;
         if (this.keys.s.isDown) my += 1;
-        if (this.cursors.left.isDown) { mx -= 1; usingArrows = true; }
-        if (this.cursors.right.isDown) { mx += 1; usingArrows = true; }
-        if (this.cursors.up.isDown) { my -= 1; usingArrows = true; }
-        if (this.cursors.down.isDown) { my += 1; usingArrows = true; }
       }
-      const mag = Math.sqrt(mx * mx + my * my);
-      if (mag > 0.05) {
-        const speed = 160 * dt;
-        const beforeX = this.player.x, beforeY = this.player.y;
-        this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
-        this.player.vx = (this.player.x - beforeX) / dt;
-        this.player.vy = (this.player.y - beforeY) / dt;
+
+      // Arrows — real tank controls: Up/Down drive forward/backward along
+      // wherever the tank is currently facing, Left/Right rotate it. Holding
+      // forward while turning arcs you in a circle, same as classic tank games.
+      let forwardInput = 0, turnInput = 0, usingArrows = false;
+      if (this.cursors.up.isDown) { forwardInput += 1; usingArrows = true; }
+      if (this.cursors.down.isDown) { forwardInput -= 1; usingArrows = true; }
+      if (this.cursors.left.isDown) { turnInput -= 1; usingArrows = true; }
+      if (this.cursors.right.isDown) { turnInput += 1; usingArrows = true; }
+
+      if (usingArrows) {
+        this.player.angle += turnInput * TURN_SPEED * dt;
+        if (forwardInput !== 0) {
+          const speed = 160 * dt * (forwardInput > 0 ? 1 : 0.6); // reverse is slower, like a real tank
+          const beforeX = this.player.x, beforeY = this.player.y;
+          this.moveTank(this.player,
+            Math.cos(this.player.angle) * speed * forwardInput,
+            Math.sin(this.player.angle) * speed * forwardInput);
+          this.player.vx = (this.player.x - beforeX) / dt;
+          this.player.vy = (this.player.y - beforeY) / dt;
+        } else {
+          this.player.vx = 0; this.player.vy = 0;
+        }
       } else {
-        this.player.vx = 0; this.player.vy = 0;
-      }
-      // mouse aim stays instant (precision matters for aiming); arrow-key
-      // auto-turn sweeps through the rotation over real time instead of
-      // teleporting straight to N/S/E/W/diagonals
-      if (usingArrows && mag > 0.05) {
-        const targetAngle = Math.atan2(my, mx);
-        this.player.angle = Phaser.Math.Angle.RotateTo(this.player.angle, targetAngle, TURN_SPEED * dt);
-      } else {
+        const mag = Math.sqrt(mx * mx + my * my);
+        if (mag > 0.05) {
+          const speed = 160 * dt;
+          const beforeX = this.player.x, beforeY = this.player.y;
+          this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
+          this.player.vx = (this.player.x - beforeX) / dt;
+          this.player.vy = (this.player.y - beforeY) / dt;
+        } else {
+          this.player.vx = 0; this.player.vy = 0;
+        }
+        // mouse aim only applies in this free-movement mode — arrows already
+        // set the facing angle directly above
         this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
       }
 
