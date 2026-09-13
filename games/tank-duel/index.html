@@ -63,6 +63,12 @@ const PICKUP_TYPES = [
 const PICKUP_INTERVAL = 5; // seconds between drops, only one live on the field at a time
 const PICKUP_FIRST_DELAY = 2.5; // first drop comes quickly so short rounds still see one
 
+const MODES = [
+  { key: 'classic',  label: 'CLASSIC' },
+  { key: 'ricochet', label: 'RICOCHET' },
+];
+const RICOCHET_BOUNCES = 6; // caps chaos so a shell doesn't ricochet forever
+
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
 class PlayScene extends Phaser.Scene {
@@ -80,10 +86,12 @@ class PlayScene extends Phaser.Scene {
     this.aiWins = 0;
     this.difficulty = 'normal';
     this.mapKey = 'divide';
+    this.gameMode = 'classic';
 
     this.buildHUD();
     this.setupInput();
     this.buildMapMenu();
+    this.buildModeMenu();
     this.buildDifficultyMenu();
     this.showMenu();
     this.centerText.setText('TANK DUEL').setVisible(true);
@@ -151,12 +159,12 @@ class PlayScene extends Phaser.Scene {
 
   buildMapMenu() {
     this.mapButtons = [];
-    this.mapLabel = this.add.text(W/2, H/2 - 105, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
+    this.mapLabel = this.add.text(W/2, H/2 - 118, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
       fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     MAPS.forEach((m, i) => {
       const x = W/2 + (i - (MAPS.length - 1) / 2) * 135;
-      const y = H/2 - 70;
+      const y = H/2 - 85;
       const btn = this.add.text(x, y, m.label, {
         fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
       }).setOrigin(0.5).setPadding(12, 9, 12, 9).setBackgroundColor('#1c2128')
@@ -175,6 +183,40 @@ class PlayScene extends Phaser.Scene {
     this.refreshMapButtonStyles();
   }
 
+  buildModeMenu() {
+    this.modeButtons = [];
+    this.modeLabel = this.add.text(W/2, H/2 - 45, 'CHOOSE A GAME MODE', {
+      fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
+    MODES.forEach((m, i) => {
+      const x = W/2 + (i - (MODES.length - 1) / 2) * 155;
+      const y = H/2 - 15;
+      const btn = this.add.text(x, y, m.label, {
+        fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
+      }).setOrigin(0.5).setPadding(14, 9, 14, 9).setBackgroundColor('#1c2128')
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerover', () => { if (this.gameMode !== m.key) btn.setBackgroundColor('#262c34'); });
+      btn.on('pointerout', () => this.refreshModeButtonStyles());
+      btn.on('pointerdown', () => {
+        if (this.state !== 'ready') return;
+        this.gameMode = m.key;
+        if (window.SFX) SFX.click();
+        this.refreshModeButtonStyles();
+      });
+      btn.setData('key', m.key);
+      this.modeButtons.push(btn);
+    });
+    this.refreshModeButtonStyles();
+  }
+
+  refreshModeButtonStyles() {
+    this.modeButtons.forEach(b => {
+      const selected = b.getData('key') === this.gameMode;
+      b.setBackgroundColor(selected ? '#3a6b4a' : '#1c2128');
+      b.setColor(selected ? '#9fffc0' : '#e8ecf1');
+    });
+  }
+
   refreshMapButtonStyles() {
     this.mapButtons.forEach(b => {
       const selected = b.getData('key') === this.mapKey;
@@ -185,13 +227,13 @@ class PlayScene extends Phaser.Scene {
 
   buildDifficultyMenu() {
     this.diffButtons = [];
-    this.diffLabel = this.add.text(W/2, H/2 - 20, 'CHOOSE A DIFFICULTY TO START', {
+    this.diffLabel = this.add.text(W/2, H/2 + 22, 'CHOOSE A DIFFICULTY TO START', {
       fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     const keys = ['easy', 'normal', 'hard'];
     keys.forEach((key, i) => {
       const x = W/2 + (i - 1) * 170;
-      const y = H/2 + 15;
+      const y = H/2 + 55;
       const btn = this.add.text(x, y, DIFFICULTIES[key].label, {
         fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#e8ecf1'
       }).setOrigin(0.5).setPadding(18, 12, 18, 12).setBackgroundColor('#1c2128')
@@ -214,8 +256,10 @@ class PlayScene extends Phaser.Scene {
     this.state = 'ready';
     this.hintText.setVisible(true);
     this.mapLabel.setVisible(true);
+    this.modeLabel.setVisible(true);
     this.diffLabel.setVisible(true);
     this.mapButtons.forEach(b => b.setVisible(true));
+    this.modeButtons.forEach(b => b.setVisible(true));
     this.diffButtons.forEach(b => b.setVisible(true));
     this.menuBtn.setVisible(false);
     this.setMusicState('menu');
@@ -226,8 +270,10 @@ class PlayScene extends Phaser.Scene {
     this.subText.setVisible(false);
     this.hintText.setVisible(false);
     this.mapLabel.setVisible(false);
+    this.modeLabel.setVisible(false);
     this.diffLabel.setVisible(false);
     this.mapButtons.forEach(b => b.setVisible(false));
+    this.modeButtons.forEach(b => b.setVisible(false));
     this.diffButtons.forEach(b => b.setVisible(false));
   }
 
@@ -258,19 +304,45 @@ class PlayScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true }).setVisible(false);
     this.menuBtn.on('pointerover', () => this.menuBtn.setBackgroundColor('#262c34'));
     this.menuBtn.on('pointerout', () => this.menuBtn.setBackgroundColor('#1c2128'));
-    this.menuBtn.on('pointerdown', () => this.returnToMenu());
+    this.menuBtn.on('pointerdown', () => this.pauseGame());
+
+    // pause overlay — Resume continues the exact match in progress,
+    // Quit abandons it and opens the full map/difficulty menu
+    this.pauseBg = this.add.rectangle(W/2, H/2, 340, 220, 0x0d0d0d, 0.92)
+      .setStrokeStyle(2, 0x4fd1ff).setVisible(false);
+    this.pauseTitle = this.add.text(W/2, H/2 - 70, 'PAUSED', {
+      fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#f0e6d2'
+    }).setOrigin(0.5).setVisible(false);
+    this.resumeBtn = this.add.text(W/2, H/2 - 10, '[ RESUME ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#5be37b'
+    }).setOrigin(0.5).setPadding(14, 10, 14, 10).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.resumeBtn.on('pointerover', () => this.resumeBtn.setBackgroundColor('#262c34'));
+    this.resumeBtn.on('pointerout', () => this.resumeBtn.setBackgroundColor('#1c2128'));
+    this.resumeBtn.on('pointerdown', () => {
+      this.hidePauseOverlay();
+      this.state = 'transitioning'; // blocks the scene-wide fire handler for this same click event
+      this.time.delayedCall(0, () => this.resumeGame());
+    });
+    this.quitBtn = this.add.text(W/2, H/2 + 45, '[ QUIT TO MENU ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '15px', color: '#ff5a5a'
+    }).setOrigin(0.5).setPadding(12, 8, 12, 8).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.quitBtn.on('pointerover', () => this.quitBtn.setBackgroundColor('#262c34'));
+    this.quitBtn.on('pointerout', () => this.quitBtn.setBackgroundColor('#1c2128'));
+    this.quitBtn.on('pointerdown', () => { this.hidePauseOverlay(); this.returnToMenu(); });
 
     this.toastText = this.add.text(W/2, H/2 - 80, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
     }).setOrigin(0.5).setAlpha(0);
 
-    this.centerText = this.add.text(W/2, H/2 - 175, '', {
+    this.centerText = this.add.text(W/2, H/2 - 185, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '34px', color: '#f0e6d2', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true).setVisible(false);
-    this.subText = this.add.text(W/2, H/2 - 135, '', {
+    this.subText = this.add.text(W/2, H/2 - 148, '', {
       fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
-    this.hintText = this.add.text(W/2, H/2 + 80,
+    this.hintText = this.add.text(W/2, H/2 + 110,
       'WASD or arrows to move \u00b7 mouse or drag to aim \u00b7 click or SPACE to fire', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
@@ -343,7 +415,8 @@ class PlayScene extends Phaser.Scene {
     this.lastCountdownTick = null;
     const mapLabel = MAPS.find(m => m.key === this.currentMapKey).label;
     const mapTag = this.mapKey === 'random' ? `${mapLabel} \u00b7 ` : '';
-    this.roundText.setText(`${mapTag}${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    const modeTag = this.gameMode === 'ricochet' ? 'RICOCHET \u00b7 ' : '';
+    this.roundText.setText(`${modeTag}${mapTag}${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
     this.drawArena();
   }
 
@@ -497,7 +570,7 @@ class PlayScene extends Phaser.Scene {
       vy: Math.sin(angle) * SHELL_SPEED,
       side,
       carveMult: upgrade === 'breaker' ? 1.8 : 1,
-      bouncesLeft: upgrade === 'bounce' ? 1 : 0,
+      bouncesLeft: this.gameMode === 'ricochet' ? RICOCHET_BOUNCES : (upgrade === 'bounce' ? 1 : 0),
     });
     if (upgrade && side === 'player') this.toast(upgrade.toUpperCase() + ' FIRED', '#b37aff');
     if (window.SFX) SFX.shoot();
@@ -743,6 +816,31 @@ class PlayScene extends Phaser.Scene {
     this.subText.setText('Match ended \u2014 choose a difficulty to start a new one').setVisible(true);
   }
 
+  pauseGame() {
+    if (this.state !== 'playing') return;
+    this.pausedFrom = 'playing';
+    this.state = 'paused';
+    this.menuBtn.setVisible(false);
+    [this.pauseBg, this.pauseTitle, this.resumeBtn, this.quitBtn].forEach(o => o.setVisible(true));
+  }
+
+  hidePauseOverlay() {
+    [this.pauseBg, this.pauseTitle, this.resumeBtn, this.quitBtn].forEach(o => o.setVisible(false));
+  }
+
+  resumeGame() {
+    this.hidePauseOverlay();
+    this.state = 'playing';
+    this.menuBtn.setVisible(true);
+  }
+
+  // used by the back-button handler, which can fire at any moment — pause
+  // if mid-match, fall back to a full quit for any other non-menu state
+  handleBackRequest() {
+    if (this.state === 'playing') this.pauseGame();
+    else if (this.state !== 'ready') this.returnToMenu();
+  }
+
   // ---------------------------------------------------------------------
   update(time, delta) {
     if (this.state !== 'playing') { this.draw(); return; }
@@ -939,7 +1037,7 @@ window.addEventListener('popstate', () => {
   history.pushState({ tankDuel: true }, '', location.href);
   try {
     const scene = game.scene.getScene('Play');
-    if (scene) scene.returnToMenu();
+    if (scene) scene.handleBackRequest();
   } catch (err) {
     console.error('back-button handler error:', err);
   }
