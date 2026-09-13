@@ -52,19 +52,24 @@ const MAPS = [
   { key: 'crossroads', label: 'CROSSROADS' },
   { key: 'killbox',    label: 'KILL BOX' },
   { key: 'desert',     label: 'DESERT' },
+  { key: 'beach',      label: 'BEACH' },
   { key: 'random',     label: 'RANDOM' },
 ];
-const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'desert'];
+const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'desert', 'beach'];
 
 // per-map visual identity — a lightweight theme baked into each map rather
 // than a separate theme-picker, so new locations (beach, battleship, etc.)
 // can just be added here later with their own palette + layout together
 const MAP_THEMES = {
   desert: { bg: 0x3a2f1a, wall: 0xc9a05a, stroke: 0x8a6a30 },
+  beach:  { bg: 0xd9c48a, wall: 0x2f7a8c, stroke: 0x1f5566 },
 };
 const DEFAULT_THEME = { bg: 0x1c1814, wall: 0x4a3a2a, stroke: 0x2a2118 };
-const CRITTER_TYPES = ['bird', 'scorpion', 'tumbleweed'];
-const CRITTER_INTERVAL = [3, 6]; // seconds between spawns, Desert only
+const CRITTER_POOLS = {
+  desert: ['bird', 'scorpion', 'tumbleweed'],
+  beach: ['seagull', 'crab', 'fish'],
+};
+const CRITTER_INTERVAL = [1.5, 3.2]; // seconds between spawns
 const SHRINK_RING_CAP = 5;
 const SHRINK_INTERVAL = 7; // seconds between each ring closing, Kill Box only
 
@@ -634,6 +639,7 @@ class PlayScene extends Phaser.Scene {
       crossroads: () => this.buildMapCrossroads(),
       killbox: () => this.buildMapKillbox(),
       desert: () => this.buildMapDesert(),
+      beach: () => this.buildMapBeach(),
     };
     this.currentMapKey = this.mapKey === 'random' ? Phaser.Utils.Array.GetRandom(REAL_MAP_KEYS) : this.mapKey;
     (builders[this.currentMapKey] || builders.divide)();
@@ -717,6 +723,20 @@ class PlayScene extends Phaser.Scene {
     rocks.forEach(([r, c]) => { grid[r][c] = true; });
     // mirror every cluster horizontally so neither spawn side is favored
     rocks.forEach(([r, c]) => { grid[r][COLS - 1 - c] = true; });
+    this.grid = grid;
+  }
+
+  // MAP 7 — Beach: a lagoon splits the arena into an upper and lower shore
+  // route, with a little palm/rock cover on each side. Neither spawn sits
+  // in the water since the lagoon only spans the middle columns.
+  buildMapBeach() {
+    const grid = this.emptyGrid();
+    for (let r = 8; r <= 10; r++) {
+      for (let c = 9; c <= 22; c++) grid[r][c] = true;
+    }
+    const cover = [[4, 6], [4, 7], [13, 6], [13, 7]];
+    cover.forEach(([r, c]) => { grid[r][c] = true; });
+    cover.forEach(([r, c]) => { grid[r][COLS - 1 - c] = true; });
     this.grid = grid;
   }
 
@@ -887,62 +907,81 @@ class PlayScene extends Phaser.Scene {
   // Desert ambient critters — purely decorative background flavor, no
   // gameplay interaction. Only active on the Desert map.
   updateCritters(dt) {
-    if (this.currentMapKey !== 'desert') {
+    const pool = CRITTER_POOLS[this.currentMapKey];
+    if (!pool) {
       if (this.critters.length) this.critters = [];
       return;
     }
     this.critterTimer -= dt;
     if (this.critterTimer <= 0) {
       this.critterTimer = Phaser.Math.FloatBetween(CRITTER_INTERVAL[0], CRITTER_INTERVAL[1]);
-      this.spawnCritter();
+      this.spawnCritter(pool);
     }
     for (let i = this.critters.length - 1; i >= 0; i--) {
       const c = this.critters[i];
       c.x += c.vx * dt;
       c.y += c.vy * dt;
       c.rotation += c.spin * dt;
+      c.jumpPhase += dt;
       if (c.x < -40 || c.x > W + 40) this.critters.splice(i, 1);
     }
   }
 
-  spawnCritter() {
-    const type = Phaser.Utils.Array.GetRandom(CRITTER_TYPES);
+  spawnCritter(pool) {
+    const type = Phaser.Utils.Array.GetRandom(pool);
     const dir = Phaser.Math.Between(0, 1) ? 1 : -1;
     const startX = dir > 0 ? -30 : W + 30;
-    if (type === 'bird') {
-      this.critters.push({ type, x: startX, y: Phaser.Math.Between(25, 75),
-        vx: dir * Phaser.Math.FloatBetween(40, 65), vy: 0, rotation: 0, spin: 0 });
-    } else if (type === 'scorpion') {
-      this.critters.push({ type, x: startX, y: Phaser.Math.Between(H - 60, H - 20),
-        vx: dir * Phaser.Math.FloatBetween(18, 30), vy: 0, rotation: 0, spin: 0 });
-    } else {
-      this.critters.push({ type, x: startX, y: Phaser.Math.Between(H * 0.3, H * 0.85),
-        vx: dir * Phaser.Math.FloatBetween(50, 90), vy: 0, rotation: 0, spin: dir * 3 });
+    const base = { type, x: startX, rotation: 0, spin: 0, jumpPhase: 0 };
+    if (type === 'bird' || type === 'seagull') {
+      this.critters.push({ ...base, y: Phaser.Math.Between(25, 75),
+        vx: dir * Phaser.Math.FloatBetween(40, 65), vy: 0 });
+    } else if (type === 'scorpion' || type === 'crab') {
+      this.critters.push({ ...base, y: Phaser.Math.Between(H - 60, H - 20),
+        vx: dir * Phaser.Math.FloatBetween(18, 30), vy: 0 });
+    } else if (type === 'tumbleweed') {
+      this.critters.push({ ...base, y: Phaser.Math.Between(H * 0.3, H * 0.85),
+        vx: dir * Phaser.Math.FloatBetween(50, 90), vy: 0, spin: dir * 3 });
+    } else if (type === 'fish') {
+      this.critters.push({ ...base, y: Phaser.Math.Between(H * 0.35, H * 0.55),
+        vx: dir * Phaser.Math.FloatBetween(60, 90), vy: 0 });
     }
   }
 
   drawCritters(g) {
     if (!this.critters) return;
     this.critters.forEach(c => {
-      if (c.type === 'bird') {
-        g.lineStyle(2, 0x2a2118, 0.55);
+      if (c.type === 'bird' || c.type === 'seagull') {
+        g.lineStyle(2.5, 0x2a2118, 0.6);
         g.beginPath();
-        g.moveTo(c.x - 8, c.y);
-        g.lineTo(c.x, c.y - 4);
-        g.lineTo(c.x + 8, c.y);
+        g.moveTo(c.x - 12, c.y);
+        g.lineTo(c.x, c.y - 6);
+        g.lineTo(c.x + 12, c.y);
         g.strokePath();
       } else if (c.type === 'scorpion') {
-        g.fillStyle(0x2a2118, 0.5);
-        g.fillEllipse(c.x, c.y, 10, 5);
-        g.lineStyle(2, 0x2a2118, 0.5);
-        g.lineBetween(c.x + 5, c.y, c.x + 10, c.y - 4);
-      } else {
-        g.lineStyle(1.5, 0x8a6a30, 0.45);
+        g.fillStyle(0x2a2118, 0.55);
+        g.fillEllipse(c.x, c.y, 15, 7.5);
+        g.lineStyle(2.5, 0x2a2118, 0.55);
+        g.lineBetween(c.x + 7.5, c.y, c.x + 15, c.y - 6);
+      } else if (c.type === 'crab') {
+        g.fillStyle(0x1f5566, 0.55);
+        g.fillEllipse(c.x, c.y, 16, 8);
+        g.lineStyle(2.5, 0x1f5566, 0.55);
+        g.lineBetween(c.x - 8, c.y - 3, c.x - 13, c.y - 9);
+        g.lineBetween(c.x + 8, c.y - 3, c.x + 13, c.y - 9);
+      } else if (c.type === 'fish') {
+        const arc = Math.max(0, Math.sin(c.jumpPhase * 4)) * 16;
+        g.fillStyle(0x1f5566, 0.55);
+        g.fillEllipse(c.x, c.y - arc, 14, 6);
+        g.lineStyle(2, 0x1f5566, 0.55);
+        g.lineBetween(c.x - 7, c.y - arc, c.x - 12, c.y - arc - 5);
+        g.lineBetween(c.x - 7, c.y - arc, c.x - 12, c.y - arc + 5);
+      } else if (c.type === 'tumbleweed') {
+        g.lineStyle(2, 0x8a6a30, 0.5);
         for (let i = 0; i < 3; i++) {
           const a = c.rotation + i * (Math.PI / 3);
-          g.lineBetween(c.x - Math.cos(a) * 6, c.y - Math.sin(a) * 6, c.x + Math.cos(a) * 6, c.y + Math.sin(a) * 6);
+          g.lineBetween(c.x - Math.cos(a) * 9, c.y - Math.sin(a) * 9, c.x + Math.cos(a) * 9, c.y + Math.sin(a) * 9);
         }
-        g.strokeCircle(c.x, c.y, 6);
+        g.strokeCircle(c.x, c.y, 9);
       }
     });
   }
