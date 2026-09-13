@@ -137,6 +137,7 @@ class PlayScene extends Phaser.Scene {
     this.difficulty = 'normal';
     this.mapKey = 'divide';
     this.gameMode = 'classic';
+    this.spectatorMode = false;
 
     this.buildHUD();
     this.setupInput();
@@ -386,6 +387,13 @@ class PlayScene extends Phaser.Scene {
     });
   }
 
+  refreshSpectateButtonStyle() {
+    if (!this.spectateBtn) return;
+    this.spectateBtn.setText(`\ud83e\udd16 AI vs AI: ${this.spectatorMode ? 'ON' : 'OFF'}`);
+    this.spectateBtn.setBackgroundColor(this.spectatorMode ? '#5a3a8c' : '#1c2128');
+    this.spectateBtn.setColor(this.spectatorMode ? '#d9b8ff' : '#7f8a9a');
+  }
+
   refreshMapButtonStyles() {
     this.mapButtons.forEach(b => {
       const selected = b.getData('key') === this.mapKey;
@@ -445,6 +453,7 @@ class PlayScene extends Phaser.Scene {
     this.randomTagline.setVisible(true);
     this.menuBtn.setVisible(false);
     if (this.helpBtn) this.helpBtn.setVisible(true);
+    if (this.spectateBtn) this.spectateBtn.setVisible(true);
     this.setMusicState('menu');
     this.silenceEngines();
   }
@@ -463,6 +472,7 @@ class PlayScene extends Phaser.Scene {
     this.randomBtn.setVisible(false);
     this.randomTagline.setVisible(false);
     if (this.helpBtn) this.helpBtn.setVisible(false);
+    if (this.spectateBtn) this.spectateBtn.setVisible(false);
   }
 
   // ---------------------------------------------------------------------
@@ -504,6 +514,22 @@ class PlayScene extends Phaser.Scene {
     this.helpBtn.on('pointerover', () => this.helpBtn.setBackgroundColor('#262c34'));
     this.helpBtn.on('pointerout', () => this.helpBtn.setBackgroundColor('#1c2128'));
     this.helpBtn.on('pointerdown', () => this.showTutorial());
+
+    // spectate toggle — watch a full AI vs AI match instead of playing;
+    // shares the corner menuBtn normally uses, since menuBtn is hidden here
+    this.spectateBtn = this.add.text(W - 20, H - 12, '\ud83e\udd16 AI vs AI: OFF', {
+      fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
+    }).setOrigin(1, 1).setPadding(8, 5, 8, 5).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.spectateBtn.on('pointerover', () => { if (!this.spectatorMode) this.spectateBtn.setBackgroundColor('#262c34'); });
+    this.spectateBtn.on('pointerout', () => this.refreshSpectateButtonStyle());
+    this.spectateBtn.on('pointerdown', () => {
+      if (this.state !== 'ready') return;
+      this.spectatorMode = !this.spectatorMode;
+      if (window.SFX) SFX.click();
+      this.refreshSpectateButtonStyle();
+    });
+    this.refreshSpectateButtonStyle();
   }
 
   showTutorial() {
@@ -680,7 +706,8 @@ class PlayScene extends Phaser.Scene {
     this.setGameplayHudVisible(true);
     this.setMusicState('playing');
     this.buildArena();
-    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null };
+    this.player = { x: CELL * 3.5, y: H / 2, angle: 0, alive: true, reload: 0, vx: 0, vy: 0, upgrade: null,
+      aiming: false, target: { x: CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.controlMode = 'free'; // resets each round; switches the moment either scheme is actually used
     this.ai = { x: W - CELL * 3.5, y: H / 2, angle: Math.PI, alive: true, reload: 0, upgrade: null, aiming: false,
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
@@ -699,7 +726,9 @@ class PlayScene extends Phaser.Scene {
     const mapLabel = MAPS.find(m => m.key === this.currentMapKey).label;
     const mapTag = this.mapKey === 'random' ? `${mapLabel} \u00b7 ` : '';
     const modeTag = this.gameMode === 'ricochet' ? 'RICOCHET \u00b7 ' : '';
-    this.roundText.setText(`${modeTag}${mapTag}${DIFFICULTIES[this.difficulty].label}  \u00b7  YOU ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    const specTag = this.spectatorMode ? '\ud83e\udd16 SPECTATING \u00b7 ' : '';
+    this.roundText.setText(`${specTag}${modeTag}${mapTag}${DIFFICULTIES[this.difficulty].label}  \u00b7  ${this.spectatorMode ? 'P1' : 'YOU'} ${this.playerWins}  \u2014  AI ${this.aiWins}`);
+    this.reloadLabel.setText(this.spectatorMode ? 'P1 \u00b7 reload' : 'YOU \u00b7 reload');
     this.drawArena();
   }
 
@@ -905,7 +934,7 @@ class PlayScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------------
   tryPlayerFire() {
-    if (this.state !== 'playing' || !this.player.alive || this.player.reload > 0) return;
+    if (this.state !== 'playing' || !this.player.alive || this.player.reload > 0 || this.spectatorMode) return;
     // fire wherever the tank is currently facing — matches the mouse when
     // aiming normally, and matches your travel direction when auto-turned
     // by the arrow keys, so the barrel never lies about where the shot goes
@@ -943,25 +972,35 @@ class PlayScene extends Phaser.Scene {
   }
 
   updateAI(dt) {
-    const ai = this.ai;
-    if (!ai.alive) return;
-    const diff = DIFFICULTIES[this.difficulty];
-    const beforeX = ai.x, beforeY = ai.y;
+    this.updateTankAI(this.ai, this.player, this.difficulty, 'ai', dt);
+    if (this.spectatorMode) {
+      // in spectator mode the "player" tank is AI-controlled too, using
+      // the exact same behavior/difficulty as the opponent — lets you
+      // watch a full AI vs AI match unfold and catch anything degenerate
+      // over a long unattended stretch
+      this.updateTankAI(this.player, this.ai, this.difficulty, 'player', dt);
+    }
+  }
+
+  updateTankAI(self, target, diffKey, side, dt) {
+    if (!self.alive) return;
+    const diff = DIFFICULTIES[diffKey];
+    const beforeX = self.x, beforeY = self.y;
 
     // periodically pick a movement target — either a live pickup or a
     // random open waypoint
-    ai.retargetIn -= dt;
-    if (ai.retargetIn <= 0) {
-      ai.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
+    self.retargetIn -= dt;
+    if (self.retargetIn <= 0) {
+      self.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
       const livePickup = this.pickups.find(p => p.alive);
-      const pickupChance = this.difficulty === 'hard' ? 100 : (this.difficulty === 'normal' ? 85 : 70);
+      const pickupChance = diffKey === 'hard' ? 100 : (diffKey === 'normal' ? 85 : 70);
       if (livePickup && Phaser.Math.Between(0, 100) < pickupChance) {
-        ai.target = { x: livePickup.x, y: livePickup.y };
+        self.target = { x: livePickup.x, y: livePickup.y };
       } else {
         // require real distance so every retarget produces visible movement,
-        // and prefer a spot out of the player's sightline when reloading —
+        // and prefer a spot out of the target's sightline when reloading —
         // simple cover-seeking instead of pure random wander
-        const wantCover = this.player.alive && this.ai.reload > 0;
+        const wantCover = target.alive && self.reload > 0;
         let best = null, bestTries = 0, c, r, cx, cy;
         while (bestTries < 25) {
           c = Phaser.Math.Between(2, COLS - 3);
@@ -969,68 +1008,68 @@ class PlayScene extends Phaser.Scene {
           cx = c * CELL + CELL / 2; cy = r * CELL + CELL / 2;
           bestTries++;
           if (this.isSolid(c, r)) continue;
-          if (Phaser.Math.Distance.Between(ai.x, ai.y, cx, cy) < 180) continue;
-          const covered = wantCover && !this.hasLineOfSight(cx, cy, this.player.x, this.player.y);
+          if (Phaser.Math.Distance.Between(self.x, self.y, cx, cy) < 180) continue;
+          const covered = wantCover && !this.hasLineOfSight(cx, cy, target.x, target.y);
           if (!best) best = { x: cx, y: cy };
           if (!wantCover || covered) { best = { x: cx, y: cy }; break; }
         }
-        ai.target = best || { x: ai.x, y: ai.y };
+        self.target = best || { x: self.x, y: self.y };
       }
     }
 
     // periodically decide whether to commit to an attack — turning to aim
     // takes real time now, so this is a real "tell" the player can react to,
     // not an instant snap
-    ai.fireGate -= dt;
-    if (!ai.aiming && ai.reload <= 0 && ai.fireGate <= 0 && this.player.alive
-        && this.hasLineOfSight(ai.x, ai.y, this.player.x, this.player.y)) {
-      ai.aiming = true;
-      this.playLockOnSound();
+    self.fireGate -= dt;
+    if (!self.aiming && self.reload <= 0 && self.fireGate <= 0 && target.alive
+        && this.hasLineOfSight(self.x, self.y, target.x, target.y)) {
+      self.aiming = true;
+      this.playLockOnSound(); // updateTankAI only ever runs for the player tank in spectator mode, so this is always meaningful
     }
 
     let desiredAngle;
-    if (ai.aiming && this.player.alive) {
-      const aimX = this.player.x + (this.player.vx || 0) * diff.lead;
-      const aimY = this.player.y + (this.player.vy || 0) * diff.lead;
-      desiredAngle = Math.atan2(aimY - ai.y, aimX - ai.x);
+    if (self.aiming && target.alive) {
+      const aimX = target.x + (target.vx || 0) * diff.lead;
+      const aimY = target.y + (target.vy || 0) * diff.lead;
+      desiredAngle = Math.atan2(aimY - self.y, aimX - self.x);
     } else {
-      desiredAngle = Math.atan2(ai.target.y - ai.y, ai.target.x - ai.x);
+      desiredAngle = Math.atan2(self.target.y - self.y, self.target.x - self.x);
     }
-    ai.angle = Phaser.Math.Angle.RotateTo(ai.angle, desiredAngle, diff.turnSpeed * dt);
-    const angleDiff = Math.abs(Phaser.Math.Angle.Wrap(desiredAngle - ai.angle));
+    self.angle = Phaser.Math.Angle.RotateTo(self.angle, desiredAngle, diff.turnSpeed * dt);
+    const angleDiff = Math.abs(Phaser.Math.Angle.Wrap(desiredAngle - self.angle));
 
-    if (ai.aiming) {
+    if (self.aiming) {
       // still creeps forward slowly while lining up, instead of freezing
       // completely — reads more like a real player adjusting their angle
       if (angleDiff < Math.PI * 0.65) {
         const mv = diff.moveSpeed * dt * 0.35;
-        this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
+        this.moveTank(self, Math.cos(self.angle) * mv, Math.sin(self.angle) * mv);
       }
-      if (angleDiff < diff.aimJitter + 0.06 || !this.player.alive || !ai.alive) {
-        if (this.player.alive) this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
-        ai.aiming = false;
-        ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
+      if (angleDiff < diff.aimJitter + 0.06 || !target.alive || !self.alive) {
+        if (target.alive) this.fireShell(self, self.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), side);
+        self.aiming = false;
+        self.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
         // Hard specifically reacts to its own vulnerability the instant it
         // fires — forcing an immediate retarget (rather than waiting for its
         // next scheduled decision) means it dives for cover right away,
         // instead of obliviously continuing whatever it was doing until its
         // next periodic check like Easy/Normal do
-        if (this.difficulty === 'hard') ai.retargetIn = 0;
+        if (diffKey === 'hard') self.retargetIn = 0;
       }
     } else {
       // drive forward toward the target — can't strafe, but only needs to be
       // roughly facing the right way rather than perfectly aligned, so it
       // keeps moving smoothly through a turn instead of stopping to pivot
-      const dist = Phaser.Math.Distance.Between(ai.x, ai.y, ai.target.x, ai.target.y);
+      const dist = Phaser.Math.Distance.Between(self.x, self.y, self.target.x, self.target.y);
       if (dist > 6 && angleDiff < Math.PI * 0.65) {
         const speedScale = Math.max(0.55, 1 - (angleDiff / (Math.PI * 0.65)) * 0.35);
         const mv = diff.moveSpeed * dt * speedScale;
-        this.moveTank(ai, Math.cos(ai.angle) * mv, Math.sin(ai.angle) * mv);
+        this.moveTank(self, Math.cos(self.angle) * mv, Math.sin(self.angle) * mv);
       }
     }
 
-    ai.vx = (ai.x - beforeX) / dt;
-    ai.vy = (ai.y - beforeY) / dt;
+    self.vx = (self.x - beforeX) / dt;
+    self.vy = (self.y - beforeY) / dt;
   }
 
   // ---------------------------------------------------------------------
@@ -1325,10 +1364,17 @@ class PlayScene extends Phaser.Scene {
   endMatch() {
     const won = this.playerWins > this.aiWins;
     this.showMenu();
-    this.centerText.setText(won ? 'MATCH WON!' : 'MATCH LOST').setColor(won ? '#5be37b' : '#ff5a5a').setVisible(true);
-    this.subText.setText(
-      `Final (${DIFFICULTIES[this.difficulty].label}): You ${this.playerWins} \u2014 AI ${this.aiWins}`
-    ).setVisible(true);
+    if (this.spectatorMode) {
+      this.centerText.setText('MATCH OVER').setColor('#f0e6d2').setVisible(true);
+      this.subText.setText(
+        `Final (${DIFFICULTIES[this.difficulty].label}): P1 ${this.playerWins} \u2014 AI ${this.aiWins}`
+      ).setVisible(true);
+    } else {
+      this.centerText.setText(won ? 'MATCH WON!' : 'MATCH LOST').setColor(won ? '#5be37b' : '#ff5a5a').setVisible(true);
+      this.subText.setText(
+        `Final (${DIFFICULTIES[this.difficulty].label}): You ${this.playerWins} \u2014 AI ${this.aiWins}`
+      ).setVisible(true);
+    }
   }
 
   // called when the browser back button fires mid-match — bail out to the
@@ -1381,63 +1427,66 @@ class PlayScene extends Phaser.Scene {
 
       // WASD (or the touch joystick) — free 8-directional movement,
       // facing follows the mouse independently (twin-stick style)
-      let mx = 0, my = 0;
-      if (this.joystick && this.joystick.active) {
-        mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
-      } else {
-        if (this.keys.a.isDown) mx -= 1;
-        if (this.keys.d.isDown) mx += 1;
-        if (this.keys.w.isDown) my -= 1;
-        if (this.keys.s.isDown) my += 1;
-      }
-
-      // Arrows — real tank controls: Up/Down drive forward/backward along
-      // wherever the tank is currently facing, Left/Right rotate it. Holding
-      // forward while turning arcs you in a circle, same as classic tank games.
-      let forwardInput = 0, turnInput = 0;
-      if (this.cursors.up.isDown) forwardInput += 1;
-      if (this.cursors.down.isDown) forwardInput -= 1;
-      if (this.cursors.left.isDown) turnInput -= 1;
-      if (this.cursors.right.isDown) turnInput += 1;
-      const arrowActive = forwardInput !== 0 || turnInput !== 0;
-      const wasdActive = this.keys.w.isDown || this.keys.a.isDown || this.keys.s.isDown || this.keys.d.isDown;
-
-      // control mode only switches when the OTHER scheme is actually used —
-      // releasing arrow keys should hold your current facing, not snap back
-      // to mouse-aim just because no arrow happens to be held this frame
-      if (arrowActive) this.controlMode = 'tank';
-      else if (wasdActive) this.controlMode = 'free';
-
-      if (this.controlMode === 'tank') {
-        this.player.angle += turnInput * TURN_SPEED * dt;
-        if (forwardInput !== 0) {
-          const speed = 160 * dt * (forwardInput > 0 ? 1 : 0.6); // reverse is slower, like a real tank
-          const beforeX = this.player.x, beforeY = this.player.y;
-          this.moveTank(this.player,
-            Math.cos(this.player.angle) * speed * forwardInput,
-            Math.sin(this.player.angle) * speed * forwardInput);
-          this.player.vx = (this.player.x - beforeX) / dt;
-          this.player.vy = (this.player.y - beforeY) / dt;
+      // Skipped entirely in spectator mode — updateAI() drives both tanks.
+      if (!this.spectatorMode) {
+        let mx = 0, my = 0;
+        if (this.joystick && this.joystick.active) {
+          mx = this.joystick.dx / 40; my = this.joystick.dy / 40;
         } else {
-          this.player.vx = 0; this.player.vy = 0;
+          if (this.keys.a.isDown) mx -= 1;
+          if (this.keys.d.isDown) mx += 1;
+          if (this.keys.w.isDown) my -= 1;
+          if (this.keys.s.isDown) my += 1;
         }
-      } else {
-        const mag = Math.sqrt(mx * mx + my * my);
-        if (mag > 0.05) {
-          const speed = 135 * dt; // slightly slower free-movement strafing (was 160)
-          const beforeX = this.player.x, beforeY = this.player.y;
-          this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
-          this.player.vx = (this.player.x - beforeX) / dt;
-          this.player.vy = (this.player.y - beforeY) / dt;
-        } else {
-          this.player.vx = 0; this.player.vy = 0;
-        }
-        // mouse aim only applies in this free-movement mode — arrows already
-        // set the facing angle directly above
-        this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
-      }
 
-      if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
+        // Arrows — real tank controls: Up/Down drive forward/backward along
+        // wherever the tank is currently facing, Left/Right rotate it. Holding
+        // forward while turning arcs you in a circle, same as classic tank games.
+        let forwardInput = 0, turnInput = 0;
+        if (this.cursors.up.isDown) forwardInput += 1;
+        if (this.cursors.down.isDown) forwardInput -= 1;
+        if (this.cursors.left.isDown) turnInput -= 1;
+        if (this.cursors.right.isDown) turnInput += 1;
+        const arrowActive = forwardInput !== 0 || turnInput !== 0;
+        const wasdActive = this.keys.w.isDown || this.keys.a.isDown || this.keys.s.isDown || this.keys.d.isDown;
+
+        // control mode only switches when the OTHER scheme is actually used —
+        // releasing arrow keys should hold your current facing, not snap back
+        // to mouse-aim just because no arrow happens to be held this frame
+        if (arrowActive) this.controlMode = 'tank';
+        else if (wasdActive) this.controlMode = 'free';
+
+        if (this.controlMode === 'tank') {
+          this.player.angle += turnInput * TURN_SPEED * dt;
+          if (forwardInput !== 0) {
+            const speed = 160 * dt * (forwardInput > 0 ? 1 : 0.6); // reverse is slower, like a real tank
+            const beforeX = this.player.x, beforeY = this.player.y;
+            this.moveTank(this.player,
+              Math.cos(this.player.angle) * speed * forwardInput,
+              Math.sin(this.player.angle) * speed * forwardInput);
+            this.player.vx = (this.player.x - beforeX) / dt;
+            this.player.vy = (this.player.y - beforeY) / dt;
+          } else {
+            this.player.vx = 0; this.player.vy = 0;
+          }
+        } else {
+          const mag = Math.sqrt(mx * mx + my * my);
+          if (mag > 0.05) {
+            const speed = 135 * dt; // slightly slower free-movement strafing (was 160)
+            const beforeX = this.player.x, beforeY = this.player.y;
+            this.moveTank(this.player, (mx / Math.max(mag, 1)) * speed, (my / Math.max(mag, 1)) * speed);
+            this.player.vx = (this.player.x - beforeX) / dt;
+            this.player.vy = (this.player.y - beforeY) / dt;
+          } else {
+            this.player.vx = 0; this.player.vy = 0;
+          }
+          // mouse aim only applies in this free-movement mode — arrows already
+          // set the facing angle directly above
+          this.player.angle = Math.atan2(this.pointerWorld.y - this.player.y, this.pointerWorld.x - this.player.x);
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
+      }
 
       this.updateAI(dt);
       this.resolveTankCollision(dt);
