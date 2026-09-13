@@ -32,6 +32,8 @@ const TANK_R = 14;
 const SHELL_R = 5;
 const SHELL_SPEED = 480;
 const TURN_SPEED = 9.5; // rad/sec — how fast the arrow-key tank rotates in place
+const TREAD_MIN_DIST = 10; // px moved before laying down another tread mark
+const TREAD_LIFETIME = 2.2; // seconds before a tread mark fully fades
 const RELOAD_MS = 1300;
 const CARVE_RADIUS = 58;
 const ROUNDS_TO_WIN = 2;
@@ -409,6 +411,7 @@ class PlayScene extends Phaser.Scene {
       target: { x: W - CELL * 3.5, y: H / 2 }, retargetIn: 0, fireGate: Phaser.Math.FloatBetween(0.3, 1.2) };
     this.shells = [];
     this.pickups = [];
+    this.bumpCooldown = 0;
     this.pickupTimer = PICKUP_FIRST_DELAY;
     this.roundTime = ROUND_TIME;
     this.warnedFinalTen = false;
@@ -712,8 +715,48 @@ class PlayScene extends Phaser.Scene {
       ];
       return !corners.some(([px, py]) => { const { c, r } = cellIndex(px, py); return this.isSolid(c, r); });
     };
-    if (tryMove(tank.x + dx, tank.y)) tank.x += dx;
-    if (tryMove(tank.x, tank.y + dy)) tank.y += dy;
+    let moved = false;
+    if (tryMove(tank.x + dx, tank.y)) { tank.x += dx; moved = true; }
+    if (tryMove(tank.x, tank.y + dy)) { tank.y += dy; moved = true; }
+    if (moved) this.recordTread(tank);
+  }
+
+  recordTread(tank) {
+    if (!tank.trail) tank.trail = [];
+    const last = tank.trail[tank.trail.length - 1];
+    if (!last || Phaser.Math.Distance.Between(last.x, last.y, tank.x, tank.y) > TREAD_MIN_DIST) {
+      tank.trail.push({ x: tank.x, y: tank.y, angle: tank.angle, age: 0 });
+      if (tank.trail.length > 40) tank.trail.shift(); // hard cap, safety bound
+    }
+  }
+
+  ageTread(tank, dt) {
+    if (!tank.trail) return;
+    for (let i = tank.trail.length - 1; i >= 0; i--) {
+      tank.trail[i].age += dt;
+      if (tank.trail[i].age > TREAD_LIFETIME) tank.trail.splice(i, 1);
+    }
+  }
+
+  // resolves tank-vs-tank overlap with a soft push, so they can't drive
+  // through each other — done once per frame after both have moved
+  resolveTankCollision(dt) {
+    if (this.bumpCooldown > 0) this.bumpCooldown -= dt;
+    if (!this.player.alive || !this.ai.alive) return;
+    const dx = this.ai.x - this.player.x, dy = this.ai.y - this.player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const minDist = TANK_R * 2;
+    if (dist > 0.001 && dist < minDist) {
+      const overlap = minDist - dist;
+      const nx = dx / dist, ny = dy / dist;
+      const push = overlap / 2 + 0.4;
+      this.moveTank(this.player, -nx * push, -ny * push);
+      this.moveTank(this.ai, nx * push, ny * push);
+      if (!(this.bumpCooldown > 0)) {
+        this.bumpCooldown = 0.4;
+        if (window.SFX) SFX.blip();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -937,6 +980,9 @@ class PlayScene extends Phaser.Scene {
       if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.tryPlayerFire();
 
       this.updateAI(dt);
+      this.resolveTankCollision(dt);
+      this.ageTread(this.player, dt);
+      this.ageTread(this.ai, dt);
       this.updateShells(dt);
       this.updatePickups(dt);
 
@@ -985,6 +1031,18 @@ class PlayScene extends Phaser.Scene {
       console.error('Tank Duel update error, recovering:', err);
       if (this.state !== 'ready') this.returnToMenu();
     }
+  }
+
+  drawTreads(g, tank) {
+    if (!tank.trail) return;
+    tank.trail.forEach(p => {
+      const alpha = Math.max(0, 1 - p.age / TREAD_LIFETIME) * 0.35;
+      if (alpha <= 0) return;
+      const perpX = -Math.sin(p.angle), perpY = Math.cos(p.angle);
+      const halfW = TANK_R * 0.75;
+      g.lineStyle(3, 0x000000, alpha);
+      g.lineBetween(p.x - perpX * halfW, p.y - perpY * halfW, p.x + perpX * halfW, p.y + perpY * halfW);
+    });
   }
 
   drawTank(g, t, bodyCol, trackCol) {
@@ -1037,6 +1095,8 @@ class PlayScene extends Phaser.Scene {
       g.strokePath();
     });
 
+    this.drawTreads(g, this.player);
+    this.drawTreads(g, this.ai);
     this.drawTank(g, this.player, 0x5be37b, 0x2f5a3a);
     this.drawTank(g, this.ai, 0xff5a5a, 0x7a2f2f);
 
