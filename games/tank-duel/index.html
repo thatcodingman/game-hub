@@ -278,6 +278,32 @@ class PlayScene extends Phaser.Scene {
     });
   }
 
+  // Dedicated lock-on cue — a sharp two-beep square-wave tone, synthesized
+  // directly so its volume is fully under our control and it actually cuts
+  // through the engine hum, music, and combat sounds instead of getting lost
+  playLockOnSound() {
+    if (!window.SFX || !SFX.ctx || SFX.muted) return;
+    try {
+      const ctx = SFX.ctx;
+      const t0 = ctx.currentTime;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.35;
+      [0, 0.1].forEach((offset, i) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(i === 0 ? 700 : 950, t0 + offset);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0, t0 + offset);
+        gain.gain.linearRampToValueAtTime(vol, t0 + offset + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + offset + 0.09);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + 0.1);
+      });
+    } catch (err) {
+      console.error('lock-on sound error (non-fatal):', err);
+    }
+  }
+
   buildMapMenu() {
     this.mapButtons = [];
     this.mapLabel = this.add.text(W/2, H/2 - 158, 'PICK YOUR BATTLEFIELD', {
@@ -928,7 +954,8 @@ class PlayScene extends Phaser.Scene {
     if (ai.retargetIn <= 0) {
       ai.retargetIn = Phaser.Math.FloatBetween(diff.retarget[0], diff.retarget[1]);
       const livePickup = this.pickups.find(p => p.alive);
-      if (livePickup && Phaser.Math.Between(0, 100) < 70) {
+      const pickupChance = this.difficulty === 'hard' ? 100 : 70; // Hard never lets a pickup sit uncontested
+      if (livePickup && Phaser.Math.Between(0, 100) < pickupChance) {
         ai.target = { x: livePickup.x, y: livePickup.y };
       } else {
         // require real distance so every retarget produces visible movement,
@@ -958,7 +985,7 @@ class PlayScene extends Phaser.Scene {
     if (!ai.aiming && ai.reload <= 0 && ai.fireGate <= 0 && this.player.alive
         && this.hasLineOfSight(ai.x, ai.y, this.player.x, this.player.y)) {
       ai.aiming = true;
-      if (window.SFX) SFX.countdown(); // distinct "lock-on" cue, separate from the fire/warning sounds
+      this.playLockOnSound();
     }
 
     let desiredAngle;
@@ -983,6 +1010,12 @@ class PlayScene extends Phaser.Scene {
         if (this.player.alive) this.fireShell(ai, ai.angle + Phaser.Math.FloatBetween(-diff.aimJitter, diff.aimJitter), 'ai');
         ai.aiming = false;
         ai.fireGate = Phaser.Math.FloatBetween(diff.fireMin, diff.fireMax);
+        // Hard specifically reacts to its own vulnerability the instant it
+        // fires — forcing an immediate retarget (rather than waiting for its
+        // next scheduled decision) means it dives for cover right away,
+        // instead of obliviously continuing whatever it was doing until its
+        // next periodic check like Easy/Normal do
+        if (this.difficulty === 'hard') ai.retargetIn = 0;
       }
     } else {
       // drive forward toward the target — can't strafe, but only needs to be
