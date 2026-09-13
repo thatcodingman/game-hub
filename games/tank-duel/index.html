@@ -53,9 +53,10 @@ const MAPS = [
   { key: 'killbox',    label: 'KILL BOX' },
   { key: 'desert',     label: 'DESERT' },
   { key: 'beach',      label: 'BEACH' },
+  { key: 'battleship', label: 'BATTLESHIP' },
   { key: 'random',     label: 'RANDOM' },
 ];
-const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'desert', 'beach'];
+const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'desert', 'beach', 'battleship'];
 
 // per-map visual identity — a lightweight theme baked into each map rather
 // than a separate theme-picker, so new locations (beach, battleship, etc.)
@@ -63,11 +64,13 @@ const REAL_MAP_KEYS = ['divide', 'maze', 'fortress', 'crossroads', 'killbox', 'd
 const MAP_THEMES = {
   desert: { bg: 0x3a2f1a, wall: 0xc9a05a, stroke: 0x8a6a30 },
   beach:  { bg: 0xd9c48a, wall: 0x2f7a8c, stroke: 0x1f5566 },
+  battleship: { bg: 0x2a2f33, wall: 0x6b7378, stroke: 0x3f4548 },
 };
 const DEFAULT_THEME = { bg: 0x1c1814, wall: 0x4a3a2a, stroke: 0x2a2118 };
 const CRITTER_POOLS = {
   desert: ['bird', 'scorpion', 'tumbleweed'],
   beach: ['seagull', 'crab', 'fish'],
+  battleship: ['seagull', 'fish'], // gulls trailing the ship, fish breaching alongside
 };
 const CRITTER_INTERVAL = [1.5, 3.2]; // seconds between spawns
 const SHRINK_RING_CAP = 5;
@@ -275,15 +278,19 @@ class PlayScene extends Phaser.Scene {
 
   buildMapMenu() {
     this.mapButtons = [];
-    this.mapLabel = this.add.text(W/2, H/2 - 118, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
+    this.mapLabel = this.add.text(W/2, H/2 - 140, 'CHOOSE A MAP  (Random = endless mode, no match end)', {
       fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     MAPS.forEach((m, i) => {
-      const x = W/2 + (i - (MAPS.length - 1) / 2) * 135;
-      const y = H/2 - 85;
+      const perRow = 5;
+      const row = Math.floor(i / perRow);
+      const col = i % perRow;
+      const rowCount = row === 0 ? Math.min(perRow, MAPS.length) : MAPS.length - perRow;
+      const x = W/2 + (col - (rowCount - 1) / 2) * 140;
+      const y = H/2 - 110 + row * 36;
       const btn = this.add.text(x, y, m.label, {
-        fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
-      }).setOrigin(0.5).setPadding(12, 9, 12, 9).setBackgroundColor('#1c2128')
+        fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#e8ecf1'
+      }).setOrigin(0.5).setPadding(10, 7, 10, 7).setBackgroundColor('#1c2128')
         .setInteractive({ useHandCursor: true });
       btn.on('pointerover', () => { if (this.mapKey !== m.key) btn.setBackgroundColor('#262c34'); });
       btn.on('pointerout', () => this.refreshMapButtonStyles());
@@ -301,12 +308,12 @@ class PlayScene extends Phaser.Scene {
 
   buildModeMenu() {
     this.modeButtons = [];
-    this.modeLabel = this.add.text(W/2, H/2 - 45, 'CHOOSE A GAME MODE', {
+    this.modeLabel = this.add.text(W/2, H/2 - 38, 'CHOOSE A GAME MODE', {
       fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     MODES.forEach((m, i) => {
       const x = W/2 + (i - (MODES.length - 1) / 2) * 155;
-      const y = H/2 - 15;
+      const y = H/2 - 8;
       const btn = this.add.text(x, y, m.label, {
         fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1'
       }).setOrigin(0.5).setPadding(14, 9, 14, 9).setBackgroundColor('#1c2128')
@@ -343,13 +350,13 @@ class PlayScene extends Phaser.Scene {
 
   buildDifficultyMenu() {
     this.diffButtons = [];
-    this.diffLabel = this.add.text(W/2, H/2 + 22, 'CHOOSE A DIFFICULTY TO START', {
+    this.diffLabel = this.add.text(W/2, H/2 + 30, 'CHOOSE A DIFFICULTY TO START', {
       fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
     const keys = ['easy', 'normal', 'hard'];
     keys.forEach((key, i) => {
       const x = W/2 + (i - 1) * 170;
-      const y = H/2 + 55;
+      const y = H/2 + 65;
       const btn = this.add.text(x, y, DIFFICULTIES[key].label, {
         fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#e8ecf1'
       }).setOrigin(0.5).setPadding(18, 12, 18, 12).setBackgroundColor('#1c2128')
@@ -531,13 +538,13 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
     }).setOrigin(0.5).setAlpha(0);
 
-    this.centerText = this.add.text(W/2, H/2 - 185, '', {
+    this.centerText = this.add.text(W/2, H/2 - 205, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '34px', color: '#f0e6d2', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true).setVisible(false);
-    this.subText = this.add.text(W/2, H/2 - 148, '', {
+    this.subText = this.add.text(W/2, H/2 - 170, '', {
       fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
-    this.hintText = this.add.text(W/2, H/2 + 110,
+    this.hintText = this.add.text(W/2, H/2 + 120,
       'WASD + mouse to move/aim freely \u00b7 or arrows: Up/Down drive, Left/Right turn \u00b7 click or SPACE to fire', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
@@ -640,6 +647,7 @@ class PlayScene extends Phaser.Scene {
       killbox: () => this.buildMapKillbox(),
       desert: () => this.buildMapDesert(),
       beach: () => this.buildMapBeach(),
+      battleship: () => this.buildMapBattleship(),
     };
     this.currentMapKey = this.mapKey === 'random' ? Phaser.Utils.Array.GetRandom(REAL_MAP_KEYS) : this.mapKey;
     (builders[this.currentMapKey] || builders.divide)();
@@ -737,6 +745,25 @@ class PlayScene extends Phaser.Scene {
     const cover = [[4, 6], [4, 7], [13, 6], [13, 7]];
     cover.forEach(([r, c]) => { grid[r][c] = true; });
     cover.forEach(([r, c]) => { grid[r][COLS - 1 - c] = true; });
+    this.grid = grid;
+  }
+
+  // MAP 8 — Battleship: three narrow horizontal corridors separated by
+  // bulkheads with hatch gaps, plus scattered crate cover in the middle
+  // corridor (where both spawns sit). Tight, linear, close-quarters —
+  // the opposite feel from Desert's wide-open sightlines.
+  buildMapBattleship() {
+    const grid = this.emptyGrid();
+    const bulkheadRowTop = 6, bulkheadRowBottom = 12;
+    const hatchesTop = [[8, 9], [15, 16], [22, 23]];
+    const hatchesBottom = [[6, 7], [15, 16], [24, 25]];
+    for (let c = 2; c <= COLS - 3; c++) {
+      if (!hatchesTop.some(([a, b]) => c >= a && c <= b)) grid[bulkheadRowTop][c] = true;
+      if (!hatchesBottom.some(([a, b]) => c >= a && c <= b)) grid[bulkheadRowBottom][c] = true;
+    }
+    const crates = [[9, 12], [9, 13]];
+    crates.forEach(([r, c]) => { grid[r][c] = true; });
+    crates.forEach(([r, c]) => { grid[r][COLS - 1 - c] = true; });
     this.grid = grid;
   }
 
