@@ -547,7 +547,16 @@ class PlayScene extends Phaser.Scene {
     const bobY = f.grounded ? Math.sin(f.walkBob) * 3 * scale : 0;
     const squashY = 1 - f.squash * 0.18;
     const squashX = 1 + f.squash * 0.12;
-    const baseX = proj.sx;
+
+    // PUNCH — one continuous pull-back/thrust/retract motion; see
+    // punchFistOffset for why it's built this way. Body lean reuses this
+    // same curve at a fraction of the magnitude, so the whole fighter
+    // rocks back on the windup and surges into the thrust — and since it's
+    // the same already-continuous curve, leaning can't introduce a new snap.
+    const rawOffset = punchFistOffset(f.punchState, f.punchTimer);
+    const leanRaw = rawOffset === null ? 0 : rawOffset * 0.18;
+
+    const baseX = proj.sx + leanRaw * scale * f.facing;
     const baseY = proj.sy + f.jumpZ * scale - bobY;
     const w = 42 * scale * squashX, hgt = 56 * scale * squashY;
 
@@ -582,16 +591,36 @@ class PlayScene extends Phaser.Scene {
       g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 2.5 * scale);
     }
 
-    // PUNCH — one continuous pull-back/thrust/retract motion; see
-    // punchFistOffset for why it's built this way
-    const rawOffset = punchFistOffset(f.punchState, f.punchTimer);
     if (rawOffset !== null) {
       const fistColor = f.kind === 'panda' ? 0xdc2626 : 0xf5a623;
       const offset = rawOffset * scale;
       const fistX = baseX + f.facing * (w/2 + offset);
       const fistY = baseY - hgt + 18 * scale;
+      const shoulderX = baseX + f.facing * (w/2 * 0.5);
+      const shoulderY = fistY;
+
+      // forearm — connects the fist to the body so it reads as an arm
+      // extending, not a disembodied circle
+      g.lineStyle(5 * scale, fistColor, 1);
+      g.lineBetween(shoulderX, shoulderY, fistX, fistY);
+
+      // motion trail — a couple of fading ghost positions behind the fist,
+      // only during the actual thrust, to sell speed
+      if (f.punchState === 'active') {
+        g.fillStyle(fistColor, 0.25);
+        g.fillCircle(baseX + f.facing * (w/2 + offset * 0.55), fistY, 6 * scale);
+        g.fillStyle(fistColor, 0.12);
+        g.fillCircle(baseX + f.facing * (w/2 + offset * 0.25), fistY, 5 * scale);
+      }
+
       g.fillStyle(fistColor, 1);
-      g.fillCircle(fistX, fistY, 7 * scale);
+      if (f.punchState === 'active') {
+        // elongated along the punch axis during the thrust — a "jab streak"
+        // rather than a circle the whole way through
+        g.fillEllipse(fistX, fistY, 11 * scale, 7 * scale);
+      } else {
+        g.fillCircle(fistX, fistY, 7 * scale);
+      }
     }
 
     // HIT FLASH — a brief white overlay on whoever just got hit
