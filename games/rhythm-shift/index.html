@@ -63,6 +63,28 @@ const SCORE_PERFECT = 50;
 const TELEGRAPH_NEAR_PX = 90;
 const TELEGRAPH_FADE_RANGE_PX = 260;
 
+// LATE-GAME ESCALATION — the two-phase version of the design brief's
+// "rhythms start overlapping / the level stops giving you a beat":
+//
+// Phase 1 (AUTO_BEAT_STOP_SEC): the free auto-tick that's been carrying you
+// between taps is switched off. From here on, a beat only fires because you
+// tapped it — the game genuinely stops giving you a beat, not just a speed
+// bump.
+//
+// Phase 2 (ECHO_START_SEC): a second, independent rhythm the level runs on
+// its own appears — its own random tempo, its own open window, gating some
+// gates instead of yours. You don't control it and can't influence it. Some
+// incoming gates now belong to it instead of you, so from here on you're
+// reading two overlapping rhythms at once, not one.
+const AUTO_BEAT_STOP_SEC = 60;
+const ECHO_START_SEC = 100;
+const ECHO_PERIOD_MIN = 500;
+const ECHO_PERIOD_MAX = 900;
+const ECHO_OPEN_FRACTION = 0.5;
+const ECHO_CHANNEL_CHANCE = 0.35; // of gates spawned once the echo is active, the fraction that belong to it instead of your beat
+
+const MISS_EFFECT_DURATION_MS = 420; // how long the shatter burst at a missed gate's position plays before fading out
+
 function spawnIntervalFor(t) {
   if (t < 25) return Phaser.Math.FloatBetween(2.8, 3.4);
   if (t < 50) return Phaser.Math.FloatBetween(2.2, 2.8);
@@ -105,6 +127,15 @@ class PlayScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.beatBarBg = this.add.rectangle(W/2, 112, 260, 8, 0x1c2128).setStrokeStyle(1, 0x000000);
     this.beatBarFill = this.add.rectangle(W/2 - 129, 112, 0, 6, 0x4fd1ff).setOrigin(0, 0.5);
+
+    // ECHO bar — only shown once the level's own second rhythm kicks in.
+    // Thinner and set apart so it never reads as "another one of your bars,"
+    // it's the level's own pulse, not yours
+    this.echoBarLabel = this.add.text(W/2, 128, 'ECHO', {
+      fontFamily: 'Arial Black, Arial', fontSize: '9px', color: '#a084c4'
+    }).setOrigin(0.5).setVisible(false);
+    this.echoBarBg = this.add.rectangle(W/2, 142, 200, 5, 0x1c2128).setStrokeStyle(1, 0x000000).setVisible(false);
+    this.echoBarFill = this.add.rectangle(W/2 - 99, 142, 0, 3, 0xba7dff).setOrigin(0, 0.5).setVisible(false);
 
     this.toastText = this.add.text(W/2, 150, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
@@ -162,6 +193,17 @@ class PlayScene extends Phaser.Scene {
     this.scoreText.setText('0');
     this.gates = [];
     this.spawnTimer = 2.5;
+    this.missEffects = [];
+
+    // escalation state — starts off, flips on once runTime crosses each
+    // threshold (see update())
+    this.autoBeatStopped = false;
+    this.echoActive = false;
+    this.echoBeatPeriod = Phaser.Math.Between(ECHO_PERIOD_MIN, ECHO_PERIOD_MAX);
+    this.lastEchoBeatAt = this.time.now;
+    this.nextEchoBeatAt = this.time.now + this.echoBeatPeriod;
+    this.echoPulseFlash = 0;
+
     if (window.SFX) SFX.select();
   }
 
@@ -197,6 +239,31 @@ class PlayScene extends Phaser.Scene {
       osc.stop(t0 + 0.1);
     } catch (err) {
       console.error('beat tick sound error (non-fatal):', err);
+    }
+  }
+
+  // The echo's own pulse — deliberately NOT a variant of playBeatTick.
+  // Detuned square wave instead of a clean sine, so your ear never confuses
+  // "the level's rhythm just fired" with "my rhythm just fired"
+  playEchoTick() {
+    if (!window.SFX || !SFX.ctx || SFX.muted) return;
+    try {
+      const ctx = SFX.ctx;
+      const t0 = ctx.currentTime;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.2;
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(220, t0);
+      osc.frequency.exponentialRampToValueAtTime(160, t0 + 0.07);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol, t0 + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.12);
+    } catch (err) {
+      console.error('echo tick sound error (non-fatal):', err);
     }
   }
 
@@ -242,6 +309,9 @@ class PlayScene extends Phaser.Scene {
       this.beatBarLabel.setVisible(false);
       this.beatBarBg.setVisible(false);
       this.beatBarFill.setVisible(false);
+      this.echoBarLabel.setVisible(false);
+      this.echoBarBg.setVisible(false);
+      this.echoBarFill.setVisible(false);
       this.draw();
       return;
     }
@@ -257,20 +327,56 @@ class PlayScene extends Phaser.Scene {
 
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.handleTap();
 
-    // the beat also ticks on its own at whatever period you've set —
-    // tapping just lets you redirect it early, it never requires tapping
-    // to keep going
-    if (time >= this.nextBeatAt) this.fireBeat(this.nextBeatAt, false);
+    this.runTime += dt;
+    this.timeText.setText(this.runTime.toFixed(1));
+
+    // ESCALATION PHASE 1: the free auto-tick shuts off. From this moment,
+    // fireBeat only ever gets called from handleTap() — the world genuinely
+    // stops handing you a beat, not just slows down.
+    if (!this.autoBeatStopped && this.runTime >= AUTO_BEAT_STOP_SEC) {
+      this.autoBeatStopped = true;
+      this.beatBarLabel.setText('NEXT BEAT \u2014 TAP TO FIRE').setColor('#ff8a3d');
+      this.toast('THE BEAT IS YOURS NOW', '#ff8a3d');
+    }
+    if (!this.autoBeatStopped && time >= this.nextBeatAt) this.fireBeat(this.nextBeatAt, false);
     this.pulseFlash = Math.max(0, (this.pulseFlash || 0) - dt * 4);
 
-    // the bar fills toward the next beat, then flips to gold and holds
-    // full for the "get ready" final stretch right before it fires
+    // the bar fills toward the next beat. Once the auto-tick is off, it just
+    // holds full instead of flipping and firing on its own — a plain visual
+    // of "this beat is overdue and nothing is coming unless you tap"
     const beatProgress = Phaser.Math.Clamp((time - this.lastBeatAt) / this.beatPeriod, 0, 1);
     this.beatBarFill.width = 258 * beatProgress;
     this.beatBarFill.setFillStyle(beatProgress > 0.8 ? 0xffd23f : 0x4fd1ff);
 
-    this.runTime += dt;
-    this.timeText.setText(this.runTime.toFixed(1));
+    // ESCALATION PHASE 2: a second rhythm the level runs entirely on its
+    // own appears. Independent tempo, independent open window, no input
+    // from you drives it — from here your gates are governed by two
+    // overlapping rhythms, not one.
+    if (!this.echoActive && this.runTime >= ECHO_START_SEC) {
+      this.echoActive = true;
+      this.lastEchoBeatAt = time;
+      this.nextEchoBeatAt = time + this.echoBeatPeriod;
+      this.toast('A SECOND RHYTHM EMERGES', '#ba7dff');
+    }
+    if (this.echoActive) {
+      this.echoBarLabel.setVisible(true);
+      this.echoBarBg.setVisible(true);
+      this.echoBarFill.setVisible(true);
+      if (time >= this.nextEchoBeatAt) {
+        this.lastEchoBeatAt = this.nextEchoBeatAt;
+        this.echoBeatPeriod = Phaser.Math.Between(ECHO_PERIOD_MIN, ECHO_PERIOD_MAX);
+        this.nextEchoBeatAt = this.lastEchoBeatAt + this.echoBeatPeriod;
+        this.echoPulseFlash = 1;
+        this.playEchoTick();
+      }
+      this.echoPulseFlash = Math.max(0, (this.echoPulseFlash || 0) - dt * 4);
+      const echoProgress = Phaser.Math.Clamp((time - this.lastEchoBeatAt) / this.echoBeatPeriod, 0, 1);
+      this.echoBarFill.width = 198 * echoProgress;
+    } else {
+      this.echoBarLabel.setVisible(false);
+      this.echoBarBg.setVisible(false);
+      this.echoBarFill.setVisible(false);
+    }
 
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
@@ -281,6 +387,11 @@ class PlayScene extends Phaser.Scene {
     const openDuration = Math.max(this.beatPeriod * OPEN_FRACTION, OPEN_MIN_MS);
     const timeSinceBeat = time - this.lastBeatAt;
     const isOpen = timeSinceBeat < openDuration;
+
+    const echoOpenDuration = Math.max(this.echoBeatPeriod * ECHO_OPEN_FRACTION, OPEN_MIN_MS);
+    const echoTimeSinceBeat = time - this.lastEchoBeatAt;
+    const echoIsOpen = this.echoActive && echoTimeSinceBeat < echoOpenDuration;
+
     for (let i = this.gates.length - 1; i >= 0; i--) {
       const g = this.gates[i];
       g.x -= SCROLL_SPEED_BASE * dt;
@@ -292,8 +403,15 @@ class PlayScene extends Phaser.Scene {
       }
       if (!g.resolved && Math.abs(g.x - PLAYER_X) < GATE_R + PLAYER_R) {
         g.resolved = true;
-        if (isOpen) {
-          const perfect = timeSinceBeat < openDuration * PERFECT_FRACTION;
+        const onEcho = g.channel === 'echo';
+        const chOpen = onEcho ? echoIsOpen : isOpen;
+        const chTimeSinceBeat = onEcho ? echoTimeSinceBeat : timeSinceBeat;
+        const chOpenDuration = onEcho ? echoOpenDuration : openDuration;
+        if (chOpen) {
+          // PERFECT only applies on your own beat — the echo's timing isn't
+          // something you set, so there's no "tight timing" to reward there,
+          // just whether you read the window right
+          const perfect = !onEcho && chTimeSinceBeat < chOpenDuration * PERFECT_FRACTION;
           if (perfect) {
             this.score += SCORE_PERFECT;
             this.toast(`PERFECT! +${SCORE_PERFECT}`, '#ffd23f');
@@ -301,29 +419,51 @@ class PlayScene extends Phaser.Scene {
             this.playPerfectSound();
           } else {
             this.score += SCORE_PASS;
-            this.toast(`PASS +${SCORE_PASS}`, '#5be37b');
+            this.toast(`PASS +${SCORE_PASS}`, onEcho ? '#ba7dff' : '#5be37b');
             if (window.SFX) SFX.pickup();
           }
           this.scoreText.setText(`${this.score}`);
         } else {
-          this.registerMiss();
+          this.registerMiss(g.x, onEcho);
         }
       }
       if (g.x < -60) this.gates.splice(i, 1);
+    }
+
+    // age out miss shatter effects — pure visual, resolved independently of
+    // the gate that triggered them (which may have already scrolled off)
+    for (let i = this.missEffects.length - 1; i >= 0; i--) {
+      this.missEffects[i].t += dt * 1000;
+      if (this.missEffects[i].t > MISS_EFFECT_DURATION_MS) this.missEffects.splice(i, 1);
     }
 
     this.draw();
   }
 
   spawnGate() {
-    this.gates.push({ x: W + 40, resolved: false });
+    const channel = (this.echoActive && Math.random() < ECHO_CHANNEL_CHANCE) ? 'echo' : 'beat';
+    this.gates.push({ x: W + 40, resolved: false, channel });
   }
 
-  registerMiss() {
+  registerMiss(x, onEcho) {
     this.misses++;
     this.toast(`MISSED (${this.misses}/3)`, '#ff5a5a');
     if (window.SFX) SFX.fail();
     this.cameras.main.shake(80, 0.004);
+
+    // MISS FEEDBACK: a shatter burst pinned to exactly where the gate that
+    // beat you was, not a generic effect that could've been about any gate
+    // on screen. Fragment angles/lengths are fixed at creation so they don't
+    // jitter frame-to-frame — only their distance and fade animate.
+    const frags = [];
+    for (let i = 0; i < 6; i++) {
+      frags.push({
+        ang: Phaser.Math.FloatBetween(0, Math.PI * 2),
+        len: Phaser.Math.FloatBetween(8, 18)
+      });
+    }
+    this.missEffects.push({ x, onEcho, t: 0, frags });
+
     if (this.misses >= 3) this.die();
   }
 
@@ -356,6 +496,10 @@ class PlayScene extends Phaser.Scene {
     const timeSinceBeat = this.time.now - this.lastBeatAt;
     const isOpen = this.state === 'playing' && timeSinceBeat < openDuration;
 
+    const echoOpenDuration = Math.max(this.echoBeatPeriod * ECHO_OPEN_FRACTION, OPEN_MIN_MS);
+    const echoTimeSinceBeat = this.time.now - this.lastEchoBeatAt;
+    const echoIsOpen = this.state === 'playing' && this.echoActive && echoTimeSinceBeat < echoOpenDuration;
+
     // a glowing lane line connecting the player to the gates, only visible
     // while the beat window is open — ties the player's beat state and the
     // gates' passable state into one connected visual instead of two
@@ -366,37 +510,43 @@ class PlayScene extends Phaser.Scene {
       g.lineBetween(PLAYER_X, H/2, W, H/2);
     }
 
-    // gates — red when closed, gold when open, with a brighter edge glow
-    // right on the gap lips while open so the "safe zone" reads instantly.
-    // This shared-clock color is a global blink (every gate reads the same
+    // gates — red/gold for your beat channel, dark/bright violet for echo
+    // channel gates, with a brighter edge glow right on the gap lips while
+    // open so the "safe zone" reads instantly. This shared-clock color is a
+    // global blink per channel (every gate on that channel reads the same
     // instant), which tells you nothing about a specific gate until it's
-    // basically already here.
+    // basically already here — that's what the telegraph below is for.
     this.gates.forEach(gt => {
-      const col = isOpen ? 0xffd23f : 0xff5a5a;
+      const onEcho = gt.channel === 'echo';
+      const chOpen = onEcho ? echoIsOpen : isOpen;
+      const col = onEcho ? (chOpen ? 0xba7dff : 0x4a3566) : (chOpen ? 0xffd23f : 0xff5a5a);
       g.fillStyle(col, 1);
       g.fillRect(gt.x - 6, 0, 12, H/2 - GATE_R);
       g.fillRect(gt.x - 6, H/2 + GATE_R, 12, H/2 - GATE_R);
-      if (isOpen) {
-        g.lineStyle(2, 0xfff2c9, 0.6);
+      if (chOpen) {
+        g.lineStyle(2, onEcho ? 0xe8d9ff : 0xfff2c9, 0.6);
         g.strokeRect(gt.x - 6, H/2 - GATE_R - 4, 12, 4);
         g.strokeRect(gt.x - 6, H/2 + GATE_R, 12, 4);
       }
 
       // TELEGRAPH: distance-based foresight, separate from the blink above.
       // Project this gate's own arrival time from its remaining distance
-      // and current scroll speed, then check where that lands in the beat
-      // cycle if your tempo holds steady. Fades in with distance so it
-      // reads as "here's how this one's shaping up," and hands off to the
-      // authoritative isOpen fill once the gate is close enough that
-      // precision (not foresight) is what matters.
+      // and current scroll speed, then check where that lands in ITS
+      // channel's beat cycle if that channel's tempo holds steady. Fades in
+      // with distance so it reads as "here's how this one's shaping up,"
+      // and hands off to the authoritative chOpen fill once the gate is
+      // close enough that precision (not foresight) is what matters.
       const distToPlayer = gt.x - PLAYER_X;
       if (distToPlayer > TELEGRAPH_NEAR_PX) {
+        const chPeriod = onEcho ? this.echoBeatPeriod : this.beatPeriod;
+        const chLastBeatAt = onEcho ? this.lastEchoBeatAt : this.lastBeatAt;
+        const chOpenDuration = onEcho ? echoOpenDuration : openDuration;
         const msToArrive = (distToPlayer / SCROLL_SPEED_BASE) * 1000;
         const arrivalTime = this.time.now + msToArrive;
-        const sinceBeatAtArrival = ((arrivalTime - this.lastBeatAt) % this.beatPeriod + this.beatPeriod) % this.beatPeriod;
-        const previewOpen = sinceBeatAtArrival < openDuration;
+        const sinceBeatAtArrival = ((arrivalTime - chLastBeatAt) % chPeriod + chPeriod) % chPeriod;
+        const previewOpen = sinceBeatAtArrival < chOpenDuration;
         const fadeIn = Phaser.Math.Clamp(1 - (distToPlayer - TELEGRAPH_NEAR_PX) / TELEGRAPH_FADE_RANGE_PX, 0.15, 0.55);
-        g.lineStyle(2, previewOpen ? 0x4fd1ff : 0xff8a3d, fadeIn);
+        g.lineStyle(2, previewOpen ? (onEcho ? 0xd9bfff : 0x4fd1ff) : 0xff8a3d, fadeIn);
         g.strokeRect(gt.x - 9, H/2 - GATE_R - 9, 18, 5);
         g.strokeRect(gt.x - 9, H/2 + GATE_R + 4, 18, 5);
       }
@@ -419,7 +569,49 @@ class PlayScene extends Phaser.Scene {
         g.lineStyle(2, 0xffffff, flash * 0.6);
         g.strokeCircle(PLAYER_X, H/2, burstR);
       }
+
+      // the echo's own ring — deliberately drawn wider/looser than the beat
+      // ring so it never reads as "the same thing," a second, independent
+      // pulse you're tracking alongside your own
+      if (this.echoActive) {
+        const echoProgress = Phaser.Math.Clamp(echoTimeSinceBeat / this.echoBeatPeriod, 0, 1);
+        const echoRingR = 30 + echoProgress * 54;
+        g.lineStyle(echoIsOpen ? 3 : 1, echoIsOpen ? 0xba7dff : 0x6b4f96, echoIsOpen ? 0.6 : (0.35 - echoProgress * 0.2));
+        g.strokeCircle(PLAYER_X, H/2, echoRingR);
+
+        const echoFlash = this.echoPulseFlash || 0;
+        if (echoFlash > 0) {
+          const echoBurstR = 26 + (1 - echoFlash) * 60;
+          g.lineStyle(2, 0xba7dff, echoFlash * 0.5);
+          g.strokeCircle(PLAYER_X, H/2, echoBurstR);
+        }
+      }
     }
+
+    // MISS FEEDBACK — a shatter burst exactly where the gate that beat you
+    // was: a sharp white flash on the gap edges right at the instant, then
+    // fragment lines flying outward and fading. Distinct from the PERFECT
+    // burst() (a clean expanding ring) so a good pass and a miss never read
+    // as "the same effect in a different color"
+    this.missEffects.forEach(fx => {
+      const progress = Phaser.Math.Clamp(fx.t / MISS_EFFECT_DURATION_MS, 0, 1);
+      const flashAlpha = Math.max(0, 1 - progress * 3.5);
+      if (flashAlpha > 0) {
+        g.fillStyle(0xffffff, flashAlpha * 0.7);
+        g.fillRect(fx.x - 7, H/2 - GATE_R - 6, 14, 12);
+        g.fillRect(fx.x - 7, H/2 + GATE_R - 6, 14, 12);
+      }
+      const fragCol = fx.onEcho ? 0xba7dff : 0xff5a5a;
+      const fragAlpha = (1 - progress) * 0.8;
+      g.lineStyle(2, fragCol, fragAlpha);
+      fx.frags.forEach((fr, idx) => {
+        const anchorY = idx % 2 === 0 ? H/2 - GATE_R : H/2 + GATE_R;
+        const dist = fr.len + progress * 28;
+        const ex = fx.x + Math.cos(fr.ang) * dist;
+        const ey = anchorY + Math.sin(fr.ang) * dist * 0.6;
+        g.lineBetween(fx.x, anchorY, ex, ey);
+      });
+    });
 
     // player
     g.fillStyle(0xffffff, 0.25);
