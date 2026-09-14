@@ -5,9 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Rhythm Shift — The Arcade</title>
 <style>
-  html, body { margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%; }
+  html, body {
+    margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%;
+    overscroll-behavior: none; /* stop pull-to-refresh/rubber-banding from
+                                   firing when a tap lands near a screen edge */
+  }
   #game-container { width:100vw; height:100vh; }
-  canvas { display:block; touch-action:none; }
+  canvas {
+    display:block; touch-action:none;
+    -webkit-touch-callout: none; /* no long-press context menu on a tap-heavy game */
+    -webkit-user-select: none; user-select: none; /* no accidental text selection while tapping fast */
+    -webkit-tap-highlight-color: transparent; /* no gray flash box on every tap */
+  }
 </style>
 </head>
 <body>
@@ -18,6 +27,7 @@
 /* =========================================================================
    RHYTHM SHIFT
    "You don't follow the beat. You control it."
+
 
    One input. Every tap measures the interval since your last tap, and THAT
    interval becomes the new beat period — your own tapping cadence literally
@@ -84,6 +94,15 @@ const ECHO_OPEN_FRACTION = 0.5;
 const ECHO_CHANNEL_CHANCE = 0.35; // of gates spawned once the echo is active, the fraction that belong to it instead of your beat
 
 const MISS_EFFECT_DURATION_MS = 420; // how long the shatter burst at a missed gate's position plays before fading out
+
+// HAPTICS — mobile-only, no-ops silently anywhere navigator.vibrate isn't
+// available (desktop, iOS Safari, unsupported browsers). A single number is
+// one buzz of that many ms; an array is an on/off vibration pattern.
+function vibrate(pattern) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  } catch (err) { /* non-fatal — haptics are a nice-to-have, never block play */ }
+}
 
 function spawnIntervalFor(t) {
   if (t < 25) return Phaser.Math.FloatBetween(2.8, 3.4);
@@ -157,6 +176,7 @@ class PlayScene extends Phaser.Scene {
   }
 
   handleTap() {
+    vibrate(8); // a light buzz on every tap — start, restart, or in-run — so touch play has the same instant tactile confirmation a click already implies
     if (this.state === 'ready') { this.startRun(); return; }
     if (this.state === 'dead') { this.scene.restart(); return; }
     if (this.state !== 'playing') return;
@@ -418,6 +438,7 @@ class PlayScene extends Phaser.Scene {
             this.toast(`PERFECT! +${SCORE_PERFECT}`, '#ffd23f');
             this.burst(g.x, H/2);
             this.playPerfectSound();
+            vibrate([12, 30, 12]); // a distinct double-pulse for PERFECT — should never feel like the plain tap buzz
           } else {
             this.score += SCORE_PASS;
             this.toast(`PASS +${SCORE_PASS}`, onEcho ? '#ba7dff' : '#5be37b');
@@ -451,6 +472,7 @@ class PlayScene extends Phaser.Scene {
     this.toast(`MISSED (${this.misses}/3)`, '#ff5a5a');
     if (window.SFX) SFX.fail();
     this.cameras.main.shake(80, 0.004);
+    vibrate(35); // one sharp buzz, longer than the tap/PERFECT patterns — reads as a fault, not a confirmation
 
     // MISS FEEDBACK: a shatter burst pinned to exactly where the gate that
     // beat you was, not a generic effect that could've been about any gate
