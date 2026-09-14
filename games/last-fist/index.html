@@ -57,12 +57,12 @@ const DEPTH_COMPRESS = 0.55; // vertical screen spread of the depth axis
 
 const SEPARATION_MIN_DIST = 62; // fighters push apart rather than overlap, in arena units
 
-const GRAVITY = 1700;
+const GRAVITY = 2100;
 const MOVE_ACCEL = 1800;
 const MOVE_MAX_SPEED = 230;
 const GROUND_FRICTION = 2200;
 const AIR_CONTROL_MULT = 0.6;
-const JUMP_VELOCITY = -560;
+const JUMP_VELOCITY = -620; // paired with the higher gravity above: similar peak height to before, noticeably shorter hangtime — a snappier arc
 
 const AI_APPROACH_MIN = 75;   // AI backs off if closer than this
 const AI_APPROACH_MAX = 160;  // AI closes in if farther than this
@@ -103,6 +103,29 @@ function makeFighter(ax, az, kind) {
     facing: kind === 'panda' ? 1 : -1,
     kind, walkBob: 0, squash: 0
   };
+}
+
+// FACING-RELATIVE INPUT — this is the piece that actually makes movement
+// read as "fighting" instead of "walking around a platform." Forward/back
+// always mean toward/away from the opponent (not a fixed world axis), and
+// strafe is perpendicular to that line — so "forward" closes distance and
+// "sideways" circles them, regardless of which way the arena happens to be
+// oriented. The AI already reasons in these same terms (see aiInput below);
+// this just gives the human player the same axis.
+function relativeMoveVector(f, opp, forwardPressed, backPressed, leftPressed, rightPressed) {
+  const dx = opp.ax - f.ax, dz = opp.az - f.az;
+  const dist = Math.hypot(dx, dz) || 0.0001;
+  const fwdX = dx / dist, fwdZ = dz / dist;
+  const rightX = fwdZ, rightZ = -fwdX; // 90° rotation of the forward vector
+
+  const fwdIn = (forwardPressed ? 1 : 0) - (backPressed ? 1 : 0);
+  const strafeIn = (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
+
+  let mx = fwdIn * fwdX + strafeIn * rightX;
+  let mz = fwdIn * fwdZ + strafeIn * rightZ;
+  const mag = Math.hypot(mx, mz);
+  if (mag > 1) { mx /= mag; mz /= mag; }
+  return { mx, mz };
 }
 
 class PlayScene extends Phaser.Scene {
@@ -258,18 +281,20 @@ class PlayScene extends Phaser.Scene {
   }
 
   // shared kinematics for both fighters and the AI — same rules for everyone.
-  // moveX/moveZ are each -1/0/1; diagonals are normalized so they're not
-  // faster than a straight cardinal move.
-  stepFighter(f, moveX, moveZ, jumpPressed, dt) {
+  // mx/mz is a movement vector with magnitude <= 1 (already normalized by
+  // relativeMoveVector for the player, or directly by aiInput for the AI).
+  stepFighter(f, mx, mz, jumpPressed, dt) {
     const grounded = f.grounded;
     const accel = grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT;
     const friction = (grounded ? GROUND_FRICTION : GROUND_FRICTION * AIR_CONTROL_MULT) * dt;
 
-    let mx = moveX, mz = moveZ;
-    if (mx !== 0 && mz !== 0) { mx *= Math.SQRT1_2; mz *= Math.SQRT1_2; }
-
-    if (mx !== 0) f.vax += mx * accel * dt; else f.vax = approachZero(f.vax, friction);
-    if (mz !== 0) f.vaz += mz * accel * dt; else f.vaz = approachZero(f.vaz, friction);
+    if (mx !== 0 || mz !== 0) {
+      f.vax += mx * accel * dt;
+      f.vaz += mz * accel * dt;
+    } else {
+      f.vax = approachZero(f.vax, friction);
+      f.vaz = approachZero(f.vaz, friction);
+    }
 
     const speed = Math.hypot(f.vax, f.vaz);
     if (speed > MOVE_MAX_SPEED) { const s = MOVE_MAX_SPEED / speed; f.vax *= s; f.vaz *= s; }
@@ -368,9 +393,10 @@ class PlayScene extends Phaser.Scene {
     const p1Right = this.keys.p1Right.isDown || t.p1.right;
     const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || t.p1.jumpPressed;
     t.p1.jumpPressed = false;
-    const p1MoveX = (p1Right ? 1 : 0) - (p1Left ? 1 : 0);
-    const p1MoveZ = (p1Down ? 1 : 0) - (p1Up ? 1 : 0);
-    this.stepFighter(this.p1, p1MoveX, p1MoveZ, p1Jump, dt);
+    // "up" = forward = close the distance on the opponent; "down" = back off;
+    // left/right = strafe around them — all relative to the fight, not the map
+    const p1Move = relativeMoveVector(this.p1, this.p2, p1Up, p1Down, p1Left, p1Right);
+    this.stepFighter(this.p1, p1Move.mx, p1Move.mz, p1Jump, dt);
 
     if (this.mode === '2p') {
       const p2Up = this.keys.p2Up.isDown || t.p2.up;
@@ -379,9 +405,8 @@ class PlayScene extends Phaser.Scene {
       const p2Right = this.keys.p2Right.isDown || t.p2.right;
       const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || t.p2.jumpPressed;
       t.p2.jumpPressed = false;
-      const p2MoveX = (p2Right ? 1 : 0) - (p2Left ? 1 : 0);
-      const p2MoveZ = (p2Down ? 1 : 0) - (p2Up ? 1 : 0);
-      this.stepFighter(this.p2, p2MoveX, p2MoveZ, p2Jump, dt);
+      const p2Move = relativeMoveVector(this.p2, this.p1, p2Up, p2Down, p2Left, p2Right);
+      this.stepFighter(this.p2, p2Move.mx, p2Move.mz, p2Jump, dt);
     } else {
       const ai = this.aiInput(dt);
       this.stepFighter(this.p2, ai.moveX, ai.moveZ, ai.jump, dt);
