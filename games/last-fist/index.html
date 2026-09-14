@@ -24,85 +24,43 @@
 <script src="../../assets/sfx.js"></script>
 <script>
 /* =========================================================================
-   LAST FIST
-   "One fighter. One opponent. No health bars."
+   LAST FIST — MOVEMENT PHASE
+   Panda vs Bear.
 
-   Enemies telegraph one of three attacks by color. Read it, respond with
-   the matching input inside a window that opens near the end of the
-   telegraph (not the instant it appears — this is what makes it a timing
-   game and not a color-reflex game). Get it right, you're safe (and if the
-   signal was BLUE, you land a PERFECT COUNTER). Get it wrong, swing with
-   nothing telegraphing, or react too late — all three count as one mistake,
-   equally, no exceptions.
-
-   RED    -> BLOCK
-   YELLOW -> DODGE
-   BLUE   -> PUNCH (a correctly-timed punch here is the PERFECT COUNTER)
-
-   3 mistakes ends the run. 3 PERFECT COUNTERS KOs the current opponent and
-   the next one steps up. Only PERFECT COUNTERS build Flow (4 stacks ->
-   FLOW STATE: faster/tighter, score multiplier). Any mistake drops Flow to
-   zero, but Flow never ends the run by itself — surviving and mastering are
-   two separate objectives, on purpose.
-
-   V1 scope, locked: 2 enemy types (Brawler, Boxer), a fixed deterministic
-   spawn sequence (no randomness in enemy TYPE selection — which signal
-   fires each attack is still random, that's the whole game), Survival mode
-   only. Grappler/Counter-type enemies, Time Attack/Boss Rush/Endless modes,
-   and procedural enemy selection are all explicitly deferred to v2.
+   This is deliberately NOT a combat build yet. No punches, no kicks, no
+   health, no win condition. It's the foundation the pitch itself called
+   for first: real walk/jump/gravity/facing/collision, working against
+   either a live AI or a second local player, proven solid before a single
+   attack gets layered on top. Combat is the next phase, on purpose.
    ========================================================================= */
 
 const W = 960, H = 540;
-const BG = 0x0a0a0d;
+const GROUND_Y = H - 90;
+const ARENA_LEFT = 90;
+const ARENA_RIGHT = W - 90;
+const FIGHTER_HALF_WIDTH = 26;
+const SEPARATION_MIN_DIST = 58; // fighters push apart rather than overlap
 
-const COLOR_BLOCK = 0xff5a5a;   // red   — matches "danger" red used across the hub
-const COLOR_DODGE = 0xffd23f;   // gold  — matches the hub's existing PERFECT/highlight gold
-const COLOR_COUNTER = 0x4fd1ff; // cyan  — matches Rhythm Shift's beat-open cyan
-const COLOR_SUCCESS = 0x5be37b;
-const COLOR_MUTED = 0x7f8a9a;
+const GRAVITY = 1700;
+const MOVE_ACCEL = 1800;
+const MOVE_MAX_SPEED = 230;
+const GROUND_FRICTION = 2200;
+const AIR_CONTROL_MULT = 0.6; // reduced accel/friction while airborne — can't cut movement on a dime mid-jump
+const JUMP_VELOCITY = -560;
 
-const SIGNAL_ACTION = { block: 'block', dodge: 'dodge', counter: 'counter' };
-const SIGNAL_COLOR = { block: COLOR_BLOCK, dodge: COLOR_DODGE, counter: COLOR_COUNTER };
-const SIGNAL_LABEL = { block: 'BLOCK!', dodge: 'DODGE!', counter: 'COUNTER!' };
+const AI_APPROACH_MIN = 70;  // AI backs off if closer than this
+const AI_APPROACH_MAX = 150; // AI closes in if farther than this
+const AI_JUMP_CHANCE_PER_SEC = 0.35; // rough odds baked into a per-frame roll below
 
-// ENEMY SPECS — telegraph is the full wind-up an attack is visible for;
-// window is how much of the END of that telegraph actually accepts input
-// (same role as Rhythm Shift's OPEN_FRACTION — reading the whole wind-up
-// but only acting near the real moment keeps this a timing game).
-const ENEMY_DEFS = {
-  brawler: { name: 'BRAWLER', telegraph: 900, window: 420, color: 0xff8a3d },
-  boxer:   { name: 'BOXER',   telegraph: 500, window: 220, color: 0xba7dff }
-};
-
-// Locked, deterministic intro sequence, then a fixed repeating loop —
-// explicitly no randomness in enemy TYPE for v1, so balance stays legible
-const ENEMY_SEQUENCE = ['brawler', 'brawler', 'boxer', 'brawler', 'boxer', 'boxer'];
-const ENEMY_LOOP = ['boxer', 'brawler', 'boxer', 'boxer'];
-function enemyTypeForIndex(i) {
-  if (i < ENEMY_SEQUENCE.length) return ENEMY_SEQUENCE[i];
-  return ENEMY_LOOP[(i - ENEMY_SEQUENCE.length) % ENEMY_LOOP.length];
+function vibrate(pattern) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
 }
 
-const IDLE_DURATION_MS = 450;   // breathing room between attacks
-const RECOVERY_DURATION_MS = 500;
-const KO_CELEBRATE_MS = 900;
-const HITSTOP_MS = 110;
-const FLOW_MAX_STACKS = 4;
-const FLOW_SPEED_MULT = 0.8;    // telegraph/window/idle all compress by this once Flow State is active
-const FLOW_SCORE_MULT = 2;
-
-const SCORE_BLOCK_DODGE = 5;
-const SCORE_COUNTER = 25;
-const SCORE_KO_BONUS = 50;
-const STRIKES_TO_LOSE = 3;
-const COUNTERS_TO_KO = 3;
-
-// HAPTICS — same feature-detected helper as Rhythm Shift, silently a no-op
-// anywhere navigator.vibrate isn't available
-function vibrate(pattern) {
-  try {
-    if (navigator.vibrate) navigator.vibrate(pattern);
-  } catch (err) { /* non-fatal */ }
+function makeFighter(x, kind) {
+  return {
+    x, y: GROUND_Y, vx: 0, vy: 0, grounded: true, facing: kind === 'panda' ? 1 : -1,
+    kind, walkBob: 0, squash: 0
+  };
 }
 
 class PlayScene extends Phaser.Scene {
@@ -111,403 +69,316 @@ class PlayScene extends Phaser.Scene {
   create() {
     this.cameras.main.setBackgroundColor('#0a0a0d');
     this.g = this.add.graphics();
-    this.vignette = this.add.graphics();
 
-    this.state = 'ready';
+    this.mode = null; // 'ai' | '2p' — set on mode select
+    this.state = 'menu';
+    this.aiJumpCooldown = 1.5;
+
+    this.buildBackground();
     this.buildHUD();
-    this.buildFighters();
+    this.buildMenu();
     this.buildControls();
 
-    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-    this.leftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
-    this.downKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.DOWN);
-    this.rightKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
-
-    this.input.on('pointerdown', (p) => {
-      // control buttons handle their own pointerdown for in-run input;
-      // this whole-canvas handler only covers the ready/dead tap-to-continue
-      if (this.state !== 'playing') this.handleMenuTap();
+    this.keys = this.input.keyboard.addKeys({
+      p1Left: Phaser.Input.Keyboard.KeyCodes.A,
+      p1Right: Phaser.Input.Keyboard.KeyCodes.D,
+      p1Jump: Phaser.Input.Keyboard.KeyCodes.W,
+      p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      p2Right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      p2Jump: Phaser.Input.Keyboard.KeyCodes.UP
     });
   }
 
+  buildBackground() {
+    this.bg = this.add.graphics();
+    this.bg.fillStyle(0x0a0a0d, 1);
+    this.bg.fillRect(0, 0, W, H);
+    this.bg.fillStyle(0x111318, 1);
+    this.bg.fillRect(0, GROUND_Y + 30, W, H - (GROUND_Y + 30));
+    this.bg.lineStyle(2, 0x1c2128, 1);
+    this.bg.lineBetween(0, GROUND_Y + 30, W, GROUND_Y + 30);
+  }
+
   buildHUD() {
-    this.scoreText = this.add.text(20, 18, 'SCORE 0', {
-      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#ffd23f'
-    }).setOrigin(0, 0);
-
-    // three strike dots — "no health bars," per the design, so this is
-    // deliberately dots/icons rather than a depleting bar
-    this.strikeDots = [];
-    for (let i = 0; i < STRIKES_TO_LOSE; i++) {
-      const dot = this.add.circle(W - 24 - i * 26, 27, 8, 0x000000, 0).setStrokeStyle(2, 0xff5a5a);
-      this.strikeDots.push(dot);
-    }
-
-    this.enemyNameText = this.add.text(W/2, 18, '', {
+    this.modeText = this.add.text(W/2, 16, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a'
-    }).setOrigin(0.5, 0);
+    }).setOrigin(0.5, 0).setVisible(false);
 
-    // FLOW bar — 4 segments, fills as Flow builds, glows gold at FLOW STATE
-    this.flowLabel = this.add.text(W/2, 44, 'FLOW', {
-      fontFamily: 'Arial Black, Arial', fontSize: '10px', color: '#7f8a9a'
-    }).setOrigin(0.5);
-    this.flowSegs = [];
-    const segW = 54, gap = 6, totalW = segW * 4 + gap * 3;
-    const startX = W/2 - totalW/2;
-    for (let i = 0; i < FLOW_MAX_STACKS; i++) {
-      const bg = this.add.rectangle(startX + i * (segW + gap) + segW/2, 60, segW, 8, 0x1c2128).setStrokeStyle(1, 0x000000);
-      this.flowSegs.push(bg);
-    }
+    this.menuBtn = this.add.text(W - 16, 16, 'MENU', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true }).setVisible(false);
+    this.menuBtn.on('pointerdown', () => this.returnToMenu());
 
-    this.signalText = this.add.text(W/2, 120, '', {
-      fontFamily: 'Arial Black, Arial', fontSize: '34px', color: '#ffffff', align: 'center'
-    }).setOrigin(0.5).setAlpha(0);
-
-    this.toastText = this.add.text(W/2, 160, '', {
-      fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#5be37b'
-    }).setOrigin(0.5).setAlpha(0);
-
-    this.centerText = this.add.text(W/2, H/2 - 40, 'LAST FIST', {
+    this.centerText = this.add.text(W/2, H/2 - 70, 'LAST FIST', {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
-    this.subText = this.add.text(W/2, H/2 + 20,
-      'One fighter. One opponent. No health bars.\nRED = block \u00b7 YELLOW = dodge \u00b7 BLUE = punch to counter\n3 mistakes ends it \u2014 3 perfect counters drops them\ntap to start', {
+    this.subText = this.add.text(W/2, H/2 - 20,
+      'Panda vs Bear \u2014 movement phase\nwalk, jump, and square up. Punches and kicks come next.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
 
-  buildFighters() {
-    // simple geometric figures on purpose — "animation + impact > graphics"
-    this.playerX = 260;
-    this.enemyX = 700;
-    this.fighterY = H/2 - 20;
-
-    this.playerFlash = 0;
-    this.enemyFlash = 0;
-    this.playerKnockback = 0;
-    this.enemyKnockback = 0;
-  }
-
-  buildControls() {
-    const btnY = H - 62;
-    const btnW = 280, btnH = 84, gap = 12;
+  buildMenu() {
+    const btnY = H/2 + 50, btnW = 220, btnH = 64, gap = 20;
+    this.menuButtons = [];
     const defs = [
-      { action: 'block', label: 'BLOCK', color: COLOR_BLOCK, x: W/2 - btnW - gap },
-      { action: 'dodge', label: 'DODGE', color: COLOR_DODGE, x: W/2 },
-      { action: 'counter', label: 'PUNCH', color: COLOR_COUNTER, x: W/2 + btnW + gap }
+      { label: 'VS AI', x: W/2 - btnW/2 - gap/2, mode: 'ai' },
+      { label: 'VS PLAYER 2', x: W/2 + btnW/2 + gap/2, mode: '2p' }
     ];
-    this.controlButtons = {};
     defs.forEach(def => {
-      const bg = this.add.rectangle(def.x, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, def.color, 0.7);
+      const bg = this.add.rectangle(def.x, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, 0x4fd1ff, 0.7);
       const label = this.add.text(def.x, btnY, def.label, {
-        fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#e8ecf1'
+        fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
       }).setOrigin(0.5);
       bg.setInteractive({ useHandCursor: true });
-      bg.on('pointerdown', () => {
-        bg.setFillStyle(0x22262f, 0.95);
-        this.time.delayedCall(90, () => bg.setFillStyle(0x14161c, 0.9));
-        this.handleInput(def.action);
-      });
-      this.controlButtons[def.action] = bg;
+      bg.on('pointerdown', () => this.startMatch(def.mode));
+      this.menuButtons.push(bg, label);
     });
   }
 
-  toast(msg, colorHex) {
-    this.toastText.setText(msg).setColor(colorHex).setAlpha(1).setY(160);
-    this.tweens.add({ targets: this.toastText, alpha: 0, y: 140, duration: 450, delay: 250 });
+  buildControls() {
+    // P1 cluster — bottom-left, always available
+    this.p1Controls = this.buildControlCluster(190, 'A/D \u00b7 W', false);
+    // P2 cluster — bottom-right, only shown/used in 2P mode
+    this.p2Controls = this.buildControlCluster(W - 190, '\u2190/\u2192 \u00b7 \u2191', true);
+    this.setTouchState('p1', { left: false, right: false });
+    this.setTouchState('p2', { left: false, right: false });
   }
 
-  handleMenuTap() {
-    if (this.state === 'ready') { this.startRun(); return; }
-    if (this.state === 'dead') { this.scene.restart(); return; }
+  buildControlCluster(centerX, hint, isP2) {
+    const btnY = H - 56, btnSize = 56, gap = 10;
+    const leftX = centerX - btnSize - gap;
+    const rightX = centerX;
+    const jumpX = centerX + btnSize + gap;
+
+    const mk = (x, label) => {
+      const bg = this.add.rectangle(x, btnY, btnSize, btnSize, 0x14161c, 0.9).setStrokeStyle(2, 0x4fd1ff, 0.6);
+      const t = this.add.text(x, btnY, label, { fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1' }).setOrigin(0.5);
+      return { bg, t };
+    };
+    const left = mk(leftX, '\u25c0');
+    const right = mk(rightX, '\u25b6');
+    const jump = mk(jumpX, '\u25b2');
+    const hintText = this.add.text(centerX, btnY - 46, hint, { fontFamily: 'Arial', fontSize: '11px', color: '#555a66' }).setOrigin(0.5);
+
+    const key = isP2 ? 'p2' : 'p1';
+    const bindHold = (obj, field) => {
+      obj.bg.setInteractive({ useHandCursor: true });
+      obj.bg.on('pointerdown', () => { this.touchState[key][field] = true; obj.bg.setFillStyle(0x22262f, 0.95); });
+      obj.bg.on('pointerup', () => { this.touchState[key][field] = false; obj.bg.setFillStyle(0x14161c, 0.9); });
+      obj.bg.on('pointerout', () => { this.touchState[key][field] = false; obj.bg.setFillStyle(0x14161c, 0.9); });
+    };
+    if (!this.touchState) this.touchState = {};
+    this.touchState[key] = { left: false, right: false };
+    bindHold(left, 'left');
+    bindHold(right, 'right');
+    jump.bg.setInteractive({ useHandCursor: true });
+    jump.bg.on('pointerdown', () => { this.touchState[key].jumpPressed = true; jump.bg.setFillStyle(0x22262f, 0.95); this.time.delayedCall(90, () => jump.bg.setFillStyle(0x14161c, 0.9)); });
+
+    return { left, right, jump, hintText, objects: [left.bg, left.t, right.bg, right.t, jump.bg, jump.t, hintText] };
   }
 
-  startRun() {
+  setTouchState(key, val) {
+    Object.assign(this.touchState[key], val);
+  }
+
+  setControlsVisible(cluster, visible) {
+    cluster.objects.forEach(o => o.setVisible(visible));
+  }
+
+  startMatch(mode) {
+    this.mode = mode;
     this.state = 'playing';
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
+    this.menuButtons.forEach(o => o.setVisible(false));
 
-    this.score = 0;
-    this.strikes = 0;
-    this.flowStacks = 0;
-    this.isFlowState = false;
-    this.enemyIndex = 0;
-    this.perfectCountersThisEnemy = 0;
-    this.pendingKO = false;
-    this.hitStopMsLeft = 0;
+    this.modeText.setVisible(true).setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL');
+    this.menuBtn.setVisible(true);
 
-    this.strikeDots.forEach(d => d.setStrokeStyle(2, 0xff5a5a).setFillStyle(0x000000, 0));
-    this.updateFlowUI();
-    this.scoreText.setText('SCORE 0');
-    this.loadEnemy(0);
+    this.setControlsVisible(this.p1Controls, true);
+    this.setControlsVisible(this.p2Controls, mode === '2p');
 
-    this.attackState = 'idle';
-    this.stateElapsed = 0;
-    this.currentSignal = null;
-    this.attackResolved = true;
+    this.p1 = makeFighter(W/2 - 120, 'panda');
+    this.p2 = makeFighter(W/2 + 120, 'bear');
+    this.p1.facing = 1;
+    this.p2.facing = -1;
+    this.aiJumpCooldown = Phaser.Math.FloatBetween(1, 2.5);
 
     if (window.SFX) SFX.select();
   }
 
-  loadEnemy(index) {
-    this.enemyIndex = index;
-    this.perfectCountersThisEnemy = 0;
-    this.currentType = enemyTypeForIndex(index);
-    this.currentDef = ENEMY_DEFS[this.currentType];
-    this.enemyNameText.setText(this.currentDef.name);
+  returnToMenu() {
+    this.state = 'menu';
+    this.mode = null;
+    this.modeText.setVisible(false);
+    this.menuBtn.setVisible(false);
+    this.setControlsVisible(this.p1Controls, false);
+    this.setControlsVisible(this.p2Controls, false);
+    this.centerText.setText('LAST FIST').setVisible(true);
+    this.subText.setVisible(true);
+    this.menuButtons.forEach(o => o.setVisible(true));
   }
 
-  // effective durations, compressed during FLOW STATE — same numbers, just
-  // faster, so difficulty scales without new rules
-  effTelegraph() { return this.currentDef.telegraph * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
-  effWindow() { return this.currentDef.window * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
-  effIdle() { return IDLE_DURATION_MS * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
+  // shared kinematics for both fighters and the AI — same rules for everyone
+  stepFighter(f, left, right, jumpPressed, dt) {
+    const grounded = f.grounded;
+    const accel = grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT;
+    const friction = (grounded ? GROUND_FRICTION : GROUND_FRICTION * AIR_CONTROL_MULT) * dt;
 
-  startNextAttack() {
-    this.currentSignal = Phaser.Utils.Array.GetRandom(['block', 'dodge', 'counter']);
-    this.attackState = 'telegraph';
-    this.stateElapsed = 0;
-    this.attackResolved = false;
-    this.signalText.setText(SIGNAL_LABEL[this.currentSignal]).setColor(
-      this.currentSignal === 'block' ? '#ff5a5a' : this.currentSignal === 'dodge' ? '#ffd23f' : '#4fd1ff'
-    ).setAlpha(1);
-  }
-
-  handleInput(action) {
-    if (this.state !== 'playing') return;
-
-    if (this.attackState !== 'telegraph') {
-      // no attack in flight at all right now — an unprompted swing
-      this.whiff();
-      return;
+    if (left && !right) f.vx -= accel * dt;
+    else if (right && !left) f.vx += accel * dt;
+    else {
+      if (f.vx > 0) f.vx = Math.max(0, f.vx - friction);
+      else if (f.vx < 0) f.vx = Math.min(0, f.vx + friction);
     }
-    const windowStart = this.effTelegraph() - this.effWindow();
-    if (this.stateElapsed < windowStart) {
-      // too early — ignored outright, not punished. You saw the color but
-      // jumped the gun; nothing happens rather than inventing a new penalty
-      // tier the design didn't call for.
-      return;
+    f.vx = Phaser.Math.Clamp(f.vx, -MOVE_MAX_SPEED, MOVE_MAX_SPEED);
+    f.x += f.vx * dt;
+    f.x = Phaser.Math.Clamp(f.x, ARENA_LEFT, ARENA_RIGHT);
+
+    if (jumpPressed && f.grounded) {
+      f.vy = JUMP_VELOCITY;
+      f.grounded = false;
+      if (window.SFX) SFX.jump();
     }
-    if (this.attackResolved) return;
-    this.attackResolved = true;
-
-    const correct = SIGNAL_ACTION[this.currentSignal];
-    if (action === correct) {
-      if (action === 'counter') this.registerPerfectCounter();
-      else this.registerSuccess(action);
-    } else {
-      this.registerMiss('wrong');
-    }
-    this.signalText.setAlpha(0);
-    this.attackState = 'recovery';
-    this.stateElapsed = 0;
-  }
-
-  whiff() {
-    this.registerMiss('whiff');
-  }
-
-  registerSuccess(action) {
-    this.score += SCORE_BLOCK_DODGE;
-    this.scoreText.setText(`SCORE ${this.score}`);
-    this.toast(action === 'block' ? 'BLOCKED' : 'DODGED', '#5be37b');
-    if (window.SFX) SFX.click();
-    this.playerFlash = 1;
-  }
-
-  registerPerfectCounter() {
-    this.perfectCountersThisEnemy++;
-    this.flowStacks = Math.min(FLOW_MAX_STACKS, this.flowStacks + 1);
-    const enteringFlow = this.flowStacks === FLOW_MAX_STACKS && !this.isFlowState;
-    this.isFlowState = this.flowStacks === FLOW_MAX_STACKS;
-
-    const mult = this.isFlowState ? FLOW_SCORE_MULT : 1;
-    this.score += SCORE_COUNTER * mult;
-    this.scoreText.setText(`SCORE ${this.score}`);
-    this.toast('PERFECT COUNTER!', '#4fd1ff');
-    this.updateFlowUI();
-
-    this.enemyFlash = 1;
-    this.enemyKnockback = 1;
-    this.hitStopMsLeft = HITSTOP_MS;
-    this.cameras.main.shake(90, 0.006);
-    if (window.SFX) SFX.combo(this.flowStacks);
-    if (enteringFlow) {
-      this.toast('FLOW STATE', '#ffd23f');
-      if (window.SFX) SFX.powerup();
-      vibrate([10, 40, 10, 40, 20]);
-    } else {
-      vibrate(14);
+    f.vy += GRAVITY * dt;
+    f.y += f.vy * dt;
+    if (f.y >= GROUND_Y) {
+      const wasAirborne = !f.grounded;
+      f.y = GROUND_Y;
+      f.vy = 0;
+      f.grounded = true;
+      if (wasAirborne) { f.squash = 1; vibrate(6); }
     }
 
-    if (this.perfectCountersThisEnemy >= COUNTERS_TO_KO) {
-      this.pendingKO = true;
+    // walk-bob purely cosmetic — only while grounded and actually moving
+    if (f.grounded && Math.abs(f.vx) > 20) f.walkBob += dt * 14;
+    f.squash = Math.max(0, f.squash - dt * 4);
+  }
+
+  aiInput(dt) {
+    const dx = this.p1.x - this.p2.x;
+    const dist = Math.abs(dx);
+    let left = false, right = false, jump = false;
+
+    if (dist > AI_APPROACH_MAX) { if (dx > 0) right = true; else left = true; }
+    else if (dist < AI_APPROACH_MIN) { if (dx > 0) left = true; else right = true; }
+
+    this.aiJumpCooldown -= dt;
+    if (this.p2.grounded && this.aiJumpCooldown <= 0 && Math.random() < AI_JUMP_CHANCE_PER_SEC * dt) {
+      jump = true;
+      this.aiJumpCooldown = Phaser.Math.FloatBetween(1.5, 3.5);
+    }
+    return { left, right, jump };
+  }
+
+  separate() {
+    const dx = this.p2.x - this.p1.x;
+    const dist = Math.abs(dx);
+    if (dist < SEPARATION_MIN_DIST && dist > 0.001) {
+      const push = (SEPARATION_MIN_DIST - dist) / 2;
+      const dir = dx > 0 ? 1 : -1;
+      this.p1.x = Phaser.Math.Clamp(this.p1.x - push * dir, ARENA_LEFT, ARENA_RIGHT);
+      this.p2.x = Phaser.Math.Clamp(this.p2.x + push * dir, ARENA_LEFT, ARENA_RIGHT);
     }
   }
 
-  registerMiss(reason) {
-    this.strikes++;
-    this.flowStacks = 0;
-    this.isFlowState = false;
-    this.updateFlowUI();
-
-    const label = reason === 'whiff' ? 'WHIFFED!' : reason === 'wrong' ? 'WRONG READ!' : 'TOO LATE!';
-    this.toast(`${label} (${this.strikes}/${STRIKES_TO_LOSE})`, '#ff5a5a');
-    if (window.SFX) SFX.hit();
-    this.cameras.main.shake(140, 0.01);
-    vibrate(45);
-
-    if (this.strikes <= STRIKES_TO_LOSE) {
-      const dot = this.strikeDots[this.strikes - 1];
-      dot.setFillStyle(0xff5a5a, 1);
+  updateFacing() {
+    const dx = this.p2.x - this.p1.x;
+    if (Math.abs(dx) > 4) {
+      this.p1.facing = dx > 0 ? 1 : -1;
+      this.p2.facing = dx > 0 ? -1 : 1;
     }
-
-    this.playerFlash = 1;
-    this.playerKnockback = 1;
-    this.hitStopMsLeft = HITSTOP_MS;
-
-    // a whiff/late-timeout doesn't come through handleInput's phase
-    // transition, so make sure this attack cycle actually ends here too
-    this.signalText.setAlpha(0);
-    if (this.attackState === 'telegraph') {
-      this.attackResolved = true;
-      this.attackState = 'recovery';
-      this.stateElapsed = 0;
-    }
-
-    if (this.strikes >= STRIKES_TO_LOSE) this.die();
-  }
-
-  updateFlowUI() {
-    for (let i = 0; i < FLOW_MAX_STACKS; i++) {
-      const filled = i < this.flowStacks;
-      const col = this.isFlowState ? 0xffd23f : 0x4fd1ff;
-      this.flowSegs[i].setFillStyle(filled ? col : 0x1c2128, 1);
-    }
-    this.flowLabel.setColor(this.isFlowState ? '#ffd23f' : '#7f8a9a')
-      .setText(this.isFlowState ? 'FLOW STATE' : 'FLOW');
-  }
-
-  die() {
-    if (this.state !== 'playing') return;
-    this.state = 'dead';
-    if (window.SFX) SFX.fail();
-    this.cameras.main.shake(220, 0.012);
-
-    const key = 'lastFist_bestScore';
-    const prevBest = parseFloat(localStorage.getItem(key)) || 0;
-    const isBest = this.score > prevBest;
-    if (isBest) localStorage.setItem(key, String(this.score));
-
-    this.centerText.setText('KNOCKED OUT').setVisible(true);
-    this.subText.setText(
-      `Score: ${this.score}` + (isBest ? ' (NEW BEST)' : ` (best: ${Math.max(prevBest, this.score)})`) +
-      `\nDefeated ${this.enemyIndex} opponent${this.enemyIndex === 1 ? '' : 's'}\ntap to try again`
-    ).setVisible(true);
   }
 
   update(time, delta) {
-    let dt = delta / 1000;
+    const dt = Math.min(delta / 1000, 0.05);
 
-    if (this.state !== 'playing') {
-      this.draw();
-      return;
+    if (this.state !== 'playing') { this.draw(); return; }
+
+    const p1Left = this.keys.p1Left.isDown || this.touchState.p1.left;
+    const p1Right = this.keys.p1Right.isDown || this.touchState.p1.right;
+    const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || this.touchState.p1.jumpPressed;
+    this.touchState.p1.jumpPressed = false;
+    this.stepFighter(this.p1, p1Left, p1Right, p1Jump, dt);
+
+    if (this.mode === '2p') {
+      const p2Left = this.keys.p2Left.isDown || this.touchState.p2.left;
+      const p2Right = this.keys.p2Right.isDown || this.touchState.p2.right;
+      const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || this.touchState.p2.jumpPressed;
+      this.touchState.p2.jumpPressed = false;
+      this.stepFighter(this.p2, p2Left, p2Right, p2Jump, dt);
+    } else {
+      const ai = this.aiInput(dt);
+      this.stepFighter(this.p2, ai.left, ai.right, ai.jump, dt);
     }
 
-    if (Phaser.Input.Keyboard.JustDown(this.leftKey)) this.handleInput('block');
-    if (Phaser.Input.Keyboard.JustDown(this.downKey)) this.handleInput('dodge');
-    if (Phaser.Input.Keyboard.JustDown(this.rightKey)) this.handleInput('counter');
-
-    // HIT-STOP: freeze the attack-state clock briefly on impact so a hit
-    // actually reads as an impact, not just a number changing. Camera
-    // shake/flash tweens are separate Phaser systems and keep animating
-    // through this, which is what sells the "pause on impact" feel.
-    if (this.hitStopMsLeft > 0) {
-      this.hitStopMsLeft -= delta;
-      dt = 0;
-    }
-
-    this.playerFlash = Math.max(0, (this.playerFlash || 0) - dt * 5);
-    this.enemyFlash = Math.max(0, (this.enemyFlash || 0) - dt * 5);
-    this.playerKnockback = Math.max(0, (this.playerKnockback || 0) - dt * 3);
-    this.enemyKnockback = Math.max(0, (this.enemyKnockback || 0) - dt * 3);
-
-    this.stateElapsed += dt * 1000;
-
-    if (this.attackState === 'idle') {
-      if (this.stateElapsed >= this.effIdle()) this.startNextAttack();
-    } else if (this.attackState === 'telegraph') {
-      if (!this.attackResolved && this.stateElapsed >= this.effTelegraph()) {
-        // nobody pressed anything in time
-        this.registerMiss('late');
-      }
-    } else if (this.attackState === 'recovery') {
-      if (this.stateElapsed >= RECOVERY_DURATION_MS) {
-        if (this.pendingKO) {
-          this.pendingKO = false;
-          this.attackState = 'koCelebrate';
-          this.stateElapsed = 0;
-          this.score += SCORE_KO_BONUS;
-          this.scoreText.setText(`SCORE ${this.score}`);
-          this.toast('KO!', '#ffd23f');
-          if (window.SFX) SFX.success();
-        } else {
-          this.attackState = 'idle';
-          this.stateElapsed = 0;
-        }
-      }
-    } else if (this.attackState === 'koCelebrate') {
-      if (this.stateElapsed >= KO_CELEBRATE_MS) {
-        this.loadEnemy(this.enemyIndex + 1);
-        this.attackState = 'idle';
-        this.stateElapsed = 0;
-      }
-    }
-
+    this.separate();
+    this.updateFacing();
     this.draw();
   }
 
-  drawFighter(x, y, flash, knockback, bodyColor, facing) {
+  drawFighter(f) {
     const g = this.g;
-    const bob = knockback * 14 * facing;
-    // body
-    g.fillStyle(flash > 0 ? 0xffffff : bodyColor, 1);
-    g.fillRoundedRect(x - 20 + bob, y - 18, 40, 58, 8);
-    // head
-    g.fillCircle(x + bob, y - 34, 16);
-    if (flash > 0) {
-      g.lineStyle(2, 0xffffff, flash);
-      g.strokeCircle(x + bob, y - 34, 22);
+    const bobY = f.grounded ? Math.sin(f.walkBob) * 3 : 0;
+    const squashY = 1 - f.squash * 0.18;
+    const squashX = 1 + f.squash * 0.12;
+    const baseY = f.y - bobY;
+    const w = 42 * squashX, hgt = 56 * squashY;
+
+    if (f.kind === 'panda') {
+      // body
+      g.fillStyle(0xf4f4f4, 1);
+      g.fillRoundedRect(f.x - w/2, baseY - hgt, w, hgt, 10);
+      // arms/legs patches
+      g.fillStyle(0x18181b, 1);
+      g.fillRoundedRect(f.x - w/2 - 4, baseY - hgt + 6, 9, 22, 4);
+      g.fillRoundedRect(f.x + w/2 - 5, baseY - hgt + 6, 9, 22, 4);
+      // head
+      g.fillStyle(0xf4f4f4, 1);
+      g.fillCircle(f.x, baseY - hgt - 16, 17);
+      // ears
+      g.fillStyle(0x18181b, 1);
+      g.fillCircle(f.x - 13, baseY - hgt - 30, 7);
+      g.fillCircle(f.x + 13, baseY - hgt - 30, 7);
+      // eye patches
+      g.fillEllipse(f.x - 7 * f.facing, baseY - hgt - 17, 8, 10);
+      // facing nose
+      g.fillStyle(0x0a0a0d, 1);
+      g.fillCircle(f.x + f.facing * 10, baseY - hgt - 14, 3);
+    } else {
+      // bear
+      g.fillStyle(0x8b5a2b, 1);
+      g.fillRoundedRect(f.x - w/2, baseY - hgt, w, hgt, 10);
+      g.fillStyle(0x6b431f, 1);
+      g.fillRoundedRect(f.x - w/2 - 4, baseY - hgt + 6, 9, 22, 4);
+      g.fillRoundedRect(f.x + w/2 - 5, baseY - hgt + 6, 9, 22, 4);
+      g.fillStyle(0x8b5a2b, 1);
+      g.fillCircle(f.x, baseY - hgt - 16, 18);
+      g.fillStyle(0x6b431f, 1);
+      g.fillCircle(f.x - 14, baseY - hgt - 30, 7);
+      g.fillCircle(f.x + 14, baseY - hgt - 30, 7);
+      // muzzle, offset toward facing
+      g.fillStyle(0xd8b98c, 1);
+      g.fillEllipse(f.x + f.facing * 6, baseY - hgt - 12, 14, 10);
+      g.fillStyle(0x0a0a0d, 1);
+      g.fillCircle(f.x + f.facing * 10, baseY - hgt - 12, 2.5);
     }
   }
 
   draw() {
     const g = this.g;
     g.clear();
-    this.vignette.clear();
 
-    // arena floor line
-    g.lineStyle(2, 0x1c2128, 1);
-    g.lineBetween(60, this.fighterY + 44, W - 60, this.fighterY + 44);
+    if (this.state !== 'playing') return;
 
-    // telegraph aura around the enemy — the core readable signal
-    if (this.state === 'playing' && this.attackState === 'telegraph' && this.currentSignal) {
-      const col = SIGNAL_COLOR[this.currentSignal];
-      const windowStart = this.effTelegraph() - this.effWindow();
-      const inWindow = this.stateElapsed >= windowStart;
-      const pulse = inWindow ? 0.85 : 0.35 + 0.25 * (this.stateElapsed / Math.max(1, windowStart));
-      g.lineStyle(inWindow ? 5 : 3, col, pulse);
-      g.strokeCircle(this.enemyX, this.fighterY - 10, inWindow ? 56 : 48);
+    // arena bounds markers
+    g.lineStyle(1, 0x1c2128, 0.6);
+    g.lineBetween(ARENA_LEFT, GROUND_Y + 30, ARENA_LEFT, GROUND_Y - 200);
+    g.lineBetween(ARENA_RIGHT, GROUND_Y + 30, ARENA_RIGHT, GROUND_Y - 200);
 
-      if (inWindow) {
-        this.vignette.fillStyle(col, 0.06);
-        this.vignette.fillRect(0, 0, W, H);
-      }
-    }
-
-    this.drawFighter(this.playerX, this.fighterY, this.playerFlash, this.playerKnockback, 0xe8ecf1, -1);
-    this.drawFighter(this.enemyX, this.fighterY, this.enemyFlash, this.enemyKnockback,
-      this.currentDef ? this.currentDef.color : 0x555a66, 1);
+    this.drawFighter(this.p1);
+    this.drawFighter(this.p2);
   }
 }
 
