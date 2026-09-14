@@ -78,6 +78,9 @@ const PUNCH_RANGE = 78; // arena units — a bit past SEPARATION_MIN_DIST, so cl
 const PUNCH_WINDUP_MS = 120;
 const PUNCH_ACTIVE_MS = 90;
 const PUNCH_RECOVERY_MS = 320;
+const PUNCH_PULLBACK = 8;   // how far the fist draws back during windup, unscaled
+const PUNCH_EXTEND = 26;    // full thrust distance at the peak of active, unscaled
+const PUNCH_RETRACT_MS = 150; // portion of recovery spent visually easing the fist back in
 const PUNCH_KNOCKBACK = 150; // velocity impulse on the defender; friction bleeds it off naturally
 
 function vibrate(pattern) {
@@ -106,6 +109,32 @@ function project(ax, az) {
 function depthScale(az) {
   const t = (az + ARENA_RZ) / (ARENA_RZ * 2); // 0..1
   return 0.8 + t * 0.4;
+}
+
+// One continuous fist-offset curve across all three punch phases — pulls
+// back during windup, thrusts out (ease-in, for a snappy feel) during
+// active, eases back in during the start of recovery. Each phase's formula
+// is built to land on exactly the same value the next phase starts from,
+// so there's no positional snap at the handoffs — that discontinuity was
+// exactly what read as "not fluent" before.
+function punchFistOffset(punchState, punchTimer) {
+  if (punchState === 'windup') {
+    const p = 1 - punchTimer / PUNCH_WINDUP_MS; // 0..1 across windup
+    return -PUNCH_PULLBACK * p;
+  }
+  if (punchState === 'active') {
+    const p = 1 - punchTimer / PUNCH_ACTIVE_MS; // 0..1 across active
+    const eased = p * p; // ease-in — starts slow (still near the pulled-back pose), snaps at the end
+    return -PUNCH_PULLBACK + (PUNCH_EXTEND + PUNCH_PULLBACK) * eased;
+  }
+  if (punchState === 'recovery') {
+    const retractDur = Math.min(PUNCH_RETRACT_MS, PUNCH_RECOVERY_MS);
+    const elapsed = PUNCH_RECOVERY_MS - punchTimer;
+    if (elapsed >= retractDur) return null; // fully retracted — normal idle arm takes over
+    const p = Phaser.Math.Clamp(elapsed / retractDur, 0, 1);
+    return PUNCH_EXTEND * (1 - p);
+  }
+  return null;
 }
 
 function makeFighter(ax, az, kind) {
@@ -553,16 +582,12 @@ class PlayScene extends Phaser.Scene {
       g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 2.5 * scale);
     }
 
-    // PUNCH — pull back slightly during windup (anticipation), thrust out
-    // during active (the actual hit window), nothing drawn during recovery
-    if (f.punchState === 'windup' || f.punchState === 'active') {
+    // PUNCH — one continuous pull-back/thrust/retract motion; see
+    // punchFistOffset for why it's built this way
+    const rawOffset = punchFistOffset(f.punchState, f.punchTimer);
+    if (rawOffset !== null) {
       const fistColor = f.kind === 'panda' ? 0xdc2626 : 0xf5a623;
-      let offset;
-      if (f.punchState === 'windup') {
-        offset = -8 * scale * (1 - f.punchTimer / PUNCH_WINDUP_MS);
-      } else {
-        offset = 26 * scale * (1 - f.punchTimer / PUNCH_ACTIVE_MS);
-      }
+      const offset = rawOffset * scale;
       const fistX = baseX + f.facing * (w/2 + offset);
       const fistY = baseY - hgt + 18 * scale;
       g.fillStyle(fistColor, 1);
