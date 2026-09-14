@@ -24,41 +24,83 @@
 <script src="../../assets/sfx.js"></script>
 <script>
 /* =========================================================================
-   LAST FIST — MOVEMENT PHASE
+   LAST FIST — STAGE 1: MOVEMENT ONLY
    Panda vs Bear.
 
-   This is deliberately NOT a combat build yet. No punches, no kicks, no
-   health, no win condition. It's the foundation the pitch itself called
-   for first: real walk/jump/gravity/facing/collision, working against
-   either a live AI or a second local player, proven solid before a single
-   attack gets layered on top. Combat is the next phase, on purpose.
+   No punches, no kicks, no blocking, no health, no archetypes yet — those
+   are Stages 2-4. This stage is purely: can you actually move your animal
+   around an opponent in a real 2D arena (strafe AND depth, not just a
+   left-right line), jump, and have it feel responsive on mobile.
+
+   The arena is a small 2.5D space: (ax, az) is the fighter's actual
+   position on the ground plane (ax = left/right, az = forward/back —
+   "forward" meaning deeper into the arena, away from camera). Jump is a
+   THIRD, independent axis (height off the ground), layered on top of
+   whatever (ax, az) position the fighter is standing at when they jump.
+   Screen position is a projection of (ax, az) with a depth-based scale so
+   fighters nearer the camera read as bigger/lower, farther as
+   smaller/higher — enough of a perspective cue to sell "walking around"
+   without needing real 3D.
    ========================================================================= */
 
 const W = 960, H = 540;
-const GROUND_Y = H - 90;
-const ARENA_LEFT = 90;
-const ARENA_RIGHT = W - 90;
-const FIGHTER_HALF_WIDTH = 26;
-const SEPARATION_MIN_DIST = 58; // fighters push apart rather than overlap
+
+// ARENA — an elliptical ground plane in arena-space units. ax is left/right,
+// az is depth (negative = away from camera/"north", positive = toward
+// camera/"south"). Deliberately a smaller range on the depth axis than the
+// width axis — that asymmetry is what sells the camera angle.
+const ARENA_CENTER_X = W / 2;
+const ARENA_CENTER_Y = 300; // screen Y for az=0 (the "front-center" of the ring)
+const ARENA_RX = 260;
+const ARENA_RZ = 115;
+const DEPTH_COMPRESS = 0.55; // vertical screen spread of the depth axis
+
+const SEPARATION_MIN_DIST = 62; // fighters push apart rather than overlap, in arena units
 
 const GRAVITY = 1700;
 const MOVE_ACCEL = 1800;
 const MOVE_MAX_SPEED = 230;
 const GROUND_FRICTION = 2200;
-const AIR_CONTROL_MULT = 0.6; // reduced accel/friction while airborne — can't cut movement on a dime mid-jump
+const AIR_CONTROL_MULT = 0.6;
 const JUMP_VELOCITY = -560;
 
-const AI_APPROACH_MIN = 70;  // AI backs off if closer than this
-const AI_APPROACH_MAX = 150; // AI closes in if farther than this
-const AI_JUMP_CHANCE_PER_SEC = 0.35; // rough odds baked into a per-frame roll below
+const AI_APPROACH_MIN = 75;   // AI backs off if closer than this
+const AI_APPROACH_MAX = 160;  // AI closes in if farther than this
+const AI_JUMP_CHANCE_PER_SEC = 0.35;
 
 function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
 }
 
-function makeFighter(x, kind) {
+function approachZero(v, delta) {
+  if (v > 0) return Math.max(0, v - delta);
+  if (v < 0) return Math.min(0, v + delta);
+  return 0;
+}
+
+// clamps an (ax, az) point to inside the arena ellipse, preserving direction
+function clampToArena(ax, az) {
+  const nx = ax / ARENA_RX, nz = az / ARENA_RZ;
+  const d = Math.hypot(nx, nz);
+  if (d > 1) return { ax: ax / d, az: az / d };
+  return { ax, az };
+}
+
+function project(ax, az) {
+  return { sx: ARENA_CENTER_X + ax, sy: ARENA_CENTER_Y + az * DEPTH_COMPRESS };
+}
+
+// nearer the camera (larger az) reads bigger; farther back reads smaller
+function depthScale(az) {
+  const t = (az + ARENA_RZ) / (ARENA_RZ * 2); // 0..1
+  return 0.8 + t * 0.4;
+}
+
+function makeFighter(ax, az, kind) {
   return {
-    x, y: GROUND_Y, vx: 0, vy: 0, grounded: true, facing: kind === 'panda' ? 1 : -1,
+    ax, az, vax: 0, vaz: 0,
+    jumpZ: 0, vJump: 0, grounded: true,
+    facing: kind === 'panda' ? 1 : -1,
     kind, walkBob: 0, squash: 0
   };
 }
@@ -70,33 +112,28 @@ class PlayScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor('#0a0a0d');
     this.g = this.add.graphics();
 
-    this.mode = null; // 'ai' | '2p' — set on mode select
+    this.mode = null; // 'ai' | '2p'
     this.state = 'menu';
     this.aiJumpCooldown = 1.5;
+    this.aiCircleTimer = 0;
+    this.aiCircleDir = 1;
 
-    this.buildBackground();
     this.buildHUD();
     this.buildMenu();
     this.buildControls();
 
     this.keys = this.input.keyboard.addKeys({
+      p1Up: Phaser.Input.Keyboard.KeyCodes.W,
+      p1Down: Phaser.Input.Keyboard.KeyCodes.S,
       p1Left: Phaser.Input.Keyboard.KeyCodes.A,
       p1Right: Phaser.Input.Keyboard.KeyCodes.D,
-      p1Jump: Phaser.Input.Keyboard.KeyCodes.W,
+      p1Jump: Phaser.Input.Keyboard.KeyCodes.SPACE,
+      p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
+      p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
       p2Right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-      p2Jump: Phaser.Input.Keyboard.KeyCodes.UP
+      p2Jump: Phaser.Input.Keyboard.KeyCodes.FORWARD_SLASH
     });
-  }
-
-  buildBackground() {
-    this.bg = this.add.graphics();
-    this.bg.fillStyle(0x0a0a0d, 1);
-    this.bg.fillRect(0, 0, W, H);
-    this.bg.fillStyle(0x111318, 1);
-    this.bg.fillRect(0, GROUND_Y + 30, W, H - (GROUND_Y + 30));
-    this.bg.lineStyle(2, 0x1c2128, 1);
-    this.bg.lineBetween(0, GROUND_Y + 30, W, GROUND_Y + 30);
   }
 
   buildHUD() {
@@ -109,17 +146,17 @@ class PlayScene extends Phaser.Scene {
     }).setOrigin(1, 0).setInteractive({ useHandCursor: true }).setVisible(false);
     this.menuBtn.on('pointerdown', () => this.returnToMenu());
 
-    this.centerText = this.add.text(W/2, H/2 - 70, 'LAST FIST', {
+    this.centerText = this.add.text(W/2, 120, 'LAST FIST', {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
-    this.subText = this.add.text(W/2, H/2 - 20,
-      'Panda vs Bear \u2014 movement phase\nwalk, jump, and square up. Punches and kicks come next.', {
+    this.subText = this.add.text(W/2, 168,
+      'Panda vs Bear \u2014 movement stage\ncircle, close distance, and square up. Punches and kicks come next.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
 
   buildMenu() {
-    const btnY = H/2 + 50, btnW = 220, btnH = 64, gap = 20;
+    const btnY = 240, btnW = 220, btnH = 64, gap = 20;
     this.menuButtons = [];
     const defs = [
       { label: 'VS AI', x: W/2 - btnW/2 - gap/2, mode: 'ai' },
@@ -137,49 +174,50 @@ class PlayScene extends Phaser.Scene {
   }
 
   buildControls() {
-    // P1 cluster — bottom-left, always available
-    this.p1Controls = this.buildControlCluster(190, 'A/D \u00b7 W', false);
-    // P2 cluster — bottom-right, only shown/used in 2P mode
-    this.p2Controls = this.buildControlCluster(W - 190, '\u2190/\u2192 \u00b7 \u2191', true);
-    this.setTouchState('p1', { left: false, right: false });
-    this.setTouchState('p2', { left: false, right: false });
+    this.touchState = {};
+    // P1 — bottom-left: dpad on the outside edge, jump toward center (easier
+    // thumb reach for a left-corner player)
+    this.p1Controls = this.buildControlCluster({ dpadX: 108, jumpX: 216, hint: 'WASD + SPACE', key: 'p1' });
+    // P2 — bottom-right, mirrored
+    this.p2Controls = this.buildControlCluster({ dpadX: W - 108, jumpX: W - 216, hint: '\u2190\u2191\u2192\u2193 + /', key: 'p2' });
   }
 
-  buildControlCluster(centerX, hint, isP2) {
-    const btnY = H - 56, btnSize = 56, gap = 10;
-    const leftX = centerX - btnSize - gap;
-    const rightX = centerX;
-    const jumpX = centerX + btnSize + gap;
+  buildControlCluster({ dpadX, jumpX, hint, key }) {
+    const dpadY = H - 74, btn = 34, gap = 4;
+    this.touchState[key] = { up: false, down: false, left: false, right: false, jumpPressed: false };
 
-    const mk = (x, label) => {
-      const bg = this.add.rectangle(x, btnY, btnSize, btnSize, 0x14161c, 0.9).setStrokeStyle(2, 0x4fd1ff, 0.6);
-      const t = this.add.text(x, btnY, label, { fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1' }).setOrigin(0.5);
+    const mkBtn = (x, y, label, size) => {
+      const bg = this.add.rectangle(x, y, size, size, 0x14161c, 0.9).setStrokeStyle(2, 0x4fd1ff, 0.6);
+      const t = this.add.text(x, y, label, { fontFamily: 'Arial Black, Arial', fontSize: size > 44 ? '20px' : '14px', color: '#e8ecf1' }).setOrigin(0.5);
       return { bg, t };
     };
-    const left = mk(leftX, '\u25c0');
-    const right = mk(rightX, '\u25b6');
-    const jump = mk(jumpX, '\u25b2');
-    const hintText = this.add.text(centerX, btnY - 46, hint, { fontFamily: 'Arial', fontSize: '11px', color: '#555a66' }).setOrigin(0.5);
+    const up = mkBtn(dpadX, dpadY - btn - gap, '\u25b2', btn);
+    const down = mkBtn(dpadX, dpadY + btn + gap, '\u25bc', btn);
+    const left = mkBtn(dpadX - btn - gap, dpadY, '\u25c0', btn);
+    const right = mkBtn(dpadX + btn + gap, dpadY, '\u25b6', btn);
+    const jump = mkBtn(jumpX, dpadY, 'JUMP', 56);
+    const hintText = this.add.text(dpadX, dpadY - btn * 2 - gap * 2 - 10, hint, {
+      fontFamily: 'Arial', fontSize: '10px', color: '#555a66'
+    }).setOrigin(0.5);
 
-    const key = isP2 ? 'p2' : 'p1';
     const bindHold = (obj, field) => {
       obj.bg.setInteractive({ useHandCursor: true });
       obj.bg.on('pointerdown', () => { this.touchState[key][field] = true; obj.bg.setFillStyle(0x22262f, 0.95); });
       obj.bg.on('pointerup', () => { this.touchState[key][field] = false; obj.bg.setFillStyle(0x14161c, 0.9); });
       obj.bg.on('pointerout', () => { this.touchState[key][field] = false; obj.bg.setFillStyle(0x14161c, 0.9); });
     };
-    if (!this.touchState) this.touchState = {};
-    this.touchState[key] = { left: false, right: false };
+    bindHold(up, 'up');
+    bindHold(down, 'down');
     bindHold(left, 'left');
     bindHold(right, 'right');
     jump.bg.setInteractive({ useHandCursor: true });
-    jump.bg.on('pointerdown', () => { this.touchState[key].jumpPressed = true; jump.bg.setFillStyle(0x22262f, 0.95); this.time.delayedCall(90, () => jump.bg.setFillStyle(0x14161c, 0.9)); });
+    jump.bg.on('pointerdown', () => {
+      this.touchState[key].jumpPressed = true;
+      jump.bg.setFillStyle(0x22262f, 0.95);
+      this.time.delayedCall(90, () => jump.bg.setFillStyle(0x14161c, 0.9));
+    });
 
-    return { left, right, jump, hintText, objects: [left.bg, left.t, right.bg, right.t, jump.bg, jump.t, hintText] };
-  }
-
-  setTouchState(key, val) {
-    Object.assign(this.touchState[key], val);
+    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, jump.bg, jump.t, hintText] };
   }
 
   setControlsVisible(cluster, visible) {
@@ -199,11 +237,10 @@ class PlayScene extends Phaser.Scene {
     this.setControlsVisible(this.p1Controls, true);
     this.setControlsVisible(this.p2Controls, mode === '2p');
 
-    this.p1 = makeFighter(W/2 - 120, 'panda');
-    this.p2 = makeFighter(W/2 + 120, 'bear');
-    this.p1.facing = 1;
-    this.p2.facing = -1;
+    this.p1 = makeFighter(-90, 20, 'panda');
+    this.p2 = makeFighter(90, -20, 'bear');
     this.aiJumpCooldown = Phaser.Math.FloatBetween(1, 2.5);
+    this.aiCircleTimer = 0;
 
     if (window.SFX) SFX.select();
   }
@@ -220,71 +257,99 @@ class PlayScene extends Phaser.Scene {
     this.menuButtons.forEach(o => o.setVisible(true));
   }
 
-  // shared kinematics for both fighters and the AI — same rules for everyone
-  stepFighter(f, left, right, jumpPressed, dt) {
+  // shared kinematics for both fighters and the AI — same rules for everyone.
+  // moveX/moveZ are each -1/0/1; diagonals are normalized so they're not
+  // faster than a straight cardinal move.
+  stepFighter(f, moveX, moveZ, jumpPressed, dt) {
     const grounded = f.grounded;
     const accel = grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT;
     const friction = (grounded ? GROUND_FRICTION : GROUND_FRICTION * AIR_CONTROL_MULT) * dt;
 
-    if (left && !right) f.vx -= accel * dt;
-    else if (right && !left) f.vx += accel * dt;
-    else {
-      if (f.vx > 0) f.vx = Math.max(0, f.vx - friction);
-      else if (f.vx < 0) f.vx = Math.min(0, f.vx + friction);
-    }
-    f.vx = Phaser.Math.Clamp(f.vx, -MOVE_MAX_SPEED, MOVE_MAX_SPEED);
-    f.x += f.vx * dt;
-    f.x = Phaser.Math.Clamp(f.x, ARENA_LEFT, ARENA_RIGHT);
+    let mx = moveX, mz = moveZ;
+    if (mx !== 0 && mz !== 0) { mx *= Math.SQRT1_2; mz *= Math.SQRT1_2; }
+
+    if (mx !== 0) f.vax += mx * accel * dt; else f.vax = approachZero(f.vax, friction);
+    if (mz !== 0) f.vaz += mz * accel * dt; else f.vaz = approachZero(f.vaz, friction);
+
+    const speed = Math.hypot(f.vax, f.vaz);
+    if (speed > MOVE_MAX_SPEED) { const s = MOVE_MAX_SPEED / speed; f.vax *= s; f.vaz *= s; }
+
+    f.ax += f.vax * dt;
+    f.az += f.vaz * dt;
+    const clamped = clampToArena(f.ax, f.az);
+    f.ax = clamped.ax; f.az = clamped.az;
 
     if (jumpPressed && f.grounded) {
-      f.vy = JUMP_VELOCITY;
+      f.vJump = JUMP_VELOCITY;
       f.grounded = false;
       if (window.SFX) SFX.jump();
     }
-    f.vy += GRAVITY * dt;
-    f.y += f.vy * dt;
-    if (f.y >= GROUND_Y) {
+    f.vJump += GRAVITY * dt;
+    f.jumpZ += f.vJump * dt;
+    if (f.jumpZ >= 0) {
       const wasAirborne = !f.grounded;
-      f.y = GROUND_Y;
-      f.vy = 0;
+      f.jumpZ = 0;
+      f.vJump = 0;
       f.grounded = true;
       if (wasAirborne) { f.squash = 1; vibrate(6); }
     }
 
-    // walk-bob purely cosmetic — only while grounded and actually moving
-    if (f.grounded && Math.abs(f.vx) > 20) f.walkBob += dt * 14;
+    if (f.grounded && speed > 20) f.walkBob += dt * 14;
     f.squash = Math.max(0, f.squash - dt * 4);
   }
 
+  // approach if too far, back off if too close, and — in the comfortable
+  // band — circle around the player using the perpendicular direction, so
+  // the AI actually orbits rather than just beelining. This is the whole
+  // point of the 2D arena: it gives the AI somewhere to go that "left/right
+  // only" never could.
   aiInput(dt) {
-    const dx = this.p1.x - this.p2.x;
-    const dist = Math.abs(dx);
-    let left = false, right = false, jump = false;
+    const dx = this.p1.ax - this.p2.ax, dz = this.p1.az - this.p2.az;
+    const dist = Math.hypot(dx, dz) || 0.001;
+    let moveX = 0, moveZ = 0, jump = false;
 
-    if (dist > AI_APPROACH_MAX) { if (dx > 0) right = true; else left = true; }
-    else if (dist < AI_APPROACH_MIN) { if (dx > 0) left = true; else right = true; }
+    this.aiCircleTimer -= dt;
+    if (this.aiCircleTimer <= 0) {
+      this.aiCircleDir = Math.random() < 0.5 ? 1 : -1;
+      this.aiCircleTimer = Phaser.Math.FloatBetween(1.5, 3);
+    }
+
+    if (dist > AI_APPROACH_MAX) {
+      moveX = dx / dist; moveZ = dz / dist;
+    } else if (dist < AI_APPROACH_MIN) {
+      moveX = -dx / dist; moveZ = -dz / dist;
+    } else {
+      const perpX = -dz / dist, perpZ = dx / dist;
+      moveX = perpX * this.aiCircleDir;
+      moveZ = perpZ * this.aiCircleDir;
+    }
 
     this.aiJumpCooldown -= dt;
     if (this.p2.grounded && this.aiJumpCooldown <= 0 && Math.random() < AI_JUMP_CHANCE_PER_SEC * dt) {
       jump = true;
       this.aiJumpCooldown = Phaser.Math.FloatBetween(1.5, 3.5);
     }
-    return { left, right, jump };
+    return { moveX, moveZ, jump };
   }
 
   separate() {
-    const dx = this.p2.x - this.p1.x;
-    const dist = Math.abs(dx);
+    const dx = this.p2.ax - this.p1.ax, dz = this.p2.az - this.p1.az;
+    const dist = Math.hypot(dx, dz);
     if (dist < SEPARATION_MIN_DIST && dist > 0.001) {
       const push = (SEPARATION_MIN_DIST - dist) / 2;
-      const dir = dx > 0 ? 1 : -1;
-      this.p1.x = Phaser.Math.Clamp(this.p1.x - push * dir, ARENA_LEFT, ARENA_RIGHT);
-      this.p2.x = Phaser.Math.Clamp(this.p2.x + push * dir, ARENA_LEFT, ARENA_RIGHT);
+      const ux = dx / dist, uz = dz / dist;
+      this.p1.ax -= ux * push; this.p1.az -= uz * push;
+      this.p2.ax += ux * push; this.p2.az += uz * push;
+      Object.assign(this.p1, clampToArena(this.p1.ax, this.p1.az));
+      Object.assign(this.p2, clampToArena(this.p2.ax, this.p2.az));
     }
   }
 
+  // simple shapes only support a left/right flip, not true rotation, so
+  // facing is still just "which side is the opponent on" — that reads fine
+  // even with depth in the mix
   updateFacing() {
-    const dx = this.p2.x - this.p1.x;
+    const dx = this.p2.ax - this.p1.ax;
     if (Math.abs(dx) > 4) {
       this.p1.facing = dx > 0 ? 1 : -1;
       this.p2.facing = dx > 0 ? -1 : 1;
@@ -296,21 +361,30 @@ class PlayScene extends Phaser.Scene {
 
     if (this.state !== 'playing') { this.draw(); return; }
 
-    const p1Left = this.keys.p1Left.isDown || this.touchState.p1.left;
-    const p1Right = this.keys.p1Right.isDown || this.touchState.p1.right;
-    const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || this.touchState.p1.jumpPressed;
-    this.touchState.p1.jumpPressed = false;
-    this.stepFighter(this.p1, p1Left, p1Right, p1Jump, dt);
+    const t = this.touchState;
+    const p1Up = this.keys.p1Up.isDown || t.p1.up;
+    const p1Down = this.keys.p1Down.isDown || t.p1.down;
+    const p1Left = this.keys.p1Left.isDown || t.p1.left;
+    const p1Right = this.keys.p1Right.isDown || t.p1.right;
+    const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || t.p1.jumpPressed;
+    t.p1.jumpPressed = false;
+    const p1MoveX = (p1Right ? 1 : 0) - (p1Left ? 1 : 0);
+    const p1MoveZ = (p1Down ? 1 : 0) - (p1Up ? 1 : 0);
+    this.stepFighter(this.p1, p1MoveX, p1MoveZ, p1Jump, dt);
 
     if (this.mode === '2p') {
-      const p2Left = this.keys.p2Left.isDown || this.touchState.p2.left;
-      const p2Right = this.keys.p2Right.isDown || this.touchState.p2.right;
-      const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || this.touchState.p2.jumpPressed;
-      this.touchState.p2.jumpPressed = false;
-      this.stepFighter(this.p2, p2Left, p2Right, p2Jump, dt);
+      const p2Up = this.keys.p2Up.isDown || t.p2.up;
+      const p2Down = this.keys.p2Down.isDown || t.p2.down;
+      const p2Left = this.keys.p2Left.isDown || t.p2.left;
+      const p2Right = this.keys.p2Right.isDown || t.p2.right;
+      const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || t.p2.jumpPressed;
+      t.p2.jumpPressed = false;
+      const p2MoveX = (p2Right ? 1 : 0) - (p2Left ? 1 : 0);
+      const p2MoveZ = (p2Down ? 1 : 0) - (p2Up ? 1 : 0);
+      this.stepFighter(this.p2, p2MoveX, p2MoveZ, p2Jump, dt);
     } else {
       const ai = this.aiInput(dt);
-      this.stepFighter(this.p2, ai.left, ai.right, ai.jump, dt);
+      this.stepFighter(this.p2, ai.moveX, ai.moveZ, ai.jump, dt);
     }
 
     this.separate();
@@ -318,67 +392,79 @@ class PlayScene extends Phaser.Scene {
     this.draw();
   }
 
+  drawShadow(f) {
+    const proj = project(f.ax, f.az);
+    const scale = depthScale(f.az);
+    const airLift = Phaser.Math.Clamp(1 + f.jumpZ / 160, 0.35, 1); // shadow shrinks as fighter jumps higher
+    this.g.fillStyle(0x000000, 0.35);
+    this.g.fillEllipse(proj.sx, proj.sy, 40 * scale * airLift, 14 * scale * airLift);
+  }
+
   drawFighter(f) {
     const g = this.g;
-    const bobY = f.grounded ? Math.sin(f.walkBob) * 3 : 0;
+    const proj = project(f.ax, f.az);
+    const scale = depthScale(f.az);
+    const bobY = f.grounded ? Math.sin(f.walkBob) * 3 * scale : 0;
     const squashY = 1 - f.squash * 0.18;
     const squashX = 1 + f.squash * 0.12;
-    const baseY = f.y - bobY;
-    const w = 42 * squashX, hgt = 56 * squashY;
+    const baseX = proj.sx;
+    const baseY = proj.sy + f.jumpZ * scale - bobY;
+    const w = 42 * scale * squashX, hgt = 56 * scale * squashY;
 
     if (f.kind === 'panda') {
-      // body
       g.fillStyle(0xf4f4f4, 1);
-      g.fillRoundedRect(f.x - w/2, baseY - hgt, w, hgt, 10);
-      // arms/legs patches
+      g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
       g.fillStyle(0x18181b, 1);
-      g.fillRoundedRect(f.x - w/2 - 4, baseY - hgt + 6, 9, 22, 4);
-      g.fillRoundedRect(f.x + w/2 - 5, baseY - hgt + 6, 9, 22, 4);
-      // head
+      g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0xf4f4f4, 1);
-      g.fillCircle(f.x, baseY - hgt - 16, 17);
-      // ears
+      g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
       g.fillStyle(0x18181b, 1);
-      g.fillCircle(f.x - 13, baseY - hgt - 30, 7);
-      g.fillCircle(f.x + 13, baseY - hgt - 30, 7);
-      // eye patches
-      g.fillEllipse(f.x - 7 * f.facing, baseY - hgt - 17, 8, 10);
-      // facing nose
+      g.fillCircle(baseX - 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(baseX + 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillEllipse(baseX - 7 * f.facing * scale, baseY - hgt - 17 * scale, 8 * scale, 10 * scale);
       g.fillStyle(0x0a0a0d, 1);
-      g.fillCircle(f.x + f.facing * 10, baseY - hgt - 14, 3);
+      g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 14 * scale, 3 * scale);
     } else {
-      // bear
       g.fillStyle(0x8b5a2b, 1);
-      g.fillRoundedRect(f.x - w/2, baseY - hgt, w, hgt, 10);
+      g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
       g.fillStyle(0x6b431f, 1);
-      g.fillRoundedRect(f.x - w/2 - 4, baseY - hgt + 6, 9, 22, 4);
-      g.fillRoundedRect(f.x + w/2 - 5, baseY - hgt + 6, 9, 22, 4);
+      g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0x8b5a2b, 1);
-      g.fillCircle(f.x, baseY - hgt - 16, 18);
+      g.fillCircle(baseX, baseY - hgt - 16 * scale, 18 * scale);
       g.fillStyle(0x6b431f, 1);
-      g.fillCircle(f.x - 14, baseY - hgt - 30, 7);
-      g.fillCircle(f.x + 14, baseY - hgt - 30, 7);
-      // muzzle, offset toward facing
+      g.fillCircle(baseX - 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(baseX + 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
       g.fillStyle(0xd8b98c, 1);
-      g.fillEllipse(f.x + f.facing * 6, baseY - hgt - 12, 14, 10);
+      g.fillEllipse(baseX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 14 * scale, 10 * scale);
       g.fillStyle(0x0a0a0d, 1);
-      g.fillCircle(f.x + f.facing * 10, baseY - hgt - 12, 2.5);
+      g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 2.5 * scale);
     }
+  }
+
+  drawArena() {
+    const g = this.g;
+    g.fillStyle(0x111318, 1);
+    g.fillEllipse(ARENA_CENTER_X, ARENA_CENTER_Y, ARENA_RX * 2, ARENA_RZ * 2 * DEPTH_COMPRESS);
+    g.lineStyle(2, 0x1c2128, 1);
+    g.strokeEllipse(ARENA_CENTER_X, ARENA_CENTER_Y, ARENA_RX * 2, ARENA_RZ * 2 * DEPTH_COMPRESS);
+    // a couple of inner rings purely for depth legibility, nothing functional
+    g.lineStyle(1, 0x181b21, 0.8);
+    g.strokeEllipse(ARENA_CENTER_X, ARENA_CENTER_Y, ARENA_RX * 1.3, ARENA_RZ * 1.3 * DEPTH_COMPRESS);
   }
 
   draw() {
     const g = this.g;
     g.clear();
-
     if (this.state !== 'playing') return;
 
-    // arena bounds markers
-    g.lineStyle(1, 0x1c2128, 0.6);
-    g.lineBetween(ARENA_LEFT, GROUND_Y + 30, ARENA_LEFT, GROUND_Y - 200);
-    g.lineBetween(ARENA_RIGHT, GROUND_Y + 30, ARENA_RIGHT, GROUND_Y - 200);
+    this.drawArena();
 
-    this.drawFighter(this.p1);
-    this.drawFighter(this.p2);
+    // painter's algorithm — draw the fighter farther from camera first so
+    // the nearer one correctly overlaps them when they're close together
+    const order = [this.p1, this.p2].sort((a, b) => project(a.ax, a.az).sy - project(b.ax, b.az).sy);
+    order.forEach(f => { this.drawShadow(f); this.drawFighter(f); });
   }
 }
 
