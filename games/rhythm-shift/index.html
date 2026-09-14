@@ -41,7 +41,8 @@ const GATE_R = 16; // half-height of the gap the player must be inside
 const BEAT_PERIOD_DEFAULT = 700;
 const BEAT_PERIOD_MIN = 260;
 const BEAT_PERIOD_MAX = 1500;
-const OPEN_WINDOW_MS = 260; // how long after a beat fires a gate counts as "open"
+const OPEN_FRACTION = 0.32; // open window is a % of YOUR beat period, not a fixed time —
+                             // otherwise a fast tempo makes the window always-open (a free win)
 
 function spawnIntervalFor(t) {
   if (t < 20) return Phaser.Math.FloatBetween(2.1, 2.7);
@@ -153,7 +154,8 @@ class PlayScene extends Phaser.Scene {
       this.spawnGate();
     }
 
-    const isOpen = (time - this.lastBeatAt) < OPEN_WINDOW_MS;
+    const openDuration = this.beatPeriod * OPEN_FRACTION;
+    const isOpen = (time - this.lastBeatAt) < openDuration;
     for (let i = this.gates.length - 1; i >= 0; i--) {
       const g = this.gates[i];
       g.x -= SCROLL_SPEED_BASE * dt;
@@ -200,25 +202,50 @@ class PlayScene extends Phaser.Scene {
     const g = this.g;
     g.clear();
 
-    // gates — red when closed, gold when open, matching the rest of the hub's shared visual language
-    const isOpen = this.state === 'playing' && (this.time.now - this.lastBeatAt) < OPEN_WINDOW_MS;
+    const openDuration = this.beatPeriod * OPEN_FRACTION;
+    const timeSinceBeat = this.time.now - this.lastBeatAt;
+    const isOpen = this.state === 'playing' && timeSinceBeat < openDuration;
+
+    // a glowing lane line connecting the player to the gates, only visible
+    // while the beat window is open — ties the player's beat state and the
+    // gates' passable state into one connected visual instead of two
+    // separate things you have to mentally link yourself
+    if (this.state === 'playing' && isOpen) {
+      const openProgress = 1 - timeSinceBeat / openDuration; // 1 right at the beat, fading to 0 as the window closes
+      g.lineStyle(3, 0xffd23f, 0.15 + openProgress * 0.35);
+      g.lineBetween(PLAYER_X, H/2, W, H/2);
+    }
+
+    // gates — red when closed, gold when open, with a brighter edge glow
+    // right on the gap lips while open so the "safe zone" reads instantly
     this.gates.forEach(gt => {
       const col = isOpen ? 0xffd23f : 0xff5a5a;
       g.fillStyle(col, 1);
       g.fillRect(gt.x - 6, 0, 12, H/2 - GATE_R);
       g.fillRect(gt.x - 6, H/2 + GATE_R, 12, H/2 - GATE_R);
+      if (isOpen) {
+        g.lineStyle(2, 0xfff2c9, 0.6);
+        g.strokeRect(gt.x - 6, H/2 - GATE_R - 4, 12, 4);
+        g.strokeRect(gt.x - 6, H/2 + GATE_R, 12, 4);
+      }
     });
 
-    // pulsing ring — grows from the last beat toward the next one, flashes at zero
+    // pulsing anticipation ring — grows from the last beat toward the next
+    // one, brightens and thickens the instant the gate window is open, and
+    // a sharp expanding burst flashes right at the beat moment itself
     if (this.state === 'playing') {
-      const progress = Phaser.Math.Clamp((this.time.now - this.lastBeatAt) / this.beatPeriod, 0, 1);
+      const progress = Phaser.Math.Clamp(timeSinceBeat / this.beatPeriod, 0, 1);
       const ringR = 18 + progress * 36;
-      const flash = this.pulseFlash || 0;
-      g.lineStyle(2, isOpen ? 0xffd23f : 0x4fd1ff, 0.5 - progress * 0.3);
+      g.lineStyle(isOpen ? 3 : 2, isOpen ? 0xffd23f : 0x4fd1ff, isOpen ? 0.75 : (0.5 - progress * 0.3));
       g.strokeCircle(PLAYER_X, H/2, ringR);
+
+      const flash = this.pulseFlash || 0;
       if (flash > 0) {
-        g.fillStyle(0xffffff, flash * 0.4);
-        g.fillCircle(PLAYER_X, H/2, 16 + flash * 20);
+        const burstR = 14 + (1 - flash) * 50;
+        g.fillStyle(0xffffff, flash * 0.55);
+        g.fillCircle(PLAYER_X, H/2, burstR);
+        g.lineStyle(2, 0xffffff, flash * 0.6);
+        g.strokeCircle(PLAYER_X, H/2, burstR);
       }
     }
 
