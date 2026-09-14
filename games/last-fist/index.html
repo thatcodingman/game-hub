@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Last Fist — The Arcade</title>
+<style>
+  html, body {
+    margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%;
+    overscroll-behavior: none;
+  }
+  #game-container { width:100vw; height:100vh; }
+  canvas {
+    display:block; touch-action:none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   LAST FIST
+   "One fighter. One opponent. No health bars."
+
+   Enemies telegraph one of three attacks by color. Read it, respond with
+   the matching input inside a window that opens near the end of the
+   telegraph (not the instant it appears — this is what makes it a timing
+   game and not a color-reflex game). Get it right, you're safe (and if the
+   signal was BLUE, you land a PERFECT COUNTER). Get it wrong, swing with
+   nothing telegraphing, or react too late — all three count as one mistake,
+   equally, no exceptions.
+
+   RED    -> BLOCK
+   YELLOW -> DODGE
+   BLUE   -> PUNCH (a correctly-timed punch here is the PERFECT COUNTER)
+
+   3 mistakes ends the run. 3 PERFECT COUNTERS KOs the current opponent and
+   the next one steps up. Only PERFECT COUNTERS build Flow (4 stacks ->
+   FLOW STATE: faster/tighter, score multiplier). Any mistake drops Flow to
+   zero, but Flow never ends the run by itself — surviving and mastering are
+   two separate objectives, on purpose.
+
+   V1 scope, locked: 2 enemy types (Brawler, Boxer), a fixed deterministic
+   spawn sequence (no randomness in enemy TYPE selection — which signal
+   fires each attack is still random, that's the whole game), Survival mode
+   only. Grappler/Counter-type enemies, Time Attack/Boss Rush/Endless modes,
+   and procedural enemy selection are all explicitly deferred to v2.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const BG = 0x0a0a0d;
+
+const COLOR_BLOCK = 0xff5a5a;   // red   — matches "danger" red used across the hub
+const COLOR_DODGE = 0xffd23f;   // gold  — matches the hub's existing PERFECT/highlight gold
+const COLOR_COUNTER = 0x4fd1ff; // cyan  — matches Rhythm Shift's beat-open cyan
+const COLOR_SUCCESS = 0x5be37b;
+const COLOR_MUTED = 0x7f8a9a;
+
+const SIGNAL_ACTION = { block: 'block', dodge: 'dodge', counter: 'counter' };
+const SIGNAL_COLOR = { block: COLOR_BLOCK, dodge: COLOR_DODGE, counter: COLOR_COUNTER };
+const SIGNAL_LABEL = { block: 'BLOCK!', dodge: 'DODGE!', counter: 'COUNTER!' };
+
+// ENEMY SPECS — telegraph is the full wind-up an attack is visible for;
+// window is how much of the END of that telegraph actually accepts input
+// (same role as Rhythm Shift's OPEN_FRACTION — reading the whole wind-up
+// but only acting near the real moment keeps this a timing game).
+const ENEMY_DEFS = {
+  brawler: { name: 'BRAWLER', telegraph: 900, window: 420, color: 0xff8a3d },
+  boxer:   { name: 'BOXER',   telegraph: 500, window: 220, color: 0xba7dff }
+};
+
+// Locked, deterministic intro sequence, then a fixed repeating loop —
+// explicitly no randomness in enemy TYPE for v1, so balance stays legible
+const ENEMY_SEQUENCE = ['brawler', 'brawler', 'boxer', 'brawler', 'boxer', 'boxer'];
+const ENEMY_LOOP = ['boxer', 'brawler', 'boxer', 'boxer'];
+function enemyTypeForIndex(i) {
+  if (i < ENEMY_SEQUENCE.length) return ENEMY_SEQUENCE[i];
+  return ENEMY_LOOP[(i - ENEMY_SEQUENCE.length) % ENEMY_LOOP.length];
+}
+
+const IDLE_DURATION_MS = 450;   // breathing room between attacks
+const RECOVERY_DURATION_MS = 500;
+const KO_CELEBRATE_MS = 900;
+const HITSTOP_MS = 110;
+const FLOW_MAX_STACKS = 4;
+const FLOW_SPEED_MULT = 0.8;    // telegraph/window/idle all compress by this once Flow State is active
+const FLOW_SCORE_MULT = 2;
+
+const SCORE_BLOCK_DODGE = 5;
+const SCORE_COUNTER = 25;
+const SCORE_KO_BONUS = 50;
+const STRIKES_TO_LOSE = 3;
+const COUNTERS_TO_KO = 3;
+
+// HAPTICS — same feature-detected helper as Rhythm Shift, silently a no-op
+// anywhere navigator.vibrate isn't available
+function vibrate(pattern) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  } catch (err) { /* non-fatal */ }
+}
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
+
+  create() {
+    this.cameras.main.setBackgroundColor('#0a0a0d');
+    this.g = this.add.graphics();
+    this.vignette = this.add.graphics();
+
+    this.state = 'ready';
+    this.buildHUD();
+    this.buildFighters();
+    this.buildControls();
+
+    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.leftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
+    this.downKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.DOWN);
+    this.rightKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
+
+    this.input.on('pointerdown', (p) => {
+      // control buttons handle their own pointerdown for in-run input;
+      // this whole-canvas handler only covers the ready/dead tap-to-continue
+      if (this.state !== 'playing') this.handleMenuTap();
+    });
+  }
+
+  buildHUD() {
+    this.scoreText = this.add.text(20, 18, 'SCORE 0', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#ffd23f'
+    }).setOrigin(0, 0);
+
+    // three strike dots — "no health bars," per the design, so this is
+    // deliberately dots/icons rather than a depleting bar
+    this.strikeDots = [];
+    for (let i = 0; i < STRIKES_TO_LOSE; i++) {
+      const dot = this.add.circle(W - 24 - i * 26, 27, 8, 0x000000, 0).setStrokeStyle(2, 0xff5a5a);
+      this.strikeDots.push(dot);
+    }
+
+    this.enemyNameText = this.add.text(W/2, 18, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a'
+    }).setOrigin(0.5, 0);
+
+    // FLOW bar — 4 segments, fills as Flow builds, glows gold at FLOW STATE
+    this.flowLabel = this.add.text(W/2, 44, 'FLOW', {
+      fontFamily: 'Arial Black, Arial', fontSize: '10px', color: '#7f8a9a'
+    }).setOrigin(0.5);
+    this.flowSegs = [];
+    const segW = 54, gap = 6, totalW = segW * 4 + gap * 3;
+    const startX = W/2 - totalW/2;
+    for (let i = 0; i < FLOW_MAX_STACKS; i++) {
+      const bg = this.add.rectangle(startX + i * (segW + gap) + segW/2, 60, segW, 8, 0x1c2128).setStrokeStyle(1, 0x000000);
+      this.flowSegs.push(bg);
+    }
+
+    this.signalText = this.add.text(W/2, 120, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '34px', color: '#ffffff', align: 'center'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.toastText = this.add.text(W/2, 160, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#5be37b'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.centerText = this.add.text(W/2, H/2 - 40, 'LAST FIST', {
+      fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
+    this.subText = this.add.text(W/2, H/2 + 20,
+      'One fighter. One opponent. No health bars.\nRED = block \u00b7 YELLOW = dodge \u00b7 BLUE = punch to counter\n3 mistakes ends it \u2014 3 perfect counters drops them\ntap to start', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
+    }).setOrigin(0.5);
+  }
+
+  buildFighters() {
+    // simple geometric figures on purpose — "animation + impact > graphics"
+    this.playerX = 260;
+    this.enemyX = 700;
+    this.fighterY = H/2 - 20;
+
+    this.playerFlash = 0;
+    this.enemyFlash = 0;
+    this.playerKnockback = 0;
+    this.enemyKnockback = 0;
+  }
+
+  buildControls() {
+    const btnY = H - 62;
+    const btnW = 280, btnH = 84, gap = 12;
+    const defs = [
+      { action: 'block', label: 'BLOCK', color: COLOR_BLOCK, x: W/2 - btnW - gap },
+      { action: 'dodge', label: 'DODGE', color: COLOR_DODGE, x: W/2 },
+      { action: 'counter', label: 'PUNCH', color: COLOR_COUNTER, x: W/2 + btnW + gap }
+    ];
+    this.controlButtons = {};
+    defs.forEach(def => {
+      const bg = this.add.rectangle(def.x, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, def.color, 0.7);
+      const label = this.add.text(def.x, btnY, def.label, {
+        fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#e8ecf1'
+      }).setOrigin(0.5);
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerdown', () => {
+        bg.setFillStyle(0x22262f, 0.95);
+        this.time.delayedCall(90, () => bg.setFillStyle(0x14161c, 0.9));
+        this.handleInput(def.action);
+      });
+      this.controlButtons[def.action] = bg;
+    });
+  }
+
+  toast(msg, colorHex) {
+    this.toastText.setText(msg).setColor(colorHex).setAlpha(1).setY(160);
+    this.tweens.add({ targets: this.toastText, alpha: 0, y: 140, duration: 450, delay: 250 });
+  }
+
+  handleMenuTap() {
+    if (this.state === 'ready') { this.startRun(); return; }
+    if (this.state === 'dead') { this.scene.restart(); return; }
+  }
+
+  startRun() {
+    this.state = 'playing';
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+
+    this.score = 0;
+    this.strikes = 0;
+    this.flowStacks = 0;
+    this.isFlowState = false;
+    this.enemyIndex = 0;
+    this.perfectCountersThisEnemy = 0;
+    this.pendingKO = false;
+    this.hitStopMsLeft = 0;
+
+    this.strikeDots.forEach(d => d.setStrokeStyle(2, 0xff5a5a).setFillStyle(0x000000, 0));
+    this.updateFlowUI();
+    this.scoreText.setText('SCORE 0');
+    this.loadEnemy(0);
+
+    this.attackState = 'idle';
+    this.stateElapsed = 0;
+    this.currentSignal = null;
+    this.attackResolved = true;
+
+    if (window.SFX) SFX.select();
+  }
+
+  loadEnemy(index) {
+    this.enemyIndex = index;
+    this.perfectCountersThisEnemy = 0;
+    this.currentType = enemyTypeForIndex(index);
+    this.currentDef = ENEMY_DEFS[this.currentType];
+    this.enemyNameText.setText(this.currentDef.name);
+  }
+
+  // effective durations, compressed during FLOW STATE — same numbers, just
+  // faster, so difficulty scales without new rules
+  effTelegraph() { return this.currentDef.telegraph * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
+  effWindow() { return this.currentDef.window * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
+  effIdle() { return IDLE_DURATION_MS * (this.isFlowState ? FLOW_SPEED_MULT : 1); }
+
+  startNextAttack() {
+    this.currentSignal = Phaser.Utils.Array.GetRandom(['block', 'dodge', 'counter']);
+    this.attackState = 'telegraph';
+    this.stateElapsed = 0;
+    this.attackResolved = false;
+    this.signalText.setText(SIGNAL_LABEL[this.currentSignal]).setColor(
+      this.currentSignal === 'block' ? '#ff5a5a' : this.currentSignal === 'dodge' ? '#ffd23f' : '#4fd1ff'
+    ).setAlpha(1);
+  }
+
+  handleInput(action) {
+    if (this.state !== 'playing') return;
+
+    if (this.attackState !== 'telegraph') {
+      // no attack in flight at all right now — an unprompted swing
+      this.whiff();
+      return;
+    }
+    const windowStart = this.effTelegraph() - this.effWindow();
+    if (this.stateElapsed < windowStart) {
+      // too early — ignored outright, not punished. You saw the color but
+      // jumped the gun; nothing happens rather than inventing a new penalty
+      // tier the design didn't call for.
+      return;
+    }
+    if (this.attackResolved) return;
+    this.attackResolved = true;
+
+    const correct = SIGNAL_ACTION[this.currentSignal];
+    if (action === correct) {
+      if (action === 'counter') this.registerPerfectCounter();
+      else this.registerSuccess(action);
+    } else {
+      this.registerMiss('wrong');
+    }
+    this.signalText.setAlpha(0);
+    this.attackState = 'recovery';
+    this.stateElapsed = 0;
+  }
+
+  whiff() {
+    this.registerMiss('whiff');
+  }
+
+  registerSuccess(action) {
+    this.score += SCORE_BLOCK_DODGE;
+    this.scoreText.setText(`SCORE ${this.score}`);
+    this.toast(action === 'block' ? 'BLOCKED' : 'DODGED', '#5be37b');
+    if (window.SFX) SFX.click();
+    this.playerFlash = 1;
+  }
+
+  registerPerfectCounter() {
+    this.perfectCountersThisEnemy++;
+    this.flowStacks = Math.min(FLOW_MAX_STACKS, this.flowStacks + 1);
+    const enteringFlow = this.flowStacks === FLOW_MAX_STACKS && !this.isFlowState;
+    this.isFlowState = this.flowStacks === FLOW_MAX_STACKS;
+
+    const mult = this.isFlowState ? FLOW_SCORE_MULT : 1;
+    this.score += SCORE_COUNTER * mult;
+    this.scoreText.setText(`SCORE ${this.score}`);
+    this.toast('PERFECT COUNTER!', '#4fd1ff');
+    this.updateFlowUI();
+
+    this.enemyFlash = 1;
+    this.enemyKnockback = 1;
+    this.hitStopMsLeft = HITSTOP_MS;
+    this.cameras.main.shake(90, 0.006);
+    if (window.SFX) SFX.combo(this.flowStacks);
+    if (enteringFlow) {
+      this.toast('FLOW STATE', '#ffd23f');
+      if (window.SFX) SFX.powerup();
+      vibrate([10, 40, 10, 40, 20]);
+    } else {
+      vibrate(14);
+    }
+
+    if (this.perfectCountersThisEnemy >= COUNTERS_TO_KO) {
+      this.pendingKO = true;
+    }
+  }
+
+  registerMiss(reason) {
+    this.strikes++;
+    this.flowStacks = 0;
+    this.isFlowState = false;
+    this.updateFlowUI();
+
+    const label = reason === 'whiff' ? 'WHIFFED!' : reason === 'wrong' ? 'WRONG READ!' : 'TOO LATE!';
+    this.toast(`${label} (${this.strikes}/${STRIKES_TO_LOSE})`, '#ff5a5a');
+    if (window.SFX) SFX.hit();
+    this.cameras.main.shake(140, 0.01);
+    vibrate(45);
+
+    if (this.strikes <= STRIKES_TO_LOSE) {
+      const dot = this.strikeDots[this.strikes - 1];
+      dot.setFillStyle(0xff5a5a, 1);
+    }
+
+    this.playerFlash = 1;
+    this.playerKnockback = 1;
+    this.hitStopMsLeft = HITSTOP_MS;
+
+    // a whiff/late-timeout doesn't come through handleInput's phase
+    // transition, so make sure this attack cycle actually ends here too
+    this.signalText.setAlpha(0);
+    if (this.attackState === 'telegraph') {
+      this.attackResolved = true;
+      this.attackState = 'recovery';
+      this.stateElapsed = 0;
+    }
+
+    if (this.strikes >= STRIKES_TO_LOSE) this.die();
+  }
+
+  updateFlowUI() {
+    for (let i = 0; i < FLOW_MAX_STACKS; i++) {
+      const filled = i < this.flowStacks;
+      const col = this.isFlowState ? 0xffd23f : 0x4fd1ff;
+      this.flowSegs[i].setFillStyle(filled ? col : 0x1c2128, 1);
+    }
+    this.flowLabel.setColor(this.isFlowState ? '#ffd23f' : '#7f8a9a')
+      .setText(this.isFlowState ? 'FLOW STATE' : 'FLOW');
+  }
+
+  die() {
+    if (this.state !== 'playing') return;
+    this.state = 'dead';
+    if (window.SFX) SFX.fail();
+    this.cameras.main.shake(220, 0.012);
+
+    const key = 'lastFist_bestScore';
+    const prevBest = parseFloat(localStorage.getItem(key)) || 0;
+    const isBest = this.score > prevBest;
+    if (isBest) localStorage.setItem(key, String(this.score));
+
+    this.centerText.setText('KNOCKED OUT').setVisible(true);
+    this.subText.setText(
+      `Score: ${this.score}` + (isBest ? ' (NEW BEST)' : ` (best: ${Math.max(prevBest, this.score)})`) +
+      `\nDefeated ${this.enemyIndex} opponent${this.enemyIndex === 1 ? '' : 's'}\ntap to try again`
+    ).setVisible(true);
+  }
+
+  update(time, delta) {
+    let dt = delta / 1000;
+
+    if (this.state !== 'playing') {
+      this.draw();
+      return;
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.leftKey)) this.handleInput('block');
+    if (Phaser.Input.Keyboard.JustDown(this.downKey)) this.handleInput('dodge');
+    if (Phaser.Input.Keyboard.JustDown(this.rightKey)) this.handleInput('counter');
+
+    // HIT-STOP: freeze the attack-state clock briefly on impact so a hit
+    // actually reads as an impact, not just a number changing. Camera
+    // shake/flash tweens are separate Phaser systems and keep animating
+    // through this, which is what sells the "pause on impact" feel.
+    if (this.hitStopMsLeft > 0) {
+      this.hitStopMsLeft -= delta;
+      dt = 0;
+    }
+
+    this.playerFlash = Math.max(0, (this.playerFlash || 0) - dt * 5);
+    this.enemyFlash = Math.max(0, (this.enemyFlash || 0) - dt * 5);
+    this.playerKnockback = Math.max(0, (this.playerKnockback || 0) - dt * 3);
+    this.enemyKnockback = Math.max(0, (this.enemyKnockback || 0) - dt * 3);
+
+    this.stateElapsed += dt * 1000;
+
+    if (this.attackState === 'idle') {
+      if (this.stateElapsed >= this.effIdle()) this.startNextAttack();
+    } else if (this.attackState === 'telegraph') {
+      if (!this.attackResolved && this.stateElapsed >= this.effTelegraph()) {
+        // nobody pressed anything in time
+        this.registerMiss('late');
+      }
+    } else if (this.attackState === 'recovery') {
+      if (this.stateElapsed >= RECOVERY_DURATION_MS) {
+        if (this.pendingKO) {
+          this.pendingKO = false;
+          this.attackState = 'koCelebrate';
+          this.stateElapsed = 0;
+          this.score += SCORE_KO_BONUS;
+          this.scoreText.setText(`SCORE ${this.score}`);
+          this.toast('KO!', '#ffd23f');
+          if (window.SFX) SFX.success();
+        } else {
+          this.attackState = 'idle';
+          this.stateElapsed = 0;
+        }
+      }
+    } else if (this.attackState === 'koCelebrate') {
+      if (this.stateElapsed >= KO_CELEBRATE_MS) {
+        this.loadEnemy(this.enemyIndex + 1);
+        this.attackState = 'idle';
+        this.stateElapsed = 0;
+      }
+    }
+
+    this.draw();
+  }
+
+  drawFighter(x, y, flash, knockback, bodyColor, facing) {
+    const g = this.g;
+    const bob = knockback * 14 * facing;
+    // body
+    g.fillStyle(flash > 0 ? 0xffffff : bodyColor, 1);
+    g.fillRoundedRect(x - 20 + bob, y - 18, 40, 58, 8);
+    // head
+    g.fillCircle(x + bob, y - 34, 16);
+    if (flash > 0) {
+      g.lineStyle(2, 0xffffff, flash);
+      g.strokeCircle(x + bob, y - 34, 22);
+    }
+  }
+
+  draw() {
+    const g = this.g;
+    g.clear();
+    this.vignette.clear();
+
+    // arena floor line
+    g.lineStyle(2, 0x1c2128, 1);
+    g.lineBetween(60, this.fighterY + 44, W - 60, this.fighterY + 44);
+
+    // telegraph aura around the enemy — the core readable signal
+    if (this.state === 'playing' && this.attackState === 'telegraph' && this.currentSignal) {
+      const col = SIGNAL_COLOR[this.currentSignal];
+      const windowStart = this.effTelegraph() - this.effWindow();
+      const inWindow = this.stateElapsed >= windowStart;
+      const pulse = inWindow ? 0.85 : 0.35 + 0.25 * (this.stateElapsed / Math.max(1, windowStart));
+      g.lineStyle(inWindow ? 5 : 3, col, pulse);
+      g.strokeCircle(this.enemyX, this.fighterY - 10, inWindow ? 56 : 48);
+
+      if (inWindow) {
+        this.vignette.fillStyle(col, 0.06);
+        this.vignette.fillRect(0, 0, W, H);
+      }
+    }
+
+    this.drawFighter(this.playerX, this.fighterY, this.playerFlash, this.playerKnockback, 0xe8ecf1, -1);
+    this.drawFighter(this.enemyX, this.fighterY, this.enemyFlash, this.enemyKnockback,
+      this.currentDef ? this.currentDef.color : 0x555a66, 1);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  backgroundColor: '#0a0a0d',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PlayScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
