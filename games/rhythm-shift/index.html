@@ -39,20 +39,26 @@ const SCROLL_SPEED_BASE = 150;
 const GATE_R = 16; // half-height of the gap the player must be inside
 
 const BEAT_PERIOD_DEFAULT = 700;
-const BEAT_PERIOD_MIN = 260;
+const BEAT_PERIOD_MIN = 320; // was 260 — the old floor let max-speed tapping hit a
+                              // ~54% open duty cycle (nearly always-open), too generous
 const BEAT_PERIOD_MAX = 1500;
 const TARGET_BPM_MIN = 75;
 const TARGET_BPM_MAX = 130; // the sweet spot — fast enough that windows come around often,
                              // slow enough that each one stays wide and humanly hittable
-const OPEN_FRACTION = 0.45; // open window is a % of YOUR beat period, not a fixed time —
+const OPEN_FRACTION = 0.65; // open window is a % of YOUR beat period, not a fixed time —
                              // otherwise a fast tempo makes the window always-open (a free win)
-const OPEN_MIN_MS = 140; // floor so even a very fast tempo stays humanly hittable
+const OPEN_MIN_MS = 110; // now mostly a defensive backstop — with the higher
+                          // BEAT_PERIOD_MIN, the 45% proportional rule alone
+                          // already keeps the fastest tempo's window reasonable
+const PERFECT_FRACTION = 0.3; // the first 30% of the open window counts as PERFECT
+const SCORE_PASS = 10;
+const SCORE_PERFECT = 50;
 
 function spawnIntervalFor(t) {
-  if (t < 20) return Phaser.Math.FloatBetween(2.1, 2.7);
-  if (t < 40) return Phaser.Math.FloatBetween(1.7, 2.2);
-  if (t < 60) return Phaser.Math.FloatBetween(1.3, 1.8);
-  return Phaser.Math.FloatBetween(1.0, 1.5);
+  if (t < 25) return Phaser.Math.FloatBetween(2.8, 3.4);
+  if (t < 50) return Phaser.Math.FloatBetween(2.2, 2.8);
+  if (t < 75) return Phaser.Math.FloatBetween(1.7, 2.2);
+  return Phaser.Math.FloatBetween(1.4, 1.8);
 }
 
 class PlayScene extends Phaser.Scene {
@@ -75,9 +81,21 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '40px', color: '#e8ecf1'
     }).setOrigin(0.5, 0).setShadow(0, 2, '#000', 6, true, true);
 
+    this.scoreText = this.add.text(20, 20, '0', {
+      fontFamily: 'Arial Black, Arial', fontSize: '20px', color: '#ffd23f'
+    }).setOrigin(0, 0);
+
     this.bpmText = this.add.text(W/2, 78, '', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5);
+
+    // NEXT BEAT bar — a plain, literal countdown so you don't have to
+    // interpret the abstract pulsing ring alone to know when to tap
+    this.beatBarLabel = this.add.text(W/2, 96, 'NEXT BEAT', {
+      fontFamily: 'Arial Black, Arial', fontSize: '10px', color: '#7f8a9a'
+    }).setOrigin(0.5);
+    this.beatBarBg = this.add.rectangle(W/2, 112, 260, 8, 0x1c2128).setStrokeStyle(1, 0x000000);
+    this.beatBarFill = this.add.rectangle(W/2 - 129, 112, 0, 6, 0x4fd1ff).setOrigin(0, 0.5);
 
     this.toastText = this.add.text(W/2, 150, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
@@ -87,7 +105,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
     this.subText = this.add.text(W/2, H/2 + 30,
-      `You don\u2019t follow the beat. You control it.\ntap twice to set your rhythm \u2014 aim for a steady ${TARGET_BPM_MIN}\u2013${TARGET_BPM_MAX} BPM to start\ngates only open right after each beat`, {
+      `You don\u2019t follow the beat. You control it.\ntap twice to set your rhythm \u2014 aim for a steady ${TARGET_BPM_MIN}\u2013${TARGET_BPM_MAX} BPM to start\ngates only open right after each beat \u2014 you get 3 misses before a run ends`, {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
@@ -109,10 +127,15 @@ class PlayScene extends Phaser.Scene {
     // your own tap cadence becomes the new beat period — this is the whole
     // mechanic. Ignore absurd double-taps or long pauses as unintentional.
     if (interval > 180 && interval < 3000) {
-      this.beatPeriod = Phaser.Math.Clamp(interval, BEAT_PERIOD_MIN, BEAT_PERIOD_MAX);
+      // rolling average of your last 4 taps, not just a blend with the
+      // previous value — a single mistimed tap now only makes up ~25% of
+      // your rhythm instead of being able to swing it on its own
+      const target = Phaser.Math.Clamp(interval, BEAT_PERIOD_MIN, BEAT_PERIOD_MAX);
+      this.tapIntervals.push(target);
+      if (this.tapIntervals.length > 4) this.tapIntervals.shift();
+      this.beatPeriod = this.tapIntervals.reduce((a, b) => a + b, 0) / this.tapIntervals.length;
     }
-    this.fireBeat(now);
-    if (window.SFX) SFX.click();
+    this.fireBeat(now, true);
   }
 
   startRun() {
@@ -121,18 +144,84 @@ class PlayScene extends Phaser.Scene {
     this.subText.setVisible(false);
     this.beatPeriod = BEAT_PERIOD_DEFAULT;
     this.lastTapAt = this.time.now;
+    this.tapIntervals = [];
+    this.misses = 0;
     this.lastBeatAt = this.time.now;
     this.nextBeatAt = this.time.now + this.beatPeriod;
     this.runTime = 0;
+    this.score = 0;
+    this.scoreText.setText('0');
     this.gates = [];
-    this.spawnTimer = 1.2;
+    this.spawnTimer = 2.5;
     if (window.SFX) SFX.select();
   }
 
-  fireBeat(now) {
+  fireBeat(now, tapped) {
     this.lastBeatAt = now;
     this.nextBeatAt = now + this.beatPeriod;
     this.pulseFlash = 1;
+    this.playBeatTick(tapped);
+  }
+
+  // A real audible pulse on every beat — a rhythm game with no sound marking
+  // the beat itself was the biggest gap. Tapped beats (you just took control)
+  // ring a touch brighter/higher than beats that fired on their own, so the
+  // ear can tell the difference between "I acted" and "the world continued."
+  playBeatTick(tapped) {
+    if (!window.SFX || !SFX.ctx || SFX.muted) return;
+    try {
+      const ctx = SFX.ctx;
+      const t0 = ctx.currentTime;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.28;
+      const startFreq = tapped ? 1150 : 850;
+      const endFreq = tapped ? 700 : 520;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(startFreq, t0);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t0 + 0.05);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol, t0 + 0.004);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.1);
+    } catch (err) {
+      console.error('beat tick sound error (non-fatal):', err);
+    }
+  }
+
+  // Distinct bright ascending chime for a PERFECT pass, separate from both
+  // the beat tick and the normal-pass pickup sound
+  playPerfectSound() {
+    if (!window.SFX || !SFX.ctx || SFX.muted) return;
+    try {
+      const ctx = SFX.ctx;
+      const t0 = ctx.currentTime;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.35;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1300, t0);
+      osc.frequency.exponentialRampToValueAtTime(1900, t0 + 0.07);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol, t0 + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.22);
+    } catch (err) {
+      console.error('perfect sound error (non-fatal):', err);
+    }
+  }
+
+  // a quick celebratory ring burst at the gate you just perfected
+  burst(x, y) {
+    const ring = this.add.circle(x, y, 6, 0xffd23f, 0.6).setStrokeStyle(2, 0xfff2c9);
+    this.tweens.add({
+      targets: ring, radius: 46, alpha: 0, duration: 320, ease: 'Cubic.Out',
+      onUpdate: () => ring.setStrokeStyle(2, 0xfff2c9, ring.alpha), onComplete: () => ring.destroy()
+    });
   }
 
   update(time, delta) {
@@ -141,9 +230,16 @@ class PlayScene extends Phaser.Scene {
     if (this.state !== 'playing') {
       this.bpmText.setText(this.state === 'ready' ? `target ${TARGET_BPM_MIN}\u2013${TARGET_BPM_MAX} BPM` : '');
       this.bpmText.setColor('#7f8a9a');
+      this.beatBarLabel.setVisible(false);
+      this.beatBarBg.setVisible(false);
+      this.beatBarFill.setVisible(false);
       this.draw();
       return;
     }
+
+    this.beatBarLabel.setVisible(true);
+    this.beatBarBg.setVisible(true);
+    this.beatBarFill.setVisible(true);
 
     const bpm = Math.round(60000 / this.beatPeriod);
     const inRange = bpm >= TARGET_BPM_MIN && bpm <= TARGET_BPM_MAX;
@@ -155,8 +251,14 @@ class PlayScene extends Phaser.Scene {
     // the beat also ticks on its own at whatever period you've set —
     // tapping just lets you redirect it early, it never requires tapping
     // to keep going
-    if (time >= this.nextBeatAt) this.fireBeat(this.nextBeatAt);
+    if (time >= this.nextBeatAt) this.fireBeat(this.nextBeatAt, false);
     this.pulseFlash = Math.max(0, (this.pulseFlash || 0) - dt * 4);
+
+    // the bar fills toward the next beat, then flips to gold and holds
+    // full for the "get ready" final stretch right before it fires
+    const beatProgress = Phaser.Math.Clamp((time - this.lastBeatAt) / this.beatPeriod, 0, 1);
+    this.beatBarFill.width = 258 * beatProgress;
+    this.beatBarFill.setFillStyle(beatProgress > 0.8 ? 0xffd23f : 0x4fd1ff);
 
     this.runTime += dt;
     this.timeText.setText(this.runTime.toFixed(1));
@@ -168,7 +270,8 @@ class PlayScene extends Phaser.Scene {
     }
 
     const openDuration = Math.max(this.beatPeriod * OPEN_FRACTION, OPEN_MIN_MS);
-    const isOpen = (time - this.lastBeatAt) < openDuration;
+    const timeSinceBeat = time - this.lastBeatAt;
+    const isOpen = timeSinceBeat < openDuration;
     for (let i = this.gates.length - 1; i >= 0; i--) {
       const g = this.gates[i];
       g.x -= SCROLL_SPEED_BASE * dt;
@@ -181,10 +284,20 @@ class PlayScene extends Phaser.Scene {
       if (!g.resolved && Math.abs(g.x - PLAYER_X) < GATE_R + PLAYER_R) {
         g.resolved = true;
         if (isOpen) {
-          this.toast('PASSED', '#5be37b');
-          if (window.SFX) SFX.pickup();
+          const perfect = timeSinceBeat < openDuration * PERFECT_FRACTION;
+          if (perfect) {
+            this.score += SCORE_PERFECT;
+            this.toast(`PERFECT! +${SCORE_PERFECT}`, '#ffd23f');
+            this.burst(g.x, H/2);
+            this.playPerfectSound();
+          } else {
+            this.score += SCORE_PASS;
+            this.toast(`PASS +${SCORE_PASS}`, '#5be37b');
+            if (window.SFX) SFX.pickup();
+          }
+          this.scoreText.setText(`${this.score}`);
         } else {
-          this.die();
+          this.registerMiss();
         }
       }
       if (g.x < -60) this.gates.splice(i, 1);
@@ -197,6 +310,14 @@ class PlayScene extends Phaser.Scene {
     this.gates.push({ x: W + 40, resolved: false });
   }
 
+  registerMiss() {
+    this.misses++;
+    this.toast(`MISSED (${this.misses}/3)`, '#ff5a5a');
+    if (window.SFX) SFX.fail();
+    this.cameras.main.shake(80, 0.004);
+    if (this.misses >= 3) this.die();
+  }
+
   die() {
     if (this.state !== 'playing') return;
     this.state = 'dead';
@@ -207,8 +328,15 @@ class PlayScene extends Phaser.Scene {
     const isBest = isNaN(prevBest) || this.runTime > prevBest;
     if (isBest) localStorage.setItem(key, this.runTime.toFixed(1));
 
+    const scoreKey = 'rhythmShift_bestScore';
+    const prevBestScore = parseFloat(localStorage.getItem(scoreKey)) || 0;
+    const isBestScore = this.score > prevBestScore;
+    if (isBestScore) localStorage.setItem(scoreKey, String(this.score));
+
     this.centerText.setText(`${this.runTime.toFixed(1)}s\n` + (isBest ? 'NEW BEST' : `Best: ${prevBest.toFixed(1)}s`)).setVisible(true);
-    this.subText.setText('tap to try again').setVisible(true);
+    this.subText.setText(
+      `Score: ${this.score}` + (isBestScore ? ' (NEW BEST)' : ` (best: ${Math.max(prevBestScore, this.score)})`) + '\ntap to try again'
+    ).setVisible(true);
   }
 
   draw() {
