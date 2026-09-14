@@ -138,6 +138,7 @@ class PlayScene extends Phaser.Scene {
     this.mapKey = 'divide';
     this.gameMode = 'classic';
     this.spectatorMode = false;
+    this.matchStats = { shotsFired: 0, shotsMissed: 0 };
 
     this.buildHUD();
     this.setupInput();
@@ -302,6 +303,35 @@ class PlayScene extends Phaser.Scene {
       });
     } catch (err) {
       console.error('lock-on sound error (non-fatal):', err);
+    }
+  }
+
+  // A distinct "you got them" moment — separate from the shared kill
+  // explosion, since right now a player-caused kill and an AI-caused kill
+  // look/sound nearly identical. A bright ascending chime plus a quick
+  // full-screen flash, only for a genuine human-landed shot.
+  playerHitConfirm() {
+    const flash = this.add.rectangle(W/2, H/2, W, H, 0xdfffe0, 0.35).setDepth(50);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 160, onComplete: () => flash.destroy() });
+
+    if (!window.SFX || !SFX.ctx || SFX.muted) return;
+    try {
+      const ctx = SFX.ctx;
+      const t0 = ctx.currentTime;
+      const vol = (typeof SFX.volume === 'number' ? SFX.volume : 1) * 0.4;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1400, t0);
+      osc.frequency.exponentialRampToValueAtTime(2000, t0 + 0.06);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol, t0 + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.2);
+    } catch (err) {
+      console.error('hit confirm sound error (non-fatal):', err);
     }
   }
 
@@ -630,6 +660,45 @@ class PlayScene extends Phaser.Scene {
     this.quitBtn.on('pointerout', () => this.quitBtn.setBackgroundColor('#1c2128'));
     this.quitBtn.on('pointerdown', () => { this.hidePauseOverlay(); this.returnToMenu(); });
 
+    // match summary overlay — shown once a full match ends, separate from
+    // the normal menu so a 4-line stat breakdown never has to fight the
+    // map/mode/difficulty pickers for space
+    this.summaryBg = this.add.rectangle(W/2, H/2, 380, 290, 0x0d0d0d, 0.95)
+      .setStrokeStyle(2, 0xffd23f).setVisible(false);
+    this.summaryTitle = this.add.text(W/2, H/2 - 115, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '28px', color: '#f0e6d2'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryRounds = this.add.text(W/2, H/2 - 72, '', {
+      fontFamily: 'Arial', fontSize: '15px', color: '#a08860'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryStatsTitle = this.add.text(W/2, H/2 - 35, 'SHOT STATS', {
+      fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryFired = this.add.text(W/2, H/2 - 6, '', {
+      fontFamily: 'Arial', fontSize: '16px', color: '#e8ecf1'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryMissed = this.add.text(W/2, H/2 + 20, '', {
+      fontFamily: 'Arial', fontSize: '16px', color: '#ff8a3d'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryAccuracy = this.add.text(W/2, H/2 + 46, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#5be37b'
+    }).setOrigin(0.5).setVisible(false);
+    this.summaryContinueBtn = this.add.text(W/2, H/2 + 105, '[ CONTINUE ]', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
+    }).setOrigin(0.5).setPadding(16, 10, 16, 10).setBackgroundColor('#1c2128')
+      .setInteractive({ useHandCursor: true }).setVisible(false);
+    this.summaryContinueBtn.on('pointerover', () => this.summaryContinueBtn.setBackgroundColor('#262c34'));
+    this.summaryContinueBtn.on('pointerout', () => this.summaryContinueBtn.setBackgroundColor('#1c2128'));
+    this.summaryContinueBtn.on('pointerdown', () => {
+      this.hideMatchSummary();
+      this.showMenu();
+      this.centerText.setText('TANK DUEL').setColor('#f0e6d2').setVisible(true);
+    });
+    this.summaryElements = [
+      this.summaryBg, this.summaryTitle, this.summaryRounds, this.summaryStatsTitle,
+      this.summaryFired, this.summaryMissed, this.summaryAccuracy, this.summaryContinueBtn,
+    ];
+
     this.toastText = this.add.text(W/2, H/2 - 80, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#ffd23f'
     }).setOrigin(0.5).setAlpha(0);
@@ -640,8 +709,8 @@ class PlayScene extends Phaser.Scene {
     this.subtitleText = this.add.text(W/2, H/2 - 198, 'AIM. FIRE. SURVIVE.', {
       fontFamily: 'Arial', fontSize: '13px', color: '#ffd23f'
     }).setOrigin(0.5).setLetterSpacing(1.5).setVisible(false);
-    this.subText = this.add.text(W/2, H/2 - 178, '', {
-      fontFamily: 'Arial', fontSize: '14px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
+    this.subText = this.add.text(W/2, H/2 - 188, '', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
     this.hintText = this.add.text(W/2, H/2 + 200,
       'WASD + mouse to move/aim freely \u00b7 or arrows: Up/Down drive, Left/Right turn \u00b7 click or SPACE to fire', {
@@ -695,6 +764,7 @@ class PlayScene extends Phaser.Scene {
   startMatch() {
     this.playerWins = 0;
     this.aiWins = 0;
+    this.matchStats = { shotsFired: 0, shotsMissed: 0 };
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
     this.startRound();
@@ -956,6 +1026,7 @@ class PlayScene extends Phaser.Scene {
       bouncesLeft: this.gameMode === 'ricochet' ? RICOCHET_BOUNCES : (upgrade === 'bounce' ? 1 : 0),
     });
     if (upgrade && side === 'player') this.toast(upgrade.toUpperCase() + ' FIRED', '#b37aff');
+    if (side === 'player') this.matchStats.shotsFired++;
     if (window.SFX) SFX.shoot();
   }
 
@@ -1316,12 +1387,17 @@ class PlayScene extends Phaser.Scene {
         }
         this.explode(s.x, s.y, false, s.carveMult);
         this.carveTerrain(s.x, s.y, s.carveMult);
+        if (s.side === 'player') this.matchStats.shotsMissed++;
         this.shells.splice(i, 1);
         continue;
       }
       s.x = tryX; s.y = tryY;
 
-      if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) { this.shells.splice(i, 1); continue; }
+      if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) {
+        if (s.side === 'player') this.matchStats.shotsMissed++;
+        this.shells.splice(i, 1);
+        continue;
+      }
 
       const target = s.side === 'player' ? this.ai : this.player;
       if (target.alive) {
@@ -1342,6 +1418,7 @@ class PlayScene extends Phaser.Scene {
       this.playerWins++;
       this.toast('ROUND WIN!', '#5be37b');
       if (window.SFX) SFX.success();
+      if (!this.spectatorMode) this.playerHitConfirm(); // a genuine human landed this one
     } else {
       this.aiWins++;
       this.toast('AI WINS THE ROUND', '#ff5a5a');
@@ -1361,19 +1438,37 @@ class PlayScene extends Phaser.Scene {
     }
   }
 
+  formatShotStats() {
+    const fired = this.matchStats.shotsFired;
+    const missed = this.matchStats.shotsMissed;
+    const acc = fired > 0 ? Math.round(((fired - missed) / fired) * 100) : 0;
+    return { fired, missed, acc };
+  }
+
+  showMatchSummary(title, titleColor, roundsLine) {
+    this.hideMenu();
+    this.menuBtn.setVisible(false);
+    const { fired, missed, acc } = this.formatShotStats();
+    this.summaryTitle.setText(title).setColor(titleColor);
+    this.summaryRounds.setText(roundsLine);
+    this.summaryFired.setText(`Shots fired: ${fired}`);
+    this.summaryMissed.setText(`Shots missed: ${missed}`);
+    this.summaryAccuracy.setText(fired > 0 ? `${acc}% accuracy` : 'No shots fired');
+    this.summaryElements.forEach(o => o.setVisible(true));
+  }
+
+  hideMatchSummary() {
+    this.summaryElements.forEach(o => o.setVisible(false));
+  }
+
   endMatch() {
     const won = this.playerWins > this.aiWins;
-    this.showMenu();
+    const who = this.spectatorMode ? 'P1' : 'You';
+    const roundsLine = `${DIFFICULTIES[this.difficulty].label} \u00b7 ${who} ${this.playerWins} \u2014 AI ${this.aiWins}`;
     if (this.spectatorMode) {
-      this.centerText.setText('MATCH OVER').setColor('#f0e6d2').setVisible(true);
-      this.subText.setText(
-        `Final (${DIFFICULTIES[this.difficulty].label}): P1 ${this.playerWins} \u2014 AI ${this.aiWins}`
-      ).setVisible(true);
+      this.showMatchSummary('MATCH OVER', '#f0e6d2', roundsLine);
     } else {
-      this.centerText.setText(won ? 'MATCH WON!' : 'MATCH LOST').setColor(won ? '#5be37b' : '#ff5a5a').setVisible(true);
-      this.subText.setText(
-        `Final (${DIFFICULTIES[this.difficulty].label}): You ${this.playerWins} \u2014 AI ${this.aiWins}`
-      ).setVisible(true);
+      this.showMatchSummary(won ? 'MATCH WON!' : 'MATCH LOST', won ? '#5be37b' : '#ff5a5a', roundsLine);
     }
   }
 
@@ -1381,9 +1476,19 @@ class PlayScene extends Phaser.Scene {
   // main menu instead of letting the page navigate away
   returnToMenu() {
     if (this.state === 'ready') return;
+    const hadShots = this.matchStats && this.matchStats.shotsFired > 0;
+    this.hideMatchSummary();
     this.showMenu();
     this.centerText.setText('TANK DUEL').setColor('#f0e6d2').setVisible(true);
-    this.subText.setText('Match ended \u2014 choose a difficulty to start a new one').setVisible(true);
+    if (hadShots) {
+      const who = this.spectatorMode ? 'P1' : 'You';
+      const { fired, missed, acc } = this.formatShotStats();
+      this.subText.setText(
+        `Session ended \u2014 ${who} ${this.playerWins} \u2014 AI ${this.aiWins} \u00b7 ${fired} fired, ${missed} missed (${acc}%)`
+      ).setVisible(true);
+    } else {
+      this.subText.setText('Match ended \u2014 choose a difficulty to start a new one').setVisible(true);
+    }
   }
 
   pauseGame() {
