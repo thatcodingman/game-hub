@@ -92,32 +92,46 @@ const MODES = [
 ];
 const RICOCHET_BOUNCES = 6; // caps chaos so a shell doesn't ricochet forever
 
-const TUTORIAL_STEPS = [
-  { title: 'MOVE', lines: [
-    'WASD: free movement, your tank always faces the mouse.',
-    'Arrows: real tank controls \u2014 Up/Down drive, Left/Right turn.'
-  ] },
-  { title: 'AIM & FIRE', lines: [
-    'Click or SPACE fires toward your aim.',
-    'One shell at a time \u2014 watch your reload bar before firing again.'
-  ] },
-  { title: 'DESTRUCTIBLE TERRAIN', lines: [
-    'Every shell that hits a wall carves a permanent crater.',
-    'Use it to open new sightlines or carve yourself an escape route.'
-  ] },
-  { title: 'PICKUPS', lines: [
-    'Grab a pulsing diamond for a one-shot upgrade on your next shell:',
-    'RAPID (skip reload)  \u00b7  BREAKER (bigger crater)  \u00b7  BOUNCE (ricochets off a wall).'
-  ] },
-  { title: 'WIN THE ROUND', lines: [
-    'One hit destroys a tank and wins the round.',
-    'Best of 3 wins the match \u2014 except Random mode, which never ends until you quit.'
-  ] },
-  { title: "YOU'RE READY", lines: [
-    'Pick a map, a game mode, and a difficulty to start.',
-    'Good luck out there.'
-  ] },
-];
+function getTutorialSteps(isTouch) {
+  const moveStep = isTouch
+    ? { title: 'MOVE', lines: [
+        'Left side of the screen: drag to move your tank.',
+        'Release to stop \u2014 your tank keeps facing wherever you last aimed.'
+      ] }
+    : { title: 'MOVE', lines: [
+        'WASD: free movement, your tank always faces the mouse.',
+        'Arrows: real tank controls \u2014 Up/Down drive, Left/Right turn.'
+      ] };
+  const fireStep = isTouch
+    ? { title: 'AIM & FIRE', lines: [
+        'Right side of the screen: drag to aim, release to fire.',
+        'One shell at a time \u2014 watch your reload bar before firing again.'
+      ] }
+    : { title: 'AIM & FIRE', lines: [
+        'Click or SPACE fires toward your aim.',
+        'One shell at a time \u2014 watch your reload bar before firing again.'
+      ] };
+  return [
+    moveStep,
+    fireStep,
+    { title: 'DESTRUCTIBLE TERRAIN', lines: [
+      'Every shell that hits a wall carves a permanent crater.',
+      'Use it to open new sightlines or carve yourself an escape route.'
+    ] },
+    { title: 'PICKUPS', lines: [
+      'Grab a pulsing diamond for a one-shot upgrade on your next shell:',
+      'RAPID (skip reload)  \u00b7  BREAKER (bigger crater)  \u00b7  BOUNCE (ricochets off a wall).'
+    ] },
+    { title: 'WIN THE ROUND', lines: [
+      'One hit destroys a tank and wins the round.',
+      'Best of 3 wins the match \u2014 except Random mode, which never ends until you quit.'
+    ] },
+    { title: "YOU'RE READY", lines: [
+      'Pick a map, a game mode, and a difficulty to start.',
+      'Good luck out there.'
+    ] },
+  ];
+}
 
 function cellIndex(px, py) { return { c: Math.floor(px / CELL), r: Math.floor(py / CELL) }; }
 
@@ -510,6 +524,7 @@ class PlayScene extends Phaser.Scene {
   // automatically, reopenable anytime from the menu's "HOW TO PLAY" button
   buildTutorial() {
     this.tutorialIndex = 0;
+    this.tutorialSteps = getTutorialSteps(('ontouchstart' in window) || navigator.maxTouchPoints > 0);
     this.tutorialBg = this.add.rectangle(W/2, H/2, 640, 260, 0x0d0d0d, 0.95)
       .setStrokeStyle(2, 0xffd23f).setVisible(false);
     this.tutorialStep = this.add.text(W/2, H/2 - 105, '', {
@@ -571,18 +586,18 @@ class PlayScene extends Phaser.Scene {
   }
 
   renderTutorialStep() {
-    const step = TUTORIAL_STEPS[this.tutorialIndex];
-    this.tutorialStep.setText(`${this.tutorialIndex + 1} / ${TUTORIAL_STEPS.length}`);
+    const step = this.tutorialSteps[this.tutorialIndex];
+    this.tutorialStep.setText(`${this.tutorialIndex + 1} / ${this.tutorialSteps.length}`);
     this.tutorialTitle.setText(step.title);
     this.tutorialBody.setText(step.lines.join('\n\n'));
-    const last = this.tutorialIndex === TUTORIAL_STEPS.length - 1;
+    const last = this.tutorialIndex === this.tutorialSteps.length - 1;
     this.tutorialNextBtn.setText(last ? '[ LET\'S GO ]' : '[ NEXT ]');
   }
 
   nextTutorialStep() {
     if (window.SFX) SFX.click();
     this.tutorialIndex++;
-    if (this.tutorialIndex >= TUTORIAL_STEPS.length) {
+    if (this.tutorialIndex >= this.tutorialSteps.length) {
       this.closeTutorial();
       return;
     }
@@ -712,8 +727,11 @@ class PlayScene extends Phaser.Scene {
     this.subText = this.add.text(W/2, H/2 - 188, '', {
       fontFamily: 'Arial', fontSize: '13px', color: '#a08860', align: 'center', wordWrap: { width: 620 }
     }).setOrigin(0.5).setVisible(false);
+    const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
     this.hintText = this.add.text(W/2, H/2 + 200,
-      'WASD + mouse to move/aim freely \u00b7 or arrows: Up/Down drive, Left/Right turn \u00b7 click or SPACE to fire', {
+      isTouchDevice
+        ? 'Left side: drag to move \u00b7 right side: drag to aim, release to fire'
+        : 'WASD + mouse to move/aim freely \u00b7 or arrows: Up/Down drive, Left/Right turn \u00b7 click or SPACE to fire', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
     }).setOrigin(0.5).setVisible(false);
   }
@@ -730,33 +748,49 @@ class PlayScene extends Phaser.Scene {
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.pointerWorld = { x: W * 0.75, y: H / 2 };
+    this.joystick = null;
+    this.aimDrag = null;
 
-    // aim tracking — skip while a touch pointer is actively driving the
-    // left-side movement joystick, so it doesn't yank the aim around too.
-    // Mouse input always aims/fires regardless of which half of the screen
-    // it's on, since desktop movement is WASD, not a joystick.
+    // Mouse always drives aim continuously and fires instantly on click —
+    // unchanged desktop behavior. Touch gets its own scheme: left half is a
+    // movement joystick, right half is drag-to-aim / release-to-fire, since
+    // touch has no continuous hover the way a mouse cursor does.
     this.input.on('pointermove', p => {
-      if (p.wasTouch && this.joystick && this.joystick.active && p.id === this.joystick.id) return;
-      this.pointerWorld.x = p.x; this.pointerWorld.y = p.y;
+      if (!p.wasTouch) {
+        this.pointerWorld.x = p.x; this.pointerWorld.y = p.y;
+        return;
+      }
+      if (this.joystick && this.joystick.active && p.id === this.joystick.id) {
+        this.joystick.dx = Phaser.Math.Clamp(p.x - this.joystick.originX, -40, 40);
+        this.joystick.dy = Phaser.Math.Clamp(p.y - this.joystick.originY, -40, 40);
+      }
+      if (this.aimDrag && this.aimDrag.active && p.id === this.aimDrag.id) {
+        this.aimDrag.curX = p.x; this.aimDrag.curY = p.y;
+        this.pointerWorld.x = p.x; this.pointerWorld.y = p.y;
+      }
     });
 
     this.input.on('pointerdown', p => {
       if (this.state !== 'playing') return;
-      if (p.wasTouch && p.x < W / 2) {
-        this.joystick = { active: true, originX: p.x, originY: p.y, dx: 0, dy: 0, id: p.id };
+      if (p.wasTouch) {
+        if (p.x < W / 2) {
+          this.joystick = { active: true, originX: p.x, originY: p.y, dx: 0, dy: 0, id: p.id };
+        } else {
+          this.aimDrag = { active: true, originX: p.x, originY: p.y, curX: p.x, curY: p.y, id: p.id };
+          this.pointerWorld.x = p.x; this.pointerWorld.y = p.y;
+        }
       } else {
         this.pointerWorld.x = p.x; this.pointerWorld.y = p.y;
         this.tryPlayerFire();
       }
     });
-    this.input.on('pointermove', p => {
-      if (this.joystick && this.joystick.active && p.id === this.joystick.id) {
-        this.joystick.dx = Phaser.Math.Clamp(p.x - this.joystick.originX, -40, 40);
-        this.joystick.dy = Phaser.Math.Clamp(p.y - this.joystick.originY, -40, 40);
-      }
-    });
+
     this.input.on('pointerup', p => {
       if (this.joystick && p.id === this.joystick.id) this.joystick.active = false;
+      if (this.aimDrag && p.id === this.aimDrag.id) {
+        this.aimDrag.active = false;
+        this.tryPlayerFire(); // fires toward wherever the drag ended, including a plain tap with no movement
+      }
     });
   }
 
@@ -1732,6 +1766,21 @@ class PlayScene extends Phaser.Scene {
       g.lineBetween(this.ai.x, this.ai.y, this.player.x, this.player.y);
       g.fillStyle(0xff3b3b, pulse);
       g.fillCircle(this.player.x, this.player.y, 3);
+    }
+
+    // touch control visuals — the joystick and aim-drag are otherwise
+    // completely invisible, which makes them hard to use on a real device
+    if (this.joystick && this.joystick.active) {
+      g.lineStyle(2, 0xffffff, 0.35);
+      g.strokeCircle(this.joystick.originX, this.joystick.originY, 40);
+      g.fillStyle(0xffffff, 0.22);
+      g.fillCircle(this.joystick.originX + this.joystick.dx, this.joystick.originY + this.joystick.dy, 18);
+    }
+    if (this.aimDrag && this.aimDrag.active) {
+      g.lineStyle(2, 0xffe08a, 0.55);
+      g.lineBetween(this.aimDrag.originX, this.aimDrag.originY, this.aimDrag.curX, this.aimDrag.curY);
+      g.fillStyle(0xffe08a, 0.4);
+      g.fillCircle(this.aimDrag.curX, this.aimDrag.curY, 10);
     }
 
     this.drawTreads(g, this.player);
