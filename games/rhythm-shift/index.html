@@ -56,6 +56,13 @@ const PERFECT_FRACTION = 0.3; // the first 30% of the open window counts as PERF
 const SCORE_PASS = 10;
 const SCORE_PERFECT = 50;
 
+// Telegraph tuning: gates closer than this to the player drop the preview
+// outline and defer entirely to the real isOpen fill (foresight stops being
+// useful once precision matters). The fade range controls how far out the
+// preview starts appearing and how quickly it ramps up to full opacity.
+const TELEGRAPH_NEAR_PX = 90;
+const TELEGRAPH_FADE_RANGE_PX = 260;
+
 function spawnIntervalFor(t) {
   if (t < 25) return Phaser.Math.FloatBetween(2.8, 3.4);
   if (t < 50) return Phaser.Math.FloatBetween(2.2, 2.8);
@@ -360,7 +367,10 @@ class PlayScene extends Phaser.Scene {
     }
 
     // gates — red when closed, gold when open, with a brighter edge glow
-    // right on the gap lips while open so the "safe zone" reads instantly
+    // right on the gap lips while open so the "safe zone" reads instantly.
+    // This shared-clock color is a global blink (every gate reads the same
+    // instant), which tells you nothing about a specific gate until it's
+    // basically already here.
     this.gates.forEach(gt => {
       const col = isOpen ? 0xffd23f : 0xff5a5a;
       g.fillStyle(col, 1);
@@ -370,6 +380,25 @@ class PlayScene extends Phaser.Scene {
         g.lineStyle(2, 0xfff2c9, 0.6);
         g.strokeRect(gt.x - 6, H/2 - GATE_R - 4, 12, 4);
         g.strokeRect(gt.x - 6, H/2 + GATE_R, 12, 4);
+      }
+
+      // TELEGRAPH: distance-based foresight, separate from the blink above.
+      // Project this gate's own arrival time from its remaining distance
+      // and current scroll speed, then check where that lands in the beat
+      // cycle if your tempo holds steady. Fades in with distance so it
+      // reads as "here's how this one's shaping up," and hands off to the
+      // authoritative isOpen fill once the gate is close enough that
+      // precision (not foresight) is what matters.
+      const distToPlayer = gt.x - PLAYER_X;
+      if (distToPlayer > TELEGRAPH_NEAR_PX) {
+        const msToArrive = (distToPlayer / SCROLL_SPEED_BASE) * 1000;
+        const arrivalTime = this.time.now + msToArrive;
+        const sinceBeatAtArrival = ((arrivalTime - this.lastBeatAt) % this.beatPeriod + this.beatPeriod) % this.beatPeriod;
+        const previewOpen = sinceBeatAtArrival < openDuration;
+        const fadeIn = Phaser.Math.Clamp(1 - (distToPlayer - TELEGRAPH_NEAR_PX) / TELEGRAPH_FADE_RANGE_PX, 0.15, 0.55);
+        g.lineStyle(2, previewOpen ? 0x4fd1ff : 0xff8a3d, fadeIn);
+        g.strokeRect(gt.x - 9, H/2 - GATE_R - 9, 18, 5);
+        g.strokeRect(gt.x - 9, H/2 + GATE_R + 4, 18, 5);
       }
     });
 
