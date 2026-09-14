@@ -105,26 +105,18 @@ function makeFighter(ax, az, kind) {
   };
 }
 
-// FACING-RELATIVE INPUT — this is the piece that actually makes movement
-// read as "fighting" instead of "walking around a platform." Forward/back
-// always mean toward/away from the opponent (not a fixed world axis), and
-// strafe is perpendicular to that line — so "forward" closes distance and
-// "sideways" circles them, regardless of which way the arena happens to be
-// oriented. The AI already reasons in these same terms (see aiInput below);
-// this just gives the human player the same axis.
-function relativeMoveVector(f, opp, forwardPressed, backPressed, leftPressed, rightPressed) {
-  const dx = opp.ax - f.ax, dz = opp.az - f.az;
-  const dist = Math.hypot(dx, dz) || 0.0001;
-  const fwdX = dx / dist, fwdZ = dz / dist;
-  const rightX = fwdZ, rightZ = -fwdX; // 90° rotation of the forward vector
-
-  const fwdIn = (forwardPressed ? 1 : 0) - (backPressed ? 1 : 0);
-  const strafeIn = (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
-
-  let mx = fwdIn * fwdX + strafeIn * rightX;
-  let mz = fwdIn * fwdZ + strafeIn * rightZ;
-  const mag = Math.hypot(mx, mz);
-  if (mag > 1) { mx /= mag; mz /= mag; }
+// SCREEN-RELATIVE INPUT — left/right/up/down always mean the same physical
+// direction on screen, regardless of which way the fighter happens to be
+// facing. A facing-relative version (forward = toward opponent, strafe =
+// perpendicular) was tried here, but it made the dpad unpredictable: "left"
+// could visibly push you toward the right side of the screen whenever your
+// facing wasn't screen-aligned, which reads as broken controls, not smart
+// ones. Auto-facing the opponent (see updateFacing) is still purely visual
+// and is unaffected by this.
+function axisMoveVector(upPressed, downPressed, leftPressed, rightPressed) {
+  let mx = (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
+  let mz = (downPressed ? 1 : 0) - (upPressed ? 1 : 0);
+  if (mx !== 0 && mz !== 0) { mx *= Math.SQRT1_2; mz *= Math.SQRT1_2; }
   return { mx, mz };
 }
 
@@ -282,7 +274,7 @@ class PlayScene extends Phaser.Scene {
 
   // shared kinematics for both fighters and the AI — same rules for everyone.
   // mx/mz is a movement vector with magnitude <= 1 (already normalized by
-  // relativeMoveVector for the player, or directly by aiInput for the AI).
+  // axisMoveVector for the player, or directly by aiInput for the AI).
   stepFighter(f, mx, mz, jumpPressed, dt) {
     const grounded = f.grounded;
     const accel = grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT;
@@ -393,9 +385,8 @@ class PlayScene extends Phaser.Scene {
     const p1Right = this.keys.p1Right.isDown || t.p1.right;
     const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || t.p1.jumpPressed;
     t.p1.jumpPressed = false;
-    // "up" = forward = close the distance on the opponent; "down" = back off;
-    // left/right = strafe around them — all relative to the fight, not the map
-    const p1Move = relativeMoveVector(this.p1, this.p2, p1Up, p1Down, p1Left, p1Right);
+    // "up" = away from camera, "left" = screen-left — always, regardless of facing
+    const p1Move = axisMoveVector(p1Up, p1Down, p1Left, p1Right);
     this.stepFighter(this.p1, p1Move.mx, p1Move.mz, p1Jump, dt);
 
     if (this.mode === '2p') {
@@ -405,7 +396,7 @@ class PlayScene extends Phaser.Scene {
       const p2Right = this.keys.p2Right.isDown || t.p2.right;
       const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || t.p2.jumpPressed;
       t.p2.jumpPressed = false;
-      const p2Move = relativeMoveVector(this.p2, this.p1, p2Up, p2Down, p2Left, p2Right);
+      const p2Move = axisMoveVector(p2Up, p2Down, p2Left, p2Right);
       this.stepFighter(this.p2, p2Move.mx, p2Move.mz, p2Jump, dt);
     } else {
       const ai = this.aiInput(dt);
