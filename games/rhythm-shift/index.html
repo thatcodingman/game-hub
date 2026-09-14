@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Rhythm Shift — The Arcade</title>
+<style>
+  html, body { margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%; }
+  #game-container { width:100vw; height:100vh; }
+  canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   RHYTHM SHIFT
+   "You don't follow the beat. You control it."
+
+   One input. Every tap measures the interval since your last tap, and THAT
+   interval becomes the new beat period — your own tapping cadence literally
+   is the world's tempo, not a fixed metronome you're matching. Gates only
+   open in a short window right after each beat fires; whether a scrolling
+   gate's arrival lines up with an open window depends entirely on the
+   rhythm you've set for yourself.
+
+   MVP scope: one obstacle type (gates), difficulty via spawn-rate ramp.
+   The "rhythms start overlapping / the level stops giving you a beat"
+   late-game escalation from the design brief is deliberately deferred —
+   prove this core loop is fun first.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const PLAYER_X = 200;
+const PLAYER_R = 13;
+const SCROLL_SPEED_BASE = 150;
+const GATE_R = 16; // half-height of the gap the player must be inside
+
+const BEAT_PERIOD_DEFAULT = 700;
+const BEAT_PERIOD_MIN = 260;
+const BEAT_PERIOD_MAX = 1500;
+const OPEN_WINDOW_MS = 260; // how long after a beat fires a gate counts as "open"
+
+function spawnIntervalFor(t) {
+  if (t < 20) return Phaser.Math.FloatBetween(2.1, 2.7);
+  if (t < 40) return Phaser.Math.FloatBetween(1.7, 2.2);
+  if (t < 60) return Phaser.Math.FloatBetween(1.3, 1.8);
+  return Phaser.Math.FloatBetween(1.0, 1.5);
+}
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
+
+  create() {
+    this.cameras.main.setBackgroundColor('#0a0a0d');
+    this.g = this.add.graphics();
+
+    this.state = 'ready';
+    this.gates = [];
+    this.buildHUD();
+
+    this.input.on('pointerdown', () => this.handleTap());
+    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+  }
+
+  buildHUD() {
+    this.timeText = this.add.text(W/2, 26, '0.0', {
+      fontFamily: 'Arial Black, Arial', fontSize: '40px', color: '#e8ecf1'
+    }).setOrigin(0.5, 0).setShadow(0, 2, '#000', 6, true, true);
+
+    this.bpmText = this.add.text(W/2, 78, '', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setOrigin(0.5);
+
+    this.toastText = this.add.text(W/2, 150, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#5be37b'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.centerText = this.add.text(W/2, H/2 - 30, 'RHYTHM SHIFT', {
+      fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#e8ecf1', align: 'center'
+    }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
+    this.subText = this.add.text(W/2, H/2 + 30,
+      'You don\u2019t follow the beat. You control it.\ntap to set your rhythm \u2014 gates only open right after each beat', {
+      fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
+    }).setOrigin(0.5);
+  }
+
+  toast(msg, color) {
+    this.toastText.setText(msg).setColor(color).setAlpha(1).setY(150);
+    this.tweens.add({ targets: this.toastText, alpha: 0, y: 130, duration: 500, delay: 250 });
+  }
+
+  handleTap() {
+    if (this.state === 'ready') { this.startRun(); return; }
+    if (this.state === 'dead') { this.scene.restart(); return; }
+    if (this.state !== 'playing') return;
+
+    const now = this.time.now;
+    const interval = now - this.lastTapAt;
+    this.lastTapAt = now;
+
+    // your own tap cadence becomes the new beat period — this is the whole
+    // mechanic. Ignore absurd double-taps or long pauses as unintentional.
+    if (interval > 180 && interval < 3000) {
+      this.beatPeriod = Phaser.Math.Clamp(interval, BEAT_PERIOD_MIN, BEAT_PERIOD_MAX);
+    }
+    this.fireBeat(now);
+    if (window.SFX) SFX.click();
+  }
+
+  startRun() {
+    this.state = 'playing';
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    this.beatPeriod = BEAT_PERIOD_DEFAULT;
+    this.lastTapAt = this.time.now;
+    this.lastBeatAt = this.time.now;
+    this.nextBeatAt = this.time.now + this.beatPeriod;
+    this.runTime = 0;
+    this.gates = [];
+    this.spawnTimer = 1.2;
+    if (window.SFX) SFX.select();
+  }
+
+  fireBeat(now) {
+    this.lastBeatAt = now;
+    this.nextBeatAt = now + this.beatPeriod;
+    this.pulseFlash = 1;
+  }
+
+  update(time, delta) {
+    const dt = delta / 1000;
+    this.bpmText.setText(this.state === 'playing' ? `${Math.round(60000 / this.beatPeriod)} BPM` : '');
+
+    if (this.state !== 'playing') { this.draw(); return; }
+
+    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.handleTap();
+
+    // the beat also ticks on its own at whatever period you've set —
+    // tapping just lets you redirect it early, it never requires tapping
+    // to keep going
+    if (time >= this.nextBeatAt) this.fireBeat(this.nextBeatAt);
+    this.pulseFlash = Math.max(0, (this.pulseFlash || 0) - dt * 4);
+
+    this.runTime += dt;
+    this.timeText.setText(this.runTime.toFixed(1));
+
+    this.spawnTimer -= dt;
+    if (this.spawnTimer <= 0) {
+      this.spawnTimer = spawnIntervalFor(this.runTime);
+      this.spawnGate();
+    }
+
+    const isOpen = (time - this.lastBeatAt) < OPEN_WINDOW_MS;
+    for (let i = this.gates.length - 1; i >= 0; i--) {
+      const g = this.gates[i];
+      g.x -= SCROLL_SPEED_BASE * dt;
+      if (!g.resolved && g.x < PLAYER_X - GATE_R * 2) {
+        // it's fully passed the player without a collision check ever
+        // triggering below — shouldn't normally happen, but never let a
+        // gate silently vanish unresolved
+        g.resolved = true;
+      }
+      if (!g.resolved && Math.abs(g.x - PLAYER_X) < GATE_R + PLAYER_R) {
+        g.resolved = true;
+        if (isOpen) {
+          this.toast('PASSED', '#5be37b');
+          if (window.SFX) SFX.pickup();
+        } else {
+          this.die();
+        }
+      }
+      if (g.x < -60) this.gates.splice(i, 1);
+    }
+
+    this.draw();
+  }
+
+  spawnGate() {
+    this.gates.push({ x: W + 40, resolved: false });
+  }
+
+  die() {
+    if (this.state !== 'playing') return;
+    this.state = 'dead';
+    if (window.SFX) SFX.hit();
+    this.cameras.main.shake(180, 0.008);
+    const key = 'rhythmShift_best';
+    const prevBest = parseFloat(localStorage.getItem(key));
+    const isBest = isNaN(prevBest) || this.runTime > prevBest;
+    if (isBest) localStorage.setItem(key, this.runTime.toFixed(1));
+
+    this.centerText.setText(`${this.runTime.toFixed(1)}s\n` + (isBest ? 'NEW BEST' : `Best: ${prevBest.toFixed(1)}s`)).setVisible(true);
+    this.subText.setText('tap to try again').setVisible(true);
+  }
+
+  draw() {
+    const g = this.g;
+    g.clear();
+
+    // gates — red when closed, gold when open, matching the rest of the hub's shared visual language
+    const isOpen = this.state === 'playing' && (this.time.now - this.lastBeatAt) < OPEN_WINDOW_MS;
+    this.gates.forEach(gt => {
+      const col = isOpen ? 0xffd23f : 0xff5a5a;
+      g.fillStyle(col, 1);
+      g.fillRect(gt.x - 6, 0, 12, H/2 - GATE_R);
+      g.fillRect(gt.x - 6, H/2 + GATE_R, 12, H/2 - GATE_R);
+    });
+
+    // pulsing ring — grows from the last beat toward the next one, flashes at zero
+    if (this.state === 'playing') {
+      const progress = Phaser.Math.Clamp((this.time.now - this.lastBeatAt) / this.beatPeriod, 0, 1);
+      const ringR = 18 + progress * 36;
+      const flash = this.pulseFlash || 0;
+      g.lineStyle(2, isOpen ? 0xffd23f : 0x4fd1ff, 0.5 - progress * 0.3);
+      g.strokeCircle(PLAYER_X, H/2, ringR);
+      if (flash > 0) {
+        g.fillStyle(0xffffff, flash * 0.4);
+        g.fillCircle(PLAYER_X, H/2, 16 + flash * 20);
+      }
+    }
+
+    // player
+    g.fillStyle(0xffffff, 0.25);
+    g.fillCircle(PLAYER_X, H/2, PLAYER_R * 2);
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(PLAYER_X, H/2, PLAYER_R);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  backgroundColor: '#0a0a0d',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PlayScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
