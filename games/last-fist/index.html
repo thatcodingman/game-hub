@@ -105,16 +105,21 @@ const AI_GRAPPLE_CHANCE_PER_SEC = 0.3; // rarer than punch/kick — bigger commi
 // GROUND — pressing GRAPPLE again while already clinched is the takedown
 // attempt. Whoever presses first wins it and becomes top position; simple
 // on purpose — "first to commit" is instantly understandable even though
-// it's not a real wrestling exchange. Top can strike (PUNCH), bottom can
-// cover up (BLOCK, reduces damage) or mash free (DODGE, repeated presses).
-// Auto-returns to standing if nobody resolves it in time.
+// it's not a real wrestling exchange. Top can strike (PUNCH). Bottom has
+// real agency, not just cover-and-pray: strike back (PUNCH, weaker, own
+// cooldown, can't do it while blocking), cover up (BLOCK, reduces damage),
+// or mash free (DODGE, repeated presses). Auto-returns to standing if
+// nobody resolves it in time.
 const GROUND_STRIKE_DAMAGE = 6;
 const GROUND_STRIKE_COOLDOWN_MS = 400; // top can't spam-strike faster than this
+const GROUND_BOTTOM_STRIKE_DAMAGE = 4; // weaker than top's — an awkward compromised-position strike
+const GROUND_BOTTOM_STRIKE_COOLDOWN_MS = 550; // slower to recover than top's strike
 const GROUND_BLOCK_REDUCTION = 0.35; // bottom's damage taken while covering up, as a fraction of normal
-const GROUND_DURATION_MS = 4000; // auto-returns to standing if nobody resolves it
+const GROUND_DURATION_MS = 2400; // auto-returns to standing if nobody resolves it — was 4000, way too long against ~400ms strike cooldowns
 const GROUND_ESCAPE_PRESSES_NEEDED = 4; // bottom mashes DODGE this many times to escape early
 const AI_GROUND_STRIKE_CHANCE_PER_SEC = 0.8; // eager once on top
 const AI_GROUND_ESCAPE_CHANCE_PER_SEC = 1.2; // eager to get up when pinned
+const AI_GROUND_BOTTOM_STRIKE_CHANCE_PER_SEC = 0.9; // eager to hit back when pinned, not just escape
 const GROUND_POSE_TRANSITION_MS = 150; // how fast the squash-to-the-ground visual eases in/out
 
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
@@ -302,6 +307,7 @@ class PlayScene extends Phaser.Scene {
     this.groundTimer = 0;
     this.groundTopIsP1 = true;
     this.groundStrikeCooldown = 0;
+    this.groundBottomStrikeCooldown = 0;
     this.groundEscapeProgress = 0;
 
     this.buildHUD();
@@ -586,6 +592,7 @@ class PlayScene extends Phaser.Scene {
     this.groundActive = false;
     this.groundTimer = 0;
     this.groundStrikeCooldown = 0;
+    this.groundBottomStrikeCooldown = 0;
     this.groundEscapeProgress = 0;
 
     this.p1NameText.setText(this.p1.character.name.toUpperCase()).setVisible(true);
@@ -891,6 +898,7 @@ class PlayScene extends Phaser.Scene {
     this.groundActive = true;
     this.groundTimer = 0;
     this.groundStrikeCooldown = 0;
+    this.groundBottomStrikeCooldown = 0;
     this.groundEscapeProgress = 0;
     this.groundTopIsP1 = (fighter === this.p1);
     const midX = (this.p1.ax + this.p2.ax) / 2, midZ = (this.p1.az + this.p2.az) / 2;
@@ -927,14 +935,17 @@ class PlayScene extends Phaser.Scene {
     });
   }
 
-  // top strikes (on cooldown so it can't be spammed into a one-frame KO),
-  // bottom either covers up (reduces the damage significantly, doesn't
-  // stop it) or mashes free — same shape as the clinch: resolves early via
-  // a real action, or times out back to standing if nobody does anything
-  updateGround(dt, topPunchPressed, bottomEscapePressed, bottomBlockHeld) {
+  // top strikes (on cooldown so it can't be spammed into a one-frame KO).
+  // bottom has real choices, not just cover-and-pray: strike back (weaker,
+  // own cooldown, blocked out if they're also covering up — can't punch
+  // and cover your face at once), cover up (reduces damage, doesn't stop
+  // it), or mash free. Same shape as the clinch: resolves early via a real
+  // action, or times out back to standing if nobody does anything.
+  updateGround(dt, topPunchPressed, bottomStrikePressed, bottomEscapePressed, bottomBlockHeld) {
     if (!this.groundActive) return;
     this.groundTimer += dt * 1000;
     if (this.groundStrikeCooldown > 0) this.groundStrikeCooldown -= dt * 1000;
+    if (this.groundBottomStrikeCooldown > 0) this.groundBottomStrikeCooldown -= dt * 1000;
 
     const top = this.groundTopIsP1 ? this.p1 : this.p2;
     const bottom = this.groundTopIsP1 ? this.p2 : this.p1;
@@ -950,6 +961,19 @@ class PlayScene extends Phaser.Scene {
       vibrate(bottomBlockHeld ? 10 : 20);
       this.showHitText(bottom);
       this.checkKO(bottom, top);
+      if (this.state !== 'playing') return; // KO'd — round's over, stop resolving ground state
+    }
+
+    if (bottomStrikePressed && !bottomBlockHeld && this.groundBottomStrikeCooldown <= 0) {
+      this.groundBottomStrikeCooldown = GROUND_BOTTOM_STRIKE_COOLDOWN_MS;
+      const dmg = GROUND_BOTTOM_STRIKE_DAMAGE * bottom.character.damageMult;
+      top.health -= dmg;
+      top.hitFlash = 1;
+      top.squash = 1;
+      if (window.SFX) SFX.hit();
+      vibrate(15);
+      this.showHitText(top);
+      this.checkKO(top, bottom);
       if (this.state !== 'playing') return; // KO'd — round's over, stop resolving ground state
     }
 
@@ -1114,7 +1138,7 @@ class PlayScene extends Phaser.Scene {
     this.updateGuard(this.p1, p1Block, dt);
 
     let groundP2Punch = false, groundP2Dodge = false, groundP2Block = false;
-    let groundAiTopPunch = false, groundAiBottomEscape = false;
+    let groundAiTopPunch = false, groundAiBottomEscape = false, groundAiBottomStrike = false;
 
     if (this.mode === '2p') {
       const p2Up = this.keys.p2Up.isDown || t.p2.up;
@@ -1159,6 +1183,7 @@ class PlayScene extends Phaser.Scene {
       // auto-struggles, both as a per-second chance rather than a single roll
       groundAiTopPunch = this.groundActive && !this.groundTopIsP1 && Math.random() < AI_GROUND_STRIKE_CHANCE_PER_SEC * dt;
       groundAiBottomEscape = this.groundActive && this.groundTopIsP1 && Math.random() < AI_GROUND_ESCAPE_CHANCE_PER_SEC * dt;
+      groundAiBottomStrike = this.groundActive && this.groundTopIsP1 && Math.random() < AI_GROUND_BOTTOM_STRIKE_CHANCE_PER_SEC * dt;
       const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.clinchActive || this.groundActive;
       this.stepFighter(this.p2, aiLocked ? 0 : ai.moveX, aiLocked ? 0 : ai.moveZ, ai.jump, dt);
       this.updateGuard(this.p2, ai.block, dt);
@@ -1170,9 +1195,10 @@ class PlayScene extends Phaser.Scene {
 
     if (this.groundActive) {
       const topPunchPressed = this.groundTopIsP1 ? p1Punch : (this.mode === '2p' ? groundP2Punch : groundAiTopPunch);
+      const bottomStrikePressed = this.groundTopIsP1 ? (this.mode === '2p' ? groundP2Punch : groundAiBottomStrike) : p1Punch;
       const bottomEscapePressed = this.groundTopIsP1 ? (this.mode === '2p' ? groundP2Dodge : groundAiBottomEscape) : p1Dodge;
       const bottomBlockHeld = this.groundTopIsP1 ? (this.mode === '2p' ? groundP2Block : false) : p1Block;
-      this.updateGround(dt, topPunchPressed, bottomEscapePressed, bottomBlockHeld);
+      this.updateGround(dt, topPunchPressed, bottomStrikePressed, bottomEscapePressed, bottomBlockHeld);
     }
 
     this.updateClinch(dt);
