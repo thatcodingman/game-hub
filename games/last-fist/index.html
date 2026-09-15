@@ -102,6 +102,20 @@ const CLINCH_DURATION_MS = 1800;
 const CLINCH_BREAK_PUSH = 90; // distance pushed apart on release, so it doesn't immediately re-trigger
 const AI_GRAPPLE_CHANCE_PER_SEC = 0.3; // rarer than punch/kick — bigger commitment
 
+// GROUND — pressing GRAPPLE again while already clinched is the takedown
+// attempt. Whoever presses first wins it and becomes top position; simple
+// on purpose — "first to commit" is instantly understandable even though
+// it's not a real wrestling exchange. Top can strike (PUNCH), bottom can
+// cover up (BLOCK, reduces damage) or mash free (DODGE, repeated presses).
+// Auto-returns to standing if nobody resolves it in time.
+const GROUND_STRIKE_DAMAGE = 6;
+const GROUND_STRIKE_COOLDOWN_MS = 400; // top can't spam-strike faster than this
+const GROUND_BLOCK_REDUCTION = 0.35; // bottom's damage taken while covering up, as a fraction of normal
+const GROUND_DURATION_MS = 4000; // auto-returns to standing if nobody resolves it
+const GROUND_ESCAPE_PRESSES_NEEDED = 4; // bottom mashes DODGE this many times to escape early
+const AI_GROUND_STRIKE_CHANCE_PER_SEC = 0.8; // eager once on top
+const AI_GROUND_ESCAPE_CHANCE_PER_SEC = 1.2; // eager to get up when pinned
+
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
 // (the single frame window it can actually connect) -> recovery (can't act
 // again yet). Movement is locked during windup+active only; recovery still
@@ -282,6 +296,11 @@ class PlayScene extends Phaser.Scene {
     this.prevTouchUp = { p1: false, p2: false }; // rising-edge tracking for the touch dpad's up button, used by double-tap-jump
     this.clinchActive = false;
     this.clinchTimer = 0;
+    this.groundActive = false;
+    this.groundTimer = 0;
+    this.groundTopIsP1 = true;
+    this.groundStrikeCooldown = 0;
+    this.groundEscapeProgress = 0;
 
     this.buildHUD();
     this.buildMenu();
@@ -562,6 +581,10 @@ class PlayScene extends Phaser.Scene {
     this.aiPrevP1AttackState = 'idle';
     this.clinchActive = false;
     this.clinchTimer = 0;
+    this.groundActive = false;
+    this.groundTimer = 0;
+    this.groundStrikeCooldown = 0;
+    this.groundEscapeProgress = 0;
 
     this.p1NameText.setText(this.p1.character.name.toUpperCase()).setVisible(true);
     this.p2NameText.setText(this.p2.character.name.toUpperCase()).setVisible(true);
@@ -845,6 +868,72 @@ class PlayScene extends Phaser.Scene {
     this.tweens.add({ targets: t, y: t.y - 26, alpha: 0, duration: 500, onComplete: () => t.destroy() });
   }
 
+  // TAKEDOWN — pressing GRAPPLE again while already clinched. First to
+  // press wins it and becomes top position. Not a real wrestling exchange,
+  // deliberately: "first to commit" is instantly understandable, which
+  // matters more here than realism.
+  tryTakedown(fighter, grapplePressed) {
+    if (!this.clinchActive || this.groundActive || !grapplePressed) return;
+    this.clinchActive = false;
+    this.groundActive = true;
+    this.groundTimer = 0;
+    this.groundStrikeCooldown = 0;
+    this.groundEscapeProgress = 0;
+    this.groundTopIsP1 = (fighter === this.p1);
+    const midX = (this.p1.ax + this.p2.ax) / 2, midZ = (this.p1.az + this.p2.az) / 2;
+    if (window.SFX) SFX.powerup();
+    vibrate(30);
+    this.showClinchText(midX, midZ, 'TAKEDOWN!', '#ffd23f');
+  }
+
+  // top strikes (on cooldown so it can't be spammed into a one-frame KO),
+  // bottom either covers up (reduces the damage significantly, doesn't
+  // stop it) or mashes free — same shape as the clinch: resolves early via
+  // a real action, or times out back to standing if nobody does anything
+  updateGround(dt, topPunchPressed, bottomEscapePressed, bottomBlockHeld) {
+    if (!this.groundActive) return;
+    this.groundTimer += dt * 1000;
+    if (this.groundStrikeCooldown > 0) this.groundStrikeCooldown -= dt * 1000;
+
+    const top = this.groundTopIsP1 ? this.p1 : this.p2;
+    const bottom = this.groundTopIsP1 ? this.p2 : this.p1;
+
+    if (topPunchPressed && this.groundStrikeCooldown <= 0) {
+      this.groundStrikeCooldown = GROUND_STRIKE_COOLDOWN_MS;
+      let dmg = GROUND_STRIKE_DAMAGE * top.character.damageMult;
+      if (bottomBlockHeld) dmg *= GROUND_BLOCK_REDUCTION;
+      bottom.health -= dmg;
+      bottom.hitFlash = bottomBlockHeld ? 0.5 : 1;
+      if (window.SFX) SFX.hit();
+      vibrate(bottomBlockHeld ? 10 : 20);
+      this.showHitText(bottom);
+      this.checkKO(bottom, top);
+      if (this.state !== 'playing') return; // KO'd — round's over, stop resolving ground state
+    }
+
+    if (bottomEscapePressed) {
+      this.groundEscapeProgress++;
+      if (this.groundEscapeProgress >= GROUND_ESCAPE_PRESSES_NEEDED) {
+        this.endGround('ESCAPED!');
+        return;
+      }
+    }
+
+    if (this.groundTimer >= GROUND_DURATION_MS) this.endGround('BROKE FREE');
+  }
+
+  endGround(msg) {
+    const midX = (this.p1.ax + this.p2.ax) / 2, midZ = (this.p1.az + this.p2.az) / 2;
+    this.groundActive = false;
+    const dist = Math.hypot(this.p2.ax - this.p1.ax, this.p2.az - this.p1.az) || 0.001;
+    const ux = (this.p2.ax - this.p1.ax) / dist, uz = (this.p2.az - this.p1.az) / dist;
+    const a1 = clampToArena(midX - ux * CLINCH_BREAK_PUSH / 2, midZ - uz * CLINCH_BREAK_PUSH / 2);
+    const a2 = clampToArena(midX + ux * CLINCH_BREAK_PUSH / 2, midZ + uz * CLINCH_BREAK_PUSH / 2);
+    this.p1.ax = a1.ax; this.p1.az = a1.az;
+    this.p2.ax = a2.ax; this.p2.az = a2.az;
+    this.showClinchText(midX, midZ, msg, '#7f8a9a');
+  }
+
   // windup (committed, no hit yet) -> active (the window it can connect in)
   // -> recovery (can't attack again yet). Facing is already auto-locked
   // onto the opponent, so range alone decides a hit — no angle check needed.
@@ -972,13 +1061,16 @@ class PlayScene extends Phaser.Scene {
     t.p1.grapplePressed = false;
     // "up" = away from camera, "left" = screen-left — always, regardless of facing
     const p1Move = axisMoveVector(p1Up, p1Down, p1Left, p1Right);
-    this.tryStartDodge(this.p1, this.p2, p1Dodge, p1Move.mx, p1Move.mz);
-    this.tryStartGrapple(this.p1, this.p2, p1Grapple);
-    // committed to the attack, a dash, or a clinch — can't strafe out of it
-    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active' || this.p1.dodging || this.clinchActive;
+    if (this.clinchActive) this.tryTakedown(this.p1, p1Grapple);
+    else if (!this.groundActive) { this.tryStartDodge(this.p1, this.p2, p1Dodge, p1Move.mx, p1Move.mz); this.tryStartGrapple(this.p1, this.p2, p1Grapple); }
+    // committed to the attack, a dash, a clinch, or a ground exchange — can't strafe out of it
+    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active' || this.p1.dodging || this.clinchActive || this.groundActive;
     this.stepFighter(this.p1, p1Locked ? 0 : p1Move.mx, p1Locked ? 0 : p1Move.mz, p1Jump, dt);
     if (this.p1.dodging) this.stepDodge(this.p1, dt);
     this.updateGuard(this.p1, p1Block, dt);
+
+    let groundP2Punch = false, groundP2Dodge = false, groundP2Block = false;
+    let groundAiTopPunch = false, groundAiBottomEscape = false;
 
     if (this.mode === '2p') {
       const p2Up = this.keys.p2Up.isDown || t.p2.up;
@@ -990,6 +1082,7 @@ class PlayScene extends Phaser.Scene {
       const p2Block = this.keys.p2Block.isDown || t.p2.blockHeld;
       const p2Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p2Dodge) || t.p2.dodgePressed;
       const p2Grapple = Phaser.Input.Keyboard.JustDown(this.keys.p2Grapple) || t.p2.grapplePressed;
+      groundP2Punch = p2Punch; groundP2Dodge = p2Dodge; groundP2Block = p2Block;
       const p2UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p2Up);
       const p2TouchUpJustPressed = t.p2.up && !this.prevTouchUp.p2;
       this.prevTouchUp.p2 = t.p2.up;
@@ -1003,30 +1096,43 @@ class PlayScene extends Phaser.Scene {
       t.p2.dodgePressed = false;
       t.p2.grapplePressed = false;
       const p2Move = axisMoveVector(p2Up, p2Down, p2Left, p2Right);
-      this.tryStartDodge(this.p2, this.p1, p2Dodge, p2Move.mx, p2Move.mz);
-      this.tryStartGrapple(this.p2, this.p1, p2Grapple);
-      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.p2.dodging || this.clinchActive;
+      if (this.clinchActive) this.tryTakedown(this.p2, p2Grapple);
+      else if (!this.groundActive) { this.tryStartDodge(this.p2, this.p1, p2Dodge, p2Move.mx, p2Move.mz); this.tryStartGrapple(this.p2, this.p1, p2Grapple); }
+      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.p2.dodging || this.clinchActive || this.groundActive;
       this.stepFighter(this.p2, p2Locked ? 0 : p2Move.mx, p2Locked ? 0 : p2Move.mz, p2Jump, dt);
       if (this.p2.dodging) this.stepDodge(this.p2, dt);
       this.updateGuard(this.p2, p2Block, dt);
-      if (!this.clinchActive) {
+      if (!this.clinchActive && !this.groundActive) {
         this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
         this.updateAttack(this.p2, this.p1, p2Punch, p2Kick, dt);
       }
     } else {
       const ai = this.aiInput(dt);
-      this.tryStartGrapple(this.p2, this.p1, ai.grapple);
-      const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.clinchActive;
+      if (this.clinchActive) this.tryTakedown(this.p2, ai.grapple);
+      else if (!this.groundActive) this.tryStartGrapple(this.p2, this.p1, ai.grapple);
+      // ground state gives the AI its own simple auto-behavior, independent
+      // of aiInput's normal decision structure — top auto-strikes, bottom
+      // auto-struggles, both as a per-second chance rather than a single roll
+      groundAiTopPunch = this.groundActive && !this.groundTopIsP1 && Math.random() < AI_GROUND_STRIKE_CHANCE_PER_SEC * dt;
+      groundAiBottomEscape = this.groundActive && this.groundTopIsP1 && Math.random() < AI_GROUND_ESCAPE_CHANCE_PER_SEC * dt;
+      const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.clinchActive || this.groundActive;
       this.stepFighter(this.p2, aiLocked ? 0 : ai.moveX, aiLocked ? 0 : ai.moveZ, ai.jump, dt);
       this.updateGuard(this.p2, ai.block, dt);
-      if (!this.clinchActive) {
+      if (!this.clinchActive && !this.groundActive) {
         this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
         this.updateAttack(this.p2, this.p1, ai.punch, ai.kick, dt);
       }
     }
 
+    if (this.groundActive) {
+      const topPunchPressed = this.groundTopIsP1 ? p1Punch : (this.mode === '2p' ? groundP2Punch : groundAiTopPunch);
+      const bottomEscapePressed = this.groundTopIsP1 ? (this.mode === '2p' ? groundP2Dodge : groundAiBottomEscape) : p1Dodge;
+      const bottomBlockHeld = this.groundTopIsP1 ? (this.mode === '2p' ? groundP2Block : false) : p1Block;
+      this.updateGround(dt, topPunchPressed, bottomEscapePressed, bottomBlockHeld);
+    }
+
     this.updateClinch(dt);
-    if (!this.clinchActive) this.separate(); // clinch holds a tighter distance than normal separation would allow
+    if (!this.clinchActive && !this.groundActive) this.separate(); // clinch/ground hold a tighter distance than normal separation would allow
     this.updateFacing();
     this.updateHealthBar(this.p1HealthFill, this.p1);
     this.updateHealthBar(this.p2HealthFill, this.p2);
@@ -1235,7 +1341,6 @@ class PlayScene extends Phaser.Scene {
 
     // CLINCH — a simple grip connector between the two while locked
     // together, plus a shrinking ring showing how much hold time is left.
-    // This is deliberately minimal; real ground-game visuals are future work.
     if (this.clinchActive) {
       const p1 = project(this.p1.ax, this.p1.az), p2 = project(this.p2.ax, this.p2.az);
       g.lineStyle(4, 0xba7dff, 0.5);
@@ -1246,6 +1351,28 @@ class PlayScene extends Phaser.Scene {
       g.beginPath();
       g.arc(midX, midY, 14, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * remain), false);
       g.strokePath();
+    }
+
+    // GROUND — same shape as the clinch visual (connector + timer ring) but
+    // in the ground-struggle color, plus dots showing the bottom fighter's
+    // escape progress so mashing DODGE actually reads as working
+    if (this.groundActive) {
+      const p1 = project(this.p1.ax, this.p1.az), p2 = project(this.p2.ax, this.p2.az);
+      g.lineStyle(4, 0xff8a3d, 0.5);
+      g.lineBetween(p1.sx, p1.sy - 20, p2.sx, p2.sy - 20);
+      const midX = (p1.sx + p2.sx) / 2, midY = (p1.sy + p2.sy) / 2 - 20;
+      const remain = 1 - Phaser.Math.Clamp(this.groundTimer / GROUND_DURATION_MS, 0, 1);
+      g.lineStyle(3, 0xff8a3d, 0.8);
+      g.beginPath();
+      g.arc(midX, midY, 14, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * remain), false);
+      g.strokePath();
+
+      for (let i = 0; i < GROUND_ESCAPE_PRESSES_NEEDED; i++) {
+        const dotX = midX - (GROUND_ESCAPE_PRESSES_NEEDED - 1) * 7 + i * 14;
+        const filled = i < this.groundEscapeProgress;
+        g.fillStyle(0x5be37b, filled ? 1 : 0.15);
+        g.fillCircle(dotX, midY + 22, 4);
+      }
     }
   }
 }
