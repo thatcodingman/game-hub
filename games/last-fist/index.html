@@ -617,17 +617,27 @@ class PlayScene extends Phaser.Scene {
     const baseY = proj.sy + f.jumpZ * scale - bobY;
     const w = 42 * scale * squashX, hgt = 56 * scale * squashY;
 
+    // Which static limb (if any) needs to stand down and hand off to the
+    // animated one — the facing-side arm during a punch, the facing-side
+    // leg during a kick. Without this, the static block and the animated
+    // limb are two unrelated shapes on screen at once, which is exactly
+    // what read as "a random arm appearing" instead of "my arm reaching out."
+    const isPunchActive = rawOffset !== null && f.attackType === 'punch';
+    const isKickActive = rawOffset !== null && f.attackType === 'kick';
+    const frontIsRight = f.facing === 1;
+
     if (f.kind === 'panda') {
       g.fillStyle(0xf4f4f4, 1);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
-      // legs — always visible, not just during a kick, so their length
-      // gives a visual sense of how far a kick can actually reach
+      // legs — always visible except the facing-side one mid-kick (that one
+      // becomes the animated kicking leg instead), so their length gives a
+      // visual sense of how far a kick can actually reach
       g.fillStyle(0x18181b, 1);
-      g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
-      g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
+      if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
+      if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       g.fillStyle(0xdc2626, 1);
-      g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
-      g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0xf4f4f4, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
       // neck shadow — drawn on top of both body and head, right at the seam
@@ -646,11 +656,11 @@ class PlayScene extends Phaser.Scene {
       g.fillStyle(0x8b5a2b, 1);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
       g.fillStyle(0x6b431f, 1);
-      g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
-      g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
+      if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
+      if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       g.fillStyle(0xf5a623, 1);
-      g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
-      g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0x8b5a2b, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 18 * scale);
       g.fillStyle(0x0a0a0d, 0.3);
@@ -668,18 +678,22 @@ class PlayScene extends Phaser.Scene {
       const isKick = f.attackType === 'kick';
       const limbColor = f.kind === 'panda' ? 0xdc2626 : 0xf5a623;
       const offset = rawOffset * scale;
-      // punch swings from mid-torso (shoulder height); kick swings from
-      // low on the body (hip height) — that height difference alone is
-      // most of what makes the two moves visually distinct
-      const tipY = isKick ? (baseY - 8 * scale) : (baseY - hgt + 18 * scale);
-      const anchorX = baseX + f.facing * (w/2 * (isKick ? 0.3 : 0.5));
-      const tipX = baseX + f.facing * (w/2 + offset);
-      const limbWidth = (isKick ? 7 : 5) * scale;
+      // anchored at exactly where the now-hidden static arm/leg block was,
+      // so this reads as that limb extending, not a new shape appearing.
+      // Punch swings from shoulder height (matching the arm patch); kick
+      // swings from hip height (matching the leg block's top) — that
+      // height difference alone is most of what makes the two moves read
+      // as different limbs.
+      const tipY = isKick ? (baseY - hgt * 0.34) : (baseY - hgt + 17 * scale);
+      const limbBaseDist = isKick ? w * 0.16 : w/2; // same base anchorX uses — tip/trail must agree with it or the static block reappears in a different spot than the tip just vacated
+      const anchorX = baseX + f.facing * limbBaseDist;
+      const tipX = baseX + f.facing * (limbBaseDist + offset);
+      const limbWidth = (isKick ? 9 : 5) * scale;
       const tipRadius = (isKick ? 8 : 7) * scale;
       const tipRadiusActive = (isKick ? 15 : 11) * scale;
       const tipRadiusActiveMinor = (isKick ? 9 : 7) * scale;
 
-      // limb — connects the tip to the body so it reads as an arm/leg
+      // limb — connects the tip to the anchor so it reads as an arm/leg
       // extending, not a disembodied shape
       g.lineStyle(limbWidth, limbColor, 1);
       g.lineBetween(anchorX, tipY, tipX, tipY);
@@ -688,9 +702,9 @@ class PlayScene extends Phaser.Scene {
       // only during the actual thrust, to sell speed
       if (f.attackState === 'active') {
         g.fillStyle(limbColor, 0.25);
-        g.fillCircle(baseX + f.facing * (w/2 + offset * 0.55), tipY, tipRadius * 0.85);
+        g.fillCircle(baseX + f.facing * (limbBaseDist + offset * 0.55), tipY, tipRadius * 0.85);
         g.fillStyle(limbColor, 0.12);
-        g.fillCircle(baseX + f.facing * (w/2 + offset * 0.25), tipY, tipRadius * 0.7);
+        g.fillCircle(baseX + f.facing * (limbBaseDist + offset * 0.25), tipY, tipRadius * 0.7);
       }
 
       g.fillStyle(limbColor, 1);
