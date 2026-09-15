@@ -166,25 +166,30 @@ const ATTACK_DEFS = {
 // here, not new engineering. bodyStyle picks which shape template to draw
 // (see drawFighter) — Tiger deliberately reuses Bear's silhouette with its
 // own palette rather than needing new geometry; the archetype comes from
-// the stat multipliers, not from bespoke art.
+// the stat multipliers, not from bespoke art. unlockAt is the games-played
+// count required to play as them — persisted across sessions.
 const CHARACTER_DEFS = {
   panda: {
     name: 'Panda', archetype: 'Defender', bodyStyle: 'panda',
     healthMult: 1.15, damageMult: 0.9, speedMult: 0.95, recoveryMult: 1.05,
-    bodyColor: 0xf4f4f4, gloveColor: 0xdc2626, darkColor: 0x18181b
+    bodyColor: 0xf4f4f4, gloveColor: 0xdc2626, darkColor: 0x18181b,
+    unlockAt: 0
   },
   bear: {
     name: 'Bear', archetype: 'Power', bodyStyle: 'bear',
     healthMult: 1.05, damageMult: 1.2, speedMult: 0.9, recoveryMult: 1.1,
-    bodyColor: 0x8b5a2b, gloveColor: 0xf5a623, darkColor: 0x6b431f, muzzleColor: 0xd8b98c
+    bodyColor: 0x8b5a2b, gloveColor: 0xf5a623, darkColor: 0x6b431f, muzzleColor: 0xd8b98c,
+    unlockAt: 3
   },
   tiger: {
     name: 'Tiger', archetype: 'Striker', bodyStyle: 'bear',
     healthMult: 0.85, damageMult: 1.3, speedMult: 1.1, recoveryMult: 0.85,
-    bodyColor: 0xe8862c, gloveColor: 0x1a1a1a, darkColor: 0x1a1a1a, muzzleColor: 0xf4f4f4
+    bodyColor: 0xe8862c, gloveColor: 0x1a1a1a, darkColor: 0x1a1a1a, muzzleColor: 0xf4f4f4,
+    unlockAt: 8
   }
 };
 const CHARACTER_ORDER = ['panda', 'bear', 'tiger'];
+const GAMES_PLAYED_KEY = 'lastFist_gamesPlayed';
 
 // scales an ATTACK_DEFS entry by a character's recoveryMult — windup/
 // active/recovery/retract get faster or slower per-character; range,
@@ -197,6 +202,20 @@ function getEffectiveDef(f, type) {
     range: base.range, knockback: base.knockback, pullback: base.pullback, extend: base.extend, damage: base.damage,
     windup: base.windup * rm, active: base.active * rm, recovery: base.recovery * rm, retract: base.retract * rm
   };
+}
+
+function loadGamesPlayed() {
+  try { return parseInt(localStorage.getItem(GAMES_PLAYED_KEY), 10) || 0; }
+  catch (err) { return 0; }
+}
+
+function saveGamesPlayed(n) {
+  try { localStorage.setItem(GAMES_PLAYED_KEY, String(n)); }
+  catch (err) { /* non-fatal — unlocks just won't persist this session */ }
+}
+
+function isUnlocked(key, gamesPlayed) {
+  return gamesPlayed >= CHARACTER_DEFS[key].unlockAt;
 }
 
 function vibrate(pattern) {
@@ -309,6 +328,8 @@ class PlayScene extends Phaser.Scene {
     this.groundStrikeCooldown = 0;
     this.groundBottomStrikeCooldown = 0;
     this.groundEscapeProgress = 0;
+    this.gamesPlayed = loadGamesPlayed();
+    this.rosterBrowseOnly = false;
 
     this.buildHUD();
     this.buildMenu();
@@ -397,6 +418,14 @@ class PlayScene extends Phaser.Scene {
       bg.on('pointerdown', () => this.beginSelect(def.mode));
       this.menuButtons.push(bg, label);
     });
+
+    // standalone roster browse — check unlock progress without committing
+    // to a mode first
+    const rosterLink = this.add.text(W/2, btnY + btnH/2 + 30, 'VIEW CHARACTERS', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    rosterLink.on('pointerdown', () => this.beginRoster());
+    this.menuButtons.push(rosterLink);
   }
 
   buildCharacterSelect() {
@@ -404,6 +433,7 @@ class PlayScene extends Phaser.Scene {
     const totalW = btnW * CHARACTER_ORDER.length + gap * (CHARACTER_ORDER.length - 1);
     const startX = W/2 - totalW/2 + btnW/2;
     this.selectButtons = [];
+    this.selectCharObjs = [];
     CHARACTER_ORDER.forEach((key, i) => {
       const c = CHARACTER_DEFS[key];
       const x = startX + i * (btnW + gap);
@@ -412,16 +442,45 @@ class PlayScene extends Phaser.Scene {
         fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
       }).setOrigin(0.5).setVisible(false);
       const archLabel = this.add.text(x, btnY + 14, c.archetype, {
-        fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a'
+        fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a', align: 'center', wordWrap: { width: btnW - 16 }
       }).setOrigin(0.5).setVisible(false);
       bg.setInteractive({ useHandCursor: true });
       bg.on('pointerdown', () => this.onCharacterPicked(key));
       this.selectButtons.push(bg, nameLabel, archLabel);
+      this.selectCharObjs.push({ key, bg, nameLabel, archLabel });
+    });
+
+    // BACK — shown during both the pick-a-fighter flow and the standalone
+    // roster browse, since neither had any way out except finishing them
+    this.selectBackBtn = this.add.text(20, 16, '\u2190 BACK', {
+      fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#7f8a9a'
+    }).setInteractive({ useHandCursor: true }).setVisible(false);
+    this.selectBackBtn.on('pointerdown', () => this.returnToMenu());
+  }
+
+  // re-applies lock/unlock appearance — called every time the select or
+  // roster screen is shown, since gamesPlayed can have changed since these
+  // buttons were built once at load time
+  refreshCharacterButtons() {
+    this.selectCharObjs.forEach(obj => {
+      const c = CHARACTER_DEFS[obj.key];
+      const unlocked = isUnlocked(obj.key, this.gamesPlayed);
+      if (unlocked) {
+        obj.bg.setStrokeStyle(2, c.gloveColor, 0.8).setFillStyle(0x14161c, 0.9);
+        obj.nameLabel.setText(c.name.toUpperCase()).setColor('#e8ecf1');
+        obj.archLabel.setText(c.archetype).setColor('#7f8a9a');
+      } else {
+        const remaining = c.unlockAt - this.gamesPlayed;
+        obj.bg.setStrokeStyle(2, 0x3a3f4a, 0.6).setFillStyle(0x0e0f12, 0.9);
+        obj.nameLabel.setText('LOCKED').setColor('#555a66');
+        obj.archLabel.setText(`${remaining} game${remaining === 1 ? '' : 's'} to unlock`).setColor('#555a66');
+      }
     });
   }
 
   setSelectVisible(visible) {
     this.selectButtons.forEach(o => o.setVisible(visible));
+    this.selectBackBtn.setVisible(visible);
   }
 
   buildRoundOverUI() {
@@ -448,33 +507,67 @@ class PlayScene extends Phaser.Scene {
     if (defender.health <= 0) {
       defender.health = 0;
       this.state = 'roundOver';
+
+      // "games played" counts completed matches, not abandoned ones — and
+      // incrementing here (not at match start) means we can tell whether
+      // THIS match's completion is exactly what crossed a new threshold
+      this.gamesPlayed++;
+      saveGamesPlayed(this.gamesPlayed);
+      const newlyUnlocked = CHARACTER_ORDER.find(k => CHARACTER_DEFS[k].unlockAt === this.gamesPlayed);
+
       const isP1Winner = attacker === this.p1;
       const winnerLabel = this.mode === 'ai'
         ? (isP1Winner ? 'YOU WIN' : 'AI WINS')
         : (isP1Winner ? 'PLAYER 1 WINS' : 'PLAYER 2 WINS');
       this.centerText.setText('KO!').setVisible(true);
-      this.subText.setText(`${winnerLabel}\n${attacker.character.name} (${attacker.character.archetype})`).setVisible(true);
+      let sub = `${winnerLabel}\n${attacker.character.name} (${attacker.character.archetype})`;
+      if (newlyUnlocked) {
+        sub += `\n\n${CHARACTER_DEFS[newlyUnlocked].name.toUpperCase()} UNLOCKED!`;
+      }
+      this.subText.setText(sub).setVisible(true);
       this.setRoundOverVisible(true);
       if (window.SFX) SFX.success();
+      if (newlyUnlocked) { if (window.SFX) SFX.powerup(); vibrate([20, 40, 20, 40, 30]); }
     }
   }
 
   beginSelect(mode) {
     this.mode = mode;
     this.state = 'select';
+    this.rosterBrowseOnly = false;
     this.selectingFor = 'p1';
     this.menuButtons.forEach(o => o.setVisible(false));
     this.centerText.setText('CHOOSE YOUR FIGHTER').setVisible(true);
     this.subText.setText('PLAYER 1 \u2014 pick a fighter').setVisible(true);
+    this.refreshCharacterButtons();
+    this.setSelectVisible(true);
+  }
+
+  // standalone "view the roster" — reachable from the main menu without
+  // starting a match, so checking unlock progress doesn't require
+  // committing to VS AI / VS PLAYER 2 first
+  beginRoster() {
+    this.state = 'roster';
+    this.rosterBrowseOnly = true;
+    this.menuButtons.forEach(o => o.setVisible(false));
+    this.centerText.setText('FIGHTERS').setVisible(true);
+    this.subText.setText(`${this.gamesPlayed} game${this.gamesPlayed === 1 ? '' : 's'} played \u2014 win matches to unlock more`).setVisible(true);
+    this.refreshCharacterButtons();
     this.setSelectVisible(true);
   }
 
   onCharacterPicked(key) {
+    if (this.rosterBrowseOnly) return; // just browsing — clicking a card doesn't do anything
+    if (!isUnlocked(key, this.gamesPlayed)) {
+      this.cameras.main.shake(60, 0.004); // a small "nope" instead of silently doing nothing
+      return;
+    }
     if (this.selectingFor === 'p1') {
       this.p1CharacterKey = key;
       if (this.mode === '2p') {
         this.selectingFor = 'p2';
         this.subText.setText('PLAYER 2 \u2014 pick a fighter');
+        this.refreshCharacterButtons();
         return;
       }
       // VS AI — the AI picks from whoever's left, so it's never a mirror match
@@ -614,6 +707,7 @@ class PlayScene extends Phaser.Scene {
   returnToMenu() {
     this.state = 'menu';
     this.mode = null;
+    this.rosterBrowseOnly = false;
     this.modeText.setVisible(false);
     this.menuBtn.setVisible(false);
     this.setControlsVisible(this.p1Controls, false);
