@@ -24,13 +24,17 @@
 <script src="../../assets/sfx.js"></script>
 <script>
 /* =========================================================================
-   LAST FIST — STAGE 1: MOVEMENT ONLY
-   Panda vs Bear.
+   LAST FIST
+   Panda vs Bear vs Tiger — pick a fighter, close the distance, make
+   something happen.
 
-   No punches, no kicks, no blocking, no health, no archetypes yet — those
-   are Stages 2-4. This stage is purely: can you actually move your animal
-   around an opponent in a real 2D arena (strafe AND depth, not just a
-   left-right line), jump, and have it feel responsive on mobile.
+   Full move set: Punch, Kick, Block (held, chip damage now that health
+   exists), Dodge (position-driven burst), Grapple (gated clinch entry —
+   the start of the ground game, not the ground game itself yet). Health
+   and a real KO/win condition are in. Characters are data-driven
+   (CHARACTER_DEFS) — archetype comes from stat multipliers (health/
+   damage/speed/recovery), not from needing bespoke art per animal; Tiger
+   reuses Bear's body silhouette with its own palette as proof of that.
 
    The arena is a small 2.5D space: (ax, az) is the fighter's actual
    position on the ground plane (ax = left/right, az = forward/back —
@@ -125,10 +129,55 @@ const KICK_EXTEND = 34;
 const KICK_RETRACT_MS = 145;
 const KICK_KNOCKBACK = 220;
 
+// Damage is separate from knockback — knockback is physical push, damage is
+// what actually threatens a KO. Values are the BASE; each character's
+// damageMult scales them (see CHARACTER_DEFS).
+const PUNCH_DAMAGE = 8;
+const KICK_DAMAGE = 13;
+const CHIP_DAMAGE = 2.5; // guard isn't free anymore now that health exists — small cost even on a clean block
+const HEALTH_BASE = 100; // scaled per-character by healthMult
+
 const ATTACK_DEFS = {
-  punch: { range: PUNCH_RANGE, windup: PUNCH_WINDUP_MS, active: PUNCH_ACTIVE_MS, recovery: PUNCH_RECOVERY_MS, knockback: PUNCH_KNOCKBACK, pullback: PUNCH_PULLBACK, extend: PUNCH_EXTEND, retract: PUNCH_RETRACT_MS },
-  kick:  { range: KICK_RANGE,  windup: KICK_WINDUP_MS,  active: KICK_ACTIVE_MS,  recovery: KICK_RECOVERY_MS,  knockback: KICK_KNOCKBACK,  pullback: KICK_PULLBACK,  extend: KICK_EXTEND,  retract: KICK_RETRACT_MS }
+  punch: { range: PUNCH_RANGE, windup: PUNCH_WINDUP_MS, active: PUNCH_ACTIVE_MS, recovery: PUNCH_RECOVERY_MS, knockback: PUNCH_KNOCKBACK, pullback: PUNCH_PULLBACK, extend: PUNCH_EXTEND, retract: PUNCH_RETRACT_MS, damage: PUNCH_DAMAGE },
+  kick:  { range: KICK_RANGE,  windup: KICK_WINDUP_MS,  active: KICK_ACTIVE_MS,  recovery: KICK_RECOVERY_MS,  knockback: KICK_KNOCKBACK,  pullback: KICK_PULLBACK,  extend: KICK_EXTEND,  retract: KICK_RETRACT_MS,  damage: KICK_DAMAGE }
 };
+
+// CHARACTER ROSTER — data-driven so adding a fighter later is a new entry
+// here, not new engineering. bodyStyle picks which shape template to draw
+// (see drawFighter) — Tiger deliberately reuses Bear's silhouette with its
+// own palette rather than needing new geometry; the archetype comes from
+// the stat multipliers, not from bespoke art.
+const CHARACTER_DEFS = {
+  panda: {
+    name: 'Panda', archetype: 'Defender', bodyStyle: 'panda',
+    healthMult: 1.15, damageMult: 0.9, speedMult: 0.95, recoveryMult: 1.05,
+    bodyColor: 0xf4f4f4, gloveColor: 0xdc2626, darkColor: 0x18181b
+  },
+  bear: {
+    name: 'Bear', archetype: 'Power', bodyStyle: 'bear',
+    healthMult: 1.05, damageMult: 1.2, speedMult: 0.9, recoveryMult: 1.1,
+    bodyColor: 0x8b5a2b, gloveColor: 0xf5a623, darkColor: 0x6b431f, muzzleColor: 0xd8b98c
+  },
+  tiger: {
+    name: 'Tiger', archetype: 'Striker', bodyStyle: 'bear',
+    healthMult: 0.85, damageMult: 1.3, speedMult: 1.1, recoveryMult: 0.85,
+    bodyColor: 0xe8862c, gloveColor: 0x1a1a1a, darkColor: 0x1a1a1a, muzzleColor: 0xf4f4f4
+  }
+};
+const CHARACTER_ORDER = ['panda', 'bear', 'tiger'];
+
+// scales an ATTACK_DEFS entry by a character's recoveryMult — windup/
+// active/recovery/retract get faster or slower per-character; range,
+// knockback and damage don't (those already get their own multiplier
+// elsewhere, or are archetype-neutral by design)
+function getEffectiveDef(f, type) {
+  const base = ATTACK_DEFS[type];
+  const rm = f.character.recoveryMult;
+  return {
+    range: base.range, knockback: base.knockback, pullback: base.pullback, extend: base.extend, damage: base.damage,
+    windup: base.windup * rm, active: base.active * rm, recovery: base.recovery * rm, retract: base.retract * rm
+  };
+}
 
 function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
@@ -185,12 +234,15 @@ function attackOffset(attackState, attackTimer, def) {
   return null;
 }
 
-function makeFighter(ax, az, kind) {
+function makeFighter(ax, az, characterKey, facing) {
+  const character = CHARACTER_DEFS[characterKey];
+  const maxHealth = HEALTH_BASE * character.healthMult;
   return {
     ax, az, vax: 0, vaz: 0,
     jumpZ: 0, vJump: 0, grounded: true,
-    facing: kind === 'panda' ? 1 : -1,
-    kind, walkBob: 0, squash: 0,
+    facing,
+    characterKey, character, walkBob: 0, squash: 0,
+    maxHealth, health: maxHealth,
     attackType: null, attackState: 'idle', attackTimer: 0, attackHasHit: false, hitFlash: 0,
     guarding: false, guardAmount: 0,
     dodging: false, dodgeTimer: 0, dodgeStartAx: ax, dodgeStartAz: az, dodgeDirX: 0, dodgeDirZ: 0, dodgeCooldown: 0,
@@ -233,6 +285,8 @@ class PlayScene extends Phaser.Scene {
 
     this.buildHUD();
     this.buildMenu();
+    this.buildCharacterSelect();
+    this.buildRoundOverUI();
     this.buildControls();
 
     this.keys = this.input.keyboard.addKeys({
@@ -282,6 +336,15 @@ class PlayScene extends Phaser.Scene {
     }).setOrigin(1, 0).setInteractive({ useHandCursor: true }).setVisible(false);
     this.menuBtn.on('pointerdown', () => this.returnToMenu());
 
+    // HEALTH BARS — P1 top-left, P2 top-right (mirrored), name label above each
+    const barW = 220, barH = 10;
+    this.p1NameText = this.add.text(20, 34, '', { fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#e8ecf1' }).setVisible(false);
+    this.p1HealthBg = this.add.rectangle(20 + barW/2, 50, barW, barH, 0x1c2128).setStrokeStyle(1, 0x000000).setVisible(false);
+    this.p1HealthFill = this.add.rectangle(20, 50, barW, barH - 2, 0x5be37b).setOrigin(0, 0.5).setVisible(false);
+    this.p2NameText = this.add.text(W - 20, 34, '', { fontFamily: 'Arial Black, Arial', fontSize: '12px', color: '#e8ecf1' }).setOrigin(1, 0).setVisible(false);
+    this.p2HealthBg = this.add.rectangle(W - 20 - barW/2, 50, barW, barH, 0x1c2128).setStrokeStyle(1, 0x000000).setVisible(false);
+    this.p2HealthFill = this.add.rectangle(W - 20, 50, barW, barH - 2, 0x5be37b).setOrigin(1, 0.5).setVisible(false);
+
     this.centerText = this.add.text(W/2, 120, 'LAST FIST', {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
@@ -304,9 +367,99 @@ class PlayScene extends Phaser.Scene {
         fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
       }).setOrigin(0.5);
       bg.setInteractive({ useHandCursor: true });
-      bg.on('pointerdown', () => this.startMatch(def.mode));
+      bg.on('pointerdown', () => this.beginSelect(def.mode));
       this.menuButtons.push(bg, label);
     });
+  }
+
+  buildCharacterSelect() {
+    const btnY = 240, btnW = 160, btnH = 84, gap = 18;
+    const totalW = btnW * CHARACTER_ORDER.length + gap * (CHARACTER_ORDER.length - 1);
+    const startX = W/2 - totalW/2 + btnW/2;
+    this.selectButtons = [];
+    CHARACTER_ORDER.forEach((key, i) => {
+      const c = CHARACTER_DEFS[key];
+      const x = startX + i * (btnW + gap);
+      const bg = this.add.rectangle(x, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, c.gloveColor, 0.8).setVisible(false);
+      const nameLabel = this.add.text(x, btnY - 16, c.name.toUpperCase(), {
+        fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
+      }).setOrigin(0.5).setVisible(false);
+      const archLabel = this.add.text(x, btnY + 14, c.archetype, {
+        fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a'
+      }).setOrigin(0.5).setVisible(false);
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerdown', () => this.onCharacterPicked(key));
+      this.selectButtons.push(bg, nameLabel, archLabel);
+    });
+  }
+
+  setSelectVisible(visible) {
+    this.selectButtons.forEach(o => o.setVisible(visible));
+  }
+
+  buildRoundOverUI() {
+    const btnY = 260, btnW = 180, btnH = 56, gap = 20;
+    const rematchBg = this.add.rectangle(W/2 - btnW/2 - gap/2, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, 0x5be37b, 0.8).setVisible(false);
+    const rematchLabel = this.add.text(W/2 - btnW/2 - gap/2, btnY, 'REMATCH', { fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1' }).setOrigin(0.5).setVisible(false);
+    const menuBg2 = this.add.rectangle(W/2 + btnW/2 + gap/2, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, 0x7f8a9a, 0.8).setVisible(false);
+    const menuLabel2 = this.add.text(W/2 + btnW/2 + gap/2, btnY, 'MAIN MENU', { fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1' }).setOrigin(0.5).setVisible(false);
+    rematchBg.setInteractive({ useHandCursor: true });
+    rematchBg.on('pointerdown', () => { this.setRoundOverVisible(false); this.startMatch(this.mode); });
+    menuBg2.setInteractive({ useHandCursor: true });
+    menuBg2.on('pointerdown', () => { this.setRoundOverVisible(false); this.returnToMenu(); });
+    this.roundOverButtons = [rematchBg, rematchLabel, menuBg2, menuLabel2];
+  }
+
+  setRoundOverVisible(visible) {
+    this.roundOverButtons.forEach(o => o.setVisible(visible));
+  }
+
+  // called after any damage lands — checks the fighter that was JUST hit;
+  // winner is whoever's still standing
+  checkKO(defender, attacker) {
+    if (this.state !== 'playing') return;
+    if (defender.health <= 0) {
+      defender.health = 0;
+      this.state = 'roundOver';
+      const isP1Winner = attacker === this.p1;
+      const winnerLabel = this.mode === 'ai'
+        ? (isP1Winner ? 'YOU WIN' : 'AI WINS')
+        : (isP1Winner ? 'PLAYER 1 WINS' : 'PLAYER 2 WINS');
+      this.centerText.setText('KO!').setVisible(true);
+      this.subText.setText(`${winnerLabel}\n${attacker.character.name} (${attacker.character.archetype})`).setVisible(true);
+      this.setRoundOverVisible(true);
+      if (window.SFX) SFX.success();
+    }
+  }
+
+  beginSelect(mode) {
+    this.mode = mode;
+    this.state = 'select';
+    this.selectingFor = 'p1';
+    this.menuButtons.forEach(o => o.setVisible(false));
+    this.centerText.setText('CHOOSE YOUR FIGHTER').setVisible(true);
+    this.subText.setText('PLAYER 1 \u2014 pick a fighter').setVisible(true);
+    this.setSelectVisible(true);
+  }
+
+  onCharacterPicked(key) {
+    if (this.selectingFor === 'p1') {
+      this.p1CharacterKey = key;
+      if (this.mode === '2p') {
+        this.selectingFor = 'p2';
+        this.subText.setText('PLAYER 2 \u2014 pick a fighter');
+        return;
+      }
+      // VS AI — the AI picks from whoever's left, so it's never a mirror match
+      const remaining = CHARACTER_ORDER.filter(k => k !== key);
+      this.p2CharacterKey = remaining[Math.floor(Math.random() * remaining.length)];
+    } else {
+      this.p2CharacterKey = key;
+    }
+    this.setSelectVisible(false);
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    this.startMatch(this.mode);
   }
 
   buildControls() {
@@ -392,6 +545,8 @@ class PlayScene extends Phaser.Scene {
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
     this.menuButtons.forEach(o => o.setVisible(false));
+    this.setSelectVisible(false);
+    this.setRoundOverVisible(false);
 
     this.modeText.setVisible(true).setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL');
     this.menuBtn.setVisible(true);
@@ -399,8 +554,8 @@ class PlayScene extends Phaser.Scene {
     this.setControlsVisible(this.p1Controls, true);
     this.setControlsVisible(this.p2Controls, mode === '2p');
 
-    this.p1 = makeFighter(-90, 20, 'panda');
-    this.p2 = makeFighter(90, -20, 'bear');
+    this.p1 = makeFighter(-90, 20, this.p1CharacterKey, 1);
+    this.p2 = makeFighter(90, -20, this.p2CharacterKey, -1);
     this.aiJumpCooldown = Phaser.Math.FloatBetween(1, 2.5);
     this.aiCircleTimer = 0;
     this.aiWillBlock = false;
@@ -408,7 +563,20 @@ class PlayScene extends Phaser.Scene {
     this.clinchActive = false;
     this.clinchTimer = 0;
 
+    this.p1NameText.setText(this.p1.character.name.toUpperCase()).setVisible(true);
+    this.p2NameText.setText(this.p2.character.name.toUpperCase()).setVisible(true);
+    this.p1HealthBg.setVisible(true);
+    this.p1HealthFill.setVisible(true).width = 220;
+    this.p2HealthBg.setVisible(true);
+    this.p2HealthFill.setVisible(true).width = 220;
+
     if (window.SFX) SFX.select();
+  }
+
+  updateHealthBar(fill, f) {
+    const pct = Phaser.Math.Clamp(f.health / f.maxHealth, 0, 1);
+    fill.width = 220 * pct;
+    fill.setFillStyle(pct > 0.5 ? 0x5be37b : pct > 0.25 ? 0xffd23f : 0xff5a5a);
   }
 
   returnToMenu() {
@@ -418,8 +586,16 @@ class PlayScene extends Phaser.Scene {
     this.menuBtn.setVisible(false);
     this.setControlsVisible(this.p1Controls, false);
     this.setControlsVisible(this.p2Controls, false);
+    this.setSelectVisible(false);
+    this.setRoundOverVisible(false);
+    this.p1NameText.setVisible(false);
+    this.p2NameText.setVisible(false);
+    this.p1HealthBg.setVisible(false);
+    this.p1HealthFill.setVisible(false);
+    this.p2HealthBg.setVisible(false);
+    this.p2HealthFill.setVisible(false);
     this.centerText.setText('LAST FIST').setVisible(true);
-    this.subText.setVisible(true);
+    this.subText.setText('Panda vs Bear vs Tiger \u2014 punch, kick, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
     this.menuButtons.forEach(o => o.setVisible(true));
   }
 
@@ -428,8 +604,10 @@ class PlayScene extends Phaser.Scene {
   // axisMoveVector for the player, or directly by aiInput for the AI).
   stepFighter(f, mx, mz, jumpPressed, dt) {
     const grounded = f.grounded;
-    const accel = grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT;
-    const friction = (grounded ? GROUND_FRICTION : GROUND_FRICTION * AIR_CONTROL_MULT) * dt;
+    const speedMult = f.character.speedMult;
+    const accel = (grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL_MULT) * speedMult;
+    const friction = (grounded ? GROUND_FRICTION : GROUND_FRICTION * AIR_CONTROL_MULT) * dt * speedMult;
+    const maxSpeed = MOVE_MAX_SPEED * speedMult;
 
     if (mx !== 0 || mz !== 0) {
       f.vax += mx * accel * dt;
@@ -440,7 +618,7 @@ class PlayScene extends Phaser.Scene {
     }
 
     const speed = Math.hypot(f.vax, f.vaz);
-    if (speed > MOVE_MAX_SPEED) { const s = MOVE_MAX_SPEED / speed; f.vax *= s; f.vaz *= s; }
+    if (speed > maxSpeed) { const s = maxSpeed / speed; f.vax *= s; f.vaz *= s; }
 
     f.ax += f.vax * dt;
     f.az += f.vaz * dt;
@@ -680,7 +858,7 @@ class PlayScene extends Phaser.Scene {
       return;
     }
 
-    const def = ATTACK_DEFS[f.attackType];
+    const def = getEffectiveDef(f, f.attackType);
     f.attackTimer -= dt * 1000;
 
     if (f.attackState === 'windup') {
@@ -690,8 +868,9 @@ class PlayScene extends Phaser.Scene {
         const dist = Math.hypot(opponent.ax - f.ax, opponent.az - f.az);
         if (dist <= def.range) {
           f.attackHasHit = true;
-          if (opponent.guarding) this.resolveBlock(f, opponent, def.knockback);
-          else this.resolveHit(f, opponent, def.knockback);
+          const damage = def.damage * f.character.damageMult;
+          if (opponent.guarding) this.resolveBlock(f, opponent, def.knockback, damage);
+          else this.resolveHit(f, opponent, def.knockback, damage);
         }
       }
       if (f.attackTimer <= 0) { f.attackState = 'recovery'; f.attackTimer = def.recovery; }
@@ -703,39 +882,44 @@ class PlayScene extends Phaser.Scene {
   startAttack(f, type) {
     f.attackType = type;
     f.attackState = 'windup';
-    f.attackTimer = ATTACK_DEFS[type].windup;
+    f.attackTimer = getEffectiveDef(f, type).windup;
     f.attackHasHit = false;
     if (window.SFX) SFX.swoosh();
   }
 
-  resolveHit(attacker, defender, knockback) {
+  resolveHit(attacker, defender, knockback, damage) {
     const dx = defender.ax - attacker.ax, dz = defender.az - attacker.az;
     const dist = Math.hypot(dx, dz) || 0.001;
     const ux = dx / dist, uz = dz / dist;
     defender.vax += ux * knockback;
     defender.vaz += uz * knockback;
     defender.hitFlash = 1;
+    defender.health -= damage;
 
     this.cameras.main.shake(70, 0.005);
     vibrate(20);
     if (window.SFX) SFX.hit();
     this.showHitText(defender);
+    this.checkKO(defender, attacker);
   }
 
-  // a blocked hit — much lighter push, lighter flash, no big shake, and a
-  // distinct sound/label so it never reads as "the hit just didn't land"
-  resolveBlock(attacker, defender, knockback) {
+  // a blocked hit — much lighter push, lighter flash, small chip damage
+  // (not zero — now that health exists, guard needs a real cost or it's
+  // strictly better than eating a hit), and a distinct sound/label
+  resolveBlock(attacker, defender, knockback, damage) {
     const dx = defender.ax - attacker.ax, dz = defender.az - attacker.az;
     const dist = Math.hypot(dx, dz) || 0.001;
     const ux = dx / dist, uz = dz / dist;
     defender.vax += ux * knockback * 0.15;
     defender.vaz += uz * knockback * 0.15;
     defender.hitFlash = 0.5;
+    defender.health -= CHIP_DAMAGE * attacker.character.damageMult;
 
     this.cameras.main.shake(30, 0.002);
     vibrate(10);
     if (window.SFX) SFX.click();
     this.showBlockText(defender);
+    this.checkKO(defender, attacker);
   }
 
   showHitText(defender) {
@@ -844,6 +1028,8 @@ class PlayScene extends Phaser.Scene {
     this.updateClinch(dt);
     if (!this.clinchActive) this.separate(); // clinch holds a tighter distance than normal separation would allow
     this.updateFacing();
+    this.updateHealthBar(this.p1HealthFill, this.p1);
+    this.updateHealthBar(this.p2HealthFill, this.p2);
     this.draw();
   }
 
@@ -868,7 +1054,7 @@ class PlayScene extends Phaser.Scene {
     // same curve at a fraction of the magnitude, so the whole fighter
     // rocks back on the windup and surges into the thrust — and since it's
     // the same already-continuous curve, leaning can't introduce a new snap.
-    const attackDef = f.attackType ? ATTACK_DEFS[f.attackType] : null;
+    const attackDef = f.attackType ? getEffectiveDef(f, f.attackType) : null;
     const rawOffset = attackDef ? attackOffset(f.attackState, f.attackTimer, attackDef) : null;
     const leanRaw = rawOffset === null ? 0 : rawOffset * 0.18;
 
@@ -914,19 +1100,20 @@ class PlayScene extends Phaser.Scene {
     const rightLegGap = frontIsRight ? frontLegGap : rearLegGap;
     const rightLegH = frontIsRight ? frontLegH : rearLegH;
 
-    if (f.kind === 'panda') {
-      g.fillStyle(0xf4f4f4, 1);
+    const c = f.character;
+    if (c.bodyStyle === 'panda') {
+      g.fillStyle(c.bodyColor, 1);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
       // legs — always visible except the facing-side one mid-kick (that one
       // becomes the animated kicking leg instead), so their length gives a
       // visual sense of how far a kick can actually reach
-      g.fillStyle(0x18181b, 1);
+      g.fillStyle(c.darkColor, 1);
       if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - leftLegGap - legW, baseY - leftLegH, legW, leftLegH, 3 * scale);
       if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + rightLegGap, baseY - rightLegH, legW, rightLegH, 3 * scale);
-      g.fillStyle(0xdc2626, 1);
+      g.fillStyle(c.gloveColor, 1);
       if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - leftArmOffX - 4 * scale, leftArmY, 9 * scale, 22 * scale, 4 * scale);
       if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + rightArmOffX - 5 * scale, rightArmY, 9 * scale, 22 * scale, 4 * scale);
-      g.fillStyle(0xf4f4f4, 1);
+      g.fillStyle(c.bodyColor, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
       // neck shadow — drawn on top of both body and head, right at the seam
       // between them, so the head reads as its own shape instead of
@@ -934,29 +1121,31 @@ class PlayScene extends Phaser.Scene {
       // was hard to see)
       g.fillStyle(0x0a0a0d, 0.3);
       g.fillEllipse(baseX, baseY - hgt, w * 0.5, 5 * scale);
-      g.fillStyle(0x18181b, 1);
+      g.fillStyle(c.darkColor, 1);
       g.fillCircle(baseX - 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
       g.fillCircle(baseX + 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
       g.fillEllipse(baseX - 7 * f.facing * scale, baseY - hgt - 17 * scale, 11 * scale, 13 * scale);
       g.fillStyle(0x0a0a0d, 1);
       g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 14 * scale, 4.5 * scale);
     } else {
-      g.fillStyle(0x8b5a2b, 1);
+      // 'bear' bodyStyle — also used by Tiger, with its own palette; the
+      // archetype comes from stats, not from needing new geometry per animal
+      g.fillStyle(c.bodyColor, 1);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
-      g.fillStyle(0x6b431f, 1);
+      g.fillStyle(c.darkColor, 1);
       if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - leftLegGap - legW, baseY - leftLegH, legW, leftLegH, 3 * scale);
       if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + rightLegGap, baseY - rightLegH, legW, rightLegH, 3 * scale);
-      g.fillStyle(0xf5a623, 1);
+      g.fillStyle(c.gloveColor, 1);
       if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - leftArmOffX - 4 * scale, leftArmY, 9 * scale, 22 * scale, 4 * scale);
       if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + rightArmOffX - 5 * scale, rightArmY, 9 * scale, 22 * scale, 4 * scale);
-      g.fillStyle(0x8b5a2b, 1);
+      g.fillStyle(c.bodyColor, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 18 * scale);
       g.fillStyle(0x0a0a0d, 0.3);
       g.fillEllipse(baseX, baseY - hgt, w * 0.5, 5 * scale);
-      g.fillStyle(0x6b431f, 1);
+      g.fillStyle(c.darkColor, 1);
       g.fillCircle(baseX - 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
       g.fillCircle(baseX + 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillStyle(0xd8b98c, 1);
+      g.fillStyle(c.muzzleColor, 1);
       g.fillEllipse(baseX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 16 * scale, 12 * scale);
       g.fillStyle(0x0a0a0d, 1);
       g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 3.5 * scale);
@@ -971,7 +1160,7 @@ class PlayScene extends Phaser.Scene {
 
     if (rawOffset !== null) {
       const isKick = f.attackType === 'kick';
-      const limbColor = f.kind === 'panda' ? 0xdc2626 : 0xf5a623;
+      const limbColor = f.character.gloveColor;
       const offset = rawOffset * scale;
       // anchored at exactly where the now-hidden static arm/leg block was,
       // so this reads as that limb extending, not a new shape appearing.
@@ -1034,7 +1223,8 @@ class PlayScene extends Phaser.Scene {
   draw() {
     const g = this.g;
     g.clear();
-    if (this.state !== 'playing') return;
+    if (this.state !== 'playing' && this.state !== 'roundOver') return;
+    if (!this.p1 || !this.p2) return;
 
     this.drawArena();
 
