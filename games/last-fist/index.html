@@ -902,7 +902,29 @@ class PlayScene extends Phaser.Scene {
     this.cameras.main.shake(140, 0.009);
     if (window.SFX) SFX.powerup();
     vibrate(30);
+    this.showTakedownImpact(midX, midZ);
     this.showClinchText(midX, midZ, 'TAKEDOWN!', '#ffd23f');
+  }
+
+  // a one-shot expanding, fading ring right where the takedown lands — a
+  // "hit the ground" cue distinct from the ongoing clinch/ground indicators,
+  // which are persistent UI, not an impact moment
+  showTakedownImpact(ax, az) {
+    const proj = project(ax, az);
+    const scale = depthScale(az);
+    const ring = this.add.graphics();
+    const state = { p: 0 };
+    this.tweens.add({
+      targets: state, p: 1, duration: 420, ease: 'Cubic.easeOut',
+      onUpdate: () => {
+        ring.clear();
+        const alpha = (1 - state.p) * 0.7;
+        const r = (8 + state.p * 40) * scale;
+        ring.lineStyle(3, 0xffd23f, alpha);
+        ring.strokeEllipse(proj.sx, proj.sy, r * 2, r * 0.6);
+      },
+      onComplete: () => ring.destroy()
+    });
   }
 
   // top strikes (on cooldown so it can't be spammed into a one-frame KO),
@@ -1179,15 +1201,19 @@ class PlayScene extends Phaser.Scene {
     const squashY = 1 - f.squash * 0.18;
     const squashX = 1 + f.squash * 0.12;
 
-    // GROUND POSE — squashes the figure down and offsets top/bottom
-    // slightly to suggest a grappling stack, eased in/out so a takedown
-    // doesn't snap instantly from standing to flattened. groundTopIsP1
-    // still reflects the correct role during the brief ease-out too,
-    // since it isn't reset until the next takedown happens.
+    // GROUND POSE — top and bottom get genuinely different poses now, not
+    // a shared flatten. Top stays mostly upright (leaning over, mounting),
+    // bottom flattens hard and its head slides sideways along its facing
+    // direction — a squashed-but-still-upright torso with a head straight
+    // on top reads as "short person," not "person lying on the ground";
+    // shifting the head to the side is what actually sells prone.
     const groundT = f.groundPoseAmount;
     const isTopFighter = f === (this.groundTopIsP1 ? this.p1 : this.p2);
-    const groundSquash = Phaser.Math.Linear(1, 0.42, groundT);
-    const groundYShift = Phaser.Math.Linear(0, isTopFighter ? -9 : 7, groundT) * scale;
+    const squashTarget = isTopFighter ? 0.68 : 0.22;
+    const groundSquash = Phaser.Math.Linear(1, squashTarget, groundT);
+    const groundYShift = Phaser.Math.Linear(0, isTopFighter ? -24 : 14, groundT) * scale;
+    const groundXLean = isTopFighter ? Phaser.Math.Linear(0, f.facing * 7, groundT) * scale : 0;
+    const groundHeadShiftX = isTopFighter ? 0 : Phaser.Math.Linear(0, f.facing * 16, groundT) * scale;
     // ongoing struggle wobble while actually grounded — this is the piece
     // that stops the hold itself from reading as frozen for its full
     // duration; top and bottom wobble out of phase so it reads as push-pull
@@ -1206,8 +1232,9 @@ class PlayScene extends Phaser.Scene {
     const rawOffset = attackDef ? attackOffset(f.attackState, f.attackTimer, attackDef) : null;
     const leanRaw = rawOffset === null ? 0 : rawOffset * 0.18;
 
-    const baseX = proj.sx + leanRaw * scale * f.facing + wobbleX;
+    const baseX = proj.sx + leanRaw * scale * f.facing + wobbleX + groundXLean;
     const baseY = proj.sy + f.jumpZ * scale - bobY + groundYShift;
+    const headX = baseX + groundHeadShiftX;
     const w = 42 * scale * squashX, hgt = 56 * scale * squashY * groundSquash * wobbleSquash;
 
     // Which static limb (if any) needs to stand down and hand off to the
@@ -1262,19 +1289,19 @@ class PlayScene extends Phaser.Scene {
       if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - leftArmOffX - 4 * scale, leftArmY, 9 * scale, 22 * scale, 4 * scale);
       if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + rightArmOffX - 5 * scale, rightArmY, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(c.bodyColor, 1);
-      g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
+      g.fillCircle(headX, baseY - hgt - 16 * scale, 17 * scale);
       // neck shadow — drawn on top of both body and head, right at the seam
       // between them, so the head reads as its own shape instead of
       // merging into the torso (this was the main reason the panda's face
       // was hard to see)
       g.fillStyle(0x0a0a0d, 0.3);
-      g.fillEllipse(baseX, baseY - hgt, w * 0.5, 5 * scale);
+      g.fillEllipse(headX, baseY - hgt, w * 0.5, 5 * scale);
       g.fillStyle(c.darkColor, 1);
-      g.fillCircle(baseX - 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillCircle(baseX + 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillEllipse(baseX - 7 * f.facing * scale, baseY - hgt - 17 * scale, 11 * scale, 13 * scale);
+      g.fillCircle(headX - 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(headX + 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillEllipse(headX - 7 * f.facing * scale, baseY - hgt - 17 * scale, 11 * scale, 13 * scale);
       g.fillStyle(0x0a0a0d, 1);
-      g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 14 * scale, 4.5 * scale);
+      g.fillCircle(headX + f.facing * 10 * scale, baseY - hgt - 14 * scale, 4.5 * scale);
     } else {
       // 'bear' bodyStyle — also used by Tiger, with its own palette; the
       // archetype comes from stats, not from needing new geometry per animal
@@ -1287,16 +1314,16 @@ class PlayScene extends Phaser.Scene {
       if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - leftArmOffX - 4 * scale, leftArmY, 9 * scale, 22 * scale, 4 * scale);
       if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + rightArmOffX - 5 * scale, rightArmY, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(c.bodyColor, 1);
-      g.fillCircle(baseX, baseY - hgt - 16 * scale, 18 * scale);
+      g.fillCircle(headX, baseY - hgt - 16 * scale, 18 * scale);
       g.fillStyle(0x0a0a0d, 0.3);
-      g.fillEllipse(baseX, baseY - hgt, w * 0.5, 5 * scale);
+      g.fillEllipse(headX, baseY - hgt, w * 0.5, 5 * scale);
       g.fillStyle(c.darkColor, 1);
-      g.fillCircle(baseX - 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillCircle(baseX + 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(headX - 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(headX + 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
       g.fillStyle(c.muzzleColor, 1);
-      g.fillEllipse(baseX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 16 * scale, 12 * scale);
+      g.fillEllipse(headX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 16 * scale, 12 * scale);
       g.fillStyle(0x0a0a0d, 1);
-      g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 3.5 * scale);
+      g.fillCircle(headX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 3.5 * scale);
     }
 
     // shield outline — fades in with guardAmount, extra readability on top
@@ -1353,7 +1380,7 @@ class PlayScene extends Phaser.Scene {
     if (f.hitFlash > 0) {
       g.fillStyle(0xffffff, f.hitFlash * 0.6);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
-      g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
+      g.fillCircle(headX, baseY - hgt - 16 * scale, 17 * scale);
     }
   }
 
