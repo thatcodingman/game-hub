@@ -73,6 +73,17 @@ const AI_BLOCK_CHANCE = 0.5; // rolled once per incoming attack (not per frame) 
 
 const GUARD_TRANSITION_MS = 100; // how long the raise/lower animation takes — quick, not an instant snap
 
+// DODGE — a position-driven burst (not velocity-based) so it can't fight
+// the normal movement speed clamp. Distance-covered eases out (fast start,
+// settles at the end) over DODGE_DURATION_MS. No explicit invulnerability
+// flag — a fast enough dash naturally moves you out of an attack's range,
+// which is checked fresh every frame anyway.
+const DODGE_DISTANCE = 110;
+const DODGE_DURATION_MS = 160;
+const DODGE_COOLDOWN_MS = 450;
+
+const DOUBLE_TAP_WINDOW_MS = 300; // max gap between two "up" taps to count as a jump
+
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
 // (the single frame window it can actually connect) -> recovery (can't act
 // again yet). Movement is locked during windup+active only; recovery still
@@ -167,7 +178,9 @@ function makeFighter(ax, az, kind) {
     facing: kind === 'panda' ? 1 : -1,
     kind, walkBob: 0, squash: 0,
     attackType: null, attackState: 'idle', attackTimer: 0, attackHasHit: false, hitFlash: 0,
-    guarding: false, guardAmount: 0
+    guarding: false, guardAmount: 0,
+    dodging: false, dodgeTimer: 0, dodgeStartAx: ax, dodgeStartAz: az, dodgeDirX: 0, dodgeDirZ: 0, dodgeCooldown: 0,
+    lastUpTapAt: -9999
   };
 }
 
@@ -200,6 +213,7 @@ class PlayScene extends Phaser.Scene {
     this.aiCircleDir = 1;
     this.aiWillBlock = false;
     this.aiPrevP1AttackState = 'idle';
+    this.prevTouchUp = { p1: false, p2: false }; // rising-edge tracking for the touch dpad's up button, used by double-tap-jump
 
     this.buildHUD();
     this.buildMenu();
@@ -214,6 +228,7 @@ class PlayScene extends Phaser.Scene {
       p1Punch: Phaser.Input.Keyboard.KeyCodes.F,
       p1Kick: Phaser.Input.Keyboard.KeyCodes.G,
       p1Block: Phaser.Input.Keyboard.KeyCodes.E,
+      p1Dodge: Phaser.Input.Keyboard.KeyCodes.R,
       // P1 also gets a second, arrow-key binding — only actually read in
       // VS AI mode (see update()), where there's no P2 to conflict with.
       // Without this, "arrows don't move me" is exactly what happens the
@@ -225,6 +240,7 @@ class PlayScene extends Phaser.Scene {
       p1PunchAlt: Phaser.Input.Keyboard.KeyCodes.PERIOD,
       p1KickAlt: Phaser.Input.Keyboard.KeyCodes.COMMA,
       p1BlockAlt: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
+      p1DodgeAlt: Phaser.Input.Keyboard.KeyCodes.QUOTES,
       p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
       p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
@@ -232,7 +248,8 @@ class PlayScene extends Phaser.Scene {
       p2Jump: Phaser.Input.Keyboard.KeyCodes.FORWARD_SLASH,
       p2Punch: Phaser.Input.Keyboard.KeyCodes.PERIOD,
       p2Kick: Phaser.Input.Keyboard.KeyCodes.COMMA,
-      p2Block: Phaser.Input.Keyboard.KeyCodes.SEMICOLON
+      p2Block: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
+      p2Dodge: Phaser.Input.Keyboard.KeyCodes.QUOTES
     });
   }
 
@@ -275,15 +292,17 @@ class PlayScene extends Phaser.Scene {
 
   buildControls() {
     this.touchState = {};
-    // P1 — bottom-left: dpad on the outside edge, jump/punch/kick/block toward center
-    this.p1Controls = this.buildControlCluster({ dpadX: 100, jumpX: 186, punchX: 250, kickX: 314, blockX: 378, hint: 'WASD + SPACE jump + F punch + G kick + E block', key: 'p1' });
+    // P1 — bottom-left: dpad on the outside edge with DODGE nested in its
+    // empty center (no jump button — double-tap up jumps instead), punch/
+    // kick/block toward center
+    this.p1Controls = this.buildControlCluster({ dpadX: 100, punchX: 196, kickX: 260, blockX: 324, hint: 'WASD + F punch + G kick + E block + R dodge\ndouble-tap W to jump', key: 'p1' });
     // P2 — bottom-right, mirrored
-    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, jumpX: W - 186, punchX: W - 250, kickX: W - 314, blockX: W - 378, hint: '\u2190\u2191\u2192\u2193 + / jump + . punch + , kick + ; block', key: 'p2' });
+    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, punchX: W - 196, kickX: W - 260, blockX: W - 324, hint: '\u2190\u2191\u2192\u2193 + . punch + , kick + ; block + \' dodge\ndouble-tap \u2191 to jump', key: 'p2' });
   }
 
-  buildControlCluster({ dpadX, jumpX, punchX, kickX, blockX, hint, key }) {
+  buildControlCluster({ dpadX, punchX, kickX, blockX, hint, key }) {
     const dpadY = H - 74, btn = 34, gap = 4;
-    this.touchState[key] = { up: false, down: false, left: false, right: false, jumpPressed: false, punchPressed: false, kickPressed: false, blockHeld: false };
+    this.touchState[key] = { up: false, down: false, left: false, right: false, punchPressed: false, kickPressed: false, blockHeld: false, dodgePressed: false };
 
     const mkBtn = (x, y, label, size, strokeColor) => {
       const bg = this.add.rectangle(x, y, size, size, 0x14161c, 0.9).setStrokeStyle(2, strokeColor || 0x4fd1ff, 0.6);
@@ -294,12 +313,14 @@ class PlayScene extends Phaser.Scene {
     const down = mkBtn(dpadX, dpadY + btn + gap, '\u25bc', btn);
     const left = mkBtn(dpadX - btn - gap, dpadY, '\u25c0', btn);
     const right = mkBtn(dpadX + btn + gap, dpadY, '\u25b6', btn);
-    const jump = mkBtn(jumpX, dpadY, 'JUMP', 44);
+    // DODGE nested in the dpad's own empty center — no extra horizontal
+    // space needed, and it's exactly where a thumb already rests
+    const dodge = mkBtn(dpadX, dpadY, 'DASH', 40, 0xffd23f);
     const punch = mkBtn(punchX, dpadY, 'PUNCH', 44, 0xff8a3d);
     const kick = mkBtn(kickX, dpadY, 'KICK', 44, 0x5be37b);
     const block = mkBtn(blockX, dpadY, 'BLOCK', 44, 0xb0b8c4);
-    const hintText = this.add.text((dpadX + blockX) / 2, dpadY - btn * 2 - gap * 2 - 10, hint, {
-      fontFamily: 'Arial', fontSize: '10px', color: '#555a66'
+    const hintText = this.add.text((dpadX + blockX) / 2, dpadY - btn * 2 - gap * 2 - 22, hint, {
+      fontFamily: 'Arial', fontSize: '10px', color: '#555a66', align: 'center'
     }).setOrigin(0.5);
 
     const bindHold = (obj, field) => {
@@ -313,11 +334,11 @@ class PlayScene extends Phaser.Scene {
     bindHold(left, 'left');
     bindHold(right, 'right');
     bindHold(block, 'blockHeld'); // block is held, not single-press, same as the dpad — matches "hands go up while held" rather than a one-shot action
-    jump.bg.setInteractive({ useHandCursor: true });
-    jump.bg.on('pointerdown', () => {
-      this.touchState[key].jumpPressed = true;
-      jump.bg.setFillStyle(0x22262f, 0.95);
-      this.time.delayedCall(90, () => jump.bg.setFillStyle(0x14161c, 0.9));
+    dodge.bg.setInteractive({ useHandCursor: true });
+    dodge.bg.on('pointerdown', () => {
+      this.touchState[key].dodgePressed = true;
+      dodge.bg.setFillStyle(0x4a3c14, 0.95);
+      this.time.delayedCall(90, () => dodge.bg.setFillStyle(0x14161c, 0.9));
     });
     punch.bg.setInteractive({ useHandCursor: true });
     punch.bg.on('pointerdown', () => {
@@ -332,7 +353,7 @@ class PlayScene extends Phaser.Scene {
       this.time.delayedCall(90, () => kick.bg.setFillStyle(0x14161c, 0.9));
     });
 
-    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, jump.bg, jump.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, hintText] };
+    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, dodge.bg, dodge.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, hintText] };
   }
 
   setControlsVisible(cluster, visible) {
@@ -415,6 +436,7 @@ class PlayScene extends Phaser.Scene {
 
     if (f.grounded && speed > 20) f.walkBob += dt * 14;
     f.squash = Math.max(0, f.squash - dt * 4);
+    f.dodgeCooldown = Math.max(0, f.dodgeCooldown - dt * 1000);
     f.hitFlash = Math.max(0, f.hitFlash - dt * 5);
   }
 
@@ -509,6 +531,49 @@ class PlayScene extends Phaser.Scene {
     const rate = 1000 / GUARD_TRANSITION_MS; // per-second rate to cross 0..1 in GUARD_TRANSITION_MS
     if (f.guardAmount < target) f.guardAmount = Math.min(target, f.guardAmount + rate * dt);
     else if (f.guardAmount > target) f.guardAmount = Math.max(target, f.guardAmount - rate * dt);
+  }
+
+  // dashes in whatever direction is currently held, or straight back away
+  // from the opponent if nothing's held. Position-driven (see stepDodge)
+  // rather than a velocity impulse — a velocity burst would just get
+  // clamped back down to normal speed the instant stepFighter ran, so the
+  // burst is driven directly instead, bypassing that clamp entirely.
+  tryStartDodge(f, opponent, dodgePressed, moveMx, moveMz) {
+    if (!dodgePressed || f.dodgeCooldown > 0) return;
+    if (!f.grounded || f.attackState !== 'idle' || f.guarding) return;
+
+    let dirX = moveMx, dirZ = moveMz;
+    const mag = Math.hypot(dirX, dirZ);
+    if (mag < 0.1) {
+      const dx = f.ax - opponent.ax, dz = f.az - opponent.az;
+      const d = Math.hypot(dx, dz) || 0.001;
+      dirX = dx / d; dirZ = dz / d;
+    } else {
+      dirX /= mag; dirZ /= mag;
+    }
+
+    f.dodging = true;
+    f.dodgeTimer = 0;
+    f.dodgeStartAx = f.ax;
+    f.dodgeStartAz = f.az;
+    f.dodgeDirX = dirX;
+    f.dodgeDirZ = dirZ;
+    f.dodgeCooldown = DODGE_COOLDOWN_MS;
+    f.vax = 0; f.vaz = 0; // clear residual velocity so normal physics doesn't fight the burst once it ends
+    if (window.SFX) SFX.swoosh();
+    vibrate(15);
+  }
+
+  stepDodge(f, dt) {
+    f.dodgeTimer += dt * 1000;
+    const p = Phaser.Math.Clamp(f.dodgeTimer / DODGE_DURATION_MS, 0, 1);
+    const eased = 1 - Math.pow(1 - p, 3); // ease-out — fast start, settles at the end
+    const dist = DODGE_DISTANCE * eased;
+    const newAx = f.dodgeStartAx + f.dodgeDirX * dist;
+    const newAz = f.dodgeStartAz + f.dodgeDirZ * dist;
+    const clamped = clampToArena(newAx, newAz);
+    f.ax = clamped.ax; f.az = clamped.az;
+    if (p >= 1) f.dodging = false;
   }
 
   // windup (committed, no hit yet) -> active (the window it can connect in)
@@ -611,18 +676,30 @@ class PlayScene extends Phaser.Scene {
     const p1Down = this.keys.p1Down.isDown || (aiMode && this.keys.p1DownAlt.isDown) || t.p1.down;
     const p1Left = this.keys.p1Left.isDown || (aiMode && this.keys.p1LeftAlt.isDown) || t.p1.left;
     const p1Right = this.keys.p1Right.isDown || (aiMode && this.keys.p1RightAlt.isDown) || t.p1.right;
-    const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || t.p1.jumpPressed;
     const p1Punch = Phaser.Input.Keyboard.JustDown(this.keys.p1Punch) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1PunchAlt)) || t.p1.punchPressed;
     const p1Kick = Phaser.Input.Keyboard.JustDown(this.keys.p1Kick) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1KickAlt)) || t.p1.kickPressed;
     const p1Block = this.keys.p1Block.isDown || (aiMode && this.keys.p1BlockAlt.isDown) || t.p1.blockHeld;
-    t.p1.jumpPressed = false;
+    const p1Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p1Dodge) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1DodgeAlt)) || t.p1.dodgePressed;
+    // double-tap "up" jumps; Space is still a direct jump key too (no
+    // mobile screen-space cost to keeping it, only the on-screen button was removed)
+    const p1UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p1Up) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1UpAlt));
+    const p1TouchUpJustPressed = t.p1.up && !this.prevTouchUp.p1;
+    this.prevTouchUp.p1 = t.p1.up;
+    let p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump);
+    if (p1UpJustPressed || p1TouchUpJustPressed) {
+      if (time - this.p1.lastUpTapAt <= DOUBLE_TAP_WINDOW_MS) { p1Jump = true; this.p1.lastUpTapAt = -9999; }
+      else this.p1.lastUpTapAt = time;
+    }
     t.p1.punchPressed = false;
     t.p1.kickPressed = false;
+    t.p1.dodgePressed = false;
     // "up" = away from camera, "left" = screen-left — always, regardless of facing
     const p1Move = axisMoveVector(p1Up, p1Down, p1Left, p1Right);
-    // committed to the attack during windup/active — can't strafe out of it
-    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active';
+    this.tryStartDodge(this.p1, this.p2, p1Dodge, p1Move.mx, p1Move.mz);
+    // committed to the attack (or a dash) — can't strafe out of it
+    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active' || this.p1.dodging;
     this.stepFighter(this.p1, p1Locked ? 0 : p1Move.mx, p1Locked ? 0 : p1Move.mz, p1Jump, dt);
+    if (this.p1.dodging) this.stepDodge(this.p1, dt);
     this.updateGuard(this.p1, p1Block, dt);
 
     if (this.mode === '2p') {
@@ -630,16 +707,26 @@ class PlayScene extends Phaser.Scene {
       const p2Down = this.keys.p2Down.isDown || t.p2.down;
       const p2Left = this.keys.p2Left.isDown || t.p2.left;
       const p2Right = this.keys.p2Right.isDown || t.p2.right;
-      const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || t.p2.jumpPressed;
       const p2Punch = Phaser.Input.Keyboard.JustDown(this.keys.p2Punch) || t.p2.punchPressed;
       const p2Kick = Phaser.Input.Keyboard.JustDown(this.keys.p2Kick) || t.p2.kickPressed;
       const p2Block = this.keys.p2Block.isDown || t.p2.blockHeld;
-      t.p2.jumpPressed = false;
+      const p2Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p2Dodge) || t.p2.dodgePressed;
+      const p2UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p2Up);
+      const p2TouchUpJustPressed = t.p2.up && !this.prevTouchUp.p2;
+      this.prevTouchUp.p2 = t.p2.up;
+      let p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump);
+      if (p2UpJustPressed || p2TouchUpJustPressed) {
+        if (time - this.p2.lastUpTapAt <= DOUBLE_TAP_WINDOW_MS) { p2Jump = true; this.p2.lastUpTapAt = -9999; }
+        else this.p2.lastUpTapAt = time;
+      }
       t.p2.punchPressed = false;
       t.p2.kickPressed = false;
+      t.p2.dodgePressed = false;
       const p2Move = axisMoveVector(p2Up, p2Down, p2Left, p2Right);
-      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active';
+      this.tryStartDodge(this.p2, this.p1, p2Dodge, p2Move.mx, p2Move.mz);
+      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.p2.dodging;
       this.stepFighter(this.p2, p2Locked ? 0 : p2Move.mx, p2Locked ? 0 : p2Move.mz, p2Jump, dt);
+      if (this.p2.dodging) this.stepDodge(this.p2, dt);
       this.updateGuard(this.p2, p2Block, dt);
       this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
       this.updateAttack(this.p2, this.p1, p2Punch, p2Kick, dt);
