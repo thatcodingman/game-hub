@@ -84,6 +84,20 @@ const DODGE_COOLDOWN_MS = 450;
 
 const DOUBLE_TAP_WINDOW_MS = 300; // max gap between two "up" taps to count as a jump
 
+// GRAPPLE — the entry point to the ground game, not the ground game itself.
+// Deliberately gated, not automatic: pressing the button only does
+// something if the real-world conditions are met (very close range,
+// grounded, free to act, and the opponent isn't guarding against it).
+// Outside that window it's a no-op — proximity alone never triggers it.
+// What happens once clinched (takedowns, ground position, strikes from
+// top) is future scope; for now the clinch is just a timed hold that
+// locks both fighters together, then releases.
+const GRAPPLE_RANGE = 68; // tighter than punch range — you have to actually close all the way in
+const CLINCH_DISTANCE = 46; // locked separation once clinched
+const CLINCH_DURATION_MS = 1800;
+const CLINCH_BREAK_PUSH = 90; // distance pushed apart on release, so it doesn't immediately re-trigger
+const AI_GRAPPLE_CHANCE_PER_SEC = 0.3; // rarer than punch/kick — bigger commitment
+
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
 // (the single frame window it can actually connect) -> recovery (can't act
 // again yet). Movement is locked during windup+active only; recovery still
@@ -214,6 +228,8 @@ class PlayScene extends Phaser.Scene {
     this.aiWillBlock = false;
     this.aiPrevP1AttackState = 'idle';
     this.prevTouchUp = { p1: false, p2: false }; // rising-edge tracking for the touch dpad's up button, used by double-tap-jump
+    this.clinchActive = false;
+    this.clinchTimer = 0;
 
     this.buildHUD();
     this.buildMenu();
@@ -229,6 +245,7 @@ class PlayScene extends Phaser.Scene {
       p1Kick: Phaser.Input.Keyboard.KeyCodes.G,
       p1Block: Phaser.Input.Keyboard.KeyCodes.E,
       p1Dodge: Phaser.Input.Keyboard.KeyCodes.R,
+      p1Grapple: Phaser.Input.Keyboard.KeyCodes.T,
       // P1 also gets a second, arrow-key binding — only actually read in
       // VS AI mode (see update()), where there's no P2 to conflict with.
       // Without this, "arrows don't move me" is exactly what happens the
@@ -241,6 +258,7 @@ class PlayScene extends Phaser.Scene {
       p1KickAlt: Phaser.Input.Keyboard.KeyCodes.COMMA,
       p1BlockAlt: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
       p1DodgeAlt: Phaser.Input.Keyboard.KeyCodes.QUOTES,
+      p1GrappleAlt: Phaser.Input.Keyboard.KeyCodes.ENTER,
       p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
       p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
@@ -249,7 +267,8 @@ class PlayScene extends Phaser.Scene {
       p2Punch: Phaser.Input.Keyboard.KeyCodes.PERIOD,
       p2Kick: Phaser.Input.Keyboard.KeyCodes.COMMA,
       p2Block: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
-      p2Dodge: Phaser.Input.Keyboard.KeyCodes.QUOTES
+      p2Dodge: Phaser.Input.Keyboard.KeyCodes.QUOTES,
+      p2Grapple: Phaser.Input.Keyboard.KeyCodes.ENTER
     });
   }
 
@@ -267,7 +286,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
     this.subText = this.add.text(W/2, 168,
-      'Panda vs Bear \u2014 punch and kick are in\ncircle, close distance, and land one. Blocks and dodges come next.', {
+      'Panda vs Bear \u2014 punch, kick, block, dodge, grapple\nclose the distance and make something happen.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
@@ -294,19 +313,19 @@ class PlayScene extends Phaser.Scene {
     this.touchState = {};
     // P1 — bottom-left: dpad on the outside edge with DODGE nested in its
     // empty center (no jump button — double-tap up jumps instead), punch/
-    // kick/block toward center
-    this.p1Controls = this.buildControlCluster({ dpadX: 100, punchX: 196, kickX: 260, blockX: 324, hint: 'WASD + F punch + G kick + E block + R dodge\ndouble-tap W to jump', key: 'p1' });
+    // kick/block/grapple toward center
+    this.p1Controls = this.buildControlCluster({ dpadX: 100, punchX: 192, kickX: 250, blockX: 308, grappleX: 366, hint: 'WASD + F punch + G kick + E block\nR dodge + T grapple + dbl-tap W jump', key: 'p1' });
     // P2 — bottom-right, mirrored
-    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, punchX: W - 196, kickX: W - 260, blockX: W - 324, hint: '\u2190\u2191\u2192\u2193 + . punch + , kick + ; block + \' dodge\ndouble-tap \u2191 to jump', key: 'p2' });
+    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, punchX: W - 192, kickX: W - 250, blockX: W - 308, grappleX: W - 366, hint: '\u2190\u2191\u2192\u2193 + . punch + , kick + ; block\n\' dodge + ENTER grapple + dbl-tap \u2191 jump', key: 'p2' });
   }
 
-  buildControlCluster({ dpadX, punchX, kickX, blockX, hint, key }) {
-    const dpadY = H - 74, btn = 34, gap = 4;
-    this.touchState[key] = { up: false, down: false, left: false, right: false, punchPressed: false, kickPressed: false, blockHeld: false, dodgePressed: false };
+  buildControlCluster({ dpadX, punchX, kickX, blockX, grappleX, hint, key }) {
+    const dpadY = H - 74, btn = 32, gap = 4;
+    this.touchState[key] = { up: false, down: false, left: false, right: false, punchPressed: false, kickPressed: false, blockHeld: false, dodgePressed: false, grapplePressed: false };
 
     const mkBtn = (x, y, label, size, strokeColor) => {
       const bg = this.add.rectangle(x, y, size, size, 0x14161c, 0.9).setStrokeStyle(2, strokeColor || 0x4fd1ff, 0.6);
-      const t = this.add.text(x, y, label, { fontFamily: 'Arial Black, Arial', fontSize: size > 44 ? '13px' : '14px', color: '#e8ecf1' }).setOrigin(0.5);
+      const t = this.add.text(x, y, label, { fontFamily: 'Arial Black, Arial', fontSize: size > 44 ? '12px' : '13px', color: '#e8ecf1' }).setOrigin(0.5);
       return { bg, t };
     };
     const up = mkBtn(dpadX, dpadY - btn - gap, '\u25b2', btn);
@@ -315,11 +334,12 @@ class PlayScene extends Phaser.Scene {
     const right = mkBtn(dpadX + btn + gap, dpadY, '\u25b6', btn);
     // DODGE nested in the dpad's own empty center — no extra horizontal
     // space needed, and it's exactly where a thumb already rests
-    const dodge = mkBtn(dpadX, dpadY, 'DASH', 40, 0xffd23f);
-    const punch = mkBtn(punchX, dpadY, 'PUNCH', 44, 0xff8a3d);
-    const kick = mkBtn(kickX, dpadY, 'KICK', 44, 0x5be37b);
-    const block = mkBtn(blockX, dpadY, 'BLOCK', 44, 0xb0b8c4);
-    const hintText = this.add.text((dpadX + blockX) / 2, dpadY - btn * 2 - gap * 2 - 22, hint, {
+    const dodge = mkBtn(dpadX, dpadY, 'DASH', 38, 0xffd23f);
+    const punch = mkBtn(punchX, dpadY, 'PUNCH', 42, 0xff8a3d);
+    const kick = mkBtn(kickX, dpadY, 'KICK', 42, 0x5be37b);
+    const block = mkBtn(blockX, dpadY, 'BLOCK', 42, 0xb0b8c4);
+    const grapple = mkBtn(grappleX, dpadY, 'GRAB', 42, 0xba7dff);
+    const hintText = this.add.text((dpadX + grappleX) / 2, dpadY - btn * 2 - gap * 2 - 26, hint, {
       fontFamily: 'Arial', fontSize: '10px', color: '#555a66', align: 'center'
     }).setOrigin(0.5);
 
@@ -352,8 +372,14 @@ class PlayScene extends Phaser.Scene {
       kick.bg.setFillStyle(0x1f3a28, 0.95);
       this.time.delayedCall(90, () => kick.bg.setFillStyle(0x14161c, 0.9));
     });
+    grapple.bg.setInteractive({ useHandCursor: true });
+    grapple.bg.on('pointerdown', () => {
+      this.touchState[key].grapplePressed = true;
+      grapple.bg.setFillStyle(0x352a4a, 0.95);
+      this.time.delayedCall(90, () => grapple.bg.setFillStyle(0x14161c, 0.9));
+    });
 
-    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, dodge.bg, dodge.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, hintText] };
+    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, dodge.bg, dodge.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, grapple.bg, grapple.t, hintText] };
   }
 
   setControlsVisible(cluster, visible) {
@@ -379,6 +405,8 @@ class PlayScene extends Phaser.Scene {
     this.aiCircleTimer = 0;
     this.aiWillBlock = false;
     this.aiPrevP1AttackState = 'idle';
+    this.clinchActive = false;
+    this.clinchTimer = 0;
 
     if (window.SFX) SFX.select();
   }
@@ -494,7 +522,12 @@ class PlayScene extends Phaser.Scene {
     const withinBlockRange = dist <= Math.max(PUNCH_RANGE, KICK_RANGE) + 30;
     const block = this.aiWillBlock && withinBlockRange && (this.p1.attackState === 'windup' || this.p1.attackState === 'active');
 
-    return { moveX, moveZ, jump, punch, kick, block };
+    let grapple = false;
+    if (!this.clinchActive && this.p2.attackState === 'idle' && !block && dist <= GRAPPLE_RANGE && Math.random() < AI_GRAPPLE_CHANCE_PER_SEC * dt) {
+      grapple = true;
+    }
+
+    return { moveX, moveZ, jump, punch, kick, block, grapple };
   }
 
   separate() {
@@ -574,6 +607,64 @@ class PlayScene extends Phaser.Scene {
     const clamped = clampToArena(newAx, newAz);
     f.ax = clamped.ax; f.az = clamped.az;
     if (p >= 1) f.dodging = false;
+  }
+
+  // GRAPPLE — gated, not automatic. Every one of these has to hold for the
+  // clinch to actually start; otherwise the button press is a no-op, same
+  // as trying to punch out of range.
+  tryStartGrapple(attacker, defender, grapplePressed) {
+    if (!grapplePressed || this.clinchActive) return;
+    if (!attacker.grounded || attacker.attackState !== 'idle' || attacker.guarding || attacker.dodging) return;
+    if (!defender.grounded || defender.guarding) return; // a guarding opponent resists the clinch
+
+    const dist = Math.hypot(defender.ax - attacker.ax, defender.az - attacker.az);
+    if (dist > GRAPPLE_RANGE) return;
+
+    this.clinchActive = true;
+    this.clinchTimer = 0;
+
+    const midX = (attacker.ax + defender.ax) / 2, midZ = (attacker.az + defender.az) / 2;
+    const d = dist || 0.001;
+    const ux = (defender.ax - attacker.ax) / d, uz = (defender.az - attacker.az) / d;
+    const a1 = clampToArena(midX - ux * CLINCH_DISTANCE / 2, midZ - uz * CLINCH_DISTANCE / 2);
+    const a2 = clampToArena(midX + ux * CLINCH_DISTANCE / 2, midZ + uz * CLINCH_DISTANCE / 2);
+    attacker.ax = a1.ax; attacker.az = a1.az;
+    defender.ax = a2.ax; defender.az = a2.az;
+    attacker.vax = 0; attacker.vaz = 0;
+    defender.vax = 0; defender.vaz = 0;
+
+    if (window.SFX) SFX.click();
+    vibrate(25);
+    this.showClinchText(midX, midZ, 'CLINCH!', '#ba7dff');
+  }
+
+  // ticks the hold and releases it after CLINCH_DURATION_MS — the actual
+  // ground-game decisions (break free early, take it to the ground, strike
+  // from the clinch) are exactly the future-scope piece; this is just the
+  // hold itself
+  updateClinch(dt) {
+    if (!this.clinchActive) return;
+    this.clinchTimer += dt * 1000;
+    if (this.clinchTimer >= CLINCH_DURATION_MS) {
+      const midX = (this.p1.ax + this.p2.ax) / 2, midZ = (this.p1.az + this.p2.az) / 2;
+      const dist = Math.hypot(this.p2.ax - this.p1.ax, this.p2.az - this.p1.az) || 0.001;
+      const ux = (this.p2.ax - this.p1.ax) / dist, uz = (this.p2.az - this.p1.az) / dist;
+      const a1 = clampToArena(midX - ux * CLINCH_BREAK_PUSH / 2, midZ - uz * CLINCH_BREAK_PUSH / 2);
+      const a2 = clampToArena(midX + ux * CLINCH_BREAK_PUSH / 2, midZ + uz * CLINCH_BREAK_PUSH / 2);
+      this.p1.ax = a1.ax; this.p1.az = a1.az;
+      this.p2.ax = a2.ax; this.p2.az = a2.az;
+      this.clinchActive = false;
+      this.showClinchText(midX, midZ, 'BROKE FREE', '#7f8a9a');
+    }
+  }
+
+  showClinchText(ax, az, msg, color) {
+    const proj = project(ax, az);
+    const scale = depthScale(az);
+    const t = this.add.text(proj.sx, proj.sy - 100 * scale, msg, {
+      fontFamily: 'Arial Black, Arial', fontSize: `${Math.round(18 * scale)}px`, color
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: t.y - 26, alpha: 0, duration: 500, onComplete: () => t.destroy() });
   }
 
   // windup (committed, no hit yet) -> active (the window it can connect in)
@@ -680,6 +771,7 @@ class PlayScene extends Phaser.Scene {
     const p1Kick = Phaser.Input.Keyboard.JustDown(this.keys.p1Kick) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1KickAlt)) || t.p1.kickPressed;
     const p1Block = this.keys.p1Block.isDown || (aiMode && this.keys.p1BlockAlt.isDown) || t.p1.blockHeld;
     const p1Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p1Dodge) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1DodgeAlt)) || t.p1.dodgePressed;
+    const p1Grapple = Phaser.Input.Keyboard.JustDown(this.keys.p1Grapple) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1GrappleAlt)) || t.p1.grapplePressed;
     // double-tap "up" jumps; Space is still a direct jump key too (no
     // mobile screen-space cost to keeping it, only the on-screen button was removed)
     const p1UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p1Up) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1UpAlt));
@@ -693,11 +785,13 @@ class PlayScene extends Phaser.Scene {
     t.p1.punchPressed = false;
     t.p1.kickPressed = false;
     t.p1.dodgePressed = false;
+    t.p1.grapplePressed = false;
     // "up" = away from camera, "left" = screen-left — always, regardless of facing
     const p1Move = axisMoveVector(p1Up, p1Down, p1Left, p1Right);
     this.tryStartDodge(this.p1, this.p2, p1Dodge, p1Move.mx, p1Move.mz);
-    // committed to the attack (or a dash) — can't strafe out of it
-    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active' || this.p1.dodging;
+    this.tryStartGrapple(this.p1, this.p2, p1Grapple);
+    // committed to the attack, a dash, or a clinch — can't strafe out of it
+    const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active' || this.p1.dodging || this.clinchActive;
     this.stepFighter(this.p1, p1Locked ? 0 : p1Move.mx, p1Locked ? 0 : p1Move.mz, p1Jump, dt);
     if (this.p1.dodging) this.stepDodge(this.p1, dt);
     this.updateGuard(this.p1, p1Block, dt);
@@ -711,6 +805,7 @@ class PlayScene extends Phaser.Scene {
       const p2Kick = Phaser.Input.Keyboard.JustDown(this.keys.p2Kick) || t.p2.kickPressed;
       const p2Block = this.keys.p2Block.isDown || t.p2.blockHeld;
       const p2Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p2Dodge) || t.p2.dodgePressed;
+      const p2Grapple = Phaser.Input.Keyboard.JustDown(this.keys.p2Grapple) || t.p2.grapplePressed;
       const p2UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p2Up);
       const p2TouchUpJustPressed = t.p2.up && !this.prevTouchUp.p2;
       this.prevTouchUp.p2 = t.p2.up;
@@ -722,24 +817,32 @@ class PlayScene extends Phaser.Scene {
       t.p2.punchPressed = false;
       t.p2.kickPressed = false;
       t.p2.dodgePressed = false;
+      t.p2.grapplePressed = false;
       const p2Move = axisMoveVector(p2Up, p2Down, p2Left, p2Right);
       this.tryStartDodge(this.p2, this.p1, p2Dodge, p2Move.mx, p2Move.mz);
-      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.p2.dodging;
+      this.tryStartGrapple(this.p2, this.p1, p2Grapple);
+      const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.p2.dodging || this.clinchActive;
       this.stepFighter(this.p2, p2Locked ? 0 : p2Move.mx, p2Locked ? 0 : p2Move.mz, p2Jump, dt);
       if (this.p2.dodging) this.stepDodge(this.p2, dt);
       this.updateGuard(this.p2, p2Block, dt);
-      this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
-      this.updateAttack(this.p2, this.p1, p2Punch, p2Kick, dt);
+      if (!this.clinchActive) {
+        this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
+        this.updateAttack(this.p2, this.p1, p2Punch, p2Kick, dt);
+      }
     } else {
       const ai = this.aiInput(dt);
-      const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active';
+      this.tryStartGrapple(this.p2, this.p1, ai.grapple);
+      const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.clinchActive;
       this.stepFighter(this.p2, aiLocked ? 0 : ai.moveX, aiLocked ? 0 : ai.moveZ, ai.jump, dt);
       this.updateGuard(this.p2, ai.block, dt);
-      this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
-      this.updateAttack(this.p2, this.p1, ai.punch, ai.kick, dt);
+      if (!this.clinchActive) {
+        this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
+        this.updateAttack(this.p2, this.p1, ai.punch, ai.kick, dt);
+      }
     }
 
-    this.separate();
+    this.updateClinch(dt);
+    if (!this.clinchActive) this.separate(); // clinch holds a tighter distance than normal separation would allow
     this.updateFacing();
     this.draw();
   }
@@ -939,6 +1042,21 @@ class PlayScene extends Phaser.Scene {
     // the nearer one correctly overlaps them when they're close together
     const order = [this.p1, this.p2].sort((a, b) => project(a.ax, a.az).sy - project(b.ax, b.az).sy);
     order.forEach(f => { this.drawShadow(f); this.drawFighter(f); });
+
+    // CLINCH — a simple grip connector between the two while locked
+    // together, plus a shrinking ring showing how much hold time is left.
+    // This is deliberately minimal; real ground-game visuals are future work.
+    if (this.clinchActive) {
+      const p1 = project(this.p1.ax, this.p1.az), p2 = project(this.p2.ax, this.p2.az);
+      g.lineStyle(4, 0xba7dff, 0.5);
+      g.lineBetween(p1.sx, p1.sy - 30, p2.sx, p2.sy - 30);
+      const midX = (p1.sx + p2.sx) / 2, midY = (p1.sy + p2.sy) / 2 - 30;
+      const remain = 1 - Phaser.Math.Clamp(this.clinchTimer / CLINCH_DURATION_MS, 0, 1);
+      g.lineStyle(3, 0xba7dff, 0.8);
+      g.beginPath();
+      g.arc(midX, midY, 14, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * remain), false);
+      g.strokePath();
+    }
   }
 }
 
