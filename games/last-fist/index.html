@@ -115,6 +115,7 @@ const GROUND_DURATION_MS = 4000; // auto-returns to standing if nobody resolves 
 const GROUND_ESCAPE_PRESSES_NEEDED = 4; // bottom mashes DODGE this many times to escape early
 const AI_GROUND_STRIKE_CHANCE_PER_SEC = 0.8; // eager once on top
 const AI_GROUND_ESCAPE_CHANCE_PER_SEC = 1.2; // eager to get up when pinned
+const GROUND_POSE_TRANSITION_MS = 150; // how fast the squash-to-the-ground visual eases in/out
 
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
 // (the single frame window it can actually connect) -> recovery (can't act
@@ -259,6 +260,7 @@ function makeFighter(ax, az, characterKey, facing) {
     maxHealth, health: maxHealth,
     attackType: null, attackState: 'idle', attackTimer: 0, attackHasHit: false, hitFlash: 0,
     guarding: false, guardAmount: 0,
+    groundPoseAmount: 0,
     dodging: false, dodgeTimer: 0, dodgeStartAx: ax, dodgeStartAz: az, dodgeDirX: 0, dodgeDirZ: 0, dodgeCooldown: 0,
     lastUpTapAt: -9999
   };
@@ -767,6 +769,17 @@ class PlayScene extends Phaser.Scene {
     else if (f.guardAmount > target) f.guardAmount = Math.max(target, f.guardAmount - rate * dt);
   }
 
+  // eases each fighter toward a squashed "on the ground" pose while the
+  // ground exchange is active, and back to standing when it ends — without
+  // this, a takedown just locks two fully-standing figures together, which
+  // reads as nothing happening
+  updateGroundPose(f, dt) {
+    const target = this.groundActive ? 1 : 0;
+    const rate = 1000 / GROUND_POSE_TRANSITION_MS;
+    if (f.groundPoseAmount < target) f.groundPoseAmount = Math.min(target, f.groundPoseAmount + rate * dt);
+    else if (f.groundPoseAmount > target) f.groundPoseAmount = Math.max(target, f.groundPoseAmount - rate * dt);
+  }
+
   // dashes in whatever direction is currently held, or straight back away
   // from the opponent if nothing's held. Position-driven (see stepDodge)
   // rather than a velocity impulse — a velocity burst would just get
@@ -881,6 +894,12 @@ class PlayScene extends Phaser.Scene {
     this.groundEscapeProgress = 0;
     this.groundTopIsP1 = (fighter === this.p1);
     const midX = (this.p1.ax + this.p2.ax) / 2, midZ = (this.p1.az + this.p2.az) / 2;
+    // a body actually hitting the ground should feel like an impact, not
+    // just a state flag flipping — same shake/squash weight punch and
+    // landing already get
+    this.p1.squash = 1;
+    this.p2.squash = 1;
+    this.cameras.main.shake(140, 0.009);
     if (window.SFX) SFX.powerup();
     vibrate(30);
     this.showClinchText(midX, midZ, 'TAKEDOWN!', '#ffd23f');
@@ -904,6 +923,7 @@ class PlayScene extends Phaser.Scene {
       if (bottomBlockHeld) dmg *= GROUND_BLOCK_REDUCTION;
       bottom.health -= dmg;
       bottom.hitFlash = bottomBlockHeld ? 0.5 : 1;
+      bottom.squash = bottomBlockHeld ? 0.5 : 1;
       if (window.SFX) SFX.hit();
       vibrate(bottomBlockHeld ? 10 : 20);
       this.showHitText(bottom);
@@ -913,6 +933,8 @@ class PlayScene extends Phaser.Scene {
 
     if (bottomEscapePressed) {
       this.groundEscapeProgress++;
+      bottom.squash = 0.6; // a small jolt per press — mashing should feel like it's physically doing something
+      vibrate(8);
       if (this.groundEscapeProgress >= GROUND_ESCAPE_PRESSES_NEEDED) {
         this.endGround('ESCAPED!');
         return;
@@ -1134,6 +1156,8 @@ class PlayScene extends Phaser.Scene {
     this.updateClinch(dt);
     if (!this.clinchActive && !this.groundActive) this.separate(); // clinch/ground hold a tighter distance than normal separation would allow
     this.updateFacing();
+    this.updateGroundPose(this.p1, dt);
+    this.updateGroundPose(this.p2, dt);
     this.updateHealthBar(this.p1HealthFill, this.p1);
     this.updateHealthBar(this.p2HealthFill, this.p2);
     this.draw();
@@ -1155,6 +1179,24 @@ class PlayScene extends Phaser.Scene {
     const squashY = 1 - f.squash * 0.18;
     const squashX = 1 + f.squash * 0.12;
 
+    // GROUND POSE — squashes the figure down and offsets top/bottom
+    // slightly to suggest a grappling stack, eased in/out so a takedown
+    // doesn't snap instantly from standing to flattened. groundTopIsP1
+    // still reflects the correct role during the brief ease-out too,
+    // since it isn't reset until the next takedown happens.
+    const groundT = f.groundPoseAmount;
+    const isTopFighter = f === (this.groundTopIsP1 ? this.p1 : this.p2);
+    const groundSquash = Phaser.Math.Linear(1, 0.42, groundT);
+    const groundYShift = Phaser.Math.Linear(0, isTopFighter ? -9 : 7, groundT) * scale;
+    // ongoing struggle wobble while actually grounded — this is the piece
+    // that stops the hold itself from reading as frozen for its full
+    // duration; top and bottom wobble out of phase so it reads as push-pull
+    // rather than both fighters twitching in sync
+    const struggleActive = this.groundActive ? 1 : 0;
+    const wobblePhase = isTopFighter ? 0 : Math.PI;
+    const wobbleX = Math.sin(this.time.now * 0.006 + wobblePhase) * 2.2 * scale * struggleActive;
+    const wobbleSquash = 1 + Math.sin(this.time.now * 0.009 + wobblePhase) * 0.05 * struggleActive;
+
     // ATTACK — one continuous pull-back/thrust/retract motion; see
     // attackOffset for why it's built this way. Body lean reuses this
     // same curve at a fraction of the magnitude, so the whole fighter
@@ -1164,9 +1206,9 @@ class PlayScene extends Phaser.Scene {
     const rawOffset = attackDef ? attackOffset(f.attackState, f.attackTimer, attackDef) : null;
     const leanRaw = rawOffset === null ? 0 : rawOffset * 0.18;
 
-    const baseX = proj.sx + leanRaw * scale * f.facing;
-    const baseY = proj.sy + f.jumpZ * scale - bobY;
-    const w = 42 * scale * squashX, hgt = 56 * scale * squashY;
+    const baseX = proj.sx + leanRaw * scale * f.facing + wobbleX;
+    const baseY = proj.sy + f.jumpZ * scale - bobY + groundYShift;
+    const w = 42 * scale * squashX, hgt = 56 * scale * squashY * groundSquash * wobbleSquash;
 
     // Which static limb (if any) needs to stand down and hand off to the
     // animated one — the facing-side arm during a punch, the facing-side
