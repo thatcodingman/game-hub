@@ -69,6 +69,9 @@ const AI_APPROACH_MAX = 160;  // AI closes in if farther than this
 const AI_JUMP_CHANCE_PER_SEC = 0.35;
 const AI_PUNCH_CHANCE_PER_SEC = 0.9; // fairly eager to punch once in range — the point is proving hit detection
 const AI_KICK_CHANCE_PER_SEC = 0.6; // slightly less eager than punch — kick is the bigger commitment
+const AI_BLOCK_CHANCE = 0.5; // rolled once per incoming attack (not per frame) — see aiInput
+
+const GUARD_TRANSITION_MS = 100; // how long the raise/lower animation takes — quick, not an instant snap
 
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
 // (the single frame window it can actually connect) -> recovery (can't act
@@ -76,12 +79,12 @@ const AI_KICK_CHANCE_PER_SEC = 0.6; // slightly less eager than punch — kick i
 // lets you drift, since being rooted THAT long felt bad in testing... well,
 // it hasn't been tested yet, that's exactly the point of shipping this alone.
 const PUNCH_RANGE = 78; // arena units — a bit past SEPARATION_MIN_DIST, so closing distance actually matters
-const PUNCH_WINDUP_MS = 120;
-const PUNCH_ACTIVE_MS = 90;
-const PUNCH_RECOVERY_MS = 320;
+const PUNCH_WINDUP_MS = 95;
+const PUNCH_ACTIVE_MS = 70;
+const PUNCH_RECOVERY_MS = 250;
 const PUNCH_PULLBACK = 8;   // how far the fist draws back during windup, unscaled
 const PUNCH_EXTEND = 26;    // full thrust distance at the peak of active, unscaled
-const PUNCH_RETRACT_MS = 150; // portion of recovery spent visually easing the fist back in
+const PUNCH_RETRACT_MS = 120; // portion of recovery spent visually easing the fist back in
 const PUNCH_KNOCKBACK = 150; // velocity impulse on the defender; friction bleeds it off naturally
 
 // KICK — longer reach, slower windup, bigger recovery, harder knockback.
@@ -89,12 +92,12 @@ const PUNCH_KNOCKBACK = 150; // velocity impulse on the defender; friction bleed
 // slow/long) so the two moves already feel distinct with zero new rules,
 // just different numbers through the same system.
 const KICK_RANGE = 95;
-const KICK_WINDUP_MS = 180;
-const KICK_ACTIVE_MS = 110;
-const KICK_RECOVERY_MS = 420;
+const KICK_WINDUP_MS = 145;
+const KICK_ACTIVE_MS = 85;
+const KICK_RECOVERY_MS = 330;
 const KICK_PULLBACK = 10;
 const KICK_EXTEND = 34;
-const KICK_RETRACT_MS = 180;
+const KICK_RETRACT_MS = 145;
 const KICK_KNOCKBACK = 220;
 
 const ATTACK_DEFS = {
@@ -163,7 +166,8 @@ function makeFighter(ax, az, kind) {
     jumpZ: 0, vJump: 0, grounded: true,
     facing: kind === 'panda' ? 1 : -1,
     kind, walkBob: 0, squash: 0,
-    attackType: null, attackState: 'idle', attackTimer: 0, attackHasHit: false, hitFlash: 0
+    attackType: null, attackState: 'idle', attackTimer: 0, attackHasHit: false, hitFlash: 0,
+    guarding: false, guardAmount: 0
   };
 }
 
@@ -194,6 +198,8 @@ class PlayScene extends Phaser.Scene {
     this.aiJumpCooldown = 1.5;
     this.aiCircleTimer = 0;
     this.aiCircleDir = 1;
+    this.aiWillBlock = false;
+    this.aiPrevP1AttackState = 'idle';
 
     this.buildHUD();
     this.buildMenu();
@@ -207,6 +213,7 @@ class PlayScene extends Phaser.Scene {
       p1Jump: Phaser.Input.Keyboard.KeyCodes.SPACE,
       p1Punch: Phaser.Input.Keyboard.KeyCodes.F,
       p1Kick: Phaser.Input.Keyboard.KeyCodes.G,
+      p1Block: Phaser.Input.Keyboard.KeyCodes.E,
       // P1 also gets a second, arrow-key binding — only actually read in
       // VS AI mode (see update()), where there's no P2 to conflict with.
       // Without this, "arrows don't move me" is exactly what happens the
@@ -217,13 +224,15 @@ class PlayScene extends Phaser.Scene {
       p1RightAlt: Phaser.Input.Keyboard.KeyCodes.RIGHT,
       p1PunchAlt: Phaser.Input.Keyboard.KeyCodes.PERIOD,
       p1KickAlt: Phaser.Input.Keyboard.KeyCodes.COMMA,
+      p1BlockAlt: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
       p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
       p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
       p2Right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
       p2Jump: Phaser.Input.Keyboard.KeyCodes.FORWARD_SLASH,
       p2Punch: Phaser.Input.Keyboard.KeyCodes.PERIOD,
-      p2Kick: Phaser.Input.Keyboard.KeyCodes.COMMA
+      p2Kick: Phaser.Input.Keyboard.KeyCodes.COMMA,
+      p2Block: Phaser.Input.Keyboard.KeyCodes.SEMICOLON
     });
   }
 
@@ -266,29 +275,30 @@ class PlayScene extends Phaser.Scene {
 
   buildControls() {
     this.touchState = {};
-    // P1 — bottom-left: dpad on the outside edge, jump/punch/kick toward center
-    this.p1Controls = this.buildControlCluster({ dpadX: 100, jumpX: 190, punchX: 258, kickX: 326, hint: 'WASD + SPACE jump + F punch + G kick', key: 'p1' });
+    // P1 — bottom-left: dpad on the outside edge, jump/punch/kick/block toward center
+    this.p1Controls = this.buildControlCluster({ dpadX: 100, jumpX: 186, punchX: 250, kickX: 314, blockX: 378, hint: 'WASD + SPACE jump + F punch + G kick + E block', key: 'p1' });
     // P2 — bottom-right, mirrored
-    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, jumpX: W - 190, punchX: W - 258, kickX: W - 326, hint: '\u2190\u2191\u2192\u2193 + / jump + . punch + , kick', key: 'p2' });
+    this.p2Controls = this.buildControlCluster({ dpadX: W - 100, jumpX: W - 186, punchX: W - 250, kickX: W - 314, blockX: W - 378, hint: '\u2190\u2191\u2192\u2193 + / jump + . punch + , kick + ; block', key: 'p2' });
   }
 
-  buildControlCluster({ dpadX, jumpX, punchX, kickX, hint, key }) {
+  buildControlCluster({ dpadX, jumpX, punchX, kickX, blockX, hint, key }) {
     const dpadY = H - 74, btn = 34, gap = 4;
-    this.touchState[key] = { up: false, down: false, left: false, right: false, jumpPressed: false, punchPressed: false, kickPressed: false };
+    this.touchState[key] = { up: false, down: false, left: false, right: false, jumpPressed: false, punchPressed: false, kickPressed: false, blockHeld: false };
 
     const mkBtn = (x, y, label, size, strokeColor) => {
       const bg = this.add.rectangle(x, y, size, size, 0x14161c, 0.9).setStrokeStyle(2, strokeColor || 0x4fd1ff, 0.6);
-      const t = this.add.text(x, y, label, { fontFamily: 'Arial Black, Arial', fontSize: size > 44 ? '15px' : '14px', color: '#e8ecf1' }).setOrigin(0.5);
+      const t = this.add.text(x, y, label, { fontFamily: 'Arial Black, Arial', fontSize: size > 44 ? '13px' : '14px', color: '#e8ecf1' }).setOrigin(0.5);
       return { bg, t };
     };
     const up = mkBtn(dpadX, dpadY - btn - gap, '\u25b2', btn);
     const down = mkBtn(dpadX, dpadY + btn + gap, '\u25bc', btn);
     const left = mkBtn(dpadX - btn - gap, dpadY, '\u25c0', btn);
     const right = mkBtn(dpadX + btn + gap, dpadY, '\u25b6', btn);
-    const jump = mkBtn(jumpX, dpadY, 'JUMP', 48);
-    const punch = mkBtn(punchX, dpadY, 'PUNCH', 48, 0xff8a3d);
-    const kick = mkBtn(kickX, dpadY, 'KICK', 48, 0x5be37b);
-    const hintText = this.add.text((dpadX + kickX) / 2, dpadY - btn * 2 - gap * 2 - 10, hint, {
+    const jump = mkBtn(jumpX, dpadY, 'JUMP', 44);
+    const punch = mkBtn(punchX, dpadY, 'PUNCH', 44, 0xff8a3d);
+    const kick = mkBtn(kickX, dpadY, 'KICK', 44, 0x5be37b);
+    const block = mkBtn(blockX, dpadY, 'BLOCK', 44, 0xb0b8c4);
+    const hintText = this.add.text((dpadX + blockX) / 2, dpadY - btn * 2 - gap * 2 - 10, hint, {
       fontFamily: 'Arial', fontSize: '10px', color: '#555a66'
     }).setOrigin(0.5);
 
@@ -302,6 +312,7 @@ class PlayScene extends Phaser.Scene {
     bindHold(down, 'down');
     bindHold(left, 'left');
     bindHold(right, 'right');
+    bindHold(block, 'blockHeld'); // block is held, not single-press, same as the dpad — matches "hands go up while held" rather than a one-shot action
     jump.bg.setInteractive({ useHandCursor: true });
     jump.bg.on('pointerdown', () => {
       this.touchState[key].jumpPressed = true;
@@ -321,7 +332,7 @@ class PlayScene extends Phaser.Scene {
       this.time.delayedCall(90, () => kick.bg.setFillStyle(0x14161c, 0.9));
     });
 
-    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, jump.bg, jump.t, punch.bg, punch.t, kick.bg, kick.t, hintText] };
+    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, jump.bg, jump.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, hintText] };
   }
 
   setControlsVisible(cluster, visible) {
@@ -345,6 +356,8 @@ class PlayScene extends Phaser.Scene {
     this.p2 = makeFighter(90, -20, 'bear');
     this.aiJumpCooldown = Phaser.Math.FloatBetween(1, 2.5);
     this.aiCircleTimer = 0;
+    this.aiWillBlock = false;
+    this.aiPrevP1AttackState = 'idle';
 
     if (window.SFX) SFX.select();
   }
@@ -447,7 +460,19 @@ class PlayScene extends Phaser.Scene {
         kick = true;
       }
     }
-    return { moveX, moveZ, jump, punch, kick };
+
+    // block reaction — decided ONCE per incoming attack (the instant it
+    // enters windup), not re-rolled every frame, or it'd flicker on/off
+    // instead of reading as a real decision
+    if (this.p1.attackState === 'windup' && this.aiPrevP1AttackState !== 'windup') {
+      this.aiWillBlock = Math.random() < AI_BLOCK_CHANCE;
+    }
+    if (this.p1.attackState === 'idle') this.aiWillBlock = false;
+    this.aiPrevP1AttackState = this.p1.attackState;
+    const withinBlockRange = dist <= Math.max(PUNCH_RANGE, KICK_RANGE) + 30;
+    const block = this.aiWillBlock && withinBlockRange && (this.p1.attackState === 'windup' || this.p1.attackState === 'active');
+
+    return { moveX, moveZ, jump, punch, kick, block };
   }
 
   separate() {
@@ -474,6 +499,18 @@ class PlayScene extends Phaser.Scene {
     }
   }
 
+  // guard is a held stance, not a burst move like punch/kick — grounded and
+  // not mid-attack to enter it, eases in/out over GUARD_TRANSITION_MS so
+  // "hands go up" is an actual animation, not an instant pose swap
+  updateGuard(f, blockHeld, dt) {
+    const canGuard = blockHeld && f.grounded && f.attackState === 'idle';
+    f.guarding = canGuard;
+    const target = canGuard ? 1 : 0;
+    const rate = 1000 / GUARD_TRANSITION_MS; // per-second rate to cross 0..1 in GUARD_TRANSITION_MS
+    if (f.guardAmount < target) f.guardAmount = Math.min(target, f.guardAmount + rate * dt);
+    else if (f.guardAmount > target) f.guardAmount = Math.max(target, f.guardAmount - rate * dt);
+  }
+
   // windup (committed, no hit yet) -> active (the window it can connect in)
   // -> recovery (can't attack again yet). Facing is already auto-locked
   // onto the opponent, so range alone decides a hit — no angle check needed.
@@ -481,6 +518,7 @@ class PlayScene extends Phaser.Scene {
   // governs the timing/range/knockback.
   updateAttack(f, opponent, punchPressed, kickPressed, dt) {
     if (f.attackState === 'idle') {
+      if (f.guarding) return; // hands are up — can't throw a punch/kick from guard
       if (punchPressed && f.grounded) this.startAttack(f, 'punch');
       else if (kickPressed && f.grounded) this.startAttack(f, 'kick');
       return;
@@ -496,7 +534,8 @@ class PlayScene extends Phaser.Scene {
         const dist = Math.hypot(opponent.ax - f.ax, opponent.az - f.az);
         if (dist <= def.range) {
           f.attackHasHit = true;
-          this.resolveHit(f, opponent, def.knockback);
+          if (opponent.guarding) this.resolveBlock(f, opponent, def.knockback);
+          else this.resolveHit(f, opponent, def.knockback);
         }
       }
       if (f.attackTimer <= 0) { f.attackState = 'recovery'; f.attackTimer = def.recovery; }
@@ -527,6 +566,22 @@ class PlayScene extends Phaser.Scene {
     this.showHitText(defender);
   }
 
+  // a blocked hit — much lighter push, lighter flash, no big shake, and a
+  // distinct sound/label so it never reads as "the hit just didn't land"
+  resolveBlock(attacker, defender, knockback) {
+    const dx = defender.ax - attacker.ax, dz = defender.az - attacker.az;
+    const dist = Math.hypot(dx, dz) || 0.001;
+    const ux = dx / dist, uz = dz / dist;
+    defender.vax += ux * knockback * 0.15;
+    defender.vaz += uz * knockback * 0.15;
+    defender.hitFlash = 0.5;
+
+    this.cameras.main.shake(30, 0.002);
+    vibrate(10);
+    if (window.SFX) SFX.click();
+    this.showBlockText(defender);
+  }
+
   showHitText(defender) {
     const proj = project(defender.ax, defender.az);
     const scale = depthScale(defender.az);
@@ -534,6 +589,15 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: `${Math.round(20 * scale)}px`, color: '#ffd23f'
     }).setOrigin(0.5);
     this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 500, onComplete: () => t.destroy() });
+  }
+
+  showBlockText(defender) {
+    const proj = project(defender.ax, defender.az);
+    const scale = depthScale(defender.az);
+    const t = this.add.text(proj.sx, proj.sy - 90 * scale, 'BLOCKED', {
+      fontFamily: 'Arial Black, Arial', fontSize: `${Math.round(16 * scale)}px`, color: '#b0b8c4'
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: t.y - 20, alpha: 0, duration: 400, onComplete: () => t.destroy() });
   }
 
   update(time, delta) {
@@ -550,6 +614,7 @@ class PlayScene extends Phaser.Scene {
     const p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump) || t.p1.jumpPressed;
     const p1Punch = Phaser.Input.Keyboard.JustDown(this.keys.p1Punch) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1PunchAlt)) || t.p1.punchPressed;
     const p1Kick = Phaser.Input.Keyboard.JustDown(this.keys.p1Kick) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1KickAlt)) || t.p1.kickPressed;
+    const p1Block = this.keys.p1Block.isDown || (aiMode && this.keys.p1BlockAlt.isDown) || t.p1.blockHeld;
     t.p1.jumpPressed = false;
     t.p1.punchPressed = false;
     t.p1.kickPressed = false;
@@ -558,6 +623,7 @@ class PlayScene extends Phaser.Scene {
     // committed to the attack during windup/active — can't strafe out of it
     const p1Locked = this.p1.attackState === 'windup' || this.p1.attackState === 'active';
     this.stepFighter(this.p1, p1Locked ? 0 : p1Move.mx, p1Locked ? 0 : p1Move.mz, p1Jump, dt);
+    this.updateGuard(this.p1, p1Block, dt);
 
     if (this.mode === '2p') {
       const p2Up = this.keys.p2Up.isDown || t.p2.up;
@@ -567,18 +633,21 @@ class PlayScene extends Phaser.Scene {
       const p2Jump = Phaser.Input.Keyboard.JustDown(this.keys.p2Jump) || t.p2.jumpPressed;
       const p2Punch = Phaser.Input.Keyboard.JustDown(this.keys.p2Punch) || t.p2.punchPressed;
       const p2Kick = Phaser.Input.Keyboard.JustDown(this.keys.p2Kick) || t.p2.kickPressed;
+      const p2Block = this.keys.p2Block.isDown || t.p2.blockHeld;
       t.p2.jumpPressed = false;
       t.p2.punchPressed = false;
       t.p2.kickPressed = false;
       const p2Move = axisMoveVector(p2Up, p2Down, p2Left, p2Right);
       const p2Locked = this.p2.attackState === 'windup' || this.p2.attackState === 'active';
       this.stepFighter(this.p2, p2Locked ? 0 : p2Move.mx, p2Locked ? 0 : p2Move.mz, p2Jump, dt);
+      this.updateGuard(this.p2, p2Block, dt);
       this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
       this.updateAttack(this.p2, this.p1, p2Punch, p2Kick, dt);
     } else {
       const ai = this.aiInput(dt);
       const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active';
       this.stepFighter(this.p2, aiLocked ? 0 : ai.moveX, aiLocked ? 0 : ai.moveZ, ai.jump, dt);
+      this.updateGuard(this.p2, ai.block, dt);
       this.updateAttack(this.p1, this.p2, p1Punch, p1Kick, dt);
       this.updateAttack(this.p2, this.p1, ai.punch, ai.kick, dt);
     }
@@ -626,6 +695,14 @@ class PlayScene extends Phaser.Scene {
     const isKickActive = rawOffset !== null && f.attackType === 'kick';
     const frontIsRight = f.facing === 1;
 
+    // guard pose — both arms ease from their resting side position up
+    // toward a raised, more centered stance as guardAmount rises. This is
+    // what makes "hands go up" an actual animation instead of a snap.
+    const armRestOffX = w/2, armGuardOffX = w * 0.19;
+    const armRestY = baseY - hgt + 6 * scale, armGuardY = baseY - hgt - 9 * scale;
+    const armOffX = Phaser.Math.Linear(armRestOffX, armGuardOffX, f.guardAmount);
+    const armY = Phaser.Math.Linear(armRestY, armGuardY, f.guardAmount);
+
     if (f.kind === 'panda') {
       g.fillStyle(0xf4f4f4, 1);
       g.fillRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
@@ -636,8 +713,8 @@ class PlayScene extends Phaser.Scene {
       if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       g.fillStyle(0xdc2626, 1);
-      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
-      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - armOffX - 4 * scale, armY, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + armOffX - 5 * scale, armY, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0xf4f4f4, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 17 * scale);
       // neck shadow — drawn on top of both body and head, right at the seam
@@ -659,8 +736,8 @@ class PlayScene extends Phaser.Scene {
       if (!(isKickActive && !frontIsRight)) g.fillRoundedRect(baseX - w * 0.04 - w * 0.24, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       if (!(isKickActive && frontIsRight)) g.fillRoundedRect(baseX + w * 0.04, baseY - hgt * 0.34, w * 0.24, hgt * 0.34, 3 * scale);
       g.fillStyle(0xf5a623, 1);
-      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - w/2 - 4 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
-      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + w/2 - 5 * scale, baseY - hgt + 6 * scale, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && !frontIsRight)) g.fillRoundedRect(baseX - armOffX - 4 * scale, armY, 9 * scale, 22 * scale, 4 * scale);
+      if (!(isPunchActive && frontIsRight)) g.fillRoundedRect(baseX + armOffX - 5 * scale, armY, 9 * scale, 22 * scale, 4 * scale);
       g.fillStyle(0x8b5a2b, 1);
       g.fillCircle(baseX, baseY - hgt - 16 * scale, 18 * scale);
       g.fillStyle(0x0a0a0d, 0.3);
@@ -672,6 +749,13 @@ class PlayScene extends Phaser.Scene {
       g.fillEllipse(baseX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 16 * scale, 12 * scale);
       g.fillStyle(0x0a0a0d, 1);
       g.fillCircle(baseX + f.facing * 10 * scale, baseY - hgt - 12 * scale, 3.5 * scale);
+    }
+
+    // shield outline — fades in with guardAmount, extra readability on top
+    // of the raised arms alone
+    if (f.guardAmount > 0.05) {
+      g.lineStyle(2 * scale, 0xb0b8c4, f.guardAmount * 0.6);
+      g.strokeRoundedRect(baseX - w/2, baseY - hgt, w, hgt, 10 * scale);
     }
 
     if (rawOffset !== null) {
