@@ -68,12 +68,43 @@ const GROUND_FRICTION = 2200;
 const AIR_CONTROL_MULT = 0.6;
 const JUMP_VELOCITY = -620; // paired with the higher gravity above: similar peak height to before, noticeably shorter hangtime — a snappier arc
 
-const AI_APPROACH_MIN = 75;   // AI backs off if closer than this
-const AI_APPROACH_MAX = 160;  // AI closes in if farther than this
-const AI_JUMP_CHANCE_PER_SEC = 0.35;
-const AI_PUNCH_CHANCE_PER_SEC = 0.9; // fairly eager to punch once in range — the point is proving hit detection
-const AI_KICK_CHANCE_PER_SEC = 0.6; // slightly less eager than punch — kick is the bigger commitment
-const AI_BLOCK_CHANCE = 0.5; // rolled once per incoming attack (not per frame) — see aiInput
+// AI DIFFICULTY — every AI behavior knob lives here instead of as flat
+// constants, so difficulty is genuinely "how the AI plays" (spacing
+// discipline, attack frequency, block reliability) rather than a stat
+// cheat layered on top of the same character system the player uses.
+// Normal is the original tuning from every prior playtest; Easy/Hard are
+// scaled from it, not re-guessed from scratch.
+const DIFFICULTY_DEFS = {
+  easy: {
+    name: 'Easy',
+    approachMin: 60, approachMax: 190, // looser spacing — easier to whiff-bait
+    jumpChance: 0.22,
+    punchChance: 0.5, kickChance: 0.32,
+    blockChance: 0.15, // rarely reacts in time
+    grappleChance: 0.15,
+    groundStrikeChance: 0.5, groundEscapeChance: 0.7, groundBottomStrikeChance: 0.45
+  },
+  normal: {
+    name: 'Normal',
+    approachMin: 75, approachMax: 160,
+    jumpChance: 0.35,
+    punchChance: 0.9, kickChance: 0.6,
+    blockChance: 0.5,
+    grappleChance: 0.3,
+    groundStrikeChance: 0.8, groundEscapeChance: 1.2, groundBottomStrikeChance: 0.9
+  },
+  hard: {
+    name: 'Hard',
+    approachMin: 78, approachMax: 145, // tighter spacing — harder to bait or kite
+    jumpChance: 0.42,
+    punchChance: 1.3, kickChance: 0.95,
+    blockChance: 0.85, // reacts to incoming attacks reliably
+    grappleChance: 0.48,
+    groundStrikeChance: 1.15, groundEscapeChance: 1.6, groundBottomStrikeChance: 1.3
+  }
+};
+const DIFFICULTY_ORDER = ['easy', 'normal', 'hard'];
+const DIFFICULTY_KEY = 'lastFist_difficulty';
 
 const GUARD_TRANSITION_MS = 100; // how long the raise/lower animation takes — quick, not an instant snap
 
@@ -100,7 +131,6 @@ const GRAPPLE_RANGE = 68; // tighter than punch range — you have to actually c
 const CLINCH_DISTANCE = 46; // locked separation once clinched
 const CLINCH_DURATION_MS = 1800;
 const CLINCH_BREAK_PUSH = 90; // distance pushed apart on release, so it doesn't immediately re-trigger
-const AI_GRAPPLE_CHANCE_PER_SEC = 0.3; // rarer than punch/kick — bigger commitment
 
 // GROUND — pressing GRAPPLE again while already clinched is the takedown
 // attempt. Whoever presses first wins it and becomes top position; simple
@@ -117,9 +147,6 @@ const GROUND_BOTTOM_STRIKE_COOLDOWN_MS = 550; // slower to recover than top's st
 const GROUND_BLOCK_REDUCTION = 0.35; // bottom's damage taken while covering up, as a fraction of normal
 const GROUND_DURATION_MS = 2400; // auto-returns to standing if nobody resolves it — was 4000, way too long against ~400ms strike cooldowns
 const GROUND_ESCAPE_PRESSES_NEEDED = 4; // bottom mashes DODGE this many times to escape early
-const AI_GROUND_STRIKE_CHANCE_PER_SEC = 0.8; // eager once on top
-const AI_GROUND_ESCAPE_CHANCE_PER_SEC = 1.2; // eager to get up when pinned
-const AI_GROUND_BOTTOM_STRIKE_CHANCE_PER_SEC = 0.9; // eager to hit back when pinned, not just escape
 const GROUND_POSE_TRANSITION_MS = 150; // how fast the squash-to-the-ground visual eases in/out
 
 // PUNCH — the first Stage 2 move. windup (committed, no hit yet) -> active
@@ -234,6 +261,18 @@ function isUnlocked(key, gamesPlayed) {
   return gamesPlayed >= CHARACTER_DEFS[key].unlockAt;
 }
 
+function loadDifficulty() {
+  try {
+    const v = localStorage.getItem(DIFFICULTY_KEY);
+    return DIFFICULTY_DEFS[v] ? v : 'normal';
+  } catch (err) { return 'normal'; }
+}
+
+function saveDifficulty(key) {
+  try { localStorage.setItem(DIFFICULTY_KEY, key); }
+  catch (err) { /* non-fatal — just won't be remembered next time */ }
+}
+
 function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
 }
@@ -345,11 +384,13 @@ class PlayScene extends Phaser.Scene {
     this.groundBottomStrikeCooldown = 0;
     this.groundEscapeProgress = 0;
     this.gamesPlayed = loadGamesPlayed();
+    this.difficulty = loadDifficulty();
     this.rosterBrowseOnly = false;
 
     this.buildHUD();
     this.buildMenu();
     this.buildCharacterSelect();
+    this.buildDifficultySelect();
     this.buildRoundOverUI();
     this.buildControls();
 
@@ -499,6 +540,30 @@ class PlayScene extends Phaser.Scene {
     this.selectBackBtn.setVisible(visible);
   }
 
+  buildDifficultySelect() {
+    const btnY = 240, btnW = 160, btnH = 84, gap = 18;
+    const totalW = btnW * DIFFICULTY_ORDER.length + gap * (DIFFICULTY_ORDER.length - 1);
+    const startX = W/2 - totalW/2 + btnW/2;
+    const colors = { easy: 0x5be37b, normal: 0x4fd1ff, hard: 0xff5a5a };
+    this.difficultyButtons = [];
+    DIFFICULTY_ORDER.forEach((key, i) => {
+      const d = DIFFICULTY_DEFS[key];
+      const x = startX + i * (btnW + gap);
+      const bg = this.add.rectangle(x, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, colors[key], 0.8).setVisible(false);
+      const nameLabel = this.add.text(x, btnY, d.name.toUpperCase(), {
+        fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1'
+      }).setOrigin(0.5).setVisible(false);
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerdown', () => this.onDifficultyPicked(key));
+      this.difficultyButtons.push(bg, nameLabel);
+    });
+  }
+
+  setDifficultyVisible(visible) {
+    this.difficultyButtons.forEach(o => o.setVisible(visible));
+    this.selectBackBtn.setVisible(visible);
+  }
+
   buildRoundOverUI() {
     const btnY = 260, btnW = 180, btnH = 56, gap = 20;
     const rematchBg = this.add.rectangle(W/2 - btnW/2 - gap/2, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, 0x5be37b, 0.8).setVisible(false);
@@ -549,10 +614,32 @@ class PlayScene extends Phaser.Scene {
 
   beginSelect(mode) {
     this.mode = mode;
-    this.state = 'select';
     this.rosterBrowseOnly = false;
-    this.selectingFor = 'p1';
     this.menuButtons.forEach(o => o.setVisible(false));
+    if (mode === 'ai') {
+      this.beginDifficultySelect();
+    } else {
+      this.enterCharacterSelect();
+    }
+  }
+
+  beginDifficultySelect() {
+    this.state = 'difficulty';
+    this.centerText.setText('SELECT DIFFICULTY').setVisible(true);
+    this.subText.setText('how tough should the AI play?').setVisible(true);
+    this.setDifficultyVisible(true);
+  }
+
+  onDifficultyPicked(key) {
+    this.difficulty = key;
+    saveDifficulty(key);
+    this.setDifficultyVisible(false);
+    this.enterCharacterSelect();
+  }
+
+  enterCharacterSelect() {
+    this.state = 'select';
+    this.selectingFor = 'p1';
     this.centerText.setText('CHOOSE YOUR FIGHTER').setVisible(true);
     this.subText.setText('PLAYER 1 \u2014 pick a fighter').setVisible(true);
     this.refreshCharacterButtons();
@@ -682,6 +769,7 @@ class PlayScene extends Phaser.Scene {
     this.subText.setVisible(false);
     this.menuButtons.forEach(o => o.setVisible(false));
     this.setSelectVisible(false);
+    this.setDifficultyVisible(false);
     this.setRoundOverVisible(false);
 
     this.modeText.setVisible(true).setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL');
@@ -732,6 +820,7 @@ class PlayScene extends Phaser.Scene {
     this.setControlsVisible(this.p1Controls, false);
     this.setControlsVisible(this.p2Controls, false);
     this.setSelectVisible(false);
+    this.setDifficultyVisible(false);
     this.setRoundOverVisible(false);
     this.p1NameText.setVisible(false);
     this.p2NameText.setVisible(false);
@@ -797,6 +886,7 @@ class PlayScene extends Phaser.Scene {
   // point of the 2D arena: it gives the AI somewhere to go that "left/right
   // only" never could.
   aiInput(dt) {
+    const diff = DIFFICULTY_DEFS[this.difficulty];
     const dx = this.p1.ax - this.p2.ax, dz = this.p1.az - this.p2.az;
     const dist = Math.hypot(dx, dz) || 0.001;
     let moveX = 0, moveZ = 0, jump = false, punch = false, kick = false;
@@ -807,9 +897,9 @@ class PlayScene extends Phaser.Scene {
       this.aiCircleTimer = Phaser.Math.FloatBetween(1.5, 3);
     }
 
-    if (dist > AI_APPROACH_MAX) {
+    if (dist > diff.approachMax) {
       moveX = dx / dist; moveZ = dz / dist;
-    } else if (dist < AI_APPROACH_MIN) {
+    } else if (dist < diff.approachMin) {
       moveX = -dx / dist; moveZ = -dz / dist;
     } else {
       const perpX = -dz / dist, perpZ = dx / dist;
@@ -818,7 +908,7 @@ class PlayScene extends Phaser.Scene {
     }
 
     this.aiJumpCooldown -= dt;
-    if (this.p2.grounded && this.aiJumpCooldown <= 0 && Math.random() < AI_JUMP_CHANCE_PER_SEC * dt) {
+    if (this.p2.grounded && this.aiJumpCooldown <= 0 && Math.random() < diff.jumpChance * dt) {
       jump = true;
       this.aiJumpCooldown = Phaser.Math.FloatBetween(1.5, 3.5);
     }
@@ -827,9 +917,9 @@ class PlayScene extends Phaser.Scene {
     // out (its longer reach is the whole point) — simple on purpose, this
     // stage is about proving both moves work, not making a smart fighter
     if (this.p2.attackState === 'idle') {
-      if (dist <= PUNCH_RANGE && Math.random() < AI_PUNCH_CHANCE_PER_SEC * dt) {
+      if (dist <= PUNCH_RANGE && Math.random() < diff.punchChance * dt) {
         punch = true;
-      } else if (dist <= KICK_RANGE && Math.random() < AI_KICK_CHANCE_PER_SEC * dt) {
+      } else if (dist <= KICK_RANGE && Math.random() < diff.kickChance * dt) {
         kick = true;
       }
     }
@@ -838,7 +928,7 @@ class PlayScene extends Phaser.Scene {
     // enters windup), not re-rolled every frame, or it'd flicker on/off
     // instead of reading as a real decision
     if (this.p1.attackState === 'windup' && this.aiPrevP1AttackState !== 'windup') {
-      this.aiWillBlock = Math.random() < AI_BLOCK_CHANCE;
+      this.aiWillBlock = Math.random() < diff.blockChance;
     }
     if (this.p1.attackState === 'idle') this.aiWillBlock = false;
     this.aiPrevP1AttackState = this.p1.attackState;
@@ -846,7 +936,7 @@ class PlayScene extends Phaser.Scene {
     const block = this.aiWillBlock && withinBlockRange && (this.p1.attackState === 'windup' || this.p1.attackState === 'active');
 
     let grapple = false;
-    if (!this.clinchActive && this.p2.attackState === 'idle' && !block && dist <= GRAPPLE_RANGE && Math.random() < AI_GRAPPLE_CHANCE_PER_SEC * dt) {
+    if (!this.clinchActive && this.p2.attackState === 'idle' && !block && dist <= GRAPPLE_RANGE && Math.random() < diff.grappleChance * dt) {
       grapple = true;
     }
 
@@ -1306,9 +1396,9 @@ class PlayScene extends Phaser.Scene {
       // ground state gives the AI its own simple auto-behavior, independent
       // of aiInput's normal decision structure — top auto-strikes, bottom
       // auto-struggles, both as a per-second chance rather than a single roll
-      groundAiTopPunch = this.groundActive && !this.groundTopIsP1 && Math.random() < AI_GROUND_STRIKE_CHANCE_PER_SEC * dt;
-      groundAiBottomEscape = this.groundActive && this.groundTopIsP1 && Math.random() < AI_GROUND_ESCAPE_CHANCE_PER_SEC * dt;
-      groundAiBottomStrike = this.groundActive && this.groundTopIsP1 && Math.random() < AI_GROUND_BOTTOM_STRIKE_CHANCE_PER_SEC * dt;
+      groundAiTopPunch = this.groundActive && !this.groundTopIsP1 && Math.random() < DIFFICULTY_DEFS[this.difficulty].groundStrikeChance * dt;
+      groundAiBottomEscape = this.groundActive && this.groundTopIsP1 && Math.random() < DIFFICULTY_DEFS[this.difficulty].groundEscapeChance * dt;
+      groundAiBottomStrike = this.groundActive && this.groundTopIsP1 && Math.random() < DIFFICULTY_DEFS[this.difficulty].groundBottomStrikeChance * dt;
       const aiLocked = this.p2.attackState === 'windup' || this.p2.attackState === 'active' || this.clinchActive || this.groundActive;
       this.stepFighter(this.p2, aiLocked ? 0 : ai.moveX, aiLocked ? 0 : ai.moveZ, ai.jump, dt);
       this.updateGuard(this.p2, ai.block, dt);
