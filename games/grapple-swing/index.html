@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Grapple Swing — The Arcade</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none;
+    background: #060608;
+    color: #f8fafc;
+    font-family: system-ui, -apple-system, sans-serif;
+    height: 100%;
+  }
+  #stage {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #gameCanvas {
+    background: #0a0a12;
+    max-width: 100vw; max-height: 100vh;
+    aspect-ratio: 960 / 540;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  /* HUD */
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 14px 18px; pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  #hud .box {
+    background: rgba(10,10,16,0.55);
+    border: 1px solid rgba(148,163,184,0.18);
+    border-radius: 10px;
+    padding: 8px 14px;
+    backdrop-filter: blur(4px);
+  }
+  #hud .label { font-size: 10px; letter-spacing: 0.1em; color: #64748b; text-transform: uppercase; }
+  #hud .value { font-size: 20px; font-weight: 700; color: #e2e8f0; }
+  #levelName { font-size: 13px; letter-spacing: 0.08em; color: #94a3b8; text-transform: uppercase; margin-top: 2px; }
+  #flowWrap { width: 140px; }
+  #flowBar { height: 8px; border-radius: 5px; background: rgba(148,163,184,0.15); overflow: hidden; margin-top: 4px; }
+  #flowFill { height: 100%; width: 0%; background: linear-gradient(90deg,#38bdf8,#a78bfa,#f472b6); transition: width 0.08s linear; }
+
+  #hint {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: rgba(226,232,240,0.55);
+    background: rgba(10,10,16,0.5); padding: 6px 14px; border-radius: 20px;
+    pointer-events: none; white-space: nowrap;
+  }
+
+  /* touch reel buttons */
+  #touchReel { position: absolute; right: 16px; bottom: 16px; display: none; flex-direction: column; gap: 10px; }
+  #touchReel button {
+    width: 58px; height: 58px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.3);
+    background: rgba(20,20,30,0.7); color: #e2e8f0; font-size: 20px; font-weight: 700;
+  }
+  #touchReset { position: absolute; left: 16px; bottom: 16px; display: none; }
+  #touchReset button {
+    padding: 10px 16px; border-radius: 20px; border: 1px solid rgba(148,163,184,0.3);
+    background: rgba(20,20,30,0.7); color: #e2e8f0; font-size: 12px; letter-spacing: 0.06em;
+  }
+
+  /* Overlays */
+  .overlay {
+    position: absolute; inset: 0;
+    background: radial-gradient(circle at 50% 30%, #14141f 0%, #060608 75%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px;
+  }
+  .hidden { display: none !important; }
+  .overlay h1 {
+    margin: 0 0 6px; font-size: 2.4rem; letter-spacing: 0.08em;
+    background: linear-gradient(90deg, #38bdf8, #a78bfa, #f472b6);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .overlay .sub { color: #94a3b8; max-width: 480px; margin-bottom: 26px; font-size: 0.95rem; line-height: 1.5; }
+  .btn {
+    background: linear-gradient(135deg,#1e293b,#0f172a);
+    border: 1px solid rgba(148,163,184,0.25);
+    color: #f1f5f9; padding: 12px 26px; border-radius: 10px;
+    font-size: 14px; letter-spacing: 0.05em; cursor: pointer; margin: 6px;
+    text-transform: uppercase; font-weight: 600;
+  }
+  .btn:hover { border-color: #38bdf8; }
+  .btn.primary { background: linear-gradient(135deg,#0369a1,#0c4a6e); border-color: #38bdf8; }
+
+  #levelGrid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr));
+    gap: 14px; max-width: 620px; width: 100%; margin-bottom: 10px;
+  }
+  .lvlCard {
+    background: rgba(20,20,32,0.7); border: 1px solid rgba(148,163,184,0.2);
+    border-radius: 12px; padding: 14px; cursor: pointer; text-align: left;
+  }
+  .lvlCard:hover { border-color: #a78bfa; }
+  .lvlCard .n { font-size: 11px; color: #64748b; letter-spacing: 0.08em; }
+  .lvlCard .t { font-size: 15px; font-weight: 700; margin: 3px 0 6px; }
+  .lvlCard .best { font-size: 11px; color: #4ade80; }
+  .lvlCard .world { font-size: 10px; color: #f472b6; text-transform: uppercase; letter-spacing: 0.08em; }
+
+  #completeStats { display: flex; gap: 28px; margin-bottom: 22px; }
+  #completeStats div { text-align: center; }
+  #completeStats .v { font-size: 1.8rem; font-weight: 700; }
+  #completeStats .l { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+  <div id="hud" class="hidden">
+    <div class="box">
+      <div class="label">Time</div>
+      <div class="value" id="timeVal">0.00</div>
+      <div id="levelName">—</div>
+    </div>
+    <div class="box" id="flowWrap">
+      <div class="label">Flow</div>
+      <div id="flowBar"><div id="flowFill"></div></div>
+    </div>
+  </div>
+
+  <div id="hint" class="hidden">Aim + click/tap an anchor to grapple · release to let go · hold to reel</div>
+
+  <div id="touchReel">
+    <button id="reelInBtn">▲</button>
+    <button id="reelOutBtn">▼</button>
+  </div>
+  <div id="touchReset"><button id="resetBtn">RESET (R)</button></div>
+
+  <div id="menuOverlay" class="overlay">
+    <h1>GRAPPLE SWING</h1>
+    <div class="sub">You don't control where you go. You control when you let go.<br>Swing, reel, and release through six handcrafted levels — then race your own ghost.</div>
+    <div id="levelGrid"></div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Mouse/touch to aim + grapple · W/S or ▲▼ to reel · A/D for slight air drift · R to reset</div>
+  </div>
+
+  <div id="completeOverlay" class="overlay hidden">
+    <h1 id="completeTitle">LEVEL CLEAR</h1>
+    <div id="completeStats">
+      <div><div class="v" id="statTime">0.00s</div><div class="l">Time</div></div>
+      <div><div class="v" id="statBest">0.00s</div><div class="l">Best</div></div>
+    </div>
+    <div>
+      <button class="btn" id="retryBtn">Retry</button>
+      <button class="btn primary" id="nextBtn">Next Level</button>
+      <button class="btn" id="menuBtn">Level Select</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- audio (self-contained; no external dependency assumed) ----------
+  let actx = null;
+  function ac(){ if(!actx){ try{ actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return actx; }
+  function beep(freq, dur, type, gain){
+    const c = ac(); if(!c) return;
+    try{
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type||'sine'; o.frequency.value = freq;
+      g.gain.value = gain||0.08;
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + (dur||0.15));
+      o.connect(g); g.connect(c.destination);
+      o.start(); o.stop(c.currentTime + (dur||0.15));
+    }catch(e){}
+  }
+  const sfx = {
+    grapple: ()=>beep(520,0.09,'square',0.06),
+    release: ()=>beep(760,0.12,'sine',0.07),
+    land:    ()=>beep(140,0.12,'sine',0.08),
+    win:     ()=>{ beep(660,0.1,'sine',0.09); setTimeout(()=>beep(880,0.16,'sine',0.09),90); setTimeout(()=>beep(1100,0.22,'sine',0.09),180); },
+    die:     ()=>beep(110,0.25,'sawtooth',0.07)
+  };
+
+  // ---------- canvas ----------
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const VW = 960, VH = 540;
+
+  // ---------- constants ----------
+  const GRAVITY = 1500;
+  const AIR_DRAG = 0.9985;
+  const GROUND_FRICTION = 0.86;
+  const AIR_CONTROL = 420;
+  const PLAYER_R = 12;
+  const MIN_ROPE = 36;
+  const MAX_ROPE = 620;
+  const REEL_SPEED = 260;
+  const ANCHOR_GRAB_R = 70;
+  const MAX_ROPE_ATTACH = 560;
+  const FLOW_SPEED_THRESHOLD = 260;
+  const FLOW_RATE = 0.010;
+  const FLOW_DECAY = 22;
+
+  // ---------- levels ----------
+  // ground segments: flat platforms {x1,x2,y}. Gaps between segments are pits.
+  const LEVELS = [
+    {
+      id: 0, name: "First Swing", world: "Learning",
+      width: 1500,
+      ground: [ {x1:-100,x2:260,y:460}, {x1:900,x2:1600,y:460} ],
+      anchors: [ {x:560,y:180} ],
+      goal: {x:1080,y:400,r:30},
+      spawn: {x:100,y:400},
+      wind: null
+    },
+    {
+      id: 1, name: "Reel It In", world: "Learning",
+      width: 1600,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1200,x2:1700,y:220} ],
+      anchors: [ {x:520,y:340}, {x:940,y:150} ],
+      goal: {x:1380,y:160,r:30},
+      spawn: {x:100,y:400},
+      wind: null
+    },
+    {
+      id: 2, name: "Let Go", world: "Learning",
+      width: 1500,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1150,x2:1600,y:460} ],
+      anchors: [ {x:520,y:200} ],
+      spike: {x1:760,x2:900,y:460,h:110},
+      goal: {x:1320,y:400,r:30},
+      spawn: {x:100,y:400},
+      wind: null
+    },
+    {
+      id: 3, name: "Wind Tunnel", world: "Height",
+      width: 1400,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1150,x2:1500,y:120} ],
+      anchors: [ {x:480,y:340}, {x:760,y:200}, {x:1020,y:120} ],
+      goal: {x:1330,y:60,r:30},
+      spawn: {x:100,y:400},
+      wind: {x1:600, x2:1150, ax:260}
+    },
+    {
+      id: 4, name: "Long Reach", world: "Speed",
+      width: 2200,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1950,x2:2300,y:460} ],
+      anchors: [ {x:460,y:220}, {x:840,y:300}, {x:1220,y:220}, {x:1600,y:300} ],
+      goal: {x:2080,y:400,r:30},
+      spawn: {x:100,y:400},
+      wind: null
+    },
+    {
+      id: 5, name: "The Echo", world: "Echo",
+      width: 1700,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1400,x2:1750,y:300} ],
+      anchors: [ {x:480,y:280}, {x:820,y:150}, {x:1150,y:260} ],
+      spike: {x1:620,x2:740,y:460,h:120},
+      goal: {x:1600,y:240,r:30},
+      spawn: {x:100,y:400},
+      wind: null,
+      echoNote: true
+    }
+  ];
+
+  // ---------- state ----------
+  let state = 'menu'; // menu | playing | complete
+  let curLevel = null, curIdx = 0;
+  let player, camX = 0;
+  let elapsed = 0;
+  let trail = [];
+  let shakeT = 0, shakeMag = 0;
+  let flow = 0;
+  let recordBuf = [];
+  let ghost = null; // {points:[{t,x,y}]}
+  let keys = { left:false, right:false, reelIn:false, reelOut:false };
+  let pointerDown = false;
+  let mouseWorld = {x:0,y:0};
+
+  function lsKey(prefix, idx){ return 'grappleSwing_' + prefix + '_' + idx; }
+  function getBest(idx){ const v = localStorage.getItem(lsKey('best', idx)); return v ? parseFloat(v) : null; }
+  function setBest(idx, t){ localStorage.setItem(lsKey('best', idx), t.toFixed(2)); }
+  function getGhost(idx){
+    try{ const v = localStorage.getItem(lsKey('ghost', idx)); return v ? JSON.parse(v) : null; }catch(e){ return null; }
+  }
+  function setGhost(idx, points){
+    try{ localStorage.setItem(lsKey('ghost', idx), JSON.stringify(points)); }catch(e){}
+  }
+
+  // ---------- level lifecycle ----------
+  function groundYAt(level, x){
+    for(const seg of level.ground){ if(x >= seg.x1 && x <= seg.x2) return seg.y; }
+    return null;
+  }
+
+  function loadLevel(idx){
+    curIdx = idx;
+    curLevel = LEVELS[idx];
+    player = {
+      x: curLevel.spawn.x, y: curLevel.spawn.y,
+      px: curLevel.spawn.x, py: curLevel.spawn.y,
+      grappled: false, anchor: null, ropeLen: 0, grounded: false
+    };
+    elapsed = 0; trail = []; flow = 0;
+    recordBuf = [];
+    ghost = getGhost(idx);
+    camX = clamp(player.x - VW/2, 0, Math.max(0, curLevel.width - VW));
+    setState('playing');
+    document.getElementById('levelName').textContent = curLevel.world + ' — ' + curLevel.name;
+  }
+
+  function resetLevel(died){
+    if(died) sfx.die();
+    loadLevel(curIdx);
+  }
+
+  function winLevel(){
+    setState('complete');
+    sfx.win();
+    const best = getBest(curIdx);
+    const isNewBest = best === null || elapsed < best;
+    if(isNewBest){ setBest(curIdx, elapsed); setGhost(curIdx, recordBuf.filter((_,i)=>i%2===0)); }
+    document.getElementById('completeTitle').textContent = curIdx === LEVELS.length-1 ? 'ALL LEVELS CLEAR' : 'LEVEL CLEAR';
+    document.getElementById('statTime').textContent = elapsed.toFixed(2) + 's';
+    document.getElementById('statBest').textContent = (isNewBest ? elapsed : best).toFixed(2) + 's' + (isNewBest ? ' — NEW BEST' : '');
+    document.getElementById('nextBtn').style.display = curIdx === LEVELS.length-1 ? 'none' : 'inline-block';
+    buildLevelGrid();
+  }
+
+  function setState(s){
+    state = s;
+    document.getElementById('menuOverlay').classList.toggle('hidden', s!=='menu');
+    document.getElementById('completeOverlay').classList.toggle('hidden', s!=='complete');
+    document.getElementById('hud').classList.toggle('hidden', s!=='playing');
+    document.getElementById('hint').classList.toggle('hidden', s!=='playing');
+    const touch = isTouch();
+    document.getElementById('touchReel').style.display = (s==='playing' && touch) ? 'flex' : 'none';
+    document.getElementById('touchReset').style.display = (s==='playing' && touch) ? 'block' : 'none';
+  }
+
+  function isTouch(){ return 'ontouchstart' in window || navigator.maxTouchPoints > 0; }
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // ---------- physics ----------
+  function stepPhysics(dt){
+    elapsed += dt;
+
+    let ax = 0;
+    if(!player.grappled){
+      if(keys.left) ax -= AIR_CONTROL;
+      if(keys.right) ax += AIR_CONTROL;
+    }
+
+    let vx = (player.x - player.px) * AIR_DRAG;
+    let vy = (player.y - player.py) * AIR_DRAG;
+    player.px = player.x;
+    player.py = player.y;
+    player.x += vx + ax*dt*dt;
+    player.y += vy + GRAVITY*dt*dt;
+
+    const w = curLevel.wind;
+    if(w && player.x > w.x1 && player.x < w.x2){
+      player.x += w.ax*dt*dt;
+    }
+
+    if(player.grappled){
+      if(keys.reelIn)  player.ropeLen = clamp(player.ropeLen - REEL_SPEED*dt, MIN_ROPE, MAX_ROPE);
+      if(keys.reelOut) player.ropeLen = clamp(player.ropeLen + REEL_SPEED*dt, MIN_ROPE, MAX_ROPE);
+      const dx = player.x - player.anchor.x, dy = player.y - player.anchor.y;
+      const dist = Math.hypot(dx,dy) || 0.0001;
+      const nx = dx/dist, ny = dy/dist;
+      player.x = player.anchor.x + nx*player.ropeLen;
+      player.y = player.anchor.y + ny*player.ropeLen;
+    }
+
+    // spike hazard (instant reset)
+    const sp = curLevel.spike;
+    if(sp && player.x > sp.x1 - PLAYER_R && player.x < sp.x2 + PLAYER_R && player.y + PLAYER_R > sp.y - sp.h){
+      resetLevel(true); return;
+    }
+
+    // ground
+    const gy = groundYAt(curLevel, player.x);
+    const wasGrounded = player.grounded;
+    if(gy !== null && player.y + PLAYER_R > gy){
+      const speed = Math.hypot(player.x-player.px, player.y-player.py)/dt;
+      player.y = gy - PLAYER_R;
+      const nvx = (player.x - player.px) * GROUND_FRICTION;
+      player.px = player.x - nvx;
+      player.py = player.y;
+      player.grounded = true;
+      if(!wasGrounded){
+        if(speed > 500) triggerShake(Math.min(14, speed/90));
+        sfx.land();
+      }
+      flow = 0;
+    } else {
+      player.grounded = false;
+    }
+
+    if(player.y > 900){ resetLevel(true); return; }
+
+    const gdx = player.x - curLevel.goal.x, gdy = player.y - curLevel.goal.y;
+    if(Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R){ winLevel(); return; }
+
+    const speedNow = Math.hypot(player.x-player.px, player.y-player.py)/dt;
+    if(!player.grounded && speedNow > FLOW_SPEED_THRESHOLD){
+      flow = clamp(flow + speedNow*dt*FLOW_RATE, 0, 100);
+    } else if(player.grounded){
+      flow = 0;
+    } else {
+      flow = clamp(flow - FLOW_DECAY*dt, 0, 100);
+    }
+
+    recordBuf.push({t: Math.round(elapsed*1000)/1000, x: Math.round(player.x), y: Math.round(player.y)});
+
+    trail.push({x:player.x, y:player.y});
+    if(trail.length > 34) trail.shift();
+
+    camX = clamp(player.x - VW/2, 0, Math.max(0, curLevel.width - VW));
+  }
+
+  function triggerShake(mag){ shakeT = 0.22; shakeMag = mag; }
+
+  // ---------- grapple input ----------
+  function screenToWorld(sx, sy){
+    const r = canvas.getBoundingClientRect();
+    const scaleX = VW / r.width, scaleY = VH / r.height;
+    return { x: (sx - r.left)*scaleX + camX, y: (sy - r.top)*scaleY };
+  }
+
+  function tryGrapple(wx, wy){
+    if(player.grappled) return;
+    let best=null, bestD=Infinity;
+    curLevel.anchors.forEach(a=>{
+      const dm = Math.hypot(wx-a.x, wy-a.y);
+      const dp = Math.hypot(player.x-a.x, player.y-a.y);
+      if(dm < ANCHOR_GRAB_R && dp <= MAX_ROPE_ATTACH && dm < bestD){ bestD = dm; best = a; }
+    });
+    if(best){
+      player.grappled = true;
+      player.anchor = best;
+      player.ropeLen = clamp(Math.hypot(player.x-best.x, player.y-best.y), MIN_ROPE, MAX_ROPE);
+      sfx.grapple();
+    }
+  }
+  function releaseGrapple(){
+    if(player.grappled){ player.grappled = false; sfx.release(); }
+  }
+
+  canvas.addEventListener('pointerdown', e=>{
+    if(state!=='playing') return;
+    pointerDown = true;
+    mouseWorld = screenToWorld(e.clientX, e.clientY);
+    tryGrapple(mouseWorld.x, mouseWorld.y);
+  });
+  canvas.addEventListener('pointermove', e=>{
+    mouseWorld = screenToWorld(e.clientX, e.clientY);
+  });
+  window.addEventListener('pointerup', ()=>{ pointerDown = false; releaseGrapple(); });
+
+  window.addEventListener('keydown', e=>{
+    if(e.code==='KeyA'||e.code==='ArrowLeft') keys.left = true;
+    if(e.code==='KeyD'||e.code==='ArrowRight') keys.right = true;
+    if(e.code==='KeyW'||e.code==='ArrowUp') keys.reelIn = true;
+    if(e.code==='KeyS'||e.code==='ArrowDown') keys.reelOut = true;
+    if(e.code==='KeyR' && state==='playing') resetLevel(false);
+    if(e.code==='Space'){ releaseGrapple(); e.preventDefault(); }
+    if(e.code==='Escape' && state==='playing') { setState('menu'); buildLevelGrid(); }
+  });
+  window.addEventListener('keyup', e=>{
+    if(e.code==='KeyA'||e.code==='ArrowLeft') keys.left = false;
+    if(e.code==='KeyD'||e.code==='ArrowRight') keys.right = false;
+    if(e.code==='KeyW'||e.code==='ArrowUp') keys.reelIn = false;
+    if(e.code==='KeyS'||e.code==='ArrowDown') keys.reelOut = false;
+  });
+
+  function holdable(el, onDown, onUp){
+    el.addEventListener('pointerdown', e=>{ e.preventDefault(); onDown(); });
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointerleave', onUp);
+  }
+  holdable(document.getElementById('reelInBtn'),  ()=>keys.reelIn=true,  ()=>keys.reelIn=false);
+  holdable(document.getElementById('reelOutBtn'), ()=>keys.reelOut=true, ()=>keys.reelOut=false);
+  document.getElementById('resetBtn').addEventListener('click', ()=> state==='playing' && resetLevel(false));
+
+  // ---------- rendering ----------
+  function draw(){
+    ctx.save();
+    ctx.clearRect(0,0,VW,VH);
+
+    // background
+    const grad = ctx.createLinearGradient(0,0,0,VH);
+    grad.addColorStop(0,'#0d0d18'); grad.addColorStop(1,'#06060a');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,VW,VH);
+
+    if(state!=='playing'){ ctx.restore(); return; }
+
+    let sx = 0, sy = 0;
+    if(shakeT > 0){
+      sx = (Math.random()-0.5)*shakeMag*2;
+      sy = (Math.random()-0.5)*shakeMag*2;
+      shakeT -= 1/120; if(shakeT<0) shakeT=0;
+    }
+    ctx.translate(-camX + sx, sy);
+
+    // parallax dots
+    ctx.fillStyle = 'rgba(148,163,184,0.12)';
+    for(let i=0;i<40;i++){
+      const px = ((i*137) % (curLevel.width+400)) - (camX*0.3)%400;
+      const py = (i*53) % VH;
+      ctx.fillRect(px + camX*0.3, py, 2, 2);
+    }
+
+    // wind zone
+    if(curLevel.wind){
+      const w = curLevel.wind;
+      ctx.fillStyle = 'rgba(56,189,248,0.05)';
+      ctx.fillRect(w.x1, 0, w.x2-w.x1, VH);
+      ctx.strokeStyle = 'rgba(56,189,248,0.35)';
+      ctx.lineWidth = 2;
+      const t = performance.now()/300;
+      for(let gx = w.x1+20; gx < w.x2; gx += 60){
+        for(let gy = 40; gy < VH-40; gy += 90){
+          const off = (t*40 + gx) % 40;
+          ctx.beginPath();
+          ctx.moveTo(gx+off, gy);
+          ctx.lineTo(gx+off+18, gy);
+          ctx.moveTo(gx+off+18, gy);
+          ctx.lineTo(gx+off+12, gy-5);
+          ctx.moveTo(gx+off+18, gy);
+          ctx.lineTo(gx+off+12, gy+5);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // ground segments
+    curLevel.ground.forEach(seg=>{
+      ctx.fillStyle = '#141420';
+      ctx.fillRect(seg.x1, seg.y, seg.x2-seg.x1, VH-seg.y+40);
+      ctx.fillStyle = '#4ade80';
+      ctx.fillRect(seg.x1, seg.y, seg.x2-seg.x1, 4);
+    });
+
+    // spikes
+    if(curLevel.spike){
+      const sp = curLevel.spike;
+      ctx.fillStyle = '#7f1d1d';
+      const n = Math.floor((sp.x2-sp.x1)/24);
+      for(let i=0;i<n;i++){
+        const x0 = sp.x1 + i*24;
+        ctx.beginPath();
+        ctx.moveTo(x0, sp.y);
+        ctx.lineTo(x0+12, sp.y - sp.h);
+        ctx.lineTo(x0+24, sp.y);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+
+    // anchors
+    const t2 = performance.now()/500;
+    curLevel.anchors.forEach(a=>{
+      const inRange = Math.hypot(mouseWorld.x-a.x, mouseWorld.y-a.y) < ANCHOR_GRAB_R;
+      const pulse = 5 + Math.sin(t2 + a.x)*2;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, ANCHOR_GRAB_R, 0, Math.PI*2);
+      ctx.strokeStyle = inRange ? 'rgba(167,139,250,0.45)' : 'rgba(148,163,184,0.12)';
+      ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, 8+pulse*0.3, 0, Math.PI*2);
+      ctx.fillStyle = inRange ? '#a78bfa' : '#38bdf8';
+      ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 14;
+      ctx.fill(); ctx.shadowBlur = 0;
+    });
+
+    // goal
+    const g = curLevel.goal;
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, g.r + Math.sin(t2*2)*3, 0, Math.PI*2);
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = 'rgba(251,191,36,0.18)'; ctx.fill();
+    ctx.fillStyle = '#fbbf24'; ctx.font = '20px system-ui';
+    ctx.textAlign='center'; ctx.fillText('🚩', g.x, g.y+7);
+
+    // ghost
+    if(ghost && ghost.length){
+      let pt = null;
+      for(let i=0;i<ghost.length;i++){
+        if(ghost[i].t >= elapsed){ pt = ghost[i]; break; }
+      }
+      if(pt){
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, PLAYER_R, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(226,232,240,0.28)';
+        ctx.fill();
+      }
+    }
+
+    // rope
+    if(player.grappled){
+      const tension = clamp(player.ropeLen / MAX_ROPE, 0, 1);
+      ctx.beginPath();
+      ctx.moveTo(player.anchor.x, player.anchor.y);
+      ctx.lineTo(player.x, player.y);
+      ctx.strokeStyle = `rgba(${Math.round(56+tension*100)}, ${Math.round(189-tension*60)}, 248, 0.85)`;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+
+    // trail
+    trail.forEach((p,i)=>{
+      const a = (i/trail.length) * (0.35 + flow/200);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PLAYER_R*0.5*(i/trail.length), 0, Math.PI*2);
+      ctx.fillStyle = `rgba(167,139,250,${a})`;
+      ctx.fill();
+    });
+
+    // player
+    const speed = Math.hypot(player.x-player.px, player.y-player.py);
+    const squash = clamp(speed/40, 0, 0.35);
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    const ang = Math.atan2(player.y-player.py, player.x-player.px);
+    ctx.rotate(ang);
+    ctx.scale(1+squash, 1-squash*0.6);
+    ctx.beginPath();
+    ctx.arc(0,0,PLAYER_R,0,Math.PI*2);
+    ctx.fillStyle = '#38bdf8';
+    ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 12 + flow/6;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    ctx.restore();
+
+    // HUD text
+    document.getElementById('timeVal').textContent = elapsed.toFixed(2);
+    document.getElementById('flowFill').style.width = flow + '%';
+  }
+
+  // ---------- main loop ----------
+  let acc = 0, last = performance.now();
+  const FIXED_DT = 1/120;
+  function loop(now){
+    let frameDt = (now - last)/1000;
+    last = now;
+    if(frameDt > 0.1) frameDt = 0.1;
+    if(state==='playing'){
+      acc += frameDt;
+      let steps = 0;
+      while(acc >= FIXED_DT && steps < 8){
+        stepPhysics(FIXED_DT);
+        acc -= FIXED_DT;
+        steps++;
+        if(state!=='playing') break;
+      }
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- menu ----------
+  function buildLevelGrid(){
+    const grid = document.getElementById('levelGrid');
+    grid.innerHTML = '';
+    LEVELS.forEach((lvl, i)=>{
+      const best = getBest(i);
+      const card = document.createElement('div');
+      card.className = 'lvlCard';
+      card.innerHTML =
+        '<div class="world">'+lvl.world+'</div>' +
+        '<div class="n">LEVEL '+(i+1)+'</div>' +
+        '<div class="t">'+lvl.name+'</div>' +
+        '<div class="best">'+(best!==null ? 'Best '+best.toFixed(2)+'s' : 'Not cleared') + '</div>';
+      card.addEventListener('click', ()=> loadLevel(i));
+      grid.appendChild(card);
+    });
+  }
+  document.getElementById('retryBtn').addEventListener('click', ()=> loadLevel(curIdx));
+  document.getElementById('nextBtn').addEventListener('click', ()=> loadLevel(Math.min(curIdx+1, LEVELS.length-1)));
+  document.getElementById('menuBtn').addEventListener('click', ()=>{ setState('menu'); buildLevelGrid(); });
+
+  buildLevelGrid();
+  setState('menu');
+})();
+</script>
+</body>
+</html>
