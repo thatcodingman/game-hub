@@ -149,17 +149,33 @@ const KICK_EXTEND = 34;
 const KICK_RETRACT_MS = 145;
 const KICK_KNOCKBACK = 220;
 
+// JUMP ATTACK — triggered by PUNCH or KICK while airborne instead of
+// grounded (same buttons, updateAttack routes on f.grounded). Fast windup
+// since jumping is already the commitment; biggest knockback and damage of
+// the three strikes, since you can't dodge or reposition out of a bad jump
+// the way you can on the ground — the risk should have a real payoff.
+const JUMP_ATTACK_RANGE = 88;
+const JUMP_ATTACK_WINDUP_MS = 60;
+const JUMP_ATTACK_ACTIVE_MS = 90;
+const JUMP_ATTACK_RECOVERY_MS = 380;
+const JUMP_ATTACK_PULLBACK = 6;
+const JUMP_ATTACK_EXTEND = 30;
+const JUMP_ATTACK_RETRACT_MS = 130;
+const JUMP_ATTACK_KNOCKBACK = 260;
+
 // Damage is separate from knockback — knockback is physical push, damage is
 // what actually threatens a KO. Values are the BASE; each character's
 // damageMult scales them (see CHARACTER_DEFS).
 const PUNCH_DAMAGE = 8;
 const KICK_DAMAGE = 13;
+const JUMP_ATTACK_DAMAGE = 14;
 const CHIP_DAMAGE = 2.5; // guard isn't free anymore now that health exists — small cost even on a clean block
 const HEALTH_BASE = 100; // scaled per-character by healthMult
 
 const ATTACK_DEFS = {
   punch: { range: PUNCH_RANGE, windup: PUNCH_WINDUP_MS, active: PUNCH_ACTIVE_MS, recovery: PUNCH_RECOVERY_MS, knockback: PUNCH_KNOCKBACK, pullback: PUNCH_PULLBACK, extend: PUNCH_EXTEND, retract: PUNCH_RETRACT_MS, damage: PUNCH_DAMAGE },
-  kick:  { range: KICK_RANGE,  windup: KICK_WINDUP_MS,  active: KICK_ACTIVE_MS,  recovery: KICK_RECOVERY_MS,  knockback: KICK_KNOCKBACK,  pullback: KICK_PULLBACK,  extend: KICK_EXTEND,  retract: KICK_RETRACT_MS,  damage: KICK_DAMAGE }
+  kick:  { range: KICK_RANGE,  windup: KICK_WINDUP_MS,  active: KICK_ACTIVE_MS,  recovery: KICK_RECOVERY_MS,  knockback: KICK_KNOCKBACK,  pullback: KICK_PULLBACK,  extend: KICK_EXTEND,  retract: KICK_RETRACT_MS,  damage: KICK_DAMAGE },
+  jumpAttack: { range: JUMP_ATTACK_RANGE, windup: JUMP_ATTACK_WINDUP_MS, active: JUMP_ATTACK_ACTIVE_MS, recovery: JUMP_ATTACK_RECOVERY_MS, knockback: JUMP_ATTACK_KNOCKBACK, pullback: JUMP_ATTACK_PULLBACK, extend: JUMP_ATTACK_EXTEND, retract: JUMP_ATTACK_RETRACT_MS, damage: JUMP_ATTACK_DAMAGE }
 };
 
 // CHARACTER ROSTER — data-driven so adding a fighter later is a new entry
@@ -397,7 +413,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
     this.subText = this.add.text(W/2, 168,
-      'Panda vs Bear \u2014 punch, kick, block, dodge, grapple\nclose the distance and make something happen.', {
+      'Panda vs Bear \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
@@ -721,7 +737,7 @@ class PlayScene extends Phaser.Scene {
     this.p2HealthBg.setVisible(false);
     this.p2HealthFill.setVisible(false);
     this.centerText.setText('LAST FIST').setVisible(true);
-    this.subText.setText('Panda vs Bear vs Tiger \u2014 punch, kick, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
+    this.subText.setText('Panda vs Bear vs Tiger \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
     this.menuButtons.forEach(o => o.setVisible(true));
   }
 
@@ -1099,13 +1115,19 @@ class PlayScene extends Phaser.Scene {
   // windup (committed, no hit yet) -> active (the window it can connect in)
   // -> recovery (can't attack again yet). Facing is already auto-locked
   // onto the opponent, so range alone decides a hit — no angle check needed.
-  // Works for punch or kick — f.attackType picks which ATTACK_DEFS entry
-  // governs the timing/range/knockback.
+  // Works for punch, kick, or jumpAttack — f.attackType picks which
+  // ATTACK_DEFS entry governs the timing/range/knockback. Jump Attack uses
+  // the same two buttons as punch/kick — it's the airborne state that
+  // decides which move actually fires, not a separate input.
   updateAttack(f, opponent, punchPressed, kickPressed, dt) {
     if (f.attackState === 'idle') {
       if (f.guarding) return; // hands are up — can't throw a punch/kick from guard
-      if (punchPressed && f.grounded) this.startAttack(f, 'punch');
-      else if (kickPressed && f.grounded) this.startAttack(f, 'kick');
+      if (f.grounded) {
+        if (punchPressed) this.startAttack(f, 'punch');
+        else if (kickPressed) this.startAttack(f, 'kick');
+      } else if (punchPressed || kickPressed) {
+        this.startAttack(f, 'jumpAttack');
+      }
       return;
     }
 
@@ -1147,8 +1169,11 @@ class PlayScene extends Phaser.Scene {
     defender.hitFlash = 1;
     defender.health -= damage;
 
-    this.cameras.main.shake(70, 0.005);
-    vibrate(20);
+    // scaled off knockback so a kick or jump attack lands with visibly
+    // more weight than a jab, without hardcoding per-move-type cases here
+    const impactScale = Phaser.Math.Clamp(knockback / PUNCH_KNOCKBACK, 1, 2);
+    this.cameras.main.shake(70 * impactScale, 0.005 * impactScale);
+    vibrate(Math.round(20 * impactScale));
     if (window.SFX) SFX.hit();
     this.showHitText(defender);
     this.checkKO(defender, attacker);
@@ -1362,7 +1387,7 @@ class PlayScene extends Phaser.Scene {
     // leg during a kick. Without this, the static block and the animated
     // limb are two unrelated shapes on screen at once, which is exactly
     // what read as "a random arm appearing" instead of "my arm reaching out."
-    const isPunchActive = rawOffset !== null && f.attackType === 'punch';
+    const isPunchActive = rawOffset !== null && (f.attackType === 'punch' || f.attackType === 'jumpAttack');
     const isKickActive = rawOffset !== null && f.attackType === 'kick';
     const frontIsRight = f.facing === 1;
     const leftIsFront = !frontIsRight;
@@ -1470,7 +1495,8 @@ class PlayScene extends Phaser.Scene {
 
     if (rawOffset !== null) {
       const isKick = f.attackType === 'kick';
-      const limbColor = f.character.gloveColor;
+      const isJumpAttack = f.attackType === 'jumpAttack';
+      const limbColor = isJumpAttack ? 0xffd23f : f.character.gloveColor;
       const offset = rawOffset * scale;
       // anchored at exactly where the now-hidden static arm/leg block was,
       // so this reads as that limb extending, not a new shape appearing.
