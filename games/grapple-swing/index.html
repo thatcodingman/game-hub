@@ -488,7 +488,23 @@
     if(best){
       player.grappled = true;
       player.anchor = best;
-      player.ropeLen = clamp(Math.hypot(player.x-best.x, player.y-best.y), MIN_ROPE, MAX_ROPE);
+      const dxr = player.x-best.x, dyr = player.y-best.y;
+      const distr = Math.hypot(dxr,dyr) || 1;
+      player.ropeLen = clamp(distr, MIN_ROPE, MAX_ROPE);
+
+      // if velocity is (near) purely radial — falling straight at/away from the anchor — the
+      // pendulum has no tangential force and would just hang there. Guarantee a visible swing.
+      const rvx = player.x-player.px, rvy = player.y-player.py;
+      const rx = dxr/distr, ry = dyr/distr;
+      const radialComp = rvx*rx + rvy*ry;
+      const tangMag = Math.hypot(rvx - radialComp*rx, rvy - radialComp*ry);
+      if(tangMag < 30){
+        const dir = keys.right ? 1 : (keys.left ? -1 : (wx >= best.x ? 1 : -1));
+        const perpx = -ry, perpy = rx;
+        const kick = 230/120; // ~230 px/s tangential nudge, expressed as a one-frame position delta
+        player.px -= perpx*dir*kick;
+        player.py -= perpy*dir*kick;
+      }
       sfx.grapple();
     }
   }
