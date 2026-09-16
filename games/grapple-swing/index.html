@@ -222,21 +222,22 @@
       wind: null
     },
     {
-      id: 1, name: "Reel It In", world: "Learning",
-      width: 1600,
-      ground: [ {x1:-100,x2:220,y:460}, {x1:1200,x2:1700,y:220} ],
-      anchors: [ {x:520,y:340}, {x:940,y:150} ],
-      goal: {x:1380,y:160,r:30},
+      id: 1, name: "The Chain", world: "Learning",
+      width: 1750,
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1250,x2:1750,y:220} ],
+      walls: [ {x1:760,x2:800,y1:40,y2:460} ],
+      anchors: [ {x:480,y:280}, {x:1020,y:190} ],
+      goal: {x:1600,y:180,r:30},
       spawn: {x:100,y:400},
       wind: null
     },
     {
       id: 2, name: "Let Go", world: "Learning",
       width: 1500,
-      ground: [ {x1:-100,x2:220,y:460}, {x1:1150,x2:1600,y:460} ],
-      anchors: [ {x:520,y:200} ],
-      spike: {x1:760,x2:900,y:460,h:110},
-      goal: {x:1320,y:400,r:30},
+      ground: [ {x1:-100,x2:220,y:460}, {x1:1000,x2:1500,y:460} ],
+      anchors: [ {x:420,y:260} ],
+      spike: {x1:650,x2:780,y:460,h:80},
+      goal: {x:1150,y:420,r:30},
       spawn: {x:100,y:400},
       wind: null
     },
@@ -341,7 +342,7 @@
     player = {
       x: curLevel.spawn.x, y: curLevel.spawn.y,
       px: curLevel.spawn.x, py: curLevel.spawn.y,
-      grappled: false, anchor: null, ropeLen: 0, grounded: false
+      grappled: false, anchor: null, ropeLen: 0, grounded: false, hasGrappled: false
     };
     elapsed = 0; trail = []; flow = 0;
     recordBuf = [];
@@ -429,7 +430,28 @@
       player._prevSwingSign = 0;
     }
 
+    // solid walls — force a real release+flight where a wide swing shouldn't be able to just brush through
+    if(curLevel.walls){
+      curLevel.walls.forEach(wl=>{
+        const cx = clamp(player.x, wl.x1, wl.x2);
+        const cy = clamp(player.y, wl.y1, wl.y2);
+        const dxw = player.x-cx, dyw = player.y-cy;
+        const dw = Math.hypot(dxw,dyw);
+        if(dw < PLAYER_R){
+          const nx = dw > 0.0001 ? dxw/dw : 1, ny = dw > 0.0001 ? dyw/dw : 0;
+          const push = PLAYER_R - dw;
+          player.x += nx*push;
+          player.y += ny*push;
+          // kill only the inward velocity component (soft stop) — sliding along the wall stays intact
+          const vx2 = player.x-player.px, vy2 = player.y-player.py;
+          const vn = vx2*nx + vy2*ny;
+          if(vn < 0){ player.px += nx*vn; player.py += ny*vn; }
+        }
+      });
+    }
+
     curSpeed = Math.hypot(player.x-player.px, player.y-player.py)/dt;
+    const preGroundVY = player.y - player.py; // captured before ground collision can zero it out
     if(!player.grappled) distSinceRelease += curSpeed*dt;
     if(vibrateT > 0) vibrateT = Math.max(0, vibrateT - dt);
     if(releaseFX){ releaseFX.t += dt; if(releaseFX.t > releaseFX.dur) releaseFX = null; }
@@ -462,8 +484,8 @@
 
     const gdx = player.x - curLevel.goal.x, gdy = player.y - curLevel.goal.y;
     const nearGoal = Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R + GOAL_FORGIVENESS;
-    const descending = (player.y - player.py) > 5;
-    if(nearGoal && !player.grappled && descending && distSinceRelease > MIN_FLIGHT_DIST){ winLevel(); return; }
+    const descending = preGroundVY > 5 || player.grounded;
+    if(nearGoal && !player.grappled && player.hasGrappled && descending && distSinceRelease > MIN_FLIGHT_DIST){ winLevel(); return; }
 
     if(!player.grounded && curSpeed > FLOW_SPEED_THRESHOLD){
       flow = clamp(flow + curSpeed*dt*FLOW_RATE, 0, 100);
@@ -493,6 +515,7 @@
   function attachToAnchor(anchor, aimHintX){
     player.grappled = true;
     player.anchor = anchor;
+    player.hasGrappled = true;
     distSinceRelease = 0;
     const dxr = player.x-anchor.x, dyr = player.y-anchor.y;
     const distr = Math.hypot(dxr,dyr) || 1;
@@ -649,6 +672,21 @@
       ctx.fillStyle = '#4ade80';
       ctx.fillRect(seg.x1, seg.y, seg.x2-seg.x1, 4);
     });
+
+    // walls — solid barriers; the lit top edge signals "clear me by flying over"
+    if(curLevel.walls){
+      curLevel.walls.forEach(wl=>{
+        const wg = ctx.createLinearGradient(wl.x1,0,wl.x2,0);
+        wg.addColorStop(0,'#1c1a24'); wg.addColorStop(0.5,'#2a2733'); wg.addColorStop(1,'#1c1a24');
+        ctx.fillStyle = wg;
+        ctx.fillRect(wl.x1, wl.y1, wl.x2-wl.x1, wl.y2-wl.y1);
+        ctx.fillStyle = '#f472b6';
+        ctx.fillRect(wl.x1, wl.y1, wl.x2-wl.x1, 4);
+        ctx.strokeStyle = 'rgba(244,114,182,0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(wl.x1, wl.y1, wl.x2-wl.x1, wl.y2-wl.y1);
+      });
+    }
 
     // spikes
     if(curLevel.spike){
