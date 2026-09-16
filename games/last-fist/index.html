@@ -25,7 +25,7 @@
 <script>
 /* =========================================================================
    LAST FIST
-   Panda vs Bear vs Tiger — pick a fighter, close the distance, make
+   Pick a fighter — close the distance, make
    something happen.
 
    Full move set: Punch, Kick, Block (held, chip damage now that health
@@ -212,31 +212,54 @@ const ATTACK_DEFS = {
 
 // CHARACTER ROSTER — data-driven so adding a fighter later is a new entry
 // here, not new engineering. bodyStyle picks which shape template to draw
-// (see drawFighter) — Tiger deliberately reuses Bear's silhouette with its
-// own palette rather than needing new geometry; the archetype comes from
-// the stat multipliers, not from bespoke art. unlockAt is the games-played
-// count required to play as them — persisted across sessions.
+// (see drawFighter) — several animals share one template with a different
+// palette AND different bodyScale/earScale (proportion multipliers), so a
+// leaner/bigger-eared monkey and a stockier/small-eared crocodile can both
+// come from the same two skeletons without needing bespoke geometry per
+// animal. grappleRangeMult/groundDamageMult default to 1 for everyone
+// except the Grappler archetype, which is the one place the stat system
+// reaches into the grapple/ground-game mechanics specifically — before
+// this, every character grappled identically. unlockAt is the
+// games-played count required to play as them — persisted across sessions.
 const CHARACTER_DEFS = {
   panda: {
     name: 'Panda', archetype: 'Defender', bodyStyle: 'panda',
     healthMult: 1.15, damageMult: 0.9, speedMult: 0.95, recoveryMult: 1.05,
     bodyColor: 0xf4f4f4, gloveColor: 0xdc2626, darkColor: 0x18181b,
+    bodyScale: 1, earScale: 1, grappleRangeMult: 1, groundDamageMult: 1,
     unlockAt: 0
   },
   bear: {
     name: 'Bear', archetype: 'Power', bodyStyle: 'bear',
     healthMult: 1.05, damageMult: 1.2, speedMult: 0.9, recoveryMult: 1.1,
     bodyColor: 0x8b5a2b, gloveColor: 0xf5a623, darkColor: 0x6b431f, muzzleColor: 0xd8b98c,
+    bodyScale: 1, earScale: 1, grappleRangeMult: 1, groundDamageMult: 1,
     unlockAt: 3
   },
   tiger: {
     name: 'Tiger', archetype: 'Striker', bodyStyle: 'bear',
     healthMult: 0.85, damageMult: 1.3, speedMult: 1.1, recoveryMult: 0.85,
     bodyColor: 0xe8862c, gloveColor: 0x1a1a1a, darkColor: 0x1a1a1a, muzzleColor: 0xf4f4f4,
+    bodyScale: 1, earScale: 1, grappleRangeMult: 1, groundDamageMult: 1,
     unlockAt: 8
+  },
+  monkey: {
+    name: 'Monkey', archetype: 'Quick', bodyStyle: 'panda',
+    healthMult: 0.75, damageMult: 0.85, speedMult: 1.25, recoveryMult: 0.75,
+    bodyColor: 0x8b6b4a, gloveColor: 0xffd23f, darkColor: 0x3d2b1a,
+    bodyScale: 0.88, earScale: 1.35, grappleRangeMult: 1, groundDamageMult: 1, // leaner, bigger round ears
+    unlockAt: 15
+  },
+  crocodile: {
+    name: 'Crocodile', archetype: 'Grappler', bodyStyle: 'bear',
+    healthMult: 1.1, damageMult: 1.0, speedMult: 0.85, recoveryMult: 1.0,
+    bodyColor: 0x4a7a3d, gloveColor: 0xd8d840, darkColor: 0x2f4a26, muzzleColor: 0x6b9a52,
+    bodyScale: 1.05, earScale: 0.6, // stockier, small reptilian ears
+    grappleRangeMult: 1.35, groundDamageMult: 1.25, // the actual point of this archetype — closes distance to grapple and hits harder once there
+    unlockAt: 25
   }
 };
-const CHARACTER_ORDER = ['panda', 'bear', 'tiger'];
+const CHARACTER_ORDER = ['panda', 'bear', 'tiger', 'monkey', 'crocodile'];
 const GAMES_PLAYED_KEY = 'lastFist_gamesPlayed';
 
 // scales an ATTACK_DEFS entry by a character's recoveryMult — windup/
@@ -459,7 +482,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
     this.subText = this.add.text(W/2, 168,
-      'Panda vs Bear \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.', {
+      'Pick a fighter \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
   }
@@ -834,7 +857,7 @@ class PlayScene extends Phaser.Scene {
     this.p2HealthBg.setVisible(false);
     this.p2HealthFill.setVisible(false);
     this.centerText.setText('LAST FIST').setVisible(true);
-    this.subText.setText('Panda vs Bear vs Tiger \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
+    this.subText.setText('Pick a fighter \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
     this.menuButtons.forEach(o => o.setVisible(true));
   }
 
@@ -956,7 +979,7 @@ class PlayScene extends Phaser.Scene {
     const block = this.aiWillBlock && withinBlockRange && (this.p1.attackState === 'windup' || this.p1.attackState === 'active');
 
     let grapple = false;
-    if (!this.clinchActive && this.p2.attackState === 'idle' && !block && dist <= GRAPPLE_RANGE && Math.random() < diff.grappleChance * dt) {
+    if (!this.clinchActive && this.p2.attackState === 'idle' && !block && dist <= GRAPPLE_RANGE * this.p2.character.grappleRangeMult && Math.random() < diff.grappleChance * dt) {
       grapple = true;
     }
 
@@ -1062,7 +1085,7 @@ class PlayScene extends Phaser.Scene {
     if (!defender.grounded || defender.guarding) return; // a guarding opponent resists the clinch
 
     const dist = Math.hypot(defender.ax - attacker.ax, defender.az - attacker.az);
-    if (dist > GRAPPLE_RANGE) return;
+    if (dist > GRAPPLE_RANGE * attacker.character.grappleRangeMult) return;
 
     this.clinchActive = true;
     this.clinchTimer = 0;
@@ -1175,7 +1198,7 @@ class PlayScene extends Phaser.Scene {
 
     if (topPunchPressed && this.groundStrikeCooldown <= 0) {
       this.groundStrikeCooldown = GROUND_STRIKE_COOLDOWN_MS;
-      let dmg = GROUND_STRIKE_DAMAGE * top.character.damageMult;
+      let dmg = GROUND_STRIKE_DAMAGE * top.character.damageMult * top.character.groundDamageMult;
       if (bottomBlockHeld) dmg *= GROUND_BLOCK_REDUCTION;
       bottom.health -= dmg;
       bottom.hitFlash = bottomBlockHeld ? 0.5 : 1;
@@ -1189,7 +1212,7 @@ class PlayScene extends Phaser.Scene {
 
     if (bottomStrikePressed && !bottomBlockHeld && this.groundBottomStrikeCooldown <= 0) {
       this.groundBottomStrikeCooldown = GROUND_BOTTOM_STRIKE_COOLDOWN_MS;
-      const dmg = GROUND_BOTTOM_STRIKE_DAMAGE * bottom.character.damageMult;
+      const dmg = GROUND_BOTTOM_STRIKE_DAMAGE * bottom.character.damageMult * bottom.character.groundDamageMult;
       top.health -= dmg;
       top.hitFlash = 1;
       top.squash = 1;
@@ -1496,7 +1519,9 @@ class PlayScene extends Phaser.Scene {
     const baseX = proj.sx + leanRaw * scale * f.facing + wobbleX + groundXLean;
     const baseY = proj.sy + f.jumpZ * scale - bobY + groundYShift;
     const headX = baseX + groundHeadShiftX;
-    const w = 42 * scale * squashX, hgt = 56 * scale * squashY * groundSquash * wobbleSquash;
+    const bodyScale = f.character.bodyScale;
+    const earScale = f.character.earScale;
+    const w = 42 * scale * squashX * bodyScale, hgt = 56 * scale * squashY * groundSquash * wobbleSquash * bodyScale;
 
     // Which static limb (if any) needs to stand down and hand off to the
     // animated one — the facing-side arm during a punch, the facing-side
@@ -1573,8 +1598,8 @@ class PlayScene extends Phaser.Scene {
       g.fillStyle(0x0a0a0d, 0.3);
       g.fillEllipse(headX, baseY - hgt, w * 0.5, 5 * scale);
       g.fillStyle(c.darkColor, 1);
-      g.fillCircle(headX - 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillCircle(headX + 13 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(headX - 13 * scale * earScale, baseY - hgt - 30 * scale, 7 * scale * earScale);
+      g.fillCircle(headX + 13 * scale * earScale, baseY - hgt - 30 * scale, 7 * scale * earScale);
       g.fillEllipse(headX - 7 * f.facing * scale, baseY - hgt - 17 * scale, 11 * scale, 13 * scale);
       g.fillStyle(0x0a0a0d, 1);
       g.fillCircle(headX + f.facing * 10 * scale, baseY - hgt - 14 * scale, 4.5 * scale);
@@ -1594,8 +1619,8 @@ class PlayScene extends Phaser.Scene {
       g.fillStyle(0x0a0a0d, 0.3);
       g.fillEllipse(headX, baseY - hgt, w * 0.5, 5 * scale);
       g.fillStyle(c.darkColor, 1);
-      g.fillCircle(headX - 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
-      g.fillCircle(headX + 14 * scale, baseY - hgt - 30 * scale, 7 * scale);
+      g.fillCircle(headX - 14 * scale * earScale, baseY - hgt - 30 * scale, 7 * scale * earScale);
+      g.fillCircle(headX + 14 * scale * earScale, baseY - hgt - 30 * scale, 7 * scale * earScale);
       g.fillStyle(c.muzzleColor, 1);
       g.fillEllipse(headX + f.facing * 6 * scale, baseY - hgt - 12 * scale, 16 * scale, 12 * scale);
       g.fillStyle(0x0a0a0d, 1);
