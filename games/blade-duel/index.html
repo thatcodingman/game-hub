@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Blade Duel — The Arcade</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none;
+    background: #060608;
+    color: #f8fafc;
+    font-family: system-ui, -apple-system, sans-serif;
+    height: 100%;
+  }
+  #stage {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #gameCanvas {
+    background: #0a0a12;
+    max-width: 100vw; max-height: 100vh;
+    aspect-ratio: 960 / 540;
+    touch-action: none;
+  }
+
+  #hud { position: absolute; top: 0; left: 0; right: 0; padding: 14px 22px; pointer-events: none; }
+  .hpRow { display: flex; justify-content: space-between; align-items: center; }
+  .hpBox { width: 40%; }
+  .hpBox .name { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px; }
+  .hpBar { height: 14px; border-radius: 7px; background: rgba(148,163,184,0.15); overflow: hidden; border: 1px solid rgba(148,163,184,0.25); }
+  .hpFill { height: 100%; transition: width 0.15s ease; }
+  #hpFillP { background: linear-gradient(90deg,#38bdf8,#818cf8); }
+  #hpFillA { background: linear-gradient(90deg,#f87171,#fb923c); margin-left: auto; }
+  .hpBox.right { text-align: right; }
+  #tierLabel { text-align: center; font-size: 12px; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px; }
+
+  #hint {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: rgba(226,232,240,0.55);
+    background: rgba(10,10,16,0.5); padding: 6px 14px; border-radius: 20px;
+    pointer-events: none; white-space: nowrap; text-align: center;
+  }
+
+  #touchControls { position: absolute; inset: 0; display: none; pointer-events: none; }
+  #touchControls button {
+    position: absolute; pointer-events: auto;
+    border-radius: 50%; border: 1px solid rgba(148,163,184,0.3);
+    background: rgba(20,20,30,0.65); color: #e2e8f0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  }
+  #btnGuardHigh { left: 16px; bottom: 128px; width: 64px; height: 64px; }
+  #btnGuardLow  { left: 16px; bottom: 54px;  width: 64px; height: 64px; }
+  #btnAttack    { right: 16px; bottom: 128px; width: 72px; height: 72px; border-color:#f87171 !important; color:#f87171 !important; }
+  #btnFeint     { right: 96px; bottom: 54px; width: 56px; height: 56px; }
+  #btnStepBack  { right: 168px; bottom: 20px; width: 56px; height: 44px; }
+  #btnStepFwd   { right: 16px;  bottom: 20px; width: 56px; height: 44px; }
+
+  .overlay {
+    position: absolute; inset: 0;
+    background: radial-gradient(circle at 50% 30%, #14141f 0%, #060608 75%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px;
+  }
+  .hidden { display: none !important; }
+  .overlay h1 {
+    margin: 0 0 6px; font-size: 2.3rem; letter-spacing: 0.08em;
+    background: linear-gradient(90deg, #f87171, #fb923c, #fde047);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .overlay .sub { color: #94a3b8; max-width: 480px; margin-bottom: 22px; font-size: 0.95rem; line-height: 1.5; }
+  .btn {
+    background: linear-gradient(135deg,#1e293b,#0f172a);
+    border: 1px solid rgba(148,163,184,0.25);
+    color: #f1f5f9; padding: 12px 26px; border-radius: 10px;
+    font-size: 14px; letter-spacing: 0.05em; cursor: pointer; margin: 6px;
+    text-transform: uppercase; font-weight: 600;
+  }
+  .btn:hover { border-color: #f87171; }
+  .btn.primary { background: linear-gradient(135deg,#7c2d12,#431407); border-color: #fb923c; }
+
+  #tierGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; max-width: 600px; width: 100%; margin-bottom: 14px; }
+  .tierCard { background: rgba(20,20,32,0.7); border: 1px solid rgba(148,163,184,0.2); border-radius: 12px; padding: 14px; cursor: pointer; text-align: left; }
+  .tierCard:hover { border-color: #fb923c; }
+  .tierCard .n { font-size: 11px; color: #64748b; letter-spacing: 0.08em; }
+  .tierCard .t { font-size: 15px; font-weight: 700; margin: 3px 0 6px; }
+  .tierCard .d { font-size: 11px; color: #94a3b8; line-height: 1.4; }
+  .tierCard .w { font-size: 11px; color: #4ade80; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+  <div id="hud" class="hidden">
+    <div class="hpRow">
+      <div class="hpBox"><div class="name" id="nameP">You</div><div class="hpBar"><div class="hpFill" id="hpFillP" style="width:100%"></div></div></div>
+      <div class="hpBox right"><div class="name" id="nameA">Opponent</div><div class="hpBar"><div class="hpFill" id="hpFillA" style="width:100%"></div></div></div>
+    </div>
+    <div id="tierLabel">—</div>
+  </div>
+
+  <div id="hint" class="hidden">W/S hold = guard high/low (fresh press = parry) · J attack (uses held line) · K feint · A/D step</div>
+
+  <div id="touchControls">
+    <button id="btnGuardHigh">GUARD<br>HIGH</button>
+    <button id="btnGuardLow">GUARD<br>LOW</button>
+    <button id="btnAttack">STRIKE</button>
+    <button id="btnFeint">FEINT</button>
+    <button id="btnStepBack">◀ STEP</button>
+    <button id="btnStepFwd">STEP ▶</button>
+  </div>
+
+  <div id="menuOverlay" class="overlay">
+    <h1>BLADE DUEL</h1>
+    <div class="sub">Every attack is a commitment. Every guard is a read. Two fighters, four verbs — attack, guard, feint, step — and one well-timed decision beats ten fast ones.</div>
+    <div id="tierGrid"></div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold W/S for high/low guard (a fresh press is a parry attempt) · J to strike in the held line · K to feint · A/D to step</div>
+  </div>
+
+  <div id="resultOverlay" class="overlay hidden">
+    <h1 id="resultTitle">VICTORY</h1>
+    <div class="sub" id="resultSub"></div>
+    <div>
+      <button class="btn" id="retryBtn">Rematch</button>
+      <button class="btn primary" id="menuBtn">Choose Opponent</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- audio (self-contained) ----------
+  let actx = null;
+  function ac(){ if(!actx){ try{ actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return actx; }
+  function beep(freq, dur, type, gain){
+    const c = ac(); if(!c) return;
+    try{
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type||'sine'; o.frequency.value = freq;
+      g.gain.value = gain||0.08;
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + (dur||0.15));
+      o.connect(g); g.connect(c.destination);
+      o.start(); o.stop(c.currentTime + (dur||0.15));
+    }catch(e){}
+  }
+  const sfx = {
+    windup:  ()=>beep(300,0.08,'triangle',0.04),
+    swing:   ()=>beep(180,0.1,'sawtooth',0.07),
+    clash:   ()=>beep(700,0.08,'square',0.08),
+    parry:   ()=>{ beep(900,0.07,'square',0.1); setTimeout(()=>beep(1200,0.1,'square',0.09),50); },
+    hit:     ()=>beep(120,0.18,'sawtooth',0.1),
+    step:    ()=>beep(400,0.05,'sine',0.04),
+    win:     ()=>{ beep(660,0.1,'sine',0.09); setTimeout(()=>beep(880,0.16,'sine',0.09),90); setTimeout(()=>beep(1100,0.22,'sine',0.09),180); },
+    lose:    ()=>beep(140,0.35,'sawtooth',0.08)
+  };
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const VW = 960, VH = 540, FLOOR_Y = 400;
+
+  // ---------- tuning ----------
+  const ARENA_MIN = 90, ARENA_MAX = 870;
+  const MIN_SEP = 55;
+  const ATTACK_RANGE = 150;
+  const STEP_DIST = 85, STEP_TIME = 0.12, STEP_COOLDOWN = 0.32;
+  const WINDUP_TIME = 0.34;
+  const ACTIVE_TIME = 0.09;
+  const RECOVERY_HIT = 0.42;
+  const RECOVERY_FEINT = 0.20;
+  const PARRY_WINDOW = 0.15;
+  const HP_MAX = 100, HIT_DMG = 32, PARRY_PUNISH_DMG = 40;
+  const STAGGER_HIT = 0.32, STAGGER_PARRIED = 0.55;
+
+  const TIERS = [
+    { id:0, name:"Practice", desc:"Slow, obvious attacks. No feints, barely guards.", think:[0.9,1.5], feintChance:0.0, guardChance:0.15, guardDelay:0.30, guardAccuracy:0.5 },
+    { id:1, name:"Apprentice", desc:"Reasonable spacing, varies attack lines.", think:[0.6,1.1], feintChance:0.08, guardChance:0.40, guardDelay:0.20, guardAccuracy:0.7 },
+    { id:2, name:"Duelist", desc:"Mixes timing and lines, uses feints, punishes hesitation.", think:[0.35,0.8], feintChance:0.22, guardChance:0.62, guardDelay:0.12, guardAccuracy:0.85 }
+  ];
+
+  let state = 'menu'; // menu | duel | result
+  let tierIdx = 0;
+  let P, A; // player, ai fighters
+  let elapsed = 0;
+  let shakeT = 0, shakeMag = 0;
+  let fx = []; // transient visual effects {type,x,y,t,dur,...}
+  let keys = { up:false, down:false };
+  let keyPressT = { up:-99, down:-99 }; // last keydown timestamp for freshness/parry detection
+  let touchGuard = null;
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function newFighter(x, color, isAI){
+    return {
+      x, color, isAI,
+      hp: HP_MAX,
+      state: 'idle', stateT: 0,
+      attackLine: 'high', isFeint: false, resolved: false,
+      guardLine: null, guardFreshT: -99,
+      staggerT: 0,
+      stepDir: 0, stepFromX: x, stepToX: x, stepCooldown: 0,
+      // ai only
+      aiThinkT: 0.6
+    };
+  }
+
+  function startDuel(idx){
+    tierIdx = idx;
+    P = newFighter(280, '#38bdf8', false);
+    A = newFighter(680, '#f87171', true);
+    elapsed = 0; fx = []; shakeT = 0;
+    keys.up=false; keys.down=false; touchGuard=null;
+    document.getElementById('tierLabel').textContent = 'vs ' + TIERS[idx].name;
+    document.getElementById('nameA').textContent = TIERS[idx].name;
+    setState('duel');
+  }
+
+  function setState(s){
+    state = s;
+    document.getElementById('menuOverlay').classList.toggle('hidden', s!=='menu');
+    document.getElementById('resultOverlay').classList.toggle('hidden', s!=='result');
+    document.getElementById('hud').classList.toggle('hidden', s!=='duel');
+    document.getElementById('hint').classList.toggle('hidden', s!=='duel');
+    document.getElementById('touchControls').style.display = (s==='duel' && isTouch()) ? 'block' : 'none';
+  }
+  function isTouch(){ return 'ontouchstart' in window || navigator.maxTouchPoints > 0; }
+
+  // ---------- fighter actions ----------
+  function currentGuardLine(f){
+    if(f === P) return keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || null));
+    return f.guardLine;
+  }
+
+  function tryAttack(f, feint){
+    if(f.state !== 'idle') return;
+    const line = currentGuardLine(f) || 'high';
+    f.attackLine = line;
+    f.isFeint = feint;
+    f.resolved = false;
+    f.state = 'windup';
+    f.stateT = 0;
+    sfx.windup();
+  }
+
+  function tryStep(f, dir){
+    if(f.state !== 'idle' || f.stepCooldown > 0) return;
+    const opp = f===P ? A : P;
+    let target = f.x + dir*STEP_DIST;
+    target = clamp(target, ARENA_MIN, ARENA_MAX);
+    if(dir > 0 && target > opp.x - MIN_SEP) target = opp.x - MIN_SEP;
+    if(dir < 0 && target < opp.x + MIN_SEP) target = opp.x + MIN_SEP;
+    f.stepFromX = f.x; f.stepToX = target;
+    f.state = 'step'; f.stateT = 0;
+    sfx.step();
+  }
+
+  function resolveHit(attacker, defender){
+    const dist = Math.abs(attacker.x - defender.x);
+    if(dist > ATTACK_RANGE){
+      fx.push({type:'miss', x:(attacker.x+defender.x)/2, y:FLOOR_Y-70, t:0, dur:0.4});
+      return;
+    }
+    const dLine = currentGuardLine(defender);
+    const freshT = defender===P ? Math.max(keyPressT.up, keyPressT.down) : defender.guardFreshT;
+    const isFreshParry = dLine === attacker.attackLine && (elapsed - freshT) <= PARRY_WINDOW;
+    if(isFreshParry){
+      attacker.hp = clamp(attacker.hp - PARRY_PUNISH_DMG, 0, HP_MAX);
+      attacker.state = 'stagger'; attacker.stateT = 0; attacker.staggerT = STAGGER_PARRIED;
+      fx.push({type:'parry', x:defender.x + (attacker.x-defender.x)*0.3, y:FLOOR_Y-90, t:0, dur:0.5});
+      triggerShake(10);
+      sfx.parry();
+    } else if(dLine === attacker.attackLine){
+      fx.push({type:'clash', x:(attacker.x+defender.x)/2, y:FLOOR_Y-90, t:0, dur:0.3});
+      sfx.clash();
+    } else {
+      defender.hp = clamp(defender.hp - HIT_DMG, 0, HP_MAX);
+      defender.state = 'stagger'; defender.stateT = 0; defender.staggerT = STAGGER_HIT;
+      fx.push({type:'hit', x:defender.x, y:FLOOR_Y-90, t:0, dur:0.35});
+      triggerShake(6);
+      sfx.hit();
+    }
+  }
+
+  function triggerShake(mag){ shakeT = 0.18; shakeMag = mag; }
+
+  // ---------- AI ----------
+  function updateAI(dt){
+    const tier = TIERS[tierIdx];
+    const dist = Math.abs(A.x - P.x);
+
+    // reactive guard when player is telegraphing
+    if(A.state === 'idle'){
+      if(P.state === 'windup' && A.guardLine === null && !A._reacted){
+        if(Math.random() < tier.guardChance){
+          A._reactAt = P.stateT + tier.guardDelay;
+        }
+        A._reacted = true;
+      }
+      if(A._reactAt !== undefined && P.stateT >= A._reactAt && P.state==='windup'){
+        const correct = Math.random() < tier.guardAccuracy;
+        A.guardLine = correct ? P.attackLine : (P.attackLine==='high'?'low':'high');
+        A.guardFreshT = elapsed;
+        A._reactAt = undefined;
+      }
+    }
+    if(P.state !== 'windup'){ A._reacted = false; A.guardLine = (A.state==='idle' && Math.random()<0.02) ? A.guardLine : A.guardLine; }
+    if(P.state === 'idle' || P.state === 'recovery' || P.state === 'stagger'){ A.guardLine = null; }
+
+    // offense
+    if(A.state === 'idle' && A.guardLine === null){
+      A.aiThinkT -= dt;
+      if(A.aiThinkT <= 0){
+        A.aiThinkT = tier.think[0] + Math.random()*(tier.think[1]-tier.think[0]);
+        if(dist > ATTACK_RANGE + 40){
+          tryStep(A, -1); // close in
+        } else if(dist < 70){
+          if(Math.random() < 0.4) tryStep(A, 1); // back off
+        } else {
+          const wantFeint = Math.random() < tier.feintChance;
+          A.guardLine = null;
+          tryAttack(A, wantFeint);
+        }
+      }
+    }
+  }
+
+  // ---------- main step ----------
+  function stepFighter(f, dt, opp){
+    switch(f.state){
+      case 'windup':
+        f.stateT += dt;
+        if(f.stateT >= WINDUP_TIME){
+          if(f.isFeint){
+            f.state = 'recovery'; f.stateT = 0;
+          } else {
+            f.state = 'active'; f.stateT = 0; f.resolved = false;
+            sfx.swing();
+          }
+        }
+        break;
+      case 'active':
+        f.stateT += dt;
+        if(!f.resolved){ f.resolved = true; resolveHit(f, opp); }
+        if(f.stateT >= ACTIVE_TIME && f.state === 'active'){ f.state = 'recovery'; f.stateT = 0; }
+        break;
+      case 'recovery': {
+        f.stateT += dt;
+        const dur = f.isFeint ? RECOVERY_FEINT : RECOVERY_HIT;
+        if(f.stateT >= dur){ f.state = 'idle'; f.stateT = 0; f.isFeint = false; }
+        break;
+      }
+      case 'stagger':
+        f.stateT += dt;
+        if(f.stateT >= f.staggerT){ f.state = 'idle'; f.stateT = 0; }
+        break;
+      case 'step': {
+        f.stateT += dt;
+        const p = clamp(f.stateT / STEP_TIME, 0, 1);
+        const ease = 1 - Math.pow(1-p, 2);
+        f.x = f.stepFromX + (f.stepToX - f.stepFromX)*ease;
+        if(p >= 1){ f.state = 'idle'; f.stateT = 0; f.stepCooldown = STEP_COOLDOWN; }
+        break;
+      }
+      default: break;
+    }
+    if(f.stepCooldown > 0) f.stepCooldown = Math.max(0, f.stepCooldown - dt);
+  }
+
+  function stepDuel(dt){
+    elapsed += dt;
+    stepFighter(P, dt, A);
+    stepFighter(A, dt, P);
+    updateAI(dt);
+    if(shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+    fx.forEach(e=> e.t += dt);
+    fx = fx.filter(e=> e.t < e.dur);
+    if(P.hp <= 0 || A.hp <= 0){
+      const playerWon = A.hp <= 0 && P.hp > 0;
+      endDuel(playerWon);
+    }
+  }
+
+  function endDuel(playerWon){
+    setState('result');
+    if(playerWon){ sfx.win(); } else { sfx.lose(); }
+    document.getElementById('resultTitle').textContent = playerWon ? 'VICTORY' : 'DEFEAT';
+    document.getElementById('resultTitle').style.background = playerWon
+      ? 'linear-gradient(90deg,#4ade80,#38bdf8)' : 'linear-gradient(90deg,#f87171,#fb923c)';
+    document.getElementById('resultTitle').style.webkitBackgroundClip = 'text';
+    document.getElementById('resultTitle').style.backgroundClip = 'text';
+    document.getElementById('resultSub').textContent = playerWon
+      ? 'A clean read. Every exchange came down to one decision — and you made it first.'
+      : 'You reacted to the sword after it was already moving. Watch the windup, not the strike.';
+  }
+
+  // ---------- input ----------
+  window.addEventListener('keydown', e=>{
+    if(e.code==='KeyW'||e.code==='ArrowUp'){ if(!keys.up) keyPressT.up = elapsed; keys.up = true; }
+    if(e.code==='KeyS'||e.code==='ArrowDown'){ if(!keys.down) keyPressT.down = elapsed; keys.down = true; }
+    if(state!=='duel') return;
+    if(e.code==='KeyJ') tryAttack(P, false);
+    if(e.code==='KeyK') tryAttack(P, true);
+    if(e.code==='KeyA') tryStep(P, -1);
+    if(e.code==='KeyD') tryStep(P, 1);
+  });
+  window.addEventListener('keyup', e=>{
+    if(e.code==='KeyW'||e.code==='ArrowUp') keys.up = false;
+    if(e.code==='KeyS'||e.code==='ArrowDown') keys.down = false;
+  });
+
+  function bindTap(id, fn){ document.getElementById(id).addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); }); }
+  function bindHold(id, on, off){
+    const el = document.getElementById(id);
+    el.addEventListener('pointerdown', e=>{ e.preventDefault(); on(); });
+    el.addEventListener('pointerup', off);
+    el.addEventListener('pointerleave', off);
+  }
+  bindHold('btnGuardHigh', ()=>{ if(touchGuard!=='high') keyPressT.up = elapsed; touchGuard='high'; }, ()=>{ if(touchGuard==='high') touchGuard=null; });
+  bindHold('btnGuardLow',  ()=>{ if(touchGuard!=='low') keyPressT.down = elapsed; touchGuard='low'; },  ()=>{ if(touchGuard==='low') touchGuard=null; });
+  bindTap('btnAttack', ()=> state==='duel' && tryAttack(P, false));
+  bindTap('btnFeint',  ()=> state==='duel' && tryAttack(P, true));
+  bindTap('btnStepBack', ()=> state==='duel' && tryStep(P, -1));
+  bindTap('btnStepFwd',  ()=> state==='duel' && tryStep(P, 1));
+
+  // ---------- rendering ----------
+  function drawFighter(f, opp){
+    const facing = f.x < opp.x ? 1 : -1;
+    const cx = f.x, cy = FLOOR_Y;
+    const hurt = f.state==='stagger';
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(facing, 1);
+
+    if(hurt){
+      const p = f.stateT / f.staggerT;
+      ctx.rotate((1-p)*0.15*(Math.random()>0.5?1:-1));
+    }
+
+    // shadow
+    ctx.beginPath();
+    ctx.ellipse(0, 6, 26, 7, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fill();
+
+    // legs
+    ctx.strokeStyle = f.color; ctx.lineWidth = 8; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-10,-46); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(10,-46); ctx.stroke();
+
+    // torso
+    ctx.strokeStyle = hurt ? '#ef4444' : f.color; ctx.lineWidth = 12;
+    ctx.beginPath(); ctx.moveTo(0,-46); ctx.lineTo(0,-92); ctx.stroke();
+
+    // head
+    ctx.beginPath(); ctx.arc(0,-104,13,0,Math.PI*2);
+    ctx.fillStyle = hurt ? '#ef4444' : f.color; ctx.fill();
+
+    // guard stance shield hint
+    const gLine = f===P ? currentGuardLine(f) : f.guardLine;
+    if(gLine){
+      const fresh = (elapsed - (f===P?Math.max(keyPressT.up,keyPressT.down):f.guardFreshT)) < PARRY_WINDOW;
+      ctx.strokeStyle = fresh ? '#fde047' : 'rgba(56,189,248,0.55)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      if(gLine==='high'){ ctx.moveTo(4,-100); ctx.lineTo(40,-118); }
+      else { ctx.moveTo(4,-60); ctx.lineTo(42,-48); }
+      ctx.stroke();
+    }
+
+    // sword by state
+    ctx.lineCap='round';
+    let sx=30, sy=-40, ex=60, ey=-70;
+    const line = f.attackLine;
+    if(f.state==='windup'){
+      const p = f.stateT/WINDUP_TIME;
+      const glow = 0.3 + p*0.7;
+      if(line==='high'){ sx=8; sy=-95; ex= 8+p*10; ey=-95-p*46; } else { sx=8; sy=-70; ex=8-p*40; ey=-70+p*18; }
+      ctx.strokeStyle = `rgba(251,191,36,${glow})`;
+      ctx.lineWidth = 5;
+      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6+p*10;
+    } else if(f.state==='active'){
+      if(line==='high'){ sx=10; sy=-118; ex=64; ey=-58; } else { sx=-30; sy=-50; ex=66; ey=-78; }
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 6;
+      ctx.shadowColor = '#f87171'; ctx.shadowBlur = 16;
+    } else if(f.state==='recovery'){
+      sx=10; sy=-40; ex=46; ey=-18;
+      ctx.strokeStyle = 'rgba(148,163,184,0.6)'; ctx.lineWidth = 4;
+      ctx.shadowBlur = 0;
+    } else {
+      sx=10; sy=-46; ex=42; ey=-24;
+      ctx.strokeStyle = 'rgba(226,232,240,0.85)'; ctx.lineWidth = 4;
+      ctx.shadowBlur = 0;
+    }
+    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.restore();
+
+    // range indicator when idle and opponent in range (subtle)
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,VW,VH);
+    const grad = ctx.createLinearGradient(0,0,0,VH);
+    grad.addColorStop(0,'#0d0d18'); grad.addColorStop(1,'#06060a');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,VW,VH);
+
+    if(state!=='duel'){ return; }
+
+    ctx.save();
+    let sx=0,sy=0;
+    if(shakeT>0){ sx=(Math.random()-0.5)*shakeMag; sy=(Math.random()-0.5)*shakeMag; }
+    ctx.translate(sx,sy);
+
+    // floor
+    ctx.strokeStyle = 'rgba(148,163,184,0.15)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(60,FLOOR_Y+8); ctx.lineTo(900,FLOOR_Y+8); ctx.stroke();
+    for(let x=60;x<900;x+=40){ ctx.beginPath(); ctx.moveTo(x,FLOOR_Y+8); ctx.lineTo(x-12,FLOOR_Y+22); ctx.strokeStyle='rgba(148,163,184,0.06)'; ctx.stroke(); }
+
+    drawFighter(P, A);
+    drawFighter(A, P);
+
+    // fx
+    fx.forEach(e=>{
+      const p = e.t/e.dur;
+      if(e.type==='clash'){
+        ctx.strokeStyle = `rgba(226,232,240,${1-p})`;
+        ctx.lineWidth = 2;
+        for(let i=0;i<4;i++){
+          const a = (i/4)*Math.PI*2 + p*3;
+          ctx.beginPath(); ctx.moveTo(e.x,e.y); ctx.lineTo(e.x+Math.cos(a)*(8+p*18), e.y+Math.sin(a)*(8+p*18)); ctx.stroke();
+        }
+      } else if(e.type==='hit'){
+        ctx.fillStyle = `rgba(239,68,68,${(1-p)*0.5})`;
+        ctx.beginPath(); ctx.arc(e.x,e.y,20+p*30,0,Math.PI*2); ctx.fill();
+      } else if(e.type==='parry'){
+        ctx.strokeStyle = `rgba(253,224,71,${1-p})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(e.x,e.y,12+p*38,0,Math.PI*2); ctx.stroke();
+        ctx.font = '13px system-ui'; ctx.fillStyle = `rgba(253,224,71,${1-p})`; ctx.textAlign='center';
+        ctx.fillText('PARRY', e.x, e.y - 30 - p*10);
+      } else if(e.type==='miss'){
+        ctx.font = '12px system-ui'; ctx.fillStyle = `rgba(148,163,184,${1-p})`; ctx.textAlign='center';
+        ctx.fillText('out of range', e.x, e.y - p*14);
+      }
+    });
+
+    ctx.restore();
+
+    document.getElementById('hpFillP').style.width = Math.max(0,P.hp) + '%';
+    document.getElementById('hpFillA').style.width = Math.max(0,A.hp) + '%';
+  }
+
+  // ---------- loop ----------
+  let acc=0, last=performance.now();
+  const FIXED_DT = 1/120;
+  function loop(now){
+    let frameDt = (now-last)/1000; last = now;
+    if(frameDt>0.1) frameDt=0.1;
+    if(state==='duel'){
+      acc += frameDt;
+      let steps=0;
+      while(acc>=FIXED_DT && steps<8){ stepDuel(FIXED_DT); acc-=FIXED_DT; steps++; if(state!=='duel') break; }
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- menu ----------
+  function buildTierGrid(){
+    const grid = document.getElementById('tierGrid');
+    grid.innerHTML = '';
+    TIERS.forEach((t,i)=>{
+      const card = document.createElement('div');
+      card.className = 'tierCard';
+      card.innerHTML = '<div class="n">TIER '+(i+1)+'</div><div class="t">'+t.name+'</div><div class="d">'+t.desc+'</div>';
+      card.addEventListener('click', ()=> startDuel(i));
+      grid.appendChild(card);
+    });
+  }
+  document.getElementById('retryBtn').addEventListener('click', ()=> startDuel(tierIdx));
+  document.getElementById('menuBtn').addEventListener('click', ()=>{ setState('menu'); buildTierGrid(); });
+
+  buildTierGrid();
+  setState('menu');
+})();
+</script>
+</body>
+</html>
