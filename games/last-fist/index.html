@@ -347,6 +347,10 @@ function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
 }
 
+function toHexColor(n) {
+  return '#' + n.toString(16).padStart(6, '0');
+}
+
 function approachZero(v, delta) {
   if (v > 0) return Math.max(0, v - delta);
   if (v < 0) return Math.min(0, v + delta);
@@ -527,6 +531,13 @@ class PlayScene extends Phaser.Scene {
       'Pick a fighter \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.', {
       fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
     }).setOrigin(0.5);
+
+    // round-start countdown — separate from centerText since it needs its
+    // own scale/color treatment per beat and lives mid-arena, not in the
+    // HUD text slot
+    this.countdownText = this.add.text(W/2, 380, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '64px', color: '#e8ecf1', align: 'center'
+    }).setOrigin(0.5).setShadow(0, 3, '#000', 10, true, true).setVisible(false).setDepth(50);
   }
 
   buildMenu() {
@@ -860,7 +871,7 @@ class PlayScene extends Phaser.Scene {
 
   startMatch(mode) {
     this.mode = mode;
-    this.state = 'playing';
+    this.state = 'countdown';
     this.centerText.setVisible(false);
     this.subText.setVisible(false);
     this.menuButtons.forEach(o => o.setVisible(false));
@@ -899,6 +910,7 @@ class PlayScene extends Phaser.Scene {
     this.p2HealthFill.setVisible(true).width = 220;
 
     if (window.SFX) SFX.select();
+    this.runCountdown();
   }
 
   updateHealthBar(fill, f) {
@@ -1246,6 +1258,59 @@ class PlayScene extends Phaser.Scene {
         ring.strokeEllipse(proj.sx, proj.sy, r * 2, r * 0.6);
       },
       onComplete: () => ring.destroy()
+    });
+  }
+
+  // ROUND-START COUNTDOWN — each beat lands with the same weight a real hit
+  // gets (squash-bounce on both fighters, camera shake, an elastic scale-in
+  // rather than a fade), instead of plain centered text. 3/2/1 alternate
+  // each fighter's own glove color, so the countdown is already about
+  // *these two specific fighters*, not generic UI. FIGHT! gets the biggest
+  // version of the same language plus the takedown's shockwave ring,
+  // reused here instead of building a second effect that does the same job.
+  runCountdown() {
+    const beats = [
+      { text: '3', color: toHexColor(this.p1.character.gloveColor), final: false },
+      { text: '2', color: toHexColor(this.p2.character.gloveColor), final: false },
+      { text: '1', color: toHexColor(this.p1.character.gloveColor), final: false },
+      { text: 'FIGHT!', color: '#ffd23f', final: true }
+    ];
+    const runBeat = (i) => {
+      if (i >= beats.length) {
+        this.countdownText.setVisible(false);
+        this.state = 'playing';
+        return;
+      }
+      this.runCountdownBeat(beats[i], () => runBeat(i + 1));
+    };
+    runBeat(0);
+  }
+
+  runCountdownBeat(beat, onDone) {
+    this.countdownText.setText(beat.text).setColor(beat.color).setScale(beat.final ? 2.4 : 1.8).setAlpha(1).setVisible(true);
+    this.p1.squash = beat.final ? 1 : 0.45;
+    this.p2.squash = beat.final ? 1 : 0.45;
+    // stepFighter's normal per-frame squash decay doesn't run during
+    // 'countdown' (update() skips physics entirely outside 'playing'), so
+    // without this tween the bounce would snap and hold instead of easing
+    // back out — same visual intent, just driven explicitly here
+    this.tweens.add({ targets: [this.p1, this.p2], squash: 0, duration: beat.final ? 260 : 200, ease: 'Quad.easeOut' });
+    this.cameras.main.shake(beat.final ? 170 : 90, beat.final ? 0.011 : 0.006);
+    vibrate(beat.final ? 30 : 12);
+    if (window.SFX) SFX[beat.final ? 'powerup' : 'click']();
+    if (beat.final) this.showTakedownImpact(0, 0);
+    this.tweens.add({
+      targets: this.countdownText, scale: 1,
+      duration: beat.final ? 260 : 180, ease: 'Back.easeOut',
+      onComplete: () => {
+        this.time.delayedCall(beat.final ? 300 : 420, () => {
+          if (beat.final) {
+            this.tweens.add({ targets: this.countdownText, alpha: 0, duration: 220, onComplete: onDone });
+          } else {
+            onDone();
+          }
+        });
+      }
     });
   }
 
