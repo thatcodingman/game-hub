@@ -60,11 +60,12 @@
     width: 58px; height: 58px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.3);
     background: rgba(20,20,30,0.7); color: #e2e8f0; font-size: 20px; font-weight: 700;
   }
-  #touchReset { position: absolute; left: 16px; bottom: 16px; display: none; }
+  #touchReset { position: absolute; left: 16px; bottom: 16px; display: none; flex-direction: column; gap: 10px; align-items: flex-start; }
   #touchReset button {
     padding: 10px 16px; border-radius: 20px; border: 1px solid rgba(148,163,184,0.3);
     background: rgba(20,20,30,0.7); color: #e2e8f0; font-size: 12px; letter-spacing: 0.06em;
   }
+  #grappleBtn { border-color: #38bdf8 !important; color: #38bdf8 !important; font-weight: 700; }
 
   /* Overlays */
   .overlay {
@@ -126,19 +127,22 @@
     </div>
   </div>
 
-  <div id="hint" class="hidden">Aim + click/tap an anchor to grapple · release to let go · hold to reel</div>
+  <div id="hint" class="hidden">Click/tap an anchor to grapple, or press E to auto-grapple the nearest one · release to let go · hold to reel</div>
 
   <div id="touchReel">
     <button id="reelInBtn">▲</button>
     <button id="reelOutBtn">▼</button>
   </div>
-  <div id="touchReset"><button id="resetBtn">RESET (R)</button></div>
+  <div id="touchReset">
+    <button id="grappleBtn">GRAPPLE</button>
+    <button id="resetBtn">RESET (R)</button>
+  </div>
 
   <div id="menuOverlay" class="overlay">
     <h1>GRAPPLE SWING</h1>
     <div class="sub">You don't control where you go. You control when you let go.<br>Swing, reel, and release through six handcrafted levels — then race your own ghost.</div>
     <div id="levelGrid"></div>
-    <div style="font-size:11px;color:#475569;margin-top:6px;">Mouse/touch to aim + grapple · W/S or ▲▼ to reel · A/D for slight air drift · R to reset</div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Click/tap an anchor to grapple, or press E / tap GRAPPLE to auto-grapple the nearest one · W/S or ▲▼ to reel · A/D to walk or drift · R to reset</div>
   </div>
 
   <div id="completeOverlay" class="overlay hidden">
@@ -197,7 +201,8 @@
   const MIN_ROPE = 36;
   const MAX_ROPE = 620;
   const REEL_SPEED = 300;  // pump tool — effective now that swings don't leak energy
-  const ANCHOR_GRAB_R = 70;
+  const ANCHOR_GRAB_R = 90; // was 70 — more forgiving aim, catches an intended anchor more reliably
+  const GOAL_FORGIVENESS = 20; // extra landing margin so reaching the platform counts, not just dead-center on the flag
   const MAX_ROPE_ATTACH = 560;
   const FLOW_SPEED_THRESHOLD = 260;
   const FLOW_RATE = 0.010;
@@ -453,7 +458,7 @@
     if(player.y > 900){ resetLevel(true); return; }
 
     const gdx = player.x - curLevel.goal.x, gdy = player.y - curLevel.goal.y;
-    if(Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R){ winLevel(); return; }
+    if(Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R + GOAL_FORGIVENESS){ winLevel(); return; }
 
     if(!player.grounded && curSpeed > FLOW_SPEED_THRESHOLD){
       flow = clamp(flow + curSpeed*dt*FLOW_RATE, 0, 100);
@@ -480,6 +485,29 @@
     return { x: (sx - r.left)*scaleX + camX, y: (sy - r.top)*scaleY };
   }
 
+  function attachToAnchor(anchor, aimHintX){
+    player.grappled = true;
+    player.anchor = anchor;
+    const dxr = player.x-anchor.x, dyr = player.y-anchor.y;
+    const distr = Math.hypot(dxr,dyr) || 1;
+    player.ropeLen = clamp(distr, MIN_ROPE, MAX_ROPE);
+
+    // if velocity is (near) purely radial — falling straight at/away from the anchor — the
+    // pendulum has no tangential force and would just hang there. Guarantee a visible swing.
+    const rvx = player.x-player.px, rvy = player.y-player.py;
+    const rx = dxr/distr, ry = dyr/distr;
+    const radialComp = rvx*rx + rvy*ry;
+    const tangMag = Math.hypot(rvx - radialComp*rx, rvy - radialComp*ry);
+    if(tangMag < 30){
+      const dir = keys.right ? 1 : (keys.left ? -1 : ((aimHintX !== undefined ? aimHintX : player.x) >= anchor.x ? 1 : -1));
+      const perpx = -ry, perpy = rx;
+      const kick = 230/120; // ~230 px/s tangential nudge, expressed as a one-frame position delta
+      player.px -= perpx*dir*kick;
+      player.py -= perpy*dir*kick;
+    }
+    sfx.grapple();
+  }
+
   function tryGrapple(wx, wy){
     if(player.grappled) return;
     let best=null, bestD=Infinity;
@@ -488,29 +516,20 @@
       const dp = Math.hypot(player.x-a.x, player.y-a.y);
       if(dm < ANCHOR_GRAB_R && dp <= MAX_ROPE_ATTACH && dm < bestD){ bestD = dm; best = a; }
     });
-    if(best){
-      player.grappled = true;
-      player.anchor = best;
-      const dxr = player.x-best.x, dyr = player.y-best.y;
-      const distr = Math.hypot(dxr,dyr) || 1;
-      player.ropeLen = clamp(distr, MIN_ROPE, MAX_ROPE);
-
-      // if velocity is (near) purely radial — falling straight at/away from the anchor — the
-      // pendulum has no tangential force and would just hang there. Guarantee a visible swing.
-      const rvx = player.x-player.px, rvy = player.y-player.py;
-      const rx = dxr/distr, ry = dyr/distr;
-      const radialComp = rvx*rx + rvy*ry;
-      const tangMag = Math.hypot(rvx - radialComp*rx, rvy - radialComp*ry);
-      if(tangMag < 30){
-        const dir = keys.right ? 1 : (keys.left ? -1 : (wx >= best.x ? 1 : -1));
-        const perpx = -ry, perpy = rx;
-        const kick = 230/120; // ~230 px/s tangential nudge, expressed as a one-frame position delta
-        player.px -= perpx*dir*kick;
-        player.py -= perpy*dir*kick;
-      }
-      sfx.grapple();
-    }
+    if(best) attachToAnchor(best, wx);
   }
+
+  // button/key grapple — no cursor needed, auto-targets the nearest reachable anchor
+  function tryGrappleNearest(){
+    if(player.grappled) return;
+    let best=null, bestD=Infinity;
+    curLevel.anchors.forEach(a=>{
+      const dp = Math.hypot(player.x-a.x, player.y-a.y);
+      if(dp <= MAX_ROPE_ATTACH && dp < bestD){ bestD = dp; best = a; }
+    });
+    if(best) attachToAnchor(best);
+  }
+
   function releaseGrapple(){
     if(player.grappled){
       const vx = player.x-player.px, vy = player.y-player.py;
@@ -536,6 +555,7 @@
     if(e.code==='KeyD'||e.code==='ArrowRight') keys.right = true;
     if(e.code==='KeyW'||e.code==='ArrowUp') keys.reelIn = true;
     if(e.code==='KeyS'||e.code==='ArrowDown') keys.reelOut = true;
+    if(e.code==='KeyE' && state==='playing') tryGrappleNearest();
     if(e.code==='KeyR' && state==='playing') resetLevel(false);
     if(e.code==='Space'){ releaseGrapple(); e.preventDefault(); }
     if(e.code==='Escape' && state==='playing') { setState('menu'); buildLevelGrid(); }
@@ -555,6 +575,7 @@
   holdable(document.getElementById('reelInBtn'),  ()=>keys.reelIn=true,  ()=>keys.reelIn=false);
   holdable(document.getElementById('reelOutBtn'), ()=>keys.reelOut=true, ()=>keys.reelOut=false);
   document.getElementById('resetBtn').addEventListener('click', ()=> state==='playing' && resetLevel(false));
+  holdable(document.getElementById('grappleBtn'), ()=> state==='playing' && tryGrappleNearest(), ()=> state==='playing' && releaseGrapple());
 
   // ---------- rendering ----------
   function draw(){
