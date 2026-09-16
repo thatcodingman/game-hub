@@ -72,21 +72,26 @@ const JUMP_VELOCITY = -620; // paired with the higher gravity above: similar pea
 // constants, so difficulty is genuinely "how the AI plays" (spacing
 // discipline, attack frequency, block reliability) rather than a stat
 // cheat layered on top of the same character system the player uses.
-// Normal is the original tuning from every prior playtest; Easy/Hard are
-// scaled from it, not re-guessed from scratch.
+// approachMax deliberately sits just past KICK_RANGE (95) for all three —
+// it used to be much wider (Easy was 190), which meant the AI settled
+// into circling well before it was ever close enough to actually attack.
+// That wasn't "easy," it was broken: it barely attacked at all, and spent
+// most of its time orbiting near the arena walls instead of near the
+// player. Difficulty should come from attack/block chance, not from the
+// AI failing to reach attack range in the first place.
 const DIFFICULTY_DEFS = {
   easy: {
     name: 'Easy',
-    approachMin: 60, approachMax: 190, // looser spacing — easier to whiff-bait
+    approachMin: 55, approachMax: 105,
     jumpChance: 0.22,
-    punchChance: 0.5, kickChance: 0.32,
+    punchChance: 0.65, kickChance: 0.42,
     blockChance: 0.15, // rarely reacts in time
     grappleChance: 0.15,
     groundStrikeChance: 0.5, groundEscapeChance: 0.7, groundBottomStrikeChance: 0.45
   },
   normal: {
     name: 'Normal',
-    approachMin: 75, approachMax: 160,
+    approachMin: 68, approachMax: 118,
     jumpChance: 0.35,
     punchChance: 0.9, kickChance: 0.6,
     blockChance: 0.5,
@@ -95,7 +100,7 @@ const DIFFICULTY_DEFS = {
   },
   hard: {
     name: 'Hard',
-    approachMin: 78, approachMax: 145, // tighter spacing — harder to bait or kite
+    approachMin: 72, approachMax: 112, // tighter spacing — harder to bait or kite
     jumpChance: 0.42,
     punchChance: 1.3, kickChance: 0.95,
     blockChance: 0.85, // reacts to incoming attacks reliably
@@ -905,6 +910,21 @@ class PlayScene extends Phaser.Scene {
       const perpX = -dz / dist, perpZ = dx / dist;
       moveX = perpX * this.aiCircleDir;
       moveZ = perpZ * this.aiCircleDir;
+    }
+
+    // keep the AI from getting stuck fighting the arena boundary clamp —
+    // if it's drifted past 80% of the arena radius (which can happen even
+    // with a sane approach band, if the player themselves is near a wall),
+    // blend its movement toward the center instead of whatever
+    // approach/retreat/circle decided, ramping smoothly rather than
+    // snapping so it doesn't look like a sudden change of mind
+    const edgeFactor = Math.hypot(this.p2.ax / ARENA_RX, this.p2.az / ARENA_RZ);
+    if (edgeFactor > 0.8) {
+      const centerDist = Math.hypot(this.p2.ax, this.p2.az) || 0.001;
+      const towardCenterX = -this.p2.ax / centerDist, towardCenterZ = -this.p2.az / centerDist;
+      const pull = Phaser.Math.Clamp((edgeFactor - 0.8) / 0.2, 0, 1);
+      moveX = Phaser.Math.Linear(moveX, towardCenterX, pull);
+      moveZ = Phaser.Math.Linear(moveZ, towardCenterZ, pull);
     }
 
     this.aiJumpCooldown -= dt;
