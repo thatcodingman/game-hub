@@ -364,19 +364,19 @@ class PlayScene extends Phaser.Scene {
       p1Block: Phaser.Input.Keyboard.KeyCodes.E,
       p1Dodge: Phaser.Input.Keyboard.KeyCodes.R,
       p1Grapple: Phaser.Input.Keyboard.KeyCodes.T,
-      // P1 also gets a second, arrow-key binding — only actually read in
-      // VS AI mode (see update()), where there's no P2 to conflict with.
-      // Without this, "arrows don't move me" is exactly what happens the
-      // moment someone tries arrows out of habit while solo vs AI.
+      // Single-player (VS AI) uses an entirely separate scheme — arrows +
+      // 1/2/3/Q/W — not WASD+FGERT with arrows layered on top like before.
+      // Only read in VS AI mode (see update()); local 2P still uses WASD
+      // (above) vs Arrows (below) as two genuinely separate players.
       p1UpAlt: Phaser.Input.Keyboard.KeyCodes.UP,
       p1DownAlt: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p1LeftAlt: Phaser.Input.Keyboard.KeyCodes.LEFT,
       p1RightAlt: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-      p1PunchAlt: Phaser.Input.Keyboard.KeyCodes.PERIOD,
-      p1KickAlt: Phaser.Input.Keyboard.KeyCodes.COMMA,
-      p1BlockAlt: Phaser.Input.Keyboard.KeyCodes.SEMICOLON,
-      p1DodgeAlt: Phaser.Input.Keyboard.KeyCodes.QUOTES,
-      p1GrappleAlt: Phaser.Input.Keyboard.KeyCodes.ENTER,
+      p1PunchAlt: Phaser.Input.Keyboard.KeyCodes.ONE,
+      p1KickAlt: Phaser.Input.Keyboard.KeyCodes.TWO,
+      p1BlockAlt: Phaser.Input.Keyboard.KeyCodes.THREE,
+      p1DodgeAlt: Phaser.Input.Keyboard.KeyCodes.Q,
+      p1GrappleAlt: Phaser.Input.Keyboard.KeyCodes.W,
       p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
       p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
       p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
@@ -603,7 +603,7 @@ class PlayScene extends Phaser.Scene {
     // P1 — bottom-left: dpad on the outside edge with DODGE nested in its
     // empty center (no jump button — double-tap up jumps instead), punch/
     // kick/block/grapple toward center
-    this.p1Controls = this.buildControlCluster({ dpadX: 100, punchX: 192, kickX: 250, blockX: 308, grappleX: 366, hint: 'WASD + F punch + G kick + E block\nR dodge + T grapple + dbl-tap W jump', key: 'p1' });
+    this.p1Controls = this.buildControlCluster({ dpadX: 100, punchX: 192, kickX: 250, blockX: 308, grappleX: 366, hint: '\u2190\u2191\u2192\u2193 + 1 punch + 2 kick + 3 block\nQ dodge + W grapple + dbl-tap \u2191 jump', key: 'p1' });
     // P2 — bottom-right, mirrored
     this.p2Controls = this.buildControlCluster({ dpadX: W - 100, punchX: W - 192, kickX: W - 250, blockX: W - 308, grappleX: W - 366, hint: '\u2190\u2191\u2192\u2193 + . punch + , kick + ; block\n\' dodge + ENTER grapple + dbl-tap \u2191 jump', key: 'p2' });
   }
@@ -668,7 +668,7 @@ class PlayScene extends Phaser.Scene {
       this.time.delayedCall(90, () => grapple.bg.setFillStyle(0x14161c, 0.9));
     });
 
-    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, dodge.bg, dodge.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, grapple.bg, grapple.t, hintText] };
+    return { objects: [up.bg, up.t, down.bg, down.t, left.bg, left.t, right.bg, right.t, dodge.bg, dodge.t, punch.bg, punch.t, kick.bg, kick.t, block.bg, block.t, grapple.bg, grapple.t, hintText], hintText };
   }
 
   setControlsVisible(cluster, visible) {
@@ -685,6 +685,9 @@ class PlayScene extends Phaser.Scene {
     this.setRoundOverVisible(false);
 
     this.modeText.setVisible(true).setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL');
+    this.p1Controls.hintText.setText(mode === 'ai'
+      ? '\u2190\u2191\u2192\u2193 + 1 punch + 2 kick + 3 block\nQ dodge + W grapple + dbl-tap \u2191 jump'
+      : 'WASD + F punch + G kick + E block\nR dodge + T grapple + dbl-tap W jump');
     this.menuBtn.setVisible(true);
 
     this.setControlsVisible(this.p1Controls, true);
@@ -1223,21 +1226,24 @@ class PlayScene extends Phaser.Scene {
 
     const t = this.touchState;
     const aiMode = this.mode === 'ai';
-    const p1Up = this.keys.p1Up.isDown || (aiMode && this.keys.p1UpAlt.isDown) || t.p1.up;
-    const p1Down = this.keys.p1Down.isDown || (aiMode && this.keys.p1DownAlt.isDown) || t.p1.down;
-    const p1Left = this.keys.p1Left.isDown || (aiMode && this.keys.p1LeftAlt.isDown) || t.p1.left;
-    const p1Right = this.keys.p1Right.isDown || (aiMode && this.keys.p1RightAlt.isDown) || t.p1.right;
-    const p1Punch = Phaser.Input.Keyboard.JustDown(this.keys.p1Punch) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1PunchAlt)) || t.p1.punchPressed;
-    const p1Kick = Phaser.Input.Keyboard.JustDown(this.keys.p1Kick) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1KickAlt)) || t.p1.kickPressed;
-    const p1Block = this.keys.p1Block.isDown || (aiMode && this.keys.p1BlockAlt.isDown) || t.p1.blockHeld;
-    const p1Dodge = Phaser.Input.Keyboard.JustDown(this.keys.p1Dodge) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1DodgeAlt)) || t.p1.dodgePressed;
-    const p1Grapple = Phaser.Input.Keyboard.JustDown(this.keys.p1Grapple) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1GrappleAlt)) || t.p1.grapplePressed;
-    // double-tap "up" jumps; Space is still a direct jump key too (no
-    // mobile screen-space cost to keeping it, only the on-screen button was removed)
-    const p1UpJustPressed = Phaser.Input.Keyboard.JustDown(this.keys.p1Up) || (aiMode && Phaser.Input.Keyboard.JustDown(this.keys.p1UpAlt));
+    // VS AI and local-2P use completely separate key sets for P1 now — not
+    // one layered on top of the other. Touch controls work in both, since
+    // mobile doesn't care which keyboard scheme is "active."
+    const p1Up = (aiMode ? this.keys.p1UpAlt.isDown : this.keys.p1Up.isDown) || t.p1.up;
+    const p1Down = (aiMode ? this.keys.p1DownAlt.isDown : this.keys.p1Down.isDown) || t.p1.down;
+    const p1Left = (aiMode ? this.keys.p1LeftAlt.isDown : this.keys.p1Left.isDown) || t.p1.left;
+    const p1Right = (aiMode ? this.keys.p1RightAlt.isDown : this.keys.p1Right.isDown) || t.p1.right;
+    const p1Punch = (aiMode ? Phaser.Input.Keyboard.JustDown(this.keys.p1PunchAlt) : Phaser.Input.Keyboard.JustDown(this.keys.p1Punch)) || t.p1.punchPressed;
+    const p1Kick = (aiMode ? Phaser.Input.Keyboard.JustDown(this.keys.p1KickAlt) : Phaser.Input.Keyboard.JustDown(this.keys.p1Kick)) || t.p1.kickPressed;
+    const p1Block = (aiMode ? this.keys.p1BlockAlt.isDown : this.keys.p1Block.isDown) || t.p1.blockHeld;
+    const p1Dodge = (aiMode ? Phaser.Input.Keyboard.JustDown(this.keys.p1DodgeAlt) : Phaser.Input.Keyboard.JustDown(this.keys.p1Dodge)) || t.p1.dodgePressed;
+    const p1Grapple = (aiMode ? Phaser.Input.Keyboard.JustDown(this.keys.p1GrappleAlt) : Phaser.Input.Keyboard.JustDown(this.keys.p1Grapple)) || t.p1.grapplePressed;
+    // double-tap "up" jumps in both modes. Space is a direct jump key too,
+    // but only in local 2P — VS AI is arrows+123QW only, no WASD leftovers.
+    const p1UpJustPressed = aiMode ? Phaser.Input.Keyboard.JustDown(this.keys.p1UpAlt) : Phaser.Input.Keyboard.JustDown(this.keys.p1Up);
     const p1TouchUpJustPressed = t.p1.up && !this.prevTouchUp.p1;
     this.prevTouchUp.p1 = t.p1.up;
-    let p1Jump = Phaser.Input.Keyboard.JustDown(this.keys.p1Jump);
+    let p1Jump = aiMode ? false : Phaser.Input.Keyboard.JustDown(this.keys.p1Jump);
     if (p1UpJustPressed || p1TouchUpJustPressed) {
       if (time - this.p1.lastUpTapAt <= DOUBLE_TAP_WINDOW_MS) { p1Jump = true; this.p1.lastUpTapAt = -9999; }
       else this.p1.lastUpTapAt = time;
