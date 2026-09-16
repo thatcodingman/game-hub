@@ -203,6 +203,7 @@
   const REEL_SPEED = 300;  // pump tool — effective now that swings don't leak energy
   const ANCHOR_GRAB_R = 90; // was 70 — more forgiving aim, catches an intended anchor more reliably
   const GOAL_FORGIVENESS = 20; // extra landing margin so reaching the platform counts, not just dead-center on the flag
+  const MIN_FLIGHT_DIST = 70; // free-flight distance required since the last grapple before a near-goal position counts as landed
   const MAX_ROPE_ATTACH = 560;
   const FLOW_SPEED_THRESHOLD = 260;
   const FLOW_RATE = 0.010;
@@ -295,6 +296,7 @@
   let pointerDown = false;
   let mouseWorld = {x:0,y:0};
   let curSpeed = 0;       // world units/sec, updated every physics tick — single source of truth for juice
+  let distSinceRelease = 0; // free-flight distance travelled since the last grapple attach — used to validate a real landing
   let vibrateT = 0;       // rope direction-change jitter timer
   let releaseFX = null;   // {x,y,t,dur,ang} snap burst at the moment of release
   let zoomCur = 1;        // smoothed camera zoom (pulls back at high speed / on release)
@@ -343,7 +345,7 @@
     };
     elapsed = 0; trail = []; flow = 0;
     recordBuf = [];
-    vibrateT = 0; releaseFX = null; curSpeed = 0;
+    vibrateT = 0; releaseFX = null; curSpeed = 0; distSinceRelease = 0;
     ghost = getGhost(idx);
     updateAnchors(0);
     camX = clamp(player.x - VW/2, 0, Math.max(0, curLevel.width - VW));
@@ -428,6 +430,7 @@
     }
 
     curSpeed = Math.hypot(player.x-player.px, player.y-player.py)/dt;
+    if(!player.grappled) distSinceRelease += curSpeed*dt;
     if(vibrateT > 0) vibrateT = Math.max(0, vibrateT - dt);
     if(releaseFX){ releaseFX.t += dt; if(releaseFX.t > releaseFX.dur) releaseFX = null; }
 
@@ -458,7 +461,9 @@
     if(player.y > 900){ resetLevel(true); return; }
 
     const gdx = player.x - curLevel.goal.x, gdy = player.y - curLevel.goal.y;
-    if(Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R + GOAL_FORGIVENESS){ winLevel(); return; }
+    const nearGoal = Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R + GOAL_FORGIVENESS;
+    const descending = (player.y - player.py) > 5;
+    if(nearGoal && !player.grappled && descending && distSinceRelease > MIN_FLIGHT_DIST){ winLevel(); return; }
 
     if(!player.grounded && curSpeed > FLOW_SPEED_THRESHOLD){
       flow = clamp(flow + curSpeed*dt*FLOW_RATE, 0, 100);
@@ -488,6 +493,7 @@
   function attachToAnchor(anchor, aimHintX){
     player.grappled = true;
     player.anchor = anchor;
+    distSinceRelease = 0;
     const dxr = player.x-anchor.x, dyr = player.y-anchor.y;
     const distr = Math.hypot(dxr,dyr) || 1;
     player.ropeLen = clamp(distr, MIN_ROPE, MAX_ROPE);
