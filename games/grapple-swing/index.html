@@ -287,6 +287,10 @@
   let keys = { left:false, right:false, reelIn:false, reelOut:false };
   let pointerDown = false;
   let mouseWorld = {x:0,y:0};
+  let curSpeed = 0;       // world units/sec, updated every physics tick — single source of truth for juice
+  let vibrateT = 0;       // rope direction-change jitter timer
+  let releaseFX = null;   // {x,y,t,dur,ang} snap burst at the moment of release
+  let zoomCur = 1;        // smoothed camera zoom (pulls back at high speed / on release)
 
   function lsKey(prefix, idx){ return 'grappleSwing_' + prefix + '_' + idx; }
   function getBest(idx){ const v = localStorage.getItem(lsKey('best', idx)); return v ? parseFloat(v) : null; }
@@ -332,6 +336,7 @@
     };
     elapsed = 0; trail = []; flow = 0;
     recordBuf = [];
+    vibrateT = 0; releaseFX = null; curSpeed = 0;
     ghost = getGhost(idx);
     updateAnchors(0);
     camX = clamp(player.x - VW/2, 0, Math.max(0, curLevel.width - VW));
@@ -403,7 +408,20 @@
       const nx = dx/dist, ny = dy/dist;
       player.x = player.anchor.x + nx*player.ropeLen;
       player.y = player.anchor.y + ny*player.ropeLen;
+
+      // detect a swing direction reversal (player crossing the bottom of the arc) for a rope-vibration cue
+      const rvx = player.x-player.px, rvy = player.y-player.py;
+      const cross = (player.x-player.anchor.x)*rvy - (player.y-player.anchor.y)*rvx;
+      const swingSign = cross > 0 ? 1 : (cross < 0 ? -1 : 0);
+      if(player._prevSwingSign && swingSign && swingSign !== player._prevSwingSign){ vibrateT = 0.16; }
+      player._prevSwingSign = swingSign;
+    } else {
+      player._prevSwingSign = 0;
     }
+
+    curSpeed = Math.hypot(player.x-player.px, player.y-player.py)/dt;
+    if(vibrateT > 0) vibrateT = Math.max(0, vibrateT - dt);
+    if(releaseFX){ releaseFX.t += dt; if(releaseFX.t > releaseFX.dur) releaseFX = null; }
 
     // spike hazard (instant reset)
     const sp = curLevel.spike;
@@ -415,14 +433,13 @@
     const gy = groundYAt(curLevel, player.x);
     const wasGrounded = player.grounded;
     if(gy !== null && player.y + PLAYER_R > gy){
-      const speed = Math.hypot(player.x-player.px, player.y-player.py)/dt;
       player.y = gy - PLAYER_R;
       const nvx = (player.x - player.px) * GROUND_FRICTION;
       player.px = player.x - nvx;
       player.py = player.y;
       player.grounded = true;
       if(!wasGrounded){
-        if(speed > 500) triggerShake(Math.min(14, speed/90));
+        if(curSpeed > 500) triggerShake(Math.min(14, curSpeed/90));
         sfx.land();
       }
       flow = 0;
@@ -435,9 +452,8 @@
     const gdx = player.x - curLevel.goal.x, gdy = player.y - curLevel.goal.y;
     if(Math.hypot(gdx,gdy) < curLevel.goal.r + PLAYER_R){ winLevel(); return; }
 
-    const speedNow = Math.hypot(player.x-player.px, player.y-player.py)/dt;
-    if(!player.grounded && speedNow > FLOW_SPEED_THRESHOLD){
-      flow = clamp(flow + speedNow*dt*FLOW_RATE, 0, 100);
+    if(!player.grounded && curSpeed > FLOW_SPEED_THRESHOLD){
+      flow = clamp(flow + curSpeed*dt*FLOW_RATE, 0, 100);
     } else if(player.grounded){
       flow = 0;
     } else {
@@ -477,7 +493,12 @@
     }
   }
   function releaseGrapple(){
-    if(player.grappled){ player.grappled = false; sfx.release(); }
+    if(player.grappled){
+      const vx = player.x-player.px, vy = player.y-player.py;
+      releaseFX = { x: player.x, y: player.y, t: 0, dur: 0.35, ang: Math.atan2(vy,vx) };
+      player.grappled = false;
+      sfx.release();
+    }
   }
 
   canvas.addEventListener('pointerdown', e=>{
@@ -534,6 +555,14 @@
       sy = (Math.random()-0.5)*shakeMag*2;
       shakeT -= 1/120; if(shakeT<0) shakeT=0;
     }
+
+    let zoomTarget = 1 - clamp(curSpeed/2600, 0, 0.07);
+    if(releaseFX){ zoomTarget -= (1 - releaseFX.t/releaseFX.dur) * 0.05; }
+    zoomCur += (zoomTarget - zoomCur) * 0.12;
+    ctx.translate(VW/2, VH/2);
+    ctx.scale(zoomCur, zoomCur);
+    ctx.translate(-VW/2, -VH/2);
+
     ctx.translate(-camX + sx, sy);
 
     // parallax dots
@@ -644,20 +673,48 @@
       }
     }
 
-    // rope
+    // rope — sags when slow/low-tension, tightens and thickens at speed, jitters on direction flips
     if(player.grappled){
-      const tension = clamp(player.ropeLen / MAX_ROPE, 0, 1);
+      const dxr = player.anchor.x-player.x, dyr = player.anchor.y-player.y;
+      const distr = Math.hypot(dxr,dyr) || 1;
+      const nxr = dxr/distr, nyr = dyr/distr;
+      const perpx = -nyr, perpy = nxr;
+      const tension = clamp(curSpeed/450, 0, 1);
+      const sag = (1-tension) * 16;
+      const jitter = vibrateT > 0 ? Math.sin(performance.now()/16) * (vibrateT/0.16) * 5 : 0;
+      const midX = (player.x+player.anchor.x)/2 + perpx*jitter;
+      const midY = (player.y+player.anchor.y)/2 + perpy*jitter + sag;
       ctx.beginPath();
-      ctx.moveTo(player.anchor.x, player.anchor.y);
-      ctx.lineTo(player.x, player.y);
-      ctx.strokeStyle = `rgba(${Math.round(56+tension*100)}, ${Math.round(189-tension*60)}, 248, 0.85)`;
-      ctx.lineWidth = 2.5;
+      ctx.moveTo(player.x, player.y);
+      ctx.quadraticCurveTo(midX, midY, player.anchor.x, player.anchor.y);
+      ctx.strokeStyle = `rgba(${Math.round(56+tension*150)}, ${Math.round(189-tension*80)}, 248, ${0.55+tension*0.4})`;
+      ctx.lineWidth = 2 + tension*2.5;
       ctx.stroke();
+    }
+
+    // release snap — expanding ring + radiating lines at the point of release
+    if(releaseFX){
+      const p = releaseFX.t / releaseFX.dur;
+      ctx.beginPath();
+      ctx.arc(releaseFX.x, releaseFX.y, 6 + p*46, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(244,114,182,${(1-p)*0.8})`;
+      ctx.lineWidth = 3*(1-p) + 1;
+      ctx.stroke();
+      for(let i=-1; i<=1; i++){
+        const a = releaseFX.ang + i*0.34;
+        const len = 10 + p*32;
+        ctx.beginPath();
+        ctx.moveTo(releaseFX.x, releaseFX.y);
+        ctx.lineTo(releaseFX.x + Math.cos(a)*len, releaseFX.y + Math.sin(a)*len);
+        ctx.strokeStyle = `rgba(255,255,255,${(1-p)*0.5})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
     }
 
     // trail
     trail.forEach((p,i)=>{
-      const a = (i/trail.length) * (0.35 + flow/200);
+      const a = (i/trail.length) * clamp(0.2 + curSpeed/900 + flow/260, 0, 0.9);
       ctx.beginPath();
       ctx.arc(p.x, p.y, PLAYER_R*0.5*(i/trail.length), 0, Math.PI*2);
       ctx.fillStyle = `rgba(167,139,250,${a})`;
@@ -665,8 +722,8 @@
     });
 
     // gorilla — arm (drawn in world space so the grapple arm can reach the anchor)
-    const speed = Math.hypot(player.x-player.px, player.y-player.py);
-    const squash = clamp(speed/40, 0, 0.35);
+    const squash = clamp(curSpeed/2600, 0, 0.4);
+    const leanAmt = clamp(curSpeed/1800, 0, 1);
     const ang = Math.atan2(player.y-player.py, player.x-player.px);
     ctx.save();
     ctx.lineCap = 'round';
@@ -690,7 +747,7 @@
       ctx.fillStyle = '#241609';
       ctx.fill();
     } else {
-      const swing = Math.sin(elapsed*7 + player.x*0.02) * 16 * (0.4 + clamp(speed/30,0,1));
+      const swing = Math.sin(elapsed*7 + player.x*0.02) * 16 * (0.4 + clamp(curSpeed/700,0,1));
       const armAng = Math.PI/2 + swing*Math.PI/180;
       const ex = player.x + Math.cos(armAng)*PLAYER_R*1.7;
       const ey = player.y + Math.sin(armAng)*PLAYER_R*1.7;
@@ -710,7 +767,7 @@
     // gorilla — body/head
     ctx.save();
     ctx.translate(player.x, player.y);
-    ctx.rotate(ang*0.25);
+    ctx.rotate(ang * (0.12 + 0.3*leanAmt));
     ctx.scale(1+squash, 1-squash*0.6);
     ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 10 + flow/6;
     const bodyGrad = ctx.createRadialGradient(-4,-4,3,0,2,PLAYER_R+6);
@@ -755,6 +812,7 @@
     // HUD text
     document.getElementById('timeVal').textContent = elapsed.toFixed(2);
     document.getElementById('flowFill').style.width = flow + '%';
+    document.getElementById('flowFill').style.boxShadow = flow > 65 ? '0 0 10px rgba(244,114,182,0.85)' : 'none';
   }
 
   // ---------- main loop ----------
