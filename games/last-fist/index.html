@@ -203,6 +203,7 @@ const KICK_DAMAGE = 13;
 const JUMP_ATTACK_DAMAGE = 14;
 const CHIP_DAMAGE = 2.5; // guard isn't free anymore now that health exists — small cost even on a clean block
 const HEALTH_BASE = 100; // scaled per-character by healthMult
+const ROUNDS_TO_WIN = 2; // best of 3 — first to 2 round wins takes the match
 
 const ATTACK_DEFS = {
   punch: { range: PUNCH_RANGE, windup: PUNCH_WINDUP_MS, active: PUNCH_ACTIVE_MS, recovery: PUNCH_RECOVERY_MS, knockback: PUNCH_KNOCKBACK, pullback: PUNCH_PULLBACK, extend: PUNCH_EXTEND, retract: PUNCH_RETRACT_MS, damage: PUNCH_DAMAGE },
@@ -524,6 +525,15 @@ class PlayScene extends Phaser.Scene {
     this.p2HealthBg = this.add.rectangle(W - 20 - barW/2, 50, barW, barH, 0x1c2128).setStrokeStyle(1, 0x000000).setVisible(false);
     this.p2HealthFill = this.add.rectangle(W - 20, 50, barW, barH - 2, 0x5be37b).setOrigin(1, 0.5).setVisible(false);
 
+    // ROUND-WIN PIPS — small dots under each health bar, filled as that
+    // fighter wins rounds. Same visual language as the ground-escape
+    // progress dots, so it reads as "progress toward a goal" immediately.
+    this.p1Pips = []; this.p2Pips = [];
+    for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+      this.p1Pips.push(this.add.circle(20 + 8 + i * 16, 64, 4, 0x2a2e36).setVisible(false));
+      this.p2Pips.push(this.add.circle(W - 20 - 8 - i * 16, 64, 4, 0x2a2e36).setVisible(false));
+    }
+
     this.centerText = this.add.text(W/2, 120, 'LAST FIST', {
       fontFamily: 'Arial Black, Arial', fontSize: '36px', color: '#e8ecf1', align: 'center'
     }).setOrigin(0.5).setShadow(0, 2, '#000', 6, true, true);
@@ -678,9 +688,18 @@ class PlayScene extends Phaser.Scene {
     const menuBg2 = this.add.rectangle(W/2 + btnW/2 + gap/2, btnY, btnW, btnH, 0x14161c, 0.9).setStrokeStyle(2, 0x7f8a9a, 0.8).setVisible(false);
     const menuLabel2 = this.add.text(W/2 + btnW/2 + gap/2, btnY, 'MAIN MENU', { fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#e8ecf1' }).setOrigin(0.5).setVisible(false);
     rematchBg.setInteractive({ useHandCursor: true });
-    rematchBg.on('pointerdown', () => { this.setRoundOverVisible(false); this.startMatch(this.mode); });
+    // whether the match is actually decided (someone hit ROUNDS_TO_WIN) or
+    // just this one round is over is the same check either way — no extra
+    // state needed, round wins are the source of truth
+    rematchBg.on('pointerdown', () => {
+      this.setRoundOverVisible(false);
+      const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+      if (matchDecided) this.startMatch(this.mode);
+      else this.startNextRound();
+    });
     menuBg2.setInteractive({ useHandCursor: true });
     menuBg2.on('pointerdown', () => { this.setRoundOverVisible(false); this.returnToMenu(); });
+    this.rematchLabel = rematchLabel;
     this.roundOverButtons = [rematchBg, rematchLabel, menuBg2, menuLabel2];
   }
 
@@ -696,26 +715,45 @@ class PlayScene extends Phaser.Scene {
       defender.health = 0;
       this.state = 'roundOver';
 
-      // "games played" counts completed matches, not abandoned ones — and
-      // incrementing here (not at match start) means we can tell whether
-      // THIS match's completion is exactly what crossed a new threshold
-      this.gamesPlayed++;
-      saveGamesPlayed(this.gamesPlayed);
-      const newlyUnlocked = CHARACTER_ORDER.find(k => CHARACTER_DEFS[k].unlockAt === this.gamesPlayed);
-
       const isP1Winner = attacker === this.p1;
+      if (isP1Winner) this.p1RoundWins++; else this.p2RoundWins++;
+      this.updateRoundPips();
+      const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+
       const winnerLabel = this.mode === 'ai'
         ? (isP1Winner ? 'YOU WIN' : 'AI WINS')
         : (isP1Winner ? 'PLAYER 1 WINS' : 'PLAYER 2 WINS');
-      this.centerText.setText('KO!').setVisible(true);
-      let sub = `${winnerLabel}\n${attacker.character.name} (${attacker.character.archetype})`;
-      if (newlyUnlocked) {
-        sub += `\n\n${CHARACTER_DEFS[newlyUnlocked].name.toUpperCase()} UNLOCKED!`;
+
+      let headline, sub;
+      if (matchDecided) {
+        // "games played" counts completed MATCHES, not individual rounds —
+        // otherwise one best-of-3 would count as up to 3 toward unlocks.
+        // Incrementing only here (not per-round) is what keeps that true.
+        this.gamesPlayed++;
+        saveGamesPlayed(this.gamesPlayed);
+        const newlyUnlocked = CHARACTER_ORDER.find(k => CHARACTER_DEFS[k].unlockAt === this.gamesPlayed);
+
+        headline = 'MATCH OVER';
+        sub = `${winnerLabel}\n${attacker.character.name} (${attacker.character.archetype}) wins ${Math.max(this.p1RoundWins, this.p2RoundWins)}-${Math.min(this.p1RoundWins, this.p2RoundWins)}`;
+        if (newlyUnlocked) sub += `\n\n${CHARACTER_DEFS[newlyUnlocked].name.toUpperCase()} UNLOCKED!`;
+        this.rematchLabel.setText('REMATCH');
+        if (newlyUnlocked) { if (window.SFX) SFX.powerup(); vibrate([20, 40, 20, 40, 30]); }
+      } else {
+        headline = `ROUND ${this.currentRound}`;
+        sub = `${winnerLabel}\n${attacker.character.name} takes it (${this.p1RoundWins}-${this.p2RoundWins})`;
+        this.rematchLabel.setText('NEXT ROUND');
       }
-      this.subText.setText(sub).setVisible(true);
-      this.setRoundOverVisible(true);
+
       if (window.SFX) SFX.success();
-      if (newlyUnlocked) { if (window.SFX) SFX.powerup(); vibrate([20, 40, 20, 40, 30]); }
+      // "KO!" gets a real impact beat — same punch-style flash the
+      // countdown uses — before the round result panel appears, instead of
+      // the biggest hit of the round landing with less weight than every
+      // other hit that led up to it
+      this.runCountdownBeat({ text: 'KO!', color: '#ff5a5a', final: true }, () => {
+        this.centerText.setText(headline).setVisible(true);
+        this.subText.setText(sub).setVisible(true);
+        this.setRoundOverVisible(true);
+      });
     }
   }
 
@@ -888,6 +926,27 @@ class PlayScene extends Phaser.Scene {
     this.setControlsVisible(this.p1Controls, true);
     this.setControlsVisible(this.p2Controls, mode === '2p');
 
+    // fresh match — round tally and round number reset here, and only
+    // here; startNextRound() (mid-match, best-of-3 continuing) deliberately
+    // does not touch these
+    this.p1RoundWins = 0;
+    this.p2RoundWins = 0;
+    this.currentRound = 1;
+    this.p1Pips.forEach(p => p.setVisible(true));
+    this.p2Pips.forEach(p => p.setVisible(true));
+
+    this.resetFightersForRound();
+    this.updateRoundPips();
+
+    if (window.SFX) SFX.select();
+    this.runCountdown();
+  }
+
+  // shared between startMatch (new match) and startNextRound (same match,
+  // next round) — fresh health/position/arena state, but crucially does
+  // NOT touch round wins or currentRound, since only one of the two
+  // callers should ever reset those
+  resetFightersForRound() {
     this.p1 = makeFighter(-90, 20, this.p1CharacterKey, 1);
     this.p2 = makeFighter(90, -20, this.p2CharacterKey, -1);
     this.aiJumpCooldown = Phaser.Math.FloatBetween(1, 2.5);
@@ -908,9 +967,23 @@ class PlayScene extends Phaser.Scene {
     this.p1HealthFill.setVisible(true).width = 220;
     this.p2HealthBg.setVisible(true);
     this.p2HealthFill.setVisible(true).width = 220;
+  }
 
-    if (window.SFX) SFX.select();
-    this.runCountdown();
+  startNextRound() {
+    this.currentRound++;
+    this.state = 'countdown';
+    this.setRoundOverVisible(false);
+    this.centerText.setVisible(false);
+    this.subText.setVisible(false);
+    this.resetFightersForRound();
+    this.runCountdown(`ROUND ${this.currentRound}`);
+  }
+
+  updateRoundPips() {
+    for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+      this.p1Pips[i].setFillStyle(i < this.p1RoundWins ? 0x5be37b : 0x2a2e36);
+      this.p2Pips[i].setFillStyle(i < this.p2RoundWins ? 0x5be37b : 0x2a2e36);
+    }
   }
 
   updateHealthBar(fill, f) {
@@ -936,6 +1009,8 @@ class PlayScene extends Phaser.Scene {
     this.p1HealthFill.setVisible(false);
     this.p2HealthBg.setVisible(false);
     this.p2HealthFill.setVisible(false);
+    this.p1Pips.forEach(p => p.setVisible(false));
+    this.p2Pips.forEach(p => p.setVisible(false));
     this.centerText.setText('LAST FIST').setVisible(true);
     this.subText.setText('Pick a fighter \u2014 punch, kick, jump attack, block, dodge, grapple\nclose the distance and make something happen.').setVisible(true);
     this.menuButtons.forEach(o => o.setVisible(true));
@@ -1268,13 +1343,15 @@ class PlayScene extends Phaser.Scene {
   // *these two specific fighters*, not generic UI. FIGHT! gets the biggest
   // version of the same language plus the takedown's shockwave ring,
   // reused here instead of building a second effect that does the same job.
-  runCountdown() {
-    const beats = [
+  runCountdown(roundLabel) {
+    const beats = [];
+    if (roundLabel) beats.push({ text: roundLabel, color: '#7f8a9a', final: false });
+    beats.push(
       { text: '3', color: toHexColor(this.p1.character.gloveColor), final: false },
       { text: '2', color: toHexColor(this.p2.character.gloveColor), final: false },
       { text: '1', color: toHexColor(this.p1.character.gloveColor), final: false },
       { text: 'FIGHT!', color: '#ffd23f', final: true }
-    ];
+    );
     const runBeat = (i) => {
       if (i >= beats.length) {
         this.countdownText.setVisible(false);
