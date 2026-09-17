@@ -102,11 +102,15 @@ const ARENA_DEFS = {
   },
   gate: {
     name: 'THE GATE', tagline: 'CENTER CHOKEPOINT',
+    // pillar height trimmed from 105 to 70 (centers unchanged) — widens the
+    // vertical opening from 40px to 75px, per the original design doc's own
+    // note that 40px is "intentionally aggressive" and 70-80px is the
+    // reasonable tuning direction if it plays too restrictive
     obstacles: [
-      { x: 385, y: 145, w: 55, h: 105 },
-      { x: 385, y: 290, w: 55, h: 105 },
-      { x: 520, y: 145, w: 55, h: 105 },
-      { x: 520, y: 290, w: 55, h: 105 }
+      { x: 385, y: 145, w: 55, h: 70 },
+      { x: 385, y: 290, w: 55, h: 70 },
+      { x: 520, y: 145, w: 55, h: 70 },
+      { x: 520, y: 290, w: 55, h: 70 }
     ]
   },
   safeHarbor: {
@@ -145,11 +149,11 @@ const DIFFICULTY_DEFS = {
   },
   normal: {
     name: 'Normal',
-    throwChance: 0.025,
-    chargeMin: 220, chargeMax: 700,
-    trackingMult: 0.85,
-    catchChance: 0.07,
-    catchDistMax: 130
+    throwChance: 0.035,
+    chargeMin: 180, chargeMax: 680, // was 220-700 — never threw Quick before; now it can
+    trackingMult: 0.95,
+    catchChance: 0.09,
+    catchDistMax: 120
   },
   hard: {
     name: 'Hard',
@@ -174,6 +178,40 @@ function toHexColor(n) { return '#' + n.toString(16).padStart(6, '0'); }
 function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
 }
+
+// Custom sound identity, built on sfx.js's exposed tone()/chime() primitives
+// rather than the shared generic vocabulary — the commitment/counter fantasy
+// needs its own signature, the same way Last Fist got its own countdown/KO
+// treatment instead of reusing shoot()/hit() everywhere.
+const Sound = {
+  throwTier(tier) {
+    if (!window.SFX) return;
+    if (tier === 'quick') SFX.tone(1050, 0.05, 'square', 0.09, 1500);        // short, sharp, barely-there
+    else if (tier === 'power') SFX.tone(160, 0.24, 'sawtooth', 0.22, 55);    // deep, heavy, slow decay
+    else SFX.tone(620, 0.09, 'sawtooth', 0.13, 260);                        // mid "thwip"
+  },
+  catchPerfect() {
+    if (!window.SFX) return;
+    SFX.tone(1200, 0.05, 'square', 0.16, 1900);
+    SFX.tone(1700, 0.09, 'sine', 0.13, 2100, 45); // bright two-stage "snap"
+  },
+  catchNormal() {
+    if (!window.SFX) return;
+    SFX.tone(700, 0.09, 'sine', 0.14, 950);
+  },
+  blocked() {
+    if (!window.SFX) return;
+    SFX.tone(220, 0.13, 'square', 0.17, 90); // dull thud — distinct from the damage hit() sound
+  },
+  whiff() {
+    if (!window.SFX) return;
+    SFX.tone(300, 0.11, 'sawtooth', 0.09, 130); // a small "dud" — the whiff penalty needs to feel bad
+  },
+  bounce() {
+    if (!window.SFX) return;
+    SFX.tone(1100, 0.05, 'triangle', 0.09, 1500); // bright ping, sells the bank-shot mechanic
+  }
+};
 
 class PlayScene extends Phaser.Scene {
   constructor() { super('PlayScene'); }
@@ -782,7 +820,7 @@ class PlayScene extends Phaser.Scene {
       if (f.catchWindowOpen && time >= f.catchActiveUntil) {
         f.catchWindowOpen = false;
         f.whiffUntil = time + WHIFF_RECOVERY_MS;
-        if (window.SFX) SFX.blip();
+        Sound.whiff();
       }
     });
   }
@@ -831,7 +869,7 @@ class PlayScene extends Phaser.Scene {
     f.counterUntil = 0;
     f.throwFollowUntil = this.time.now + 150;
 
-    if (window.SFX) SFX.shoot();
+    Sound.throwTier(tierKey);
     vibrate(tierKey === 'power' ? 20 : 8);
   }
 
@@ -849,8 +887,8 @@ class PlayScene extends Phaser.Scene {
     if (b.trail.length > TRAIL_LENGTH) b.trail.shift();
 
     // wall bounce (top/bottom)
-    if (b.y < COURT_TOP + BALL_R) { b.y = COURT_TOP + BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
-    if (b.y > COURT_BOTTOM - BALL_R) { b.y = COURT_BOTTOM - BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
+    if (b.y < COURT_TOP + BALL_R) { b.y = COURT_TOP + BALL_R; b.vy *= -1; Sound.bounce(); }
+    if (b.y > COURT_BOTTOM - BALL_R) { b.y = COURT_BOTTOM - BALL_R; b.vy *= -1; Sound.bounce(); }
 
     // obstacle bounce
     this.currentObstacles.forEach(o => {
@@ -860,7 +898,7 @@ class PlayScene extends Phaser.Scene {
         const overlapY = halfH - Math.abs(b.y - o.y);
         if (overlapX < overlapY) { b.vx *= -1; b.x += b.x < o.x ? -overlapX : overlapX; }
         else { b.vy *= -1; b.y += b.y < o.y ? -overlapY : overlapY; }
-        if (window.SFX) SFX.blip();
+        Sound.bounce();
         vibrate(8);
       }
     });
@@ -891,7 +929,7 @@ class PlayScene extends Phaser.Scene {
         if (isPowerBall && !perfect) {
           // survive but no counter — the ball is simply knocked down
           this.showCatchFeedback(f, 'BLOCKED', '#7f8a9a');
-          if (window.SFX) SFX.hit();
+          Sound.blocked();
           vibrate(15);
           this.endBall(null, f);
           return;
@@ -901,7 +939,7 @@ class PlayScene extends Phaser.Scene {
         f.counterUntil = time + (perfect ? COUNTER_WINDOW_PERFECT_MS : COUNTER_WINDOW_NORMAL_MS);
         this.showCatchFeedback(f, perfect ? 'PERFECT CATCH!' : 'CAUGHT!', perfect ? '#5be37b' : '#8fd3ff');
         this.showCatchSnap(f, perfect);
-        if (window.SFX) SFX[perfect ? 'success' : 'pickup']();
+        if (perfect) Sound.catchPerfect(); else Sound.catchNormal();
         vibrate(perfect ? 25 : 12);
         this.ball.active = false;
         f.x = f === this.p1 ? Math.max(f.x, P1_MIN_X + PLAYER_R) : Math.min(f.x, P2_MAX_X - PLAYER_R);
