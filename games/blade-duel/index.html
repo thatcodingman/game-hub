@@ -177,6 +177,7 @@
   const PARRY_WINDOW = 0.15;
   const HP_MAX = 100, HIT_DMG = 32, PARRY_PUNISH_DMG = 40;
   const STAGGER_HIT = 0.32, STAGGER_PARRIED = 0.55;
+  const SLOW_DURATION = 3.0, SLOW_MULT = 0.55; // a landed Low hit slows the defender's steps for a bit
 
   const TIERS = [
     { id:0, name:"Practice", desc:"Slow, obvious attacks. No feints, barely guards.", think:[0.9,1.5], feintChance:0.0, guardChance:0.15, guardDelay:0.30, guardAccuracy:0.5 },
@@ -203,7 +204,7 @@
       state: 'idle', stateT: 0,
       attackLine: 'high', isFeint: false, resolved: false,
       guardLine: null, guardFreshT: -99,
-      staggerT: 0,
+      staggerT: 0, slowT: 0,
       stepDir: 0, stepFromX: x, stepToX: x, stepCooldown: 0,
       // ai only
       aiThinkT: 0.6
@@ -255,7 +256,8 @@
   function tryStep(f, dir){
     if(f.state !== 'idle' || f.stepCooldown > 0) return;
     const opp = f===P ? A : P;
-    let target = f.x + dir*STEP_DIST;
+    const dist = f.slowT > 0 ? STEP_DIST*SLOW_MULT : STEP_DIST;
+    let target = f.x + dir*dist;
     const towardOpp = (opp.x - f.x) * dir > 0; // only clamp separation when actually closing distance
     if(towardOpp){
       if(dir > 0) target = Math.min(target, opp.x - MIN_SEP);
@@ -290,6 +292,7 @@
     } else {
       defender.hp = clamp(defender.hp - HIT_DMG, 0, HP_MAX);
       defender.state = 'stagger'; defender.stateT = 0; defender.staggerT = STAGGER_HIT;
+      if(attacker.attackLine === 'low'){ defender.slowT = SLOW_DURATION; }
       fx.push({type:'hit', x:defender.x, y:FLOOR_Y-90, t:0, dur:0.35});
       triggerShake(6);
       sfx.hit();
@@ -381,6 +384,7 @@
       default: break;
     }
     if(f.stepCooldown > 0) f.stepCooldown = Math.max(0, f.stepCooldown - dt);
+    if(f.slowT > 0) f.slowT = Math.max(0, f.slowT - dt);
   }
 
   function stepDuel(dt){
@@ -471,6 +475,7 @@
     const facing = f.x < opp.x ? 1 : -1;
     const cx = f.x, cy = FLOOR_Y;
     const hurt = f.state==='stagger';
+    const slowed = f.slowT > 0;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(facing, 1);
@@ -486,10 +491,11 @@
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.fill();
 
-    // legs
-    ctx.strokeStyle = f.color; ctx.lineWidth = 8; ctx.lineCap='round';
-    ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-10,-46); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(10,-46); ctx.stroke();
+    // legs — dulled and slightly bowed when slowed from a landed low hit
+    ctx.strokeStyle = slowed ? 'rgba(147,197,253,0.55)' : f.color; ctx.lineWidth = 8; ctx.lineCap='round';
+    const legBow = slowed ? 3 : 0;
+    ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-10-legBow,-46); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(10+legBow,-46); ctx.stroke();
 
     // torso
     ctx.strokeStyle = hurt ? '#ef4444' : f.color; ctx.lineWidth = 12;
@@ -507,7 +513,7 @@
       ctx.lineWidth = 4;
       ctx.beginPath();
       if(gLine==='high'){ ctx.moveTo(4,-100); ctx.lineTo(40,-118); }
-      else if(gLine==='low'){ ctx.moveTo(4,-60); ctx.lineTo(42,-48); }
+      else if(gLine==='low'){ ctx.moveTo(2,-28); ctx.lineTo(38,-12); }
       else { ctx.moveTo(2,-80); ctx.lineTo(44,-80); }
       ctx.stroke();
     }
@@ -522,7 +528,7 @@
       const glow = 0.3 + pe*0.7;
       if(line==='high'){ sx=8; sy=-95; ex=8+pe*10; ey=-95-pe*46; arc=-8; }
       else if(line==='torso'){ sx=8; sy=-80; ex=8-pe*48; ey=-80-pe*6; arc=10; }
-      else { sx=8; sy=-70; ex=8-pe*40; ey=-70+pe*18; arc=8; }
+      else { sx=8; sy=-40; ex=8-pe*34; ey=-40+pe*24; arc=6; }
       ctx.strokeStyle = `rgba(251,191,36,${glow})`;
       ctx.lineWidth = 5;
       ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6+pe*10;
@@ -531,7 +537,7 @@
       const p = clamp(f.stateT/ACTIVE_TIME, 0, 1);
       if(line==='high'){ sx=10; sy=-118; ex=64; ey=-58; arc=-26; }
       else if(line==='torso'){ sx=-24; sy=-78; ex=70; ey=-82; arc=-32; }
-      else { sx=-30; sy=-50; ex=66; ey=-78; arc=26; }
+      else { sx=-26; sy=-10; ex=62; ey=-42; arc=20; }
       // motion-blur trail: two faded prior-position arcs behind the live swing, for a fluid slash
       for(let i=2;i>=1;i--){
         const tp = clamp(p - i*0.22, 0, 1);
@@ -545,12 +551,14 @@
       swordArc(sx,sy,ex,ey,arc);
     } else if(f.state==='recovery'){
       if(line==='torso'){ sx=10; sy=-80; ex=44; ey=-70; arc=6; }
+      else if(line==='low'){ sx=10; sy=-22; ex=42; ey=-6; arc=3; }
       else { sx=10; sy=-40; ex=46; ey=-18; arc=4; }
       ctx.strokeStyle = 'rgba(148,163,184,0.6)'; ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
       swordArc(sx,sy,ex,ey,arc);
     } else {
       if(line==='torso'){ sx=10; sy=-76; ex=42; ey=-68; arc=4; }
+      else if(line==='low'){ sx=10; sy=-20; ex=40; ey=-4; arc=2; }
       else { sx=10; sy=-46; ex=42; ey=-24; arc=3; }
       ctx.strokeStyle = 'rgba(226,232,240,0.85)'; ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
@@ -559,6 +567,11 @@
     ctx.shadowBlur = 0;
 
     ctx.restore();
+
+    if(slowed){
+      ctx.font = '10px system-ui'; ctx.fillStyle = 'rgba(147,197,253,0.85)'; ctx.textAlign = 'center';
+      ctx.fillText('SLOWED', cx, cy + 20);
+    }
 
     // range indicator when idle and opponent in range (subtle)
   }
