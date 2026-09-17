@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dodgeball Arena — The Arcade</title>
+<style>
+  html, body {
+    margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%;
+    overscroll-behavior: none;
+  }
+  #game-container { width:100vw; height:100vh; }
+  canvas {
+    display:block; touch-action:none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   DODGEBALL ARENA
+   A one-on-one dodgeball duel where every throw is a prediction and every
+   catch can turn the fight around.
+
+   The hook: COMMITMENT. Hold the throw button longer for a harder throw —
+   quick (fast, low telegraph), normal, or power (slow, hard-hitting, only
+   safely caught with perfect timing). The opponent can see you charging
+   and has to decide, in real time: dodge now, wait, or try to catch it.
+
+   A caught ball opens a brief COUNTER WINDOW — your next throw releases
+   almost instantly, no charge needed. Catch is graded (perfect vs normal)
+   by how recently you pressed the catch key relative to the ball actually
+   reaching you, which keeps it skill-based without needing frame-perfect
+   physics.
+
+   3 lives each. Two static blockers sit on the court and the ball bounces
+   off them and off the top/bottom walls, so bank shots are possible.
+
+   v1 scope note (deliberately deferred, not forgotten): a shrinking arena
+   boundary and richer per-shot trajectory shaping (the original design
+   pitch's 5 distinct arcs) were cut to ship a solid core loop first —
+   commitment tiers already give 3 readable throw profiles. AI difficulty
+   tiers (like Last Fist has) were also left as v1-single-difficulty; easy
+   to add later with the same DIFFICULTY_DEFS pattern if this game earns it.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const CENTER_X = W / 2;
+const COURT_TOP = 60, COURT_BOTTOM = H - 40;
+const PLAYER_R = 20;
+const BALL_R = 9;
+const HIT_R = PLAYER_R + BALL_R - 6;
+
+const P1_MIN_X = 40, P1_MAX_X = CENTER_X - 30;
+const P2_MIN_X = CENTER_X + 30, P2_MAX_X = W - 40;
+const MOVE_SPEED = 260;
+
+const LIVES = 3;
+
+const THROW_QUICK_MS = 220;
+const THROW_NORMAL_MS = 480;
+const THROW_MAX_CHARGE_MS = 750; // auto-release cap
+
+const TIER_DEFS = {
+  quick:  { name: 'QUICK',  speed: 640, color: 0x8fd3ff, arcHeight: 10, label: 'Fast. Barely telegraphed. Weak commitment.' },
+  normal: { name: 'NORMAL', speed: 480, color: 0xffd23f, arcHeight: 34, label: 'Balanced.' },
+  power:  { name: 'POWER',  speed: 340, color: 0xff5a5a, arcHeight: 64, label: 'Slow but only a PERFECT catch survives it clean.' }
+};
+
+const CATCH_ACTIVE_MS = 200;   // how long a catch press stays "live"
+const PERFECT_PRESS_MS = 90;   // press must be this recent (relative to contact) to count as perfect
+const COUNTER_WINDOW_NORMAL_MS = 350;
+const COUNTER_WINDOW_PERFECT_MS = 600;
+
+const OBSTACLES = [
+  { x: CENTER_X - 160, y: COURT_TOP + 70, w: 26, h: 90 },
+  { x: CENTER_X + 160, y: COURT_BOTTOM - 70, w: 26, h: 90 }
+];
+
+function toHexColor(n) { return '#' + n.toString(16).padStart(6, '0'); }
+function vibrate(pattern) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
+}
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('PlayScene'); }
+
+  create() {
+    this.mode = null; // 'ai' | '2p'
+    this.state = 'menu'; // menu | mode | countdown | playing | over
+
+    this.buildBackground();
+    this.buildMenu();
+    this.buildModeSelect();
+    this.buildHUD();
+    this.buildOverPanel();
+    this.buildEntities();
+    this.buildInput();
+
+    this.setMenuVisible(true);
+    this.setModeVisible(false);
+    this.setHUDVisible(false);
+    this.setOverVisible(false);
+  }
+
+  // ---------------------------------------------------------------- SCENE UI
+
+  buildBackground() {
+    const g = this.add.graphics();
+    g.fillStyle(0x0a0a0d, 1);
+    g.fillRect(0, 0, W, H);
+    g.fillStyle(0x121218, 1);
+    g.fillRect(20, COURT_TOP, W - 40, COURT_BOTTOM - COURT_TOP);
+    g.lineStyle(2, 0x2a2e36, 1);
+    g.strokeRect(20, COURT_TOP, W - 40, COURT_BOTTOM - COURT_TOP);
+    g.lineStyle(2, 0xff5a5a, 0.55);
+    g.beginPath();
+    g.moveTo(CENTER_X, COURT_TOP);
+    g.lineTo(CENTER_X, COURT_BOTTOM);
+    g.strokePath();
+
+    OBSTACLES.forEach(o => {
+      g.fillStyle(0x3a3f4a, 1);
+      g.fillRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
+      g.lineStyle(1, 0x5a6070, 1);
+      g.strokeRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
+    });
+  }
+
+  buildMenu() {
+    this.menuTitle = this.add.text(W / 2, 150, 'DODGEBALL ARENA', {
+      fontFamily: 'Arial Black, Arial', fontSize: '44px', color: '#e8ecf1'
+    }).setOrigin(0.5);
+    this.menuSub = this.add.text(W / 2, 200, 'Every throw is a prediction. Every catch can turn it around.', {
+      fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a', align: 'center', wordWrap: { width: 560 }
+    }).setOrigin(0.5);
+
+    const btnY = 300, btnW = 260, btnH = 56;
+    const bg = this.add.rectangle(W / 2, btnY, btnW, btnH, 0x1a1d24).setStrokeStyle(2, 0xffd23f);
+    const label = this.add.text(W / 2, btnY, 'PLAY', {
+      fontFamily: 'Arial Black, Arial', fontSize: '22px', color: '#ffd23f'
+    }).setOrigin(0.5);
+    bg.setInteractive({ useHandCursor: true });
+    bg.on('pointerover', () => bg.setFillStyle(0x24272f));
+    bg.on('pointerout', () => bg.setFillStyle(0x1a1d24));
+    bg.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setMenuVisible(false);
+      this.setModeVisible(true);
+    });
+
+    this.menuGroup = [this.menuTitle, this.menuSub, bg, label];
+  }
+
+  setMenuVisible(v) { this.menuGroup.forEach(o => o.setVisible(v)); }
+
+  buildModeSelect() {
+    this.modeTitle = this.add.text(W / 2, 170, 'CHOOSE MODE', {
+      fontFamily: 'Arial Black, Arial', fontSize: '28px', color: '#e8ecf1'
+    }).setOrigin(0.5);
+
+    const btnW = 220, btnH = 64, gap = 30;
+    const defs = [
+      { label: 'VS AI', x: W / 2 - btnW / 2 - gap / 2, mode: 'ai' },
+      { label: 'VS PLAYER 2', x: W / 2 + btnW / 2 + gap / 2, mode: '2p' }
+    ];
+    this.modeGroup = [this.modeTitle];
+    defs.forEach(d => {
+      const bg = this.add.rectangle(d.x, 280, btnW, btnH, 0x1a1d24).setStrokeStyle(2, 0x8fd3ff);
+      const label = this.add.text(d.x, 280, d.label, {
+        fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#8fd3ff'
+      }).setOrigin(0.5);
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerover', () => bg.setFillStyle(0x24272f));
+      bg.on('pointerout', () => bg.setFillStyle(0x1a1d24));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.select();
+        this.setModeVisible(false);
+        this.startMatch(d.mode);
+      });
+      this.modeGroup.push(bg, label);
+    });
+
+    const hint = this.add.text(W / 2, 370, 'VS AI: Arrows to move, SPACE to throw (hold to charge), SHIFT to catch.\nVS PLAYER 2 — P1: WASD / F throw / G catch.  P2: Arrows / L throw / \' catch.', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a', align: 'center', lineSpacing: 6
+    }).setOrigin(0.5);
+    this.modeGroup.push(hint);
+  }
+
+  setModeVisible(v) { this.modeGroup.forEach(o => o.setVisible(v)); }
+
+  buildHUD() {
+    this.modeText = this.add.text(W / 2, 20, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a'
+    }).setOrigin(0.5).setVisible(false);
+
+    this.p1NameText = this.add.text(20, 20, 'P1', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#8fd3ff' }).setVisible(false);
+    this.p2NameText = this.add.text(W - 20, 20, 'P2 / CPU', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#ff9f6b' }).setOrigin(1, 0).setVisible(false);
+
+    this.p1Pips = []; this.p2Pips = [];
+    for (let i = 0; i < LIVES; i++) {
+      this.p1Pips.push(this.add.circle(20 + 8 + i * 18, 40, 5, 0x2a2e36).setVisible(false));
+      this.p2Pips.push(this.add.circle(W - 20 - 8 - i * 18, 40, 5, 0x2a2e36).setVisible(false));
+    }
+
+    this.countdownText = this.add.text(W / 2, H / 2, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '48px', color: '#ffd23f'
+    }).setOrigin(0.5).setVisible(false);
+
+    this.counterBanner = this.add.text(W / 2, 90, '', {
+      fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#5be37b'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.hudGroup = [this.modeText, this.p1NameText, this.p2NameText, ...this.p1Pips, ...this.p2Pips];
+  }
+
+  setHUDVisible(v) { this.hudGroup.forEach(o => o.setVisible(v)); }
+
+  updatePips() {
+    this.p1Pips.forEach((p, i) => p.setFillStyle(i < this.p1Lives ? 0x8fd3ff : 0x2a2e36));
+    this.p2Pips.forEach((p, i) => p.setFillStyle(i < this.p2Lives ? 0xff9f6b : 0x2a2e36));
+  }
+
+  buildOverPanel() {
+    const panelBg = this.add.rectangle(W / 2, H / 2, 420, 220, 0x14161b, 0.96).setStrokeStyle(2, 0x2a2e36).setVisible(false);
+    const headline = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'Arial Black, Arial', fontSize: '30px', color: '#ffd23f' }).setOrigin(0.5).setVisible(false);
+    const sub = this.add.text(W / 2, H / 2 - 16, '', { fontFamily: 'Arial', fontSize: '14px', color: '#b9c0cc' }).setOrigin(0.5).setVisible(false);
+
+    const rematchBg = this.add.rectangle(W / 2, H / 2 + 50, 200, 50, 0x1a1d24).setStrokeStyle(2, 0xffd23f).setVisible(false);
+    const rematchLabel = this.add.text(W / 2, H / 2 + 50, 'REMATCH', { fontFamily: 'Arial Black, Arial', fontSize: '18px', color: '#ffd23f' }).setOrigin(0.5).setVisible(false);
+    rematchBg.setInteractive({ useHandCursor: true });
+    rematchBg.on('pointerover', () => rematchBg.setFillStyle(0x24272f));
+    rematchBg.on('pointerout', () => rematchBg.setFillStyle(0x1a1d24));
+    rematchBg.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setOverVisible(false);
+      this.startMatch(this.mode);
+    });
+
+    const menuBg = this.add.rectangle(W / 2, H / 2 + 112, 200, 40, 0x1a1d24).setStrokeStyle(1, 0x5a6070).setVisible(false);
+    const menuLabel = this.add.text(W / 2, H / 2 + 112, 'MAIN MENU', { fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a' }).setOrigin(0.5).setVisible(false);
+    menuBg.setInteractive({ useHandCursor: true });
+    menuBg.on('pointerover', () => menuBg.setFillStyle(0x24272f));
+    menuBg.on('pointerout', () => menuBg.setFillStyle(0x1a1d24));
+    menuBg.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.returnToMenu();
+    });
+
+    this.overGroup = [panelBg, headline, sub, rematchBg, rematchLabel, menuBg, menuLabel];
+    this.overHeadline = headline;
+    this.overSub = sub;
+  }
+
+  setOverVisible(v) { this.overGroup.forEach(o => o.setVisible(v)); }
+
+  // ------------------------------------------------------------- ENTITIES
+
+  buildEntities() {
+    const g1 = this.add.graphics();
+    const g2 = this.add.graphics();
+    this.p1 = { x: 160, y: H / 2, color: 0x8fd3ff, dark: 0x3f6fa8, g: g1, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, counterUntil: 0, hasBall: true };
+    this.p2 = { x: W - 160, y: H / 2, color: 0xff9f6b, dark: 0xa85f3f, g: g2, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, counterUntil: 0, hasBall: false };
+
+    this.ballG = this.add.graphics();
+    this.ball = { active: false, x: 0, y: 0, vx: 0, vy: 0, progress: 0, totalDist: 1, tier: 'normal', owner: null, height: 0 };
+
+    this.aimG = this.add.graphics();
+    this.impactFlash = this.add.circle(0, 0, 40, 0xffffff, 0.5).setVisible(false);
+  }
+
+  resetForServe(serverIsP1) {
+    this.p1.x = 160; this.p1.y = H / 2;
+    this.p2.x = W - 160; this.p2.y = H / 2;
+    this.p1.charging = false; this.p2.charging = false;
+    this.p1.counterUntil = 0; this.p2.counterUntil = 0;
+    this.p1.hasBall = serverIsP1;
+    this.p2.hasBall = !serverIsP1;
+    this.ball.active = false;
+  }
+
+  // --------------------------------------------------------------- INPUT
+
+  buildInput() {
+    this.keys = this.input.keyboard.addKeys({
+      p1Up: Phaser.Input.Keyboard.KeyCodes.W,
+      p1Down: Phaser.Input.Keyboard.KeyCodes.S,
+      p1Left: Phaser.Input.Keyboard.KeyCodes.A,
+      p1Right: Phaser.Input.Keyboard.KeyCodes.D,
+      p1Throw: Phaser.Input.Keyboard.KeyCodes.F,
+      p1Catch: Phaser.Input.Keyboard.KeyCodes.G,
+
+      p1UpAlt: Phaser.Input.Keyboard.KeyCodes.UP,
+      p1DownAlt: Phaser.Input.Keyboard.KeyCodes.DOWN,
+      p1LeftAlt: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      p1RightAlt: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      p1ThrowAlt: Phaser.Input.Keyboard.KeyCodes.SPACE,
+      p1CatchAlt: Phaser.Input.Keyboard.KeyCodes.SHIFT,
+
+      p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
+      p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
+      p2Left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      p2Right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      p2Throw: Phaser.Input.Keyboard.KeyCodes.L,
+      p2Catch: Phaser.Input.Keyboard.KeyCodes.QUOTES
+    });
+  }
+
+  // --------------------------------------------------------------- FLOW
+
+  startMatch(mode) {
+    this.mode = mode;
+    this.p1Lives = LIVES;
+    this.p2Lives = LIVES;
+    this.updatePips();
+    this.resetForServe(true);
+
+    this.modeText.setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL').setVisible(true);
+    this.p2NameText.setText(mode === 'ai' ? 'CPU' : 'P2');
+    this.setHUDVisible(true);
+    this.setOverVisible(false);
+
+    this.state = 'countdown';
+    this.runCountdown();
+  }
+
+  returnToMenu() {
+    this.state = 'menu';
+    this.setHUDVisible(false);
+    this.setOverVisible(false);
+    this.setModeVisible(false);
+    this.setMenuVisible(true);
+  }
+
+  runCountdown() {
+    const beats = [
+      { text: '3', color: '#8fd3ff' },
+      { text: '2', color: '#ffd23f' },
+      { text: '1', color: '#ff9f6b' },
+      { text: 'THROW!', color: '#ff5a5a', final: true }
+    ];
+    const runBeat = (i) => {
+      if (i >= beats.length) { this.countdownText.setVisible(false); this.state = 'playing'; return; }
+      const beat = beats[i];
+      this.countdownText.setText(beat.text).setColor(beat.color).setScale(beat.final ? 2.2 : 1.6).setAlpha(1).setVisible(true);
+      this.cameras.main.shake(beat.final ? 160 : 80, beat.final ? 0.01 : 0.005);
+      vibrate(beat.final ? 25 : 10);
+      if (window.SFX) SFX[beat.final ? 'powerup' : 'countdown']();
+      this.tweens.add({
+        targets: this.countdownText, scale: 1, duration: beat.final ? 240 : 160, ease: 'Back.easeOut',
+        onComplete: () => {
+          this.time.delayedCall(beat.final ? 260 : 380, () => {
+            if (beat.final) this.tweens.add({ targets: this.countdownText, alpha: 0, duration: 200, onComplete: () => runBeat(i + 1) });
+            else runBeat(i + 1);
+          });
+        }
+      });
+    };
+    runBeat(0);
+  }
+
+  // -------------------------------------------------------------- UPDATE
+
+  update(time, dt) {
+    dt = Math.min(dt, 50);
+    if (this.state !== 'playing') return;
+
+    this.updatePlayerMovement(dt);
+    this.updateAI(dt);
+    this.updateThrowInput();
+    this.updateBall(dt);
+    this.updateCatchAttempts(time);
+    this.drawPlayers();
+    this.drawBall();
+    this.drawAim();
+  }
+
+  clampToHalf(f, isP1) {
+    const minX = isP1 ? P1_MIN_X : P2_MIN_X;
+    const maxX = isP1 ? P1_MAX_X : P2_MAX_X;
+    f.x = Phaser.Math.Clamp(f.x, minX, maxX);
+    f.y = Phaser.Math.Clamp(f.y, COURT_TOP + PLAYER_R, COURT_BOTTOM - PLAYER_R);
+    OBSTACLES.forEach(o => {
+      const halfW = o.w / 2 + PLAYER_R, halfH = o.h / 2 + PLAYER_R;
+      if (Math.abs(f.x - o.x) < halfW && Math.abs(f.y - o.y) < halfH) {
+        const overlapX = halfW - Math.abs(f.x - o.x);
+        const overlapY = halfH - Math.abs(f.y - o.y);
+        if (overlapX < overlapY) f.x += f.x < o.x ? -overlapX : overlapX;
+        else f.y += f.y < o.y ? -overlapY : overlapY;
+      }
+    });
+  }
+
+  updatePlayerMovement(dt) {
+    const aiMode = this.mode === 'ai';
+    const p1Up = aiMode ? this.keys.p1UpAlt.isDown : this.keys.p1Up.isDown;
+    const p1Down = aiMode ? this.keys.p1DownAlt.isDown : this.keys.p1Down.isDown;
+    const p1Left = aiMode ? this.keys.p1LeftAlt.isDown : this.keys.p1Left.isDown;
+    const p1Right = aiMode ? this.keys.p1RightAlt.isDown : this.keys.p1Right.isDown;
+
+    let vx = 0, vy = 0;
+    if (p1Up) vy -= 1;
+    if (p1Down) vy += 1;
+    if (p1Left) vx -= 1;
+    if (p1Right) vx += 1;
+    const len = Math.hypot(vx, vy) || 1;
+    this.p1.x += (vx / len) * MOVE_SPEED * (dt / 1000);
+    this.p1.y += (vy / len) * MOVE_SPEED * (dt / 1000);
+    this.clampToHalf(this.p1, true);
+
+    if (this.mode === '2p') {
+      let vx2 = 0, vy2 = 0;
+      if (this.keys.p2Up.isDown) vy2 -= 1;
+      if (this.keys.p2Down.isDown) vy2 += 1;
+      if (this.keys.p2Left.isDown) vx2 -= 1;
+      if (this.keys.p2Right.isDown) vx2 += 1;
+      const len2 = Math.hypot(vx2, vy2) || 1;
+      this.p2.x += (vx2 / len2) * MOVE_SPEED * (dt / 1000);
+      this.p2.y += (vy2 / len2) * MOVE_SPEED * (dt / 1000);
+      this.clampToHalf(this.p2, false);
+    }
+  }
+
+  updateAI(dt) {
+    if (this.mode !== 'ai') return;
+    const ai = this.p2, target = this.p1;
+
+    // Basic tracking: match the opponent's Y, hang back near mid-depth on X unless serving.
+    let desiredY = target.y + Phaser.Math.Between(-30, 30);
+    if (this.ball.active && this.ball.owner === null) {
+      // ball in flight — react a bit to its actual Y for dodging when not attempting a catch
+      desiredY = this.ball.y;
+    }
+    const dy = desiredY - ai.y;
+    ai.y += Phaser.Math.Clamp(dy, -1, 1) * MOVE_SPEED * 0.85 * (dt / 1000);
+    const desiredX = Phaser.Math.Clamp(P2_MIN_X + 90, P2_MIN_X, P2_MAX_X);
+    ai.x += Phaser.Math.Clamp(desiredX - ai.x, -1, 1) * MOVE_SPEED * 0.4 * (dt / 1000);
+    this.clampToHalf(ai, false);
+
+    // Throw decision
+    if (ai.hasBall && !ai.charging) {
+      if (Phaser.Math.Between(0, 100) < 2) {
+        ai.charging = true;
+        ai.chargeStart = this.time.now;
+        ai.aiReleaseAt = this.time.now + Phaser.Math.Between(THROW_QUICK_MS, THROW_MAX_CHARGE_MS);
+      }
+    } else if (ai.charging && this.time.now >= ai.aiReleaseAt) {
+      this.releaseThrow(ai, target);
+    }
+
+    // Catch decision: if ball incoming toward AI and reasonably close, sometimes attempt catch
+    if (this.ball.active && this.ball.owner === null) {
+      const dist = Math.hypot(this.ball.x - ai.x, this.ball.y - ai.y);
+      const headingToAI = (this.ball.vx > 0);
+      if (headingToAI && dist < 140 && dist > 20 && ai.catchActiveUntil < this.time.now) {
+        if (Phaser.Math.Between(0, 100) < 6) {
+          ai.catchPressAt = this.time.now;
+          ai.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+        }
+      }
+    }
+  }
+
+  updateThrowInput() {
+    const aiMode = this.mode === 'ai';
+    const p1ThrowDown = aiMode ? this.keys.p1ThrowAlt.isDown : this.keys.p1Throw.isDown;
+    const p1ThrowJustUp = aiMode
+      ? Phaser.Input.Keyboard.JustUp(this.keys.p1ThrowAlt)
+      : Phaser.Input.Keyboard.JustUp(this.keys.p1Throw);
+    const p1CatchJustDown = aiMode
+      ? Phaser.Input.Keyboard.JustDown(this.keys.p1CatchAlt)
+      : Phaser.Input.Keyboard.JustDown(this.keys.p1Catch);
+
+    this.handleThrowFor(this.p1, this.p2, p1ThrowDown, p1ThrowJustUp);
+    if (p1CatchJustDown) {
+      this.p1.catchPressAt = this.time.now;
+      this.p1.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+    }
+
+    if (this.mode === '2p') {
+      const p2ThrowDown = this.keys.p2Throw.isDown;
+      const p2ThrowJustUp = Phaser.Input.Keyboard.JustUp(this.keys.p2Throw);
+      const p2CatchJustDown = Phaser.Input.Keyboard.JustDown(this.keys.p2Catch);
+      this.handleThrowFor(this.p2, this.p1, p2ThrowDown, p2ThrowJustUp);
+      if (p2CatchJustDown) {
+        this.p2.catchPressAt = this.time.now;
+        this.p2.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+      }
+    }
+  }
+
+  handleThrowFor(f, opponent, throwDown, throwJustUp) {
+    if (!f.hasBall) return;
+    if (throwDown && !f.charging) {
+      f.charging = true;
+      f.chargeStart = this.time.now;
+    } else if (f.charging && !throwDown) {
+      this.releaseThrow(f, opponent);
+    } else if (f.charging && (this.time.now - f.chargeStart) >= THROW_MAX_CHARGE_MS) {
+      this.releaseThrow(f, opponent);
+    }
+  }
+
+  releaseThrow(f, opponent) {
+    const held = this.time.now - f.chargeStart;
+    const inCounter = this.time.now < f.counterUntil;
+    let tierKey;
+    if (inCounter) tierKey = 'quick';
+    else if (held < THROW_QUICK_MS) tierKey = 'quick';
+    else if (held < THROW_NORMAL_MS) tierKey = 'normal';
+    else tierKey = 'power';
+
+    const def = TIER_DEFS[tierKey];
+    const dx = opponent.x - f.x, dy = opponent.y - f.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const speed = inCounter ? def.speed * 1.15 : def.speed;
+
+    this.ball.active = true;
+    this.ball.x = f.x + (f === this.p1 ? PLAYER_R + BALL_R : -(PLAYER_R + BALL_R));
+    this.ball.y = f.y;
+    this.ball.vx = (dx / dist) * speed;
+    this.ball.vy = (dy / dist) * speed;
+    this.ball.tier = tierKey;
+    this.ball.owner = null;
+    this.ball.thrownBy = f;
+    this.ball.progress = 0;
+    this.ball.totalDist = dist;
+    this.ball.height = 0;
+
+    f.hasBall = false;
+    f.charging = false;
+    f.counterUntil = 0;
+
+    if (window.SFX) SFX.shoot();
+    vibrate(tierKey === 'power' ? 20 : 8);
+  }
+
+  updateBall(dt) {
+    if (!this.ball.active) return;
+    const b = this.ball;
+    const step = dt / 1000;
+    b.x += b.vx * step;
+    b.y += b.vy * step;
+    b.progress += Math.hypot(b.vx, b.vy) * step;
+    const t = Phaser.Math.Clamp(b.progress / Math.max(b.totalDist, 1), 0, 1);
+    b.height = Math.sin(Math.PI * Math.min(t, 1)) * TIER_DEFS[b.tier].arcHeight;
+
+    // wall bounce (top/bottom)
+    if (b.y < COURT_TOP + BALL_R) { b.y = COURT_TOP + BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
+    if (b.y > COURT_BOTTOM - BALL_R) { b.y = COURT_BOTTOM - BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
+
+    // obstacle bounce
+    OBSTACLES.forEach(o => {
+      const halfW = o.w / 2 + BALL_R, halfH = o.h / 2 + BALL_R;
+      if (Math.abs(b.x - o.x) < halfW && Math.abs(b.y - o.y) < halfH) {
+        const overlapX = halfW - Math.abs(b.x - o.x);
+        const overlapY = halfH - Math.abs(b.y - o.y);
+        if (overlapX < overlapY) { b.vx *= -1; b.x += b.x < o.x ? -overlapX : overlapX; }
+        else { b.vy *= -1; b.y += b.y < o.y ? -overlapY : overlapY; }
+        if (window.SFX) SFX.blip();
+        vibrate(8);
+      }
+    });
+
+    // out of bounds horizontally = miss, other player keeps/gets the ball
+    if (b.x < 10 || b.x > W - 10) {
+      const goesTo = b.x < 10 ? this.p1 : this.p2;
+      this.endBall(goesTo);
+    }
+  }
+
+  updateCatchAttempts(time) {
+    if (!this.ball.active) return;
+    const b = this.ball;
+    [this.p1, this.p2].forEach(f => {
+      const movingToward = (f === this.p1) ? b.vx < 0 : b.vx > 0;
+      if (!movingToward) return;
+      const dist = Math.hypot(b.x - f.x, b.y - f.y);
+      if (dist > HIT_R) return;
+
+      const catchActive = time < f.catchActiveUntil;
+      if (catchActive) {
+        const pressRecency = time - f.catchPressAt;
+        const isPowerBall = b.tier === 'power';
+        const perfect = pressRecency <= PERFECT_PRESS_MS;
+
+        if (isPowerBall && !perfect) {
+          // survive but no counter — the ball is simply knocked down
+          this.showCatchFeedback(f, 'BLOCKED', '#7f8a9a');
+          if (window.SFX) SFX.hit();
+          vibrate(15);
+          this.endBall(null, f);
+          return;
+        }
+
+        f.hasBall = true;
+        f.counterUntil = time + (perfect ? COUNTER_WINDOW_PERFECT_MS : COUNTER_WINDOW_NORMAL_MS);
+        this.showCatchFeedback(f, perfect ? 'PERFECT CATCH!' : 'CAUGHT!', perfect ? '#5be37b' : '#8fd3ff');
+        if (window.SFX) SFX[perfect ? 'success' : 'pickup']();
+        vibrate(perfect ? 25 : 12);
+        this.ball.active = false;
+        f.x = f === this.p1 ? Math.max(f.x, P1_MIN_X + PLAYER_R) : Math.min(f.x, P2_MAX_X - PLAYER_R);
+        return;
+      }
+
+      // no active catch attempt — hit
+      this.registerHit(f);
+    });
+  }
+
+  showCatchFeedback(f, text, color) {
+    this.counterBanner.setText(text).setColor(color).setAlpha(1).setPosition(f.x, f.y - 50);
+    this.tweens.add({ targets: this.counterBanner, alpha: 0, y: f.y - 80, duration: 700, ease: 'Quad.easeOut' });
+  }
+
+  registerHit(f) {
+    if (f === this.p1) this.p1Lives--; else this.p2Lives--;
+    this.updatePips();
+    this.impactFlash.setPosition(f.x, f.y).setVisible(true).setAlpha(0.7);
+    this.tweens.add({ targets: this.impactFlash, alpha: 0, duration: 250, onComplete: () => this.impactFlash.setVisible(false) });
+    this.cameras.main.shake(140, 0.012);
+    vibrate(30);
+    if (window.SFX) SFX.hit();
+
+    const dead = this.p1Lives <= 0 || this.p2Lives <= 0;
+    this.ball.active = false;
+
+    if (dead) {
+      this.finishMatch();
+    } else {
+      // hit player serves next, to keep the match flowing rather than snowballing
+      this.state = 'countdown';
+      this.resetForServe(f === this.p1);
+      this.time.delayedCall(500, () => this.runCountdown());
+    }
+  }
+
+  endBall(givePossessionTo, catcherAlreadyHandled) {
+    this.ball.active = false;
+    if (catcherAlreadyHandled) {
+      catcherAlreadyHandled.hasBall = true;
+      catcherAlreadyHandled.counterUntil = 0;
+      return;
+    }
+    if (givePossessionTo) givePossessionTo.hasBall = true;
+  }
+
+  finishMatch() {
+    this.state = 'over';
+    const p1Won = this.p1Lives > 0;
+    const winnerLabel = this.mode === 'ai'
+      ? (p1Won ? 'YOU WIN' : 'CPU WINS')
+      : (p1Won ? 'P1 WINS' : 'P2 WINS');
+    this.overHeadline.setText(winnerLabel);
+    this.overSub.setText(p1Won ? `P2 survived with ${this.p2Lives} hit${this.p2Lives === 1 ? '' : 's'} left? No — you closed it out.` : 'Rematch and read the charge earlier next time.');
+    this.overSub.setText(`Final: ${LIVES - this.p1Lives} — ${LIVES - this.p2Lives} hits taken.`);
+    this.setOverVisible(true);
+    if (window.SFX) SFX[p1Won ? 'success' : 'fail']();
+  }
+
+  // --------------------------------------------------------------- DRAW
+
+  drawPlayers() {
+    [this.p1, this.p2].forEach(f => {
+      f.g.clear();
+      const charging = f.charging;
+      const chargeT = charging ? Phaser.Math.Clamp((this.time.now - f.chargeStart) / THROW_MAX_CHARGE_MS, 0, 1) : 0;
+      const pulse = charging ? 1 + Math.sin(this.time.now * 0.02) * 0.04 * chargeT : 1;
+      const r = PLAYER_R * pulse;
+
+      f.g.fillStyle(f.color, 1);
+      f.g.fillCircle(f.x, f.y, r);
+      f.g.lineStyle(2, f.dark, 1);
+      f.g.strokeCircle(f.x, f.y, r);
+
+      if (f.hasBall && !this.ball.active) {
+        f.g.fillStyle(0xffffff, 0.9);
+        f.g.fillCircle(f.x, f.y - r - 8, 6);
+      }
+
+      if (this.time.now < f.counterUntil) {
+        f.g.lineStyle(2, 0x5be37b, 0.8);
+        f.g.strokeCircle(f.x, f.y, r + 6);
+      }
+    });
+  }
+
+  drawAim() {
+    this.aimG.clear();
+    [this.p1, this.p2].forEach(f => {
+      if (!f.charging) return;
+      const opponent = f === this.p1 ? this.p2 : this.p1;
+      const held = this.time.now - f.chargeStart;
+      let tierKey = held < THROW_QUICK_MS ? 'quick' : (held < THROW_NORMAL_MS ? 'normal' : 'power');
+      const def = TIER_DEFS[tierKey];
+      const dx = opponent.x - f.x, dy = opponent.y - f.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const dirX = dx / dist, dirY = dy / dist;
+      const lineLen = 40 + (held / THROW_MAX_CHARGE_MS) * 60;
+
+      this.aimG.lineStyle(3, def.color, 0.75);
+      this.aimG.beginPath();
+      this.aimG.moveTo(f.x + dirX * (PLAYER_R + 4), f.y + dirY * (PLAYER_R + 4));
+      this.aimG.lineTo(f.x + dirX * (PLAYER_R + 4 + lineLen), f.y + dirY * (PLAYER_R + 4 + lineLen));
+      this.aimG.strokePath();
+
+      if (tierKey === 'power') {
+        this.aimG.fillStyle(0xff5a5a, 0.5 + Math.sin(this.time.now * 0.02) * 0.3);
+        this.aimG.fillCircle(f.x, f.y, PLAYER_R + 10);
+      }
+    });
+  }
+
+  drawBall() {
+    this.ballG.clear();
+    if (!this.ball.active) return;
+    const b = this.ball;
+    const def = TIER_DEFS[b.tier];
+    const scale = 1 + (b.height / 80);
+    this.ballG.fillStyle(def.color, 1);
+    this.ballG.fillCircle(b.x, b.y - b.height, BALL_R * scale);
+    this.ballG.lineStyle(1, 0x0a0a0d, 0.6);
+    this.ballG.strokeCircle(b.x, b.y - b.height, BALL_R * scale);
+
+    // ground shadow for readability of the arc height
+    this.ballG.fillStyle(0x000000, 0.25);
+    this.ballG.fillEllipse(b.x, b.y + 4, BALL_R * 1.6, BALL_R * 0.6);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  backgroundColor: '#0a0a0d',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PlayScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
