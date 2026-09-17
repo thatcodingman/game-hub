@@ -78,9 +78,15 @@ const PUSH_BASE = 45, PUSH_SCALE = 1.05, PUSH_CAP = 520; // lower guaranteed bas
 const CRITICAL_PUSH_MULT = 1.4;
 
 const ROUNDS_TO_WIN = 2;
-const ROUND_SUDDEN_DEATH_MS = 19000;
-const RING_SHRINK_DURATION_MS = 11000;
 const RING_MIN_RADIUS = 125;
+// Each round of a match escalates — tighter starting ring and a faster fuse
+// to Sudden Death — so Round 1 feels like a probe and the decider feels like
+// a decider, without changing the core physics round to round.
+const ROUND_TIMING = [
+  { suddenDeathMs: 19000, shrinkMs: 11000, ringRadius: RING_RADIUS_BASE },      // Round 1 — feel each other out
+  { suddenDeathMs: 16000, shrinkMs: 9000,  ringRadius: RING_RADIUS_BASE - 12 }, // Round 2 — tighter, faster
+  { suddenDeathMs: 12000, shrinkMs: 7000,  ringRadius: RING_RADIUS_BASE - 22 } // Round 3 / decider — no room to hide
+];
 
 const DIFFICULTY_DEFS = {
   // chargeChance/minCharge/maxCharge: how often & how long the AI commits on its own.
@@ -167,7 +173,6 @@ class SumoPushScene extends Phaser.Scene {
     this.dustParticles = [];
     this.dustG = this.add.graphics();
     this.edgeWarnG = this.add.graphics().setDepth(1);
-    this.impactFlashG = this.add.graphics().setDepth(4);
   }
 
   drawRing() {
@@ -372,17 +377,22 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   startRound() {
-    this.ringRadius = RING_RADIUS_BASE;
+    this.isDeciderRound = this.p1RoundWins === ROUNDS_TO_WIN - 1 && this.p2RoundWins === ROUNDS_TO_WIN - 1;
+    const timing = this.isDeciderRound ? ROUND_TIMING[ROUND_TIMING.length - 1] : ROUND_TIMING[Math.min(this.currentRound - 1, ROUND_TIMING.length - 1)];
+    this.roundSuddenDeathMs = timing.suddenDeathMs;
+    this.roundShrinkMs = timing.shrinkMs;
+    this.ringRadius = timing.ringRadius;
     this.drawRing();
     this.roundElapsed = 0;
     this.suddenDeath = false;
     this.resetWrestler(this.p1, RING_CX - 90, RING_CY, 0);
     this.resetWrestler(this.p2, RING_CX + 90, RING_CY, Math.PI);
-    this.roundText.setText(`ROUND ${this.currentRound}`);
+    this.roundText.setText(this.isDeciderRound ? 'FINAL ROUND' : `ROUND ${this.currentRound}`);
+    this.roundText.setColor(this.isDeciderRound ? '#ff5a5a' : '#cbd5e1');
     this.phaseText.setText('');
     this.state = 'countdown';
     this.countdownUntil = this.time.now + 900;
-    this.announce(`ROUND ${this.currentRound}`, '#ffd23f');
+    this.announce(this.isDeciderRound ? 'FINAL ROUND' : `ROUND ${this.currentRound}`, this.isDeciderRound ? '#ff5a5a' : '#ffd23f');
     this.time.delayedCall(900, () => { if (this.state === 'countdown') this.state = 'playing'; });
   }
 
@@ -437,15 +447,16 @@ class SumoPushScene extends Phaser.Scene {
 
   // -------------------------------------------------------------- RING SHRINK
   updateRingShrink() {
-    if (!this.suddenDeath && this.roundElapsed >= ROUND_SUDDEN_DEATH_MS) {
+    if (!this.suddenDeath && this.roundElapsed >= this.roundSuddenDeathMs) {
       this.suddenDeath = true;
       this.suddenDeathAt = this.roundElapsed;
+      this.suddenDeathStartRadius = this.ringRadius;
       this.announce('SUDDEN DEATH', '#ff5a5a');
       Sound.suddenDeath();
     }
     if (this.suddenDeath) {
-      const t = Phaser.Math.Clamp((this.roundElapsed - this.suddenDeathAt) / RING_SHRINK_DURATION_MS, 0, 1);
-      this.ringRadius = Phaser.Math.Linear(RING_RADIUS_BASE, RING_MIN_RADIUS, t);
+      const t = Phaser.Math.Clamp((this.roundElapsed - this.suddenDeathAt) / this.roundShrinkMs, 0, 1);
+      this.ringRadius = Phaser.Math.Linear(this.suddenDeathStartRadius, RING_MIN_RADIUS, t);
       this.drawRing();
     }
   }
@@ -454,7 +465,7 @@ class SumoPushScene extends Phaser.Scene {
     if (this.suddenDeath) {
       this.phaseText.setText('SUDDEN DEATH — the ring is closing in');
     } else {
-      const remain = Math.max(0, ROUND_SUDDEN_DEATH_MS - this.roundElapsed);
+      const remain = Math.max(0, this.roundSuddenDeathMs - this.roundElapsed);
       this.phaseText.setText(`Sudden Death in ${Math.ceil(remain / 1000)}s`);
     }
   }
@@ -618,19 +629,28 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   // ------------------------------------------------------------ IMPACT FLASH
-  // A short directional streak at the contact point, pointing the way the loser
-  // just got shoved, so a push visibly reads as "winner's momentum went that way."
+  // A quick radial "IMPACT!" burst at the contact point — not a directional
+  // vector diagram. It has to read in a glance and be gone: spikes + a ring,
+  // scaling outward and fading in ~100ms, so the eye moves on to the actual
+  // displacement/edge-danger instead of lingering on the effect itself.
   spawnImpactFlash(x, y, nx, ny, dir, mag, color) {
-    const g = this.impactFlashG;
-    g.clear(); g.setAlpha(1);
-    const angle = Math.atan2(ny, nx) * (dir >= 0 ? 1 : -1) + (dir >= 0 ? 0 : Math.PI);
-    const len = Phaser.Math.Clamp(mag / 6, 22, 80);
-    g.lineStyle(5, 0xffffff, 0.95);
-    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(angle) * len, y + Math.sin(angle) * len); g.strokePath();
-    g.lineStyle(3, color, 0.8);
-    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(angle) * len * 0.7, y + Math.sin(angle) * len * 0.7); g.strokePath();
-    this.tweens.killTweensOf(g);
-    this.tweens.add({ targets: g, alpha: 0, duration: 160, ease: 'Cubic.Out', onComplete: () => { g.clear(); g.setAlpha(1); } });
+    const g = this.add.graphics().setDepth(4).setPosition(x, y);
+    const size = Phaser.Math.Clamp(mag / 9, 9, 24);
+    const spikes = 7;
+    g.lineStyle(3, 0xffffff, 1);
+    for (let i = 0; i < spikes; i++) {
+      const a = (i / spikes) * Math.PI * 2 + Math.random() * 0.4;
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * size, Math.sin(a) * size); g.strokePath();
+    }
+    g.lineStyle(2, color, 0.9);
+    g.strokeCircle(0, 0, size * 0.55);
+    g.setScale(0.4);
+    this.tweens.add({
+      targets: g, scale: 1.5, alpha: 0,
+      duration: Phaser.Math.Clamp(80 + mag * 0.1, 80, 120),
+      ease: 'Cubic.Out',
+      onComplete: () => g.destroy()
+    });
   }
 
   applyStagger(f) {
