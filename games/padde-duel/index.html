@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Paddle Duel — The Arcade</title>
+<style>
+  html, body {
+    margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%;
+    overscroll-behavior: none;
+  }
+  #game-container { width:100vw; height:100vh; }
+  canvas {
+    display:block; touch-action:none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+/* =========================================================================
+   PADDLE DUEL
+   A real-time 1v1 rally duel. You don't win with one perfect play — you win
+   by controlling the rally until your opponent's timing breaks.
+
+   THE HOOK — BALL MEMORY: every contact modifies the ball's velocity AND
+   its spin. Spin carries into the next contact and blends with your
+   paddle's own angle (derived from how fast you were moving vertically
+   the instant you made contact) and where on the paddle you hit it
+   (center = stable, edges = curve). You're not just returning the ball,
+   you're reshaping what you hand back.
+
+   No throw/catch buttons, no obstacles, no power-ups. Movement is the only
+   input. Contact is automatic when the ball reaches your paddle's plane —
+   skill is entirely about *where* you are and *how* you got there.
+
+   Rally speed escalates the longer a point runs (1.00x -> 1.35x), so long
+   rallies are earned tension, not free grinding.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const NET_X = W / 2;
+const COURT_TOP = 50, COURT_BOTTOM = H - 50;
+const BALL_R = 8;
+const TRAIL_LENGTH = 8;
+
+const PADDLE_W = 14;
+const PADDLE_HALF_SPAN = 45;
+const PADDLE_H = PADDLE_HALF_SPAN * 2;
+const P1_X = 66, P2_X = W - 66;
+const MOVE_SPEED = 380;
+
+const BASE_BALL_SPEED = 350;
+const MAX_PADDLE_ANGLE = 0.5; // radians, ~29 degrees
+const SPIN_DECAY = 0.5;
+const SPIN_CLAMP = 1.5;
+
+const SCORE_TO_WIN = 7;
+
+const DIFFICULTY_DEFS = {
+  easy:   { name: 'Easy',   trackingMult: 0.5,  predictAccuracy: 0.10, anticipate: false, aggro: 0.0 },
+  normal: { name: 'Normal', trackingMult: 0.78, predictAccuracy: 0.5,  anticipate: false, aggro: 0.15 },
+  hard:   { name: 'Hard',   trackingMult: 1.0,  predictAccuracy: 0.85, anticipate: true,  aggro: 0.35 },
+  expert: { name: 'Expert', trackingMult: 1.15, predictAccuracy: 1.0,  anticipate: true,  aggro: 0.55 }
+};
+const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
+const DIFFICULTY_KEY = 'paddleDuel_difficulty';
+function loadDifficulty() {
+  try { const d = localStorage.getItem(DIFFICULTY_KEY); return DIFFICULTY_DEFS[d] ? d : 'normal'; }
+  catch (err) { return 'normal'; }
+}
+function saveDifficulty(key) { try { localStorage.setItem(DIFFICULTY_KEY, key); } catch (err) {} }
+
+function rallySpeedMult(rally) {
+  if (rally <= 3) return 1.00;
+  if (rally <= 6) return 1.08;
+  if (rally <= 10) return 1.16;
+  if (rally <= 15) return 1.25;
+  return 1.35;
+}
+
+const Sound = {
+  contact(quality) {
+    if (!window.SFX) return;
+    if (quality === 'perfect') { SFX.tone(1300, 0.05, 'square', 0.15, 1900); SFX.tone(1800, 0.07, 'sine', 0.1, 2000, 40); }
+    else if (quality === 'late') SFX.tone(260, 0.09, 'sawtooth', 0.12, 150);
+    else SFX.tone(760, 0.06, 'triangle', 0.12, 900);
+  },
+  wall() { if (!window.SFX) return; SFX.tone(950, 0.04, 'triangle', 0.08, 1300); },
+  score() { if (!window.SFX) return; SFX.chime([440, 660, 880], 'sine', 0.12); },
+  milestone() { if (!window.SFX) return; SFX.tone(900, 0.08, 'sine', 0.14, 1400); SFX.tone(1200, 0.1, 'sine', 0.12, 1600, 60); }
+};
+
+class PaddleDuelScene extends Phaser.Scene {
+  constructor() { super('PaddleDuelScene'); }
+
+  create() {
+    this.mode = null;
+    this.difficulty = loadDifficulty();
+    this.state = 'menu';
+    this.p1LastOffset = 0;
+    this.p1LastAngle = 0;
+
+    this.buildCourt();
+    this.buildEntities();
+    this.buildHUD();
+    this.buildInput();
+    this.buildOverPanel();
+    this.buildModeSelect();
+    this.buildDifficultySelect();
+
+    this.setHudVisible(false);
+    this.setOverVisible(false);
+    this.setDifficultySelectVisible(false);
+    this.setModeSelectVisible(true);
+  }
+
+  // ---------------------------------------------------------------- COURT
+  buildCourt() {
+    const g = this.add.graphics();
+    g.fillStyle(0x0d1117, 1);
+    g.fillRect(0, 0, W, H);
+    g.lineStyle(3, 0x22283a, 1);
+    g.strokeRect(6, COURT_TOP - 10, W - 12, COURT_BOTTOM - COURT_TOP + 20);
+    // dashed net line
+    g.lineStyle(3, 0x3a4258, 1);
+    for (let y = COURT_TOP - 10; y < COURT_BOTTOM + 10; y += 22) {
+      g.beginPath(); g.moveTo(NET_X, y); g.lineTo(NET_X, Math.min(y + 12, COURT_BOTTOM + 10)); g.strokePath();
+    }
+    this.bgFlash = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(-1);
+  }
+
+  // -------------------------------------------------------------- ENTITIES
+  buildEntities() {
+    this.p1 = {
+      x: P1_X, y: H / 2, vy: 0, angle: 0, color: 0x8fd3ff,
+      rect: this.add.rectangle(P1_X, H / 2, PADDLE_W, PADDLE_H, 0x8fd3ff).setStrokeStyle(2, 0x3f6fa8)
+    };
+    this.p2 = {
+      x: P2_X, y: H / 2, vy: 0, angle: 0, color: 0xff9f6b,
+      rect: this.add.rectangle(P2_X, H / 2, PADDLE_W, PADDLE_H, 0xff9f6b).setStrokeStyle(2, 0xa85f3f)
+    };
+
+    this.ball = {
+      x: NET_X, y: H / 2, vx: 0, vy: 0, spin: 0, active: false,
+      prevX: NET_X, quality: null
+    };
+    this.ballG = this.add.circle(NET_X, H / 2, BALL_R, 0xffffff);
+    this.trail = [];
+    this.trailG = this.add.graphics();
+
+    this.rally = 0;
+    this.p1Score = 0;
+    this.p2Score = 0;
+    this.servingP1 = true;
+    this.lastMilestone = 0;
+  }
+
+  // ------------------------------------------------------------------ HUD
+  buildHUD() {
+    this.p1ScoreText = this.add.text(W / 2 - 90, 16, '0', { fontFamily: 'Arial Black', fontSize: '30px', color: '#8fd3ff' }).setOrigin(0.5);
+    this.p2ScoreText = this.add.text(W / 2 + 90, 16, '0', { fontFamily: 'Arial Black', fontSize: '30px', color: '#ff9f6b' }).setOrigin(0.5);
+    this.dashText = this.add.text(W / 2, 16, '—', { fontFamily: 'Arial', fontSize: '22px', color: '#4a5268' }).setOrigin(0.5);
+    this.rallyText = this.add.text(W / 2, 50, '', { fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a', fontStyle: 'bold' }).setOrigin(0.5);
+    this.milestoneText = this.add.text(W / 2, H / 2 - 70, '', { fontFamily: 'Arial Black', fontSize: '26px', color: '#ffd23f' }).setOrigin(0.5).setAlpha(0);
+
+    this.hudGroup = [this.p1ScoreText, this.p2ScoreText, this.dashText, this.rallyText];
+  }
+
+  setHudVisible(v) { this.hudGroup.forEach(o => o.setVisible(v)); }
+
+  updateScoreText() {
+    this.p1ScoreText.setText(String(this.p1Score));
+    this.p2ScoreText.setText(String(this.p2Score));
+  }
+
+  // ---------------------------------------------------------------- INPUT
+  buildInput() {
+    this.keys = this.input.keyboard.addKeys({
+      up: 'W', down: 'S', arrowUp: 'UP', arrowDown: 'DOWN'
+    });
+  }
+
+  // --------------------------------------------------------- MODE SELECT
+  buildModeSelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 130, 'PADDLE DUEL', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, 175, 'Control the rally. Break their timing.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
+    items.push(title, sub);
+
+    const makeButton = (y, label, color, onClick) => {
+      const bg = this.add.rectangle(W / 2, y, 320, 62, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(W / 2, y, label, { fontFamily: 'Arial Black', fontSize: '20px', color: '#ffffff' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, color));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, color));
+      bg.on('pointerdown', () => { if (window.SFX) SFX.click(); onClick(); });
+      items.push(bg, txt);
+      return { bg, txt };
+    };
+
+    makeButton(280, 'VS AI', 0x8fd3ff, () => {
+      this.pendingMode = 'ai';
+      this.setModeSelectVisible(false);
+      this.setDifficultySelectVisible(true);
+    });
+    makeButton(360, '2 PLAYER LOCAL', 0xff9f6b, () => {
+      this.setModeSelectVisible(false);
+      this.startMatch('local');
+    });
+
+    const controlsHint = this.add.text(W / 2, 440,
+      'VS AI: Arrow Keys move   •   2P Local: P1 = W/S   P2 = Up/Down',
+      { fontFamily: 'Arial', fontSize: '13px', color: '#5a6578' }).setOrigin(0.5);
+    items.push(controlsHint);
+
+    this.modeSelectItems = items;
+  }
+  setModeSelectVisible(v) { this.modeSelectItems.forEach(o => o.setVisible(v)); }
+
+  // ------------------------------------------------------ DIFFICULTY SEL
+  buildDifficultySelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 150, 'CHOOSE DIFFICULTY', { fontFamily: 'Arial Black', fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    items.push(title);
+
+    const colors = { easy: 0x5be37b, normal: 0xffd23f, hard: 0xff9f6b, expert: 0xff5a5a };
+    DIFFICULTY_ORDER.forEach((key, i) => {
+      const y = 230 + i * 66;
+      const def = DIFFICULTY_DEFS[key];
+      const bg = this.add.rectangle(W / 2, y, 300, 52, 0x151a24).setStrokeStyle(2, colors[key]).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(W / 2, y, def.name.toUpperCase(), { fontFamily: 'Arial Black', fontSize: '18px', color: '#ffffff' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, colors[key]));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, colors[key]));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.click();
+        this.difficulty = key;
+        saveDifficulty(key);
+        this.setDifficultySelectVisible(false);
+        this.startMatch(this.pendingMode);
+      });
+      items.push(bg, txt);
+    });
+
+    const back = this.add.text(W / 2, 230 + DIFFICULTY_ORDER.length * 66 + 20, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    back.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setDifficultySelectVisible(false);
+      this.setModeSelectVisible(true);
+    });
+    items.push(back);
+
+    this.difficultySelectItems = items;
+  }
+  setDifficultySelectVisible(v) { this.difficultySelectItems.forEach(o => o.setVisible(v)); }
+
+  // ------------------------------------------------------------ OVER PANEL
+  buildOverPanel() {
+    const items = [];
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.55);
+    const headline = this.add.text(W / 2, H / 2 - 40, '', { fontFamily: 'Arial Black', fontSize: '30px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, H / 2, '', { fontFamily: 'Arial', fontSize: '16px', color: '#cbd5e1' }).setOrigin(0.5);
+    const rematchBg = this.add.rectangle(W / 2, H / 2 + 60, 220, 50, 0x151a24).setStrokeStyle(2, 0xffd23f).setInteractive({ useHandCursor: true });
+    const rematchLabel = this.add.text(W / 2, H / 2 + 60, 'REMATCH', { fontFamily: 'Arial Black', fontSize: '18px', color: '#ffd23f' }).setOrigin(0.5);
+    const menuLabel = this.add.text(W / 2, H / 2 + 110, 'MENU', { fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    rematchBg.on('pointerover', () => rematchBg.setStrokeStyle(3, 0xffd23f));
+    rematchBg.on('pointerout', () => rematchBg.setStrokeStyle(2, 0xffd23f));
+    rematchBg.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setOverVisible(false);
+      this.startMatch(this.mode);
+    });
+    menuLabel.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setOverVisible(false);
+      this.setHudVisible(false);
+      this.state = 'menu';
+      this.setModeSelectVisible(true);
+    });
+
+    items.push(dim, headline, sub, rematchBg, rematchLabel, menuLabel);
+    this.overItems = items;
+    this.overHeadline = headline;
+    this.overSub = sub;
+  }
+  setOverVisible(v) { this.overItems.forEach(o => o.setVisible(v)); }
+
+  // --------------------------------------------------------------- MATCH
+  startMatch(mode) {
+    this.mode = mode;
+    this.p1Score = 0;
+    this.p2Score = 0;
+    this.updateScoreText();
+    this.servingP1 = true;
+    this.rally = 0;
+    this.lastMilestone = 0;
+    this.rallyText.setText('');
+    this.p1.y = H / 2; this.p2.y = H / 2;
+    this.setHudVisible(true);
+    this.serveBall();
+    this.state = 'playing';
+  }
+
+  serveBall() {
+    this.ball.x = this.servingP1 ? P1_X + 30 : P2_X - 30;
+    this.ball.y = Phaser.Math.Between(COURT_TOP + 60, COURT_BOTTOM - 60);
+    this.ball.prevX = this.ball.x;
+    this.ball.spin = 0;
+    this.ball.quality = null;
+    const dir = this.servingP1 ? 1 : -1;
+    this.ball.vx = dir * BASE_BALL_SPEED * 0.75;
+    this.ball.vy = Phaser.Math.Between(-80, 80);
+    this.ball.active = true;
+    this.rally = 0;
+    this.lastMilestone = 0;
+    this.rallyText.setText('');
+    this.trail = [];
+  }
+
+  // --------------------------------------------------------------- UPDATE
+  update(time, delta) {
+    if (this.state !== 'playing') return;
+    const dt = Math.min(delta, 40);
+
+    this.updatePlayerPaddle(dt);
+    if (this.mode === 'ai') this.updateAIPaddle(dt);
+    else this.updateP2LocalPaddle(dt);
+
+    this.updateBall(dt);
+    this.drawTrail();
+  }
+
+  updatePlayerPaddle(dt) {
+    const p = this.p1;
+    let dir = 0;
+    if (this.mode === 'ai') {
+      if (this.keys.arrowUp.isDown) dir = -1;
+      else if (this.keys.arrowDown.isDown) dir = 1;
+    } else {
+      if (this.keys.up.isDown) dir = -1;
+      else if (this.keys.down.isDown) dir = 1;
+    }
+    p.vy = dir * MOVE_SPEED;
+    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.angle = Phaser.Math.Clamp(dir * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    p.rect.setPosition(p.x, p.y);
+    p.rect.setRotation(p.angle);
+  }
+
+  updateP2LocalPaddle(dt) {
+    const p = this.p2;
+    let dir = 0;
+    if (this.keys.arrowUp.isDown) dir = -1;
+    else if (this.keys.arrowDown.isDown) dir = 1;
+    p.vy = dir * MOVE_SPEED;
+    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.angle = Phaser.Math.Clamp(dir * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    p.rect.setPosition(p.x, p.y);
+    p.rect.setRotation(p.angle);
+  }
+
+  predictArrivalY(ball, targetX) {
+    if (ball.vx === 0) return ball.y;
+    const t = (targetX - ball.x) / ball.vx;
+    if (t < 0) return ball.y;
+    let y = ball.y + ball.vy * t;
+    const span = COURT_BOTTOM - COURT_TOP;
+    let rel = (y - COURT_TOP) % (2 * span);
+    if (rel < 0) rel += 2 * span;
+    if (rel > span) rel = 2 * span - rel;
+    return COURT_TOP + rel;
+  }
+
+  updateAIPaddle(dt) {
+    const p = this.p2, ball = this.ball;
+    const def = DIFFICULTY_DEFS[this.difficulty];
+    const ballComingToAI = ball.active && ball.vx > 0;
+
+    let targetY = H / 2;
+    if (ballComingToAI || def.anticipate) {
+      const predicted = this.predictArrivalY(ball, P2_X);
+      targetY = Phaser.Math.Linear(ball.y, predicted, def.predictAccuracy);
+      // expert: bias toward the extreme edges away from the human's last contact point,
+      // to set up its own return before it even hits (reads the human's habits, not the future)
+      if (def.aggro > 0 && ballComingToAI) {
+        const edgeBias = -this.p1LastOffset * def.aggro * PADDLE_HALF_SPAN * 0.4;
+        targetY += edgeBias;
+      }
+    } else {
+      targetY = ball.y;
+    }
+    targetY = Phaser.Math.Clamp(targetY, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+
+    const dy = targetY - p.y;
+    const maxStep = MOVE_SPEED * def.trackingMult * (dt / 1000);
+    const step = Phaser.Math.Clamp(dy, -maxStep, maxStep);
+    p.y += step;
+    p.y = Phaser.Math.Clamp(p.y, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.vy = step / (dt / 1000 || 1);
+    p.angle = Phaser.Math.Clamp((p.vy / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    p.rect.setPosition(p.x, p.y);
+    p.rect.setRotation(p.angle);
+  }
+
+  resolveContact(paddle, isP1) {
+    const ball = this.ball;
+    const offset = Phaser.Math.Clamp((ball.y - paddle.y) / PADDLE_HALF_SPAN, -1, 1);
+    const angle = paddle.angle;
+    const absOffset = Math.abs(offset);
+    let quality;
+    if (absOffset < 0.3) quality = 'perfect';
+    else if (absOffset < 0.75) quality = 'normal';
+    else quality = 'late';
+
+    this.rally++;
+    const speedMult = rallySpeedMult(this.rally);
+    let speed = BASE_BALL_SPEED * speedMult;
+    if (quality === 'perfect') speed *= 1.12;
+    else if (quality === 'late') speed *= 0.72;
+
+    const newSpin = Phaser.Math.Clamp(
+      angle * 0.65 + offset * 0.5 + ball.spin * SPIN_DECAY,
+      -SPIN_CLAMP, SPIN_CLAMP
+    );
+    ball.spin = newSpin;
+
+    const dir = isP1 ? 1 : -1;
+    ball.vx = dir * speed;
+    ball.vy = newSpin * speed * 0.55 + offset * 110;
+    ball.quality = quality;
+
+    if (isP1) { this.p1LastOffset = offset; this.p1LastAngle = angle; }
+
+    Sound.contact(quality);
+    this.flashPaddle(paddle, quality);
+    this.updateRallyFeedback();
+  }
+
+  flashPaddle(paddle, quality) {
+    const color = quality === 'perfect' ? 0xffd23f : (quality === 'late' ? 0xff5a5a : 0xffffff);
+    this.tweens.add({
+      targets: paddle.rect,
+      duration: 120,
+      onStart: () => paddle.rect.setFillStyle(color),
+      onComplete: () => paddle.rect.setFillStyle(paddle.color)
+    });
+  }
+
+  updateRallyFeedback() {
+    this.rallyText.setText(this.rally >= 3 ? `RALLY ${this.rally}` : '');
+    const milestones = [3, 6, 10, 15, 20];
+    for (const m of milestones) {
+      if (this.rally === m && this.lastMilestone < m) {
+        this.lastMilestone = m;
+        this.popMilestone(m);
+        break;
+      }
+    }
+    if (this.rally >= 20) {
+      this.bgFlash.setFillStyle(0xff5a5a, 0.04);
+    } else if (this.rally >= 10) {
+      this.bgFlash.setFillStyle(0xffd23f, 0.025);
+    } else {
+      this.bgFlash.setFillStyle(0xffffff, 0);
+    }
+  }
+
+  popMilestone(m) {
+    Sound.milestone();
+    const label = m >= 20 ? `RALLY ${m}!!` : `RALLY ${m}!`;
+    this.milestoneText.setText(label).setAlpha(1).setScale(0.7);
+    this.tweens.add({ targets: this.milestoneText, scale: 1.15, duration: 180, ease: 'Back.Out' });
+    this.tweens.add({ targets: this.milestoneText, alpha: 0, delay: 500, duration: 400 });
+  }
+
+  updateBall(dt) {
+    const ball = this.ball;
+    if (!ball.active) return;
+    ball.prevX = ball.x;
+    ball.x += ball.vx * (dt / 1000);
+    ball.y += ball.vy * (dt / 1000);
+
+    // top/bottom wall bounce
+    if (ball.y <= COURT_TOP + BALL_R) {
+      ball.y = COURT_TOP + BALL_R;
+      ball.vy = Math.abs(ball.vy);
+      Sound.wall();
+    } else if (ball.y >= COURT_BOTTOM - BALL_R) {
+      ball.y = COURT_BOTTOM - BALL_R;
+      ball.vy = -Math.abs(ball.vy);
+      Sound.wall();
+    }
+
+    // paddle plane crossing
+    if (ball.vx < 0 && ball.prevX > P1_X && ball.x <= P1_X) {
+      if (Math.abs(ball.y - this.p1.y) <= PADDLE_HALF_SPAN + BALL_R) {
+        ball.x = P1_X + 1;
+        this.resolveContact(this.p1, true);
+      }
+    } else if (ball.vx > 0 && ball.prevX < P2_X && ball.x >= P2_X) {
+      if (Math.abs(ball.y - this.p2.y) <= PADDLE_HALF_SPAN + BALL_R) {
+        ball.x = P2_X - 1;
+        this.resolveContact(this.p2, false);
+      }
+    }
+
+    // scoring
+    if (ball.x < 6) {
+      this.awardPoint('p2');
+    } else if (ball.x > W - 6) {
+      this.awardPoint('p1');
+    }
+
+    this.ballG.setPosition(ball.x, ball.y);
+    this.trail.unshift({ x: ball.x, y: ball.y });
+    if (this.trail.length > TRAIL_LENGTH) this.trail.pop();
+  }
+
+  drawTrail() {
+    this.trailG.clear();
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
+    const heat = Phaser.Math.Clamp(speed / (BASE_BALL_SPEED * 1.5), 0, 1);
+    const color = Phaser.Display.Color.Interpolate.ColorWithColor(
+      Phaser.Display.Color.ValueToColor(0x8fd3ff),
+      Phaser.Display.Color.ValueToColor(0xff5a5a),
+      100, Math.floor(heat * 100)
+    );
+    const colorInt = Phaser.Display.Color.GetColor(color.r, color.g, color.b);
+    this.trail.forEach((p, i) => {
+      const a = (1 - i / TRAIL_LENGTH) * 0.35;
+      const r = BALL_R * (1 - i / (TRAIL_LENGTH * 1.4));
+      if (r > 0) this.trailG.fillStyle(colorInt, a).fillCircle(p.x, p.y, r);
+    });
+  }
+
+  awardPoint(who) {
+    this.state = 'point';
+    this.ball.active = false;
+    if (who === 'p1') { this.p1Score++; this.servingP1 = false; }
+    else { this.p2Score++; this.servingP1 = true; }
+    this.updateScoreText();
+    Sound.score();
+    this.rallyText.setText('');
+
+    const matchDecided = this.p1Score >= SCORE_TO_WIN || this.p2Score >= SCORE_TO_WIN;
+    this.time.delayedCall(matchDecided ? 200 : 550, () => {
+      if (matchDecided) this.finishMatch();
+      else { this.state = 'playing'; this.serveBall(); }
+    });
+  }
+
+  finishMatch() {
+    this.state = 'over';
+    const p1Won = this.p1Score > this.p2Score;
+    const headline = this.mode === 'ai'
+      ? (p1Won ? 'YOU WIN' : 'CPU WINS')
+      : (p1Won ? 'P1 WINS' : 'P2 WINS');
+    this.overHeadline.setText(headline);
+    this.overSub.setText(`${this.p1Score} — ${this.p2Score}`);
+    this.setOverVisible(true);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  parent: 'game-container',
+  backgroundColor: '#0a0a0d',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [PaddleDuelScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
