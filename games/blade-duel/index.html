@@ -49,8 +49,9 @@
     border-radius: 50%; border: 1px solid rgba(148,163,184,0.3);
     background: rgba(20,20,30,0.65); color: #e2e8f0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
   }
-  #btnGuardHigh { left: 16px; bottom: 128px; width: 64px; height: 64px; }
-  #btnGuardLow  { left: 16px; bottom: 54px;  width: 64px; height: 64px; }
+  #btnGuardHigh { left: 16px; bottom: 194px; width: 60px; height: 60px; }
+  #btnGuardLow  { left: 16px; bottom: 128px; width: 60px; height: 60px; }
+  #btnBlock     { left: 16px; bottom: 62px;  width: 60px; height: 60px; border-color:#4ade80 !important; color:#4ade80 !important; }
   #btnAttackHigh  { right: 16px; bottom: 194px; width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
   #btnAttackTorso { right: 16px; bottom: 128px; width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
   #btnAttackLow   { right: 16px; bottom: 62px;  width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
@@ -102,11 +103,12 @@
     <div id="tierLabel">—</div>
   </div>
 
-  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · 1 = quick hit (random line) · Q+1 high · W+2 torso · E+3 low · Space feint · ←/→ step</div>
+  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · Shift = block all (chip dmg, no parry) · 1 = quick hit · Q+1 high · W+2 torso · E+3 low · Space feint · ←/→ step</div>
 
   <div id="touchControls">
     <button id="btnGuardHigh">GUARD<br>HIGH</button>
     <button id="btnGuardLow">GUARD<br>LOW</button>
+    <button id="btnBlock">BLOCK</button>
     <button id="btnAttackHigh">HIGH</button>
     <button id="btnAttackTorso">BODY</button>
     <button id="btnAttackLow">LOW</button>
@@ -119,7 +121,7 @@
     <h1>BLADE DUEL</h1>
     <div class="sub">Every attack is a commitment. Every guard is a read. Two fighters, four verbs — attack, guard, feint, step — and one well-timed decision beats ten fast ones.</div>
     <div id="tierGrid"></div>
-    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · 1 alone = quick hit on a random line · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · hold Shift to Block anything for chip damage, no parry · 1 alone = quick hit · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
   </div>
 
   <div id="resultOverlay" class="overlay hidden">
@@ -191,9 +193,9 @@
   };
 
   const TIERS = [
-    { id:0, name:"Practice", desc:"Slow, obvious attacks. No feints, barely guards.", think:[0.9,1.5], feintChance:0.0, guardChance:0.15, guardDelay:0.30, guardAccuracy:0.5 },
-    { id:1, name:"Apprentice", desc:"Reasonable spacing, varies attack lines.", think:[0.6,1.1], feintChance:0.08, guardChance:0.40, guardDelay:0.20, guardAccuracy:0.7 },
-    { id:2, name:"Duelist", desc:"Mixes timing and lines, uses feints, punishes hesitation.", think:[0.35,0.8], feintChance:0.22, guardChance:0.62, guardDelay:0.12, guardAccuracy:0.85 }
+    { id:0, name:"Practice", desc:"Attacks steadily, occasional guard.", think:[0.6,1.0], feintChance:0.05, guardChance:0.25, guardDelay:0.25, guardAccuracy:0.55 },
+    { id:1, name:"Apprentice", desc:"Good spacing, varies attack lines, guards often.", think:[0.4,0.75], feintChance:0.14, guardChance:0.55, guardDelay:0.16, guardAccuracy:0.78 },
+    { id:2, name:"Duelist", desc:"Aggressive footwork, mixes timing and lines, punishes hesitation.", think:[0.22,0.45], feintChance:0.30, guardChance:0.78, guardDelay:0.08, guardAccuracy:0.92 }
   ];
 
   let state = 'menu'; // menu | duel | result
@@ -202,9 +204,10 @@
   let elapsed = 0;
   let shakeT = 0, shakeMag = 0;
   let fx = []; // transient visual effects {type,x,y,t,dur,...}
-  let keys = { up:false, down:false, left:false, right:false, q:false, w:false, e:false };
+  let keys = { up:false, down:false, left:false, right:false, q:false, w:false, e:false, block:false };
   let keyPressT = { up:-99, down:-99 }; // last keydown timestamp for freshness/parry detection
   let touchGuard = null;
+  let touchBlock = false;
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
@@ -227,7 +230,7 @@
     P = newFighter(280, '#38bdf8', false);
     A = newFighter(680, '#f87171', true);
     elapsed = 0; fx = []; shakeT = 0;
-    keys.up=false; keys.down=false; touchGuard=null;
+    keys.up=false; keys.down=false; keys.block=false; touchGuard=null; touchBlock=false;
     document.getElementById('tierLabel').textContent = 'vs ' + TIERS[idx].name;
     document.getElementById('nameA').textContent = TIERS[idx].name;
     setState('duel');
@@ -247,8 +250,11 @@
   // Player guard defaults to 'torso' when no direction is held — a neutral stance that can
   // block but never parry (parries need a fresh, deliberate key press; there's no press for
   // "holding still"). Up/Down commit you to high/low, which CAN parry if timed right.
+  // 'block' is a dedicated held guard that stops ALL three lines — safe against a read you
+  // guessed wrong on, but it only chips (partial damage) instead of fully no-selling the hit,
+  // and it can never parry. High/Low guard stay the precise, full-stop-or-parry option.
   function currentGuardLine(f){
-    if(f === P) return keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || 'torso'));
+    if(f === P) return (keys.block || touchBlock) ? 'block' : (keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || 'torso')));
     return f.guardLine;
   }
 
@@ -292,6 +298,14 @@
       return;
     }
     const dLine = currentGuardLine(defender);
+    if(dLine === 'block'){
+      // universal chip block: stops every line, but for reduced (not zero) damage, and never parries
+      const chip = Math.round(HIT_LINES[attacker.attackLine].damage * 0.3);
+      defender.hp = clamp(defender.hp - chip, 0, HP_MAX);
+      fx.push({type:'clash', x:(attacker.x+defender.x)/2, y:FLOOR_Y-90, t:0, dur:0.3});
+      sfx.clash();
+      return;
+    }
     const freshT = defender===P ? Math.max(keyPressT.up, keyPressT.down) : defender.guardFreshT;
     const isFreshParry = dLine === attacker.attackLine && (elapsed - freshT) <= PARRY_WINDOW;
     if(isFreshParry){
@@ -349,18 +363,22 @@
         A._reactAt = undefined;
       }
     }
-    if(P.state !== 'windup'){ A._reacted = false; A.guardLine = (A.state==='idle' && Math.random()<0.02) ? A.guardLine : A.guardLine; }
+    if(P.state !== 'windup'){ A._reacted = false; }
     if(P.state === 'idle' || P.state === 'recovery' || P.state === 'stagger'){ A.guardLine = null; }
 
-    // offense
+    // offense — tighter dead zone than before, always backs off when crowded (was a coin-flip),
+    // and throws in the occasional repositioning shuffle even at mid-range so it doesn't read
+    // as a statue that only ever attacks.
     if(A.state === 'idle' && A.guardLine === null){
       A.aiThinkT -= dt;
       if(A.aiThinkT <= 0){
         A.aiThinkT = tier.think[0] + Math.random()*(tier.think[1]-tier.think[0]);
-        if(dist > ATTACK_RANGE + 40){
+        if(dist > ATTACK_RANGE + 20){
           tryStep(A, -1); // close in
-        } else if(dist < 70){
-          if(Math.random() < 0.4) tryStep(A, 1); // back off
+        } else if(dist < 60){
+          tryStep(A, 1); // always create space when crowded — don't let the player free-strike point blank
+        } else if(Math.random() < 0.15){
+          tryStep(A, Math.random() < 0.5 ? -1 : 1); // footwork shuffle, keeps it from freezing in place
         } else {
           const wantFeint = Math.random() < tier.feintChance;
           A.guardLine = null;
@@ -454,6 +472,7 @@
     if(e.code==='KeyQ') keys.q = true;
     if(e.code==='KeyW') keys.w = true;
     if(e.code==='KeyE') keys.e = true;
+    if(e.code==='ShiftLeft' || e.code==='ShiftRight') keys.block = true;
     if(state!=='duel') return;
     // targeting: Q+1 = real high, W+2 = real torso, E+3 = real low — a deliberate, aimed strike.
     // bare 1 (no modifier) is the quick option: a real hit, but on a random line you don't get
@@ -476,6 +495,7 @@
     if(e.code==='KeyQ') keys.q = false;
     if(e.code==='KeyW') keys.w = false;
     if(e.code==='KeyE') keys.e = false;
+    if(e.code==='ShiftLeft' || e.code==='ShiftRight') keys.block = false;
   });
 
   function bindTap(id, fn){ document.getElementById(id).addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); }); }
@@ -487,6 +507,7 @@
   }
   bindHold('btnGuardHigh', ()=>{ if(touchGuard!=='high') keyPressT.up = elapsed; touchGuard='high'; }, ()=>{ if(touchGuard==='high') touchGuard=null; });
   bindHold('btnGuardLow',  ()=>{ if(touchGuard!=='low') keyPressT.down = elapsed; touchGuard='low'; },  ()=>{ if(touchGuard==='low') touchGuard=null; });
+  bindHold('btnBlock', ()=>touchBlock=true, ()=>touchBlock=false);
   bindTap('btnAttackHigh',  ()=> state==='duel' && tryAttack(P, false, 'high'));
   bindTap('btnAttackTorso', ()=> state==='duel' && tryAttack(P, false, 'torso'));
   bindTap('btnAttackLow',   ()=> state==='duel' && tryAttack(P, false, 'low'));
@@ -540,7 +561,12 @@
 
     // guard stance shield hint
     const gLine = f===P ? currentGuardLine(f) : f.guardLine;
-    if(gLine){
+    if(gLine === 'block'){
+      // full-body block stance — covers every line, drawn as a solid green shield down the front
+      ctx.strokeStyle = 'rgba(74,222,128,0.7)';
+      ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.moveTo(6,-8); ctx.lineTo(6,-112); ctx.stroke();
+    } else if(gLine){
       const fresh = (elapsed - (f===P?Math.max(keyPressT.up,keyPressT.down):f.guardFreshT)) < PARRY_WINDOW;
       ctx.strokeStyle = fresh ? '#fde047' : 'rgba(56,189,248,0.55)';
       ctx.lineWidth = 4;
