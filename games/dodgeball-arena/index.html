@@ -63,6 +63,7 @@ const P2_MIN_X = CENTER_X + 30, P2_MAX_X = W - 40;
 const MOVE_SPEED = 260;
 
 const LIVES = 3;
+const ROUNDS_TO_WIN = 2; // best of 3
 
 const THROW_QUICK_MS = 220;
 const THROW_NORMAL_MS = 480;
@@ -490,6 +491,14 @@ class PlayScene extends Phaser.Scene {
       this.p2Pips.push(this.add.circle(W - 20 - 8 - i * 18, 40, 5, 0x2a2e36).setVisible(false));
     }
 
+    // round-win pips — a separate row from the life pips above, gold so
+    // they read as "match score" rather than "current-round health"
+    this.p1RoundPips = []; this.p2RoundPips = [];
+    for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+      this.p1RoundPips.push(this.add.circle(20 + 8 + i * 18, 52, 4, 0x2a2e36).setStrokeStyle(1, 0x5a5030, 1).setVisible(false));
+      this.p2RoundPips.push(this.add.circle(W - 20 - 8 - i * 18, 52, 4, 0x2a2e36).setStrokeStyle(1, 0x5a5030, 1).setVisible(false));
+    }
+
     this.countdownText = this.add.text(W / 2, H / 2, '', {
       fontFamily: 'Arial Black, Arial', fontSize: '48px', color: '#ffd23f'
     }).setOrigin(0.5).setVisible(false);
@@ -498,7 +507,7 @@ class PlayScene extends Phaser.Scene {
       fontFamily: 'Arial Black, Arial', fontSize: '16px', color: '#5be37b'
     }).setOrigin(0.5).setAlpha(0);
 
-    this.hudGroup = [this.modeText, this.p1NameText, this.p2NameText, ...this.p1Pips, ...this.p2Pips];
+    this.hudGroup = [this.modeText, this.p1NameText, this.p2NameText, ...this.p1Pips, ...this.p2Pips, ...this.p1RoundPips, ...this.p2RoundPips];
   }
 
   setHUDVisible(v) { this.hudGroup.forEach(o => o.setVisible(v)); }
@@ -506,6 +515,11 @@ class PlayScene extends Phaser.Scene {
   updatePips() {
     this.p1Pips.forEach((p, i) => p.setFillStyle(i < this.p1Lives ? 0x8fd3ff : 0x2a2e36));
     this.p2Pips.forEach((p, i) => p.setFillStyle(i < this.p2Lives ? 0xff9f6b : 0x2a2e36));
+  }
+
+  updateRoundPips() {
+    this.p1RoundPips.forEach((p, i) => p.setFillStyle(i < this.p1RoundWins ? 0xffd23f : 0x2a2e36));
+    this.p2RoundPips.forEach((p, i) => p.setFillStyle(i < this.p2RoundWins ? 0xffd23f : 0x2a2e36));
   }
 
   buildOverPanel() {
@@ -521,8 +535,11 @@ class PlayScene extends Phaser.Scene {
     rematchBg.on('pointerdown', () => {
       if (window.SFX) SFX.click();
       this.setOverVisible(false);
-      this.startMatch(this.mode);
+      const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+      if (matchDecided) this.startMatch(this.mode);
+      else this.startNextRound();
     });
+    this.rematchLabel = rematchLabel;
 
     const menuBg = this.add.rectangle(W / 2, H / 2 + 112, 200, 40, 0x1a1d24).setStrokeStyle(1, 0x5a6070).setVisible(false);
     const menuLabel = this.add.text(W / 2, H / 2 + 112, 'MAIN MENU', { fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#7f8a9a' }).setOrigin(0.5).setVisible(false);
@@ -598,6 +615,10 @@ class PlayScene extends Phaser.Scene {
 
   startMatch(mode) {
     this.mode = mode;
+    this.p1RoundWins = 0;
+    this.p2RoundWins = 0;
+    this.currentRound = 1;
+    this.updateRoundPips();
     this.p1Lives = LIVES;
     this.p2Lives = LIVES;
     this.updatePips();
@@ -610,7 +631,18 @@ class PlayScene extends Phaser.Scene {
     this.setOverVisible(false);
 
     this.state = 'countdown';
-    this.runCountdown();
+    this.runCountdown(`ROUND ${this.currentRound}`);
+  }
+
+  startNextRound() {
+    this.currentRound++;
+    this.p1Lives = LIVES;
+    this.p2Lives = LIVES;
+    this.updatePips();
+    this.resetForServe(this.nextRoundServerIsP1);
+
+    this.state = 'countdown';
+    this.runCountdown(`ROUND ${this.currentRound}`);
   }
 
   returnToMenu() {
@@ -621,13 +653,15 @@ class PlayScene extends Phaser.Scene {
     this.setMenuVisible(true);
   }
 
-  runCountdown() {
-    const beats = [
+  runCountdown(roundLabel) {
+    const beats = [];
+    if (roundLabel) beats.push({ text: roundLabel, color: '#7f8a9a' });
+    beats.push(
       { text: '3', color: '#8fd3ff' },
       { text: '2', color: '#ffd23f' },
       { text: '1', color: '#ff9f6b' },
       { text: 'THROW!', color: '#ff5a5a', final: true }
-    ];
+    );
     const runBeat = (i) => {
       if (i >= beats.length) { this.countdownText.setVisible(false); this.state = 'playing'; return; }
       const beat = beats[i];
@@ -984,7 +1018,7 @@ class PlayScene extends Phaser.Scene {
     this.ball.active = false;
 
     if (dead) {
-      this.finishMatch();
+      this.finishRound();
     } else {
       // hit player serves next, to keep the match flowing rather than snowballing
       this.state = 'countdown';
@@ -1003,17 +1037,36 @@ class PlayScene extends Phaser.Scene {
     if (givePossessionTo) givePossessionTo.hasBall = true;
   }
 
-  finishMatch() {
+  finishRound() {
     this.state = 'over';
-    const p1Won = this.p1Lives > 0;
-    const winnerLabel = this.mode === 'ai'
-      ? (p1Won ? 'YOU WIN' : 'CPU WINS')
-      : (p1Won ? 'P1 WINS' : 'P2 WINS');
-    this.overHeadline.setText(winnerLabel);
-    this.overSub.setText(p1Won ? `P2 survived with ${this.p2Lives} hit${this.p2Lives === 1 ? '' : 's'} left? No — you closed it out.` : 'Rematch and read the charge earlier next time.');
-    this.overSub.setText(`Final: ${LIVES - this.p1Lives} — ${LIVES - this.p2Lives} hits taken.`);
+    const p1WonRound = this.p1Lives > 0;
+    if (p1WonRound) this.p1RoundWins++; else this.p2RoundWins++;
+    this.updateRoundPips();
+    // the round's loser serves next round — same comeback logic already
+    // used for who serves after a single hit, just applied at round scale
+    this.nextRoundServerIsP1 = !p1WonRound;
+
+    const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+
+    if (matchDecided) {
+      const p1WonMatch = this.p1RoundWins > this.p2RoundWins;
+      const headline = this.mode === 'ai'
+        ? (p1WonMatch ? 'YOU WIN THE MATCH' : 'CPU WINS THE MATCH')
+        : (p1WonMatch ? 'P1 WINS THE MATCH' : 'P2 WINS THE MATCH');
+      this.overHeadline.setText(headline);
+      this.overSub.setText(`Match: ${this.p1RoundWins} — ${this.p2RoundWins} rounds`);
+      this.rematchLabel.setText('REMATCH');
+    } else {
+      const headline = this.mode === 'ai'
+        ? (p1WonRound ? `YOU WIN ROUND ${this.currentRound}` : `CPU WINS ROUND ${this.currentRound}`)
+        : (p1WonRound ? `P1 WINS ROUND ${this.currentRound}` : `P2 WINS ROUND ${this.currentRound}`);
+      this.overHeadline.setText(headline);
+      this.overSub.setText(`Round score: ${this.p1RoundWins} — ${this.p2RoundWins}`);
+      this.rematchLabel.setText('NEXT ROUND');
+    }
+
     this.setOverVisible(true);
-    if (window.SFX) SFX[p1Won ? 'success' : 'fail']();
+    if (window.SFX) SFX[p1WonRound ? 'success' : 'fail']();
   }
 
   // --------------------------------------------------------------- DRAW
