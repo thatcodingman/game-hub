@@ -72,13 +72,14 @@ const RECOVERY_MS = 550;
 const STAGGER_MS = 480;
 
 const CRITICAL_EDGE_DIST = 45;
-const CLASH_SPEED_THRESHOLD = 70; // if both dashing and closing-speed diff is under this, it's a mutual clash
-const PUSH_BASE = 80, PUSH_SCALE = 0.9, PUSH_CAP = 520;
+const CLASH_SPEED_THRESHOLD = 45; // if both dashing, hitting reasonably head-on, and closing-speed diff is under this, it's a mutual clash
+const CLASH_HEADON_MIN = 0.6; // fraction of each wrestler's speed that must be along the contact normal — keeps glancing hits from becoming Clashes
+const PUSH_BASE = 45, PUSH_SCALE = 1.05, PUSH_CAP = 520; // lower guaranteed base, more of the shove comes from the actual momentum difference
 const CRITICAL_PUSH_MULT = 1.4;
 
 const ROUNDS_TO_WIN = 2;
-const ROUND_SUDDEN_DEATH_MS = 30000;
-const RING_SHRINK_DURATION_MS = 20000;
+const ROUND_SUDDEN_DEATH_MS = 19000;
+const RING_SHRINK_DURATION_MS = 11000;
 const RING_MIN_RADIUS = 125;
 
 const DIFFICULTY_DEFS = {
@@ -123,6 +124,10 @@ const Sound = {
     SFX.tone(70, 0.3, 'sawtooth', 0.3, 35);
     SFX.tone(1700, 0.08, 'square', 0.16, 2100, 40);
   },
+  edgeWarning() {
+    if (!window.SFX) return;
+    SFX.tone(900, 0.09, 'square', 0.1, 700);
+  },
   ringOut() {
     if (!window.SFX) return;
     SFX.tone(300, 0.2, 'sawtooth', 0.2, 80);
@@ -161,6 +166,8 @@ class SumoPushScene extends Phaser.Scene {
     this.bgFlash = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(-1);
     this.dustParticles = [];
     this.dustG = this.add.graphics();
+    this.edgeWarnG = this.add.graphics().setDepth(1);
+    this.impactFlashG = this.add.graphics().setDepth(4);
   }
 
   drawRing() {
@@ -195,6 +202,7 @@ class SumoPushScene extends Phaser.Scene {
       dashTier: 'quick', reachedStage1: false, reachedStage2: false,
       // AI-only bookkeeping (inert for the human-controlled wrestler)
       reactedToThisCharge: false, pendingCounter: false, plannedReleaseAt: 0,
+      wasCritical: false,
       graphic: this.add.graphics()
     };
   }
@@ -205,6 +213,7 @@ class SumoPushScene extends Phaser.Scene {
     f.dashStartedAt = 0; f.staggerUntil = 0; f.recoveryUntil = 0;
     f.reachedStage1 = false; f.reachedStage2 = false;
     f.reactedToThisCharge = false; f.pendingCounter = false; f.plannedReleaseAt = 0;
+    f.wasCritical = false;
   }
 
   // ------------------------------------------------------------------ HUD
@@ -406,8 +415,24 @@ class SumoPushScene extends Phaser.Scene {
     this.clampToCanvas(this.p2);
     this.checkRingOut();
     this.updateDust(realDt);
+    this.updateEdgeWarning();
     this.drawWrestlers();
     this.updatePhaseText();
+  }
+
+  // ------------------------------------------------------------ EDGE WARNING
+  updateEdgeWarning() {
+    [this.p1, this.p2].forEach(f => {
+      const critical = this.edgeDistance(f) <= CRITICAL_EDGE_DIST;
+      if (critical && !f.wasCritical) Sound.edgeWarning();
+      f.wasCritical = critical;
+    });
+    this.edgeWarnG.clear();
+    const anyCritical = this.edgeDistance(this.p1) <= CRITICAL_EDGE_DIST || this.edgeDistance(this.p2) <= CRITICAL_EDGE_DIST;
+    if (!anyCritical) return;
+    const pulse = 0.35 + Math.sin(this.time.now * 0.012) * 0.25;
+    this.edgeWarnG.lineStyle(7, 0xff5a5a, pulse);
+    this.edgeWarnG.strokeCircle(RING_CX, RING_CY, this.ringRadius);
   }
 
   // -------------------------------------------------------------- RING SHRINK
@@ -561,8 +586,12 @@ class SumoPushScene extends Phaser.Scene {
     const bAlong = b.vx * nx + b.vy * ny;   // b's speed away from a (same sign convention)
     const netForce = aAlong - bAlong;       // positive => a is winning the exchange
 
+    const aSpeedTotal = Math.hypot(a.vx, a.vy) || 1;
+    const bSpeedTotal = Math.hypot(b.vx, b.vy) || 1;
+    const isHeadOn = (Math.abs(aAlong) / aSpeedTotal) > CLASH_HEADON_MIN && (Math.abs(bAlong) / bSpeedTotal) > CLASH_HEADON_MIN;
+
     const bothDashing = a.state === 'dashing' && b.state === 'dashing';
-    if (bothDashing && Math.abs(netForce) < CLASH_SPEED_THRESHOLD) {
+    if (bothDashing && isHeadOn && Math.abs(netForce) < CLASH_SPEED_THRESHOLD) {
       this.triggerClash(a, b, nx, ny);
       return;
     }
@@ -576,14 +605,32 @@ class SumoPushScene extends Phaser.Scene {
 
     loser.vx += nx * dir * pushMag;
     loser.vy += ny * dir * pushMag;
-    winner.vx -= nx * dir * pushMag * 0.15;
-    winner.vy -= ny * dir * pushMag * 0.15;
+    winner.vx -= nx * dir * pushMag * 0.22;
+    winner.vy -= ny * dir * pushMag * 0.22;
 
     this.applyStagger(loser);
     if (winner.state === 'charging') { winner.state = 'idle'; } // a clean win also cancels a charge-in-progress
-    Sound.impact(pushMag > 300);
-    this.cameras.main.shake(pushMag > 350 ? 90 : 50, pushMag > 350 ? 0.006 : 0.003);
-    this.spawnDust((a.x + b.x) / 2, (a.y + b.y) / 2, Math.min(pushMag / 40, 10));
+    Sound.impact(pushMag > 260);
+    this.cameras.main.shake(pushMag > 300 ? 100 : 55, pushMag > 300 ? 0.007 : 0.0035);
+    const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+    this.spawnDust(midX, midY, Math.min(pushMag / 32, 14));
+    this.spawnImpactFlash(midX, midY, nx, ny, dir, pushMag, winner.color);
+  }
+
+  // ------------------------------------------------------------ IMPACT FLASH
+  // A short directional streak at the contact point, pointing the way the loser
+  // just got shoved, so a push visibly reads as "winner's momentum went that way."
+  spawnImpactFlash(x, y, nx, ny, dir, mag, color) {
+    const g = this.impactFlashG;
+    g.clear(); g.setAlpha(1);
+    const angle = Math.atan2(ny, nx) * (dir >= 0 ? 1 : -1) + (dir >= 0 ? 0 : Math.PI);
+    const len = Phaser.Math.Clamp(mag / 6, 22, 80);
+    g.lineStyle(5, 0xffffff, 0.95);
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(angle) * len, y + Math.sin(angle) * len); g.strokePath();
+    g.lineStyle(3, color, 0.8);
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(angle) * len * 0.7, y + Math.sin(angle) * len * 0.7); g.strokePath();
+    this.tweens.killTweensOf(g);
+    this.tweens.add({ targets: g, alpha: 0, duration: 160, ease: 'Cubic.Out', onComplete: () => { g.clear(); g.setAlpha(1); } });
   }
 
   applyStagger(f) {
@@ -592,16 +639,21 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   triggerClash(a, b, nx, ny) {
+    // Sequenced like a real impact rather than one instant burst: slowdown starts
+    // immediately, the heavy hit lands, then dust and camera shake follow it —
+    // matching how a real collision's shockwave reads a beat after contact.
+    this.slowUntil = this.time.now + 320;
     Sound.clash();
-    this.cameras.main.shake(140, 0.012);
-    this.slowUntil = this.time.now + 260;
     this.announce('CLASH!', '#ffd23f');
-    const bounce = 260;
+    const bounce = 300;
     a.vx -= nx * bounce; a.vy -= ny * bounce;
     b.vx += nx * bounce; b.vy += ny * bounce;
     a.state = 'recovering'; a.recoveryUntil = this.time.now + RECOVERY_MS;
     b.state = 'recovering'; b.recoveryUntil = this.time.now + RECOVERY_MS;
-    this.spawnDust((a.x + b.x) / 2, (a.y + b.y) / 2, 16);
+    const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+    this.time.delayedCall(70, () => this.spawnDust(midX, midY, 10));
+    this.time.delayedCall(100, () => this.cameras.main.shake(150, 0.014));
+    this.time.delayedCall(130, () => this.spawnDust(midX, midY, 10));
   }
 
   spawnDust(x, y, count) {
@@ -742,8 +794,13 @@ class SumoPushScene extends Phaser.Scene {
     const stretch = dashing ? 1.25 : (charging ? 1 + chargeT * 0.12 : 1);
     const r = WRESTLER_R;
 
-    const leanX = staggered ? -Math.cos(f.facing) * 10 : (dashing ? Math.cos(f.facing) * 6 : 0);
-    const leanY = staggered ? -Math.sin(f.facing) * 10 : (dashing ? Math.sin(f.facing) * 6 : 0);
+    let leanX = staggered ? -Math.cos(f.facing) * 10 : (dashing ? Math.cos(f.facing) * 6 : 0);
+    let leanY = staggered ? -Math.sin(f.facing) * 10 : (dashing ? Math.sin(f.facing) * 6 : 0);
+    if (critical) {
+      const outAngle = Math.atan2(f.y - RING_CY, f.x - RING_CX);
+      leanX += Math.cos(outAngle) * 4;
+      leanY += Math.sin(outAngle) * 4;
+    }
 
     const bodyColor = staggered ? Phaser.Display.Color.GetColor(255, 90, 90) : f.color;
     const alpha = staggered ? 0.7 + Math.sin(now * 0.03) * 0.15 : 1;
@@ -775,10 +832,13 @@ class SumoPushScene extends Phaser.Scene {
     g.beginPath(); g.moveTo(f.x + leanX, f.y + leanY - r * 0.5); g.lineTo(ax, ay - r * armSpread * 0.7); g.strokePath();
     g.beginPath(); g.moveTo(f.x + leanX, f.y + leanY + r * 0.5); g.lineTo(ax, ay + r * armSpread * 0.7); g.strokePath();
 
-    if (dashing) {
-      // motion streak behind the dash
-      g.lineStyle(4, f.color, 0.35);
-      const bx = f.x - Math.cos(f.facing) * r * 1.6, by = f.y - Math.sin(f.facing) * r * 1.6;
+    const moveSpeed = Math.hypot(f.vx, f.vy);
+    if (dashing || (staggered && moveSpeed > 60)) {
+      // motion/slide streak along actual velocity — a dash commits along facing,
+      // but a shoved (staggered) wrestler slides wherever the push sent them.
+      const moveAngle = moveSpeed > 5 ? Math.atan2(f.vy, f.vx) : f.facing;
+      g.lineStyle(4, f.color, staggered ? 0.28 : 0.35);
+      const bx = f.x - Math.cos(moveAngle) * r * 1.6, by = f.y - Math.sin(moveAngle) * r * 1.6;
       g.beginPath(); g.moveTo(f.x, f.y); g.lineTo(bx, by); g.strokePath();
     }
   }
