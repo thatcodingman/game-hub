@@ -130,6 +130,46 @@ const ARENA_DEFS = {
 };
 const ARENA_ORDER = ['duel', 'wallBender', 'gate', 'safeHarbor', 'cross'];
 
+// AI plays smarter, not stat-boosted, same philosophy as Last Fist's
+// difficulty system: what changes is decision quality (how well it tracks
+// the ball, how early/late it commits to a catch attempt), not damage or
+// speed multipliers on the fighters themselves.
+const DIFFICULTY_DEFS = {
+  easy: {
+    name: 'Easy',
+    throwChance: 0.015,        // per-frame chance to start charging a throw when holding the ball
+    chargeMin: 350, chargeMax: 750, // tends to hold long — telegraphed, easy-to-read throws
+    trackingMult: 0.6,         // how well it tracks the opponent/ball vertically
+    catchChance: 0.035,        // per-frame chance to attempt a catch once in range
+    catchDistMax: 150          // starts considering a catch this far out — often too early
+  },
+  normal: {
+    name: 'Normal',
+    throwChance: 0.025,
+    chargeMin: 220, chargeMax: 700,
+    trackingMult: 0.85,
+    catchChance: 0.07,
+    catchDistMax: 130
+  },
+  hard: {
+    name: 'Hard',
+    throwChance: 0.04,
+    chargeMin: 140, chargeMax: 650, // can snap out a quick throw or commit to power deliberately
+    trackingMult: 1.05,
+    catchChance: 0.14,
+    catchDistMax: 90           // waits until the ball is nearly on it — lands perfects far more often
+  }
+};
+const DIFFICULTY_ORDER = ['easy', 'normal', 'hard'];
+const DIFFICULTY_KEY = 'dodgeballArena_difficulty';
+
+function loadDifficulty() {
+  try { const d = localStorage.getItem(DIFFICULTY_KEY); return DIFFICULTY_DEFS[d] ? d : 'normal'; } catch (err) { return 'normal'; }
+}
+function saveDifficulty(key) {
+  try { localStorage.setItem(DIFFICULTY_KEY, key); } catch (err) { /* non-fatal */ }
+}
+
 function toHexColor(n) { return '#' + n.toString(16).padStart(6, '0'); }
 function vibrate(pattern) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (err) { /* non-fatal */ }
@@ -141,13 +181,16 @@ class PlayScene extends Phaser.Scene {
   create() {
     this.mode = null; // 'ai' | '2p'
     this.pendingMode = null;
-    this.state = 'menu'; // menu | mode | map | countdown | playing | over
+    this.difficulty = loadDifficulty();
+    this.state = 'menu'; // menu | mode | difficulty | map | countdown | playing | over
     this.currentObstacles = ARENA_DEFS.duel.obstacles;
     this.currentArenaName = ARENA_DEFS.duel.name;
+    this.currentArenaKey = 'duel';
 
     this.buildBackground();
     this.buildMenu();
     this.buildModeSelect();
+    this.buildDifficultySelect();
     this.buildMapSelect();
     this.buildHUD();
     this.buildOverPanel();
@@ -158,6 +201,7 @@ class PlayScene extends Phaser.Scene {
 
     this.setMenuVisible(true);
     this.setModeVisible(false);
+    this.setDifficultyVisible(false);
     this.setMapVisible(false);
     this.setHUDVisible(false);
     this.setOverVisible(false);
@@ -260,7 +304,8 @@ class PlayScene extends Phaser.Scene {
         if (window.SFX) SFX.select();
         this.pendingMode = d.mode;
         this.setModeVisible(false);
-        this.setMapVisible(true);
+        if (d.mode === 'ai') this.setDifficultyVisible(true);
+        else this.setMapVisible(true);
       });
       this.modeGroup.push(bg, label);
     });
@@ -272,6 +317,50 @@ class PlayScene extends Phaser.Scene {
   }
 
   setModeVisible(v) { this.modeGroup.forEach(o => o.setVisible(v)); }
+
+  buildDifficultySelect() {
+    const title = this.add.text(W / 2, 170, 'CHOOSE DIFFICULTY', {
+      fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#e8ecf1'
+    }).setOrigin(0.5);
+    this.difficultyGroup = [title];
+
+    const btnW = 160, btnH = 56, gap = 20;
+    const colors = { easy: 0x5be37b, normal: 0xffd23f, hard: 0xff5a5a };
+    const totalW = DIFFICULTY_ORDER.length * btnW + (DIFFICULTY_ORDER.length - 1) * gap;
+    const startX = W / 2 - totalW / 2 + btnW / 2;
+
+    DIFFICULTY_ORDER.forEach((key, i) => {
+      const x = startX + i * (btnW + gap);
+      const color = colors[key];
+      const bg = this.add.rectangle(x, 260, btnW, btnH, 0x1a1d24).setStrokeStyle(2, color);
+      const label = this.add.text(x, 260, DIFFICULTY_DEFS[key].name.toUpperCase(), {
+        fontFamily: 'Arial Black, Arial', fontSize: '16px', color: toHexColor(color)
+      }).setOrigin(0.5);
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerover', () => bg.setFillStyle(0x24272f));
+      bg.on('pointerout', () => bg.setFillStyle(0x1a1d24));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.select();
+        this.difficulty = key;
+        saveDifficulty(key);
+        this.setDifficultyVisible(false);
+        this.setMapVisible(true);
+      });
+      this.difficultyGroup.push(bg, label);
+    });
+
+    const backBtn = this.add.text(W / 2, H - 40, '< back to mode', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#5a6070'
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    backBtn.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setDifficultyVisible(false);
+      this.setModeVisible(true);
+    });
+    this.difficultyGroup.push(backBtn);
+  }
+
+  setDifficultyVisible(v) { this.difficultyGroup.forEach(o => o.setVisible(v)); }
 
   buildMapSelect() {
     const title = this.add.text(W / 2, 60, 'CHOOSE ARENA', {
@@ -321,6 +410,7 @@ class PlayScene extends Phaser.Scene {
         if (window.SFX) SFX.select();
         this.currentObstacles = def.obstacles;
         this.currentArenaName = def.name;
+        this.currentArenaKey = key;
         this.drawObstaclesForCurrentMap();
         this.setMapVisible(false);
         this.startMatch(this.pendingMode);
@@ -329,13 +419,14 @@ class PlayScene extends Phaser.Scene {
       this.mapGroup.push(bg, nameText, preview, tagline);
     });
 
-    const backBtn = this.add.text(W / 2, H - 40, '< back to mode', {
+    const backBtn = this.add.text(W / 2, H - 40, '< back', {
       fontFamily: 'Arial', fontSize: '13px', color: '#5a6070'
     }).setOrigin(0.5).setInteractive({ useHandCursor: true });
     backBtn.on('pointerdown', () => {
       if (window.SFX) SFX.click();
       this.setMapVisible(false);
-      this.setModeVisible(true);
+      if (this.pendingMode === 'ai') this.setDifficultyVisible(true);
+      else this.setModeVisible(true);
     });
     this.mapGroup.push(backBtn);
   }
@@ -469,7 +560,8 @@ class PlayScene extends Phaser.Scene {
     this.updatePips();
     this.resetForServe(true);
 
-    this.modeText.setText((mode === 'ai' ? '1P VS AI' : '2P LOCAL') + '  —  ' + this.currentArenaName).setVisible(true);
+    const modeLabel = mode === 'ai' ? `1P VS AI (${DIFFICULTY_DEFS[this.difficulty].name.toUpperCase()})` : '2P LOCAL';
+    this.modeText.setText(modeLabel + '  —  ' + this.currentArenaName).setVisible(true);
     this.p2NameText.setText(mode === 'ai' ? 'CPU' : 'P2');
     this.setHUDVisible(true);
     this.setOverVisible(false);
@@ -581,36 +673,67 @@ class PlayScene extends Phaser.Scene {
   updateAI(dt) {
     if (this.mode !== 'ai') return;
     const ai = this.p2, target = this.p1;
+    const def = DIFFICULTY_DEFS[this.difficulty];
+    const incoming = this.ball.active && this.ball.owner === null;
 
     // Basic tracking: match the opponent's Y, hang back near mid-depth on X unless serving.
+    // trackingMult is where difficulty actually lives — a worse AI reacts to
+    // the ball/opponent more sluggishly, not with weaker throws or less health.
     let desiredY = target.y + Phaser.Math.Between(-30, 30);
-    if (this.ball.active && this.ball.owner === null) {
-      // ball in flight — react a bit to its actual Y for dodging when not attempting a catch
+    let desiredX = Phaser.Math.Clamp(P2_MIN_X + 90, P2_MIN_X, P2_MAX_X);
+    let xPullMult = 0.4;
+
+    if (incoming) {
+      // ball in flight — react to its actual Y for dodging/catching, on every map
       desiredY = this.ball.y;
+    } else if (ai.hasBall) {
+      // Between throws the AI should actually use the map it's on instead of
+      // parking at the same spot regardless of terrain. On Wall Bender and
+      // Safe Harbor its own-side obstacles sit far out toward its back wall,
+      // so aim just past the obstacle's push-out margin — clampToHalf below
+      // then naturally settles the AI right against it, "hugging the wall"
+      // for real bank-shot exposure or corner cover, matching what each map
+      // is actually built to reward.
+      if (this.currentArenaKey === 'wallBender') {
+        desiredX = 685;
+        desiredY = ai.y < H / 2 ? 125 : 410;
+        xPullMult = 0.55;
+      } else if (this.currentArenaKey === 'safeHarbor') {
+        desiredX = 705;
+        desiredY = ai.y < H / 2 ? 150 : 380;
+        xPullMult = 0.55;
+      }
     }
+
     const dy = desiredY - ai.y;
-    ai.y += Phaser.Math.Clamp(dy, -1, 1) * MOVE_SPEED * 0.85 * (dt / 1000);
-    const desiredX = Phaser.Math.Clamp(P2_MIN_X + 90, P2_MIN_X, P2_MAX_X);
-    ai.x += Phaser.Math.Clamp(desiredX - ai.x, -1, 1) * MOVE_SPEED * 0.4 * (dt / 1000);
+    ai.y += Phaser.Math.Clamp(dy, -1, 1) * MOVE_SPEED * def.trackingMult * (dt / 1000);
+    ai.x += Phaser.Math.Clamp(desiredX - ai.x, -1, 1) * MOVE_SPEED * xPullMult * (dt / 1000);
     this.clampToHalf(ai, false);
 
-    // Throw decision
+    // Throw decision — chargeMin/Max controls both how eagerly it commits
+    // and, indirectly, which tier it lands on (Easy tends to over-charge
+    // into a telegraphed power throw; Hard can snap out a quick one).
     if (ai.hasBall && !ai.charging) {
-      if (Phaser.Math.Between(0, 100) < 2) {
+      if (Phaser.Math.Between(0, 1000) < def.throwChance * 1000) {
         ai.charging = true;
         ai.chargeStart = this.time.now;
-        ai.aiReleaseAt = this.time.now + Phaser.Math.Between(THROW_QUICK_MS, THROW_MAX_CHARGE_MS);
+        ai.aiReleaseAt = this.time.now + Phaser.Math.Between(def.chargeMin, def.chargeMax);
       }
     } else if (ai.charging && this.time.now >= ai.aiReleaseAt) {
       this.releaseThrow(ai, target);
     }
 
-    // Catch decision: if ball incoming toward AI and reasonably close, sometimes attempt catch
+    // Catch decision — catchDistMax is the real skill knob: Easy starts
+    // considering a catch from much farther out, so its 200ms window often
+    // expires before the (slower-arriving) ball gets there — a whiff.
+    // Hard only considers it once the ball is nearly on top of it, so a
+    // press basically always lands within the perfect-timing threshold.
     if (this.ball.active && this.ball.owner === null) {
       const dist = Math.hypot(this.ball.x - ai.x, this.ball.y - ai.y);
       const headingToAI = (this.ball.vx > 0);
-      if (headingToAI && dist < 140 && dist > 20 && ai.catchActiveUntil < this.time.now && this.time.now >= ai.whiffUntil) {
-        if (Phaser.Math.Between(0, 100) < 6) {
+      if (headingToAI && dist < def.catchDistMax && dist > 10
+          && ai.catchActiveUntil < this.time.now && this.time.now >= ai.whiffUntil) {
+        if (Phaser.Math.Between(0, 1000) < def.catchChance * 1000) {
           ai.catchPressAt = this.time.now;
           ai.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
           ai.catchWindowOpen = true;
