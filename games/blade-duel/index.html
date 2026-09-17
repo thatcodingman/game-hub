@@ -212,34 +212,39 @@
   // vocabulary — no unique moves. Identity comes entirely from multipliers/overrides on the
   // existing systems. Unlisted fields default to a neutral 1x (or 0/none) at lookup time.
   const CHARACTERS = [
-    { id:0, name:'Vex', title:'The Duelist', color:'#38bdf8',
+    { id:0, name:'Vex', title:'The Duelist', color:'#38bdf8', bladeColor:'#67e8f9',
       pitch:'Cocky, surgical, aggressive — wins by committing faster than expected.',
       windupMult:0.88, recoveryMult:1.09, stepDistMult:0.90, parryWindowMult:0.80 },
-    { id:1, name:'Brutus', title:'The Heavy', color:'#f97316',
+    { id:1, name:'Brutus', title:'The Heavy', color:'#f97316', bladeColor:'#dc2626',
       pitch:'Slow, intimidating, brutally efficient — every opening costs more.',
       dmg:{high:37,torso:35,low:33}, windupMult:1.15, recoveryMult:1.15, stepDistMult:0.85 },
-    { id:2, name:'Sable', title:'The Counterfighter', color:'#a78bfa',
+    { id:2, name:'Sable', title:'The Counterfighter', color:'#a78bfa', bladeColor:'#c4b5fd',
       pitch:'Patient and calculating — prefers making the opponent attack first.',
       parryWindowMult:1.40, parryDamageMult:1.15, windupMult:1.08, stepCooldownMult:1.11 },
-    { id:3, name:'Rook', title:'The Bulwark', color:'#94a3b8',
+    { id:3, name:'Rook', title:'The Bulwark', color:'#94a3b8', bladeColor:'#60a5fa',
       pitch:'Defensive and stubborn — wins by frustrating aggression.',
       guardChipMult:0.80, blockDurationMult:0.80, blockCooldownMult:0.80, windupMult:1.10 },
-    { id:4, name:'Nyx', title:'The Trickster', color:'#f472b6',
+    { id:4, name:'Nyx', title:'The Trickster', color:'#f472b6', bladeColor:'#e879f9',
       pitch:'Unpredictable and slippery — specializes in baiting reactions to attacks that never land.',
       feintRecoveryMult:0.75, windupMult:1.05, stepCooldownMult:0.78, stepDistMult:0.90 },
-    { id:5, name:'Mara', title:'The Legbreaker', color:'#4ade80',
+    { id:5, name:'Mara', title:'The Legbreaker', color:'#4ade80', bladeColor:'#84cc16',
       pitch:'Ruthless and methodical — attacks mobility rather than chasing raw damage.',
       dmg:{high:32,torso:32,low:34}, lowSlow:{duration:3.5, mult:0.70} },
-    { id:6, name:'Calder', title:'The Displacer', color:'#facc15',
+    { id:6, name:'Calder', title:'The Displacer', color:'#facc15', bladeColor:'#fb923c',
       pitch:'Controls engagement distance with heavy body shots.',
       dmg:{high:34,torso:30,low:30}, staggerMult:{torso:1.30}, knockbackMult:{torso:1.35}, stepDistMult:1.15 },
-    { id:7, name:'Iris', title:'The Glass Blade', color:'#fb7185',
+    { id:7, name:'Iris', title:'The Glass Blade', color:'#fb7185', bladeColor:'#e0f2fe',
       pitch:'Precise but fragile — rewards consistently winning exchanges.',
       dmg:{high:36,torso:34,low:32}, windupMult:0.95, hpMax:90, blockDurationMult:0.80 }
   ];
   function charDmg(char, line){ return (char.dmg && char.dmg[line] !== undefined) ? char.dmg[line] : HIT_LINES[line].damage; }
   function charStagger(char, line){ return HIT_LINES[line].stagger * ((char.staggerMult && char.staggerMult[line]) || 1); }
   function charHpMax(char){ return char.hpMax || HP_MAX; }
+  function hexToRgb(hex){
+    const h = hex.replace('#','');
+    return { r: parseInt(h.substring(0,2),16), g: parseInt(h.substring(2,4),16), b: parseInt(h.substring(4,6),16) };
+  }
+  function bladeRgba(char, a){ const c = hexToRgb(char.bladeColor || '#e2e8f0'); return `rgba(${c.r},${c.g},${c.b},${a})`; }
 
   const TIERS = [
     { id:0, name:"Practice", desc:"Attacks steadily, guards more often than you'd expect.", think:[0.45,0.8], feintChance:0.10, guardChance:0.35, guardDelay:0.20, guardAccuracy:0.62 },
@@ -658,38 +663,40 @@
       if(line==='high'){ sx=8; sy=-95; ex=8+pe*10; ey=-95-pe*46; arc=-8; }
       else if(line==='torso'){ sx=8; sy=-80; ex=8-pe*48; ey=-80-pe*6; arc=10; }
       else { sx=8; sy=-40; ex=8-pe*34; ey=-40+pe*24; arc=6; }
-      ctx.strokeStyle = `rgba(251,191,36,${glow})`;
+      ctx.strokeStyle = bladeRgba(f.char, glow);
       ctx.lineWidth = 5;
-      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6+pe*10;
+      ctx.shadowColor = f.char.bladeColor; ctx.shadowBlur = 6+pe*10;
       swordArc(sx,sy,ex,ey,arc);
     } else if(f.state==='active'){
       const p = clamp(f.stateT/ACTIVE_TIME, 0, 1);
       if(line==='high'){ sx=10; sy=-118; ex=64; ey=-58; arc=-26; }
       else if(line==='torso'){ sx=-24; sy=-78; ex=70; ey=-82; arc=-32; }
       else { sx=-26; sy=-10; ex=62; ey=-42; arc=20; }
-      // motion-blur trail: two faded prior-position arcs behind the live swing, for a fluid slash
+      // motion-blur trail: two faded prior-position arcs, tinted by the character's blade color
       for(let i=2;i>=1;i--){
         const tp = clamp(p - i*0.22, 0, 1);
         const mx = sx + (ex-sx)*tp, my = sy + (ey-sy)*tp;
-        ctx.strokeStyle = `rgba(255,255,255,${0.10*(3-i)})`;
+        ctx.strokeStyle = bladeRgba(f.char, 0.14*(3-i));
         ctx.lineWidth = 4;
         swordArc(sx, sy, mx, my, arc*tp);
       }
+      // the live swing still flashes white-hot at its core (universal "this is landing now" cue)
+      // but the glow halo around it carries the character's color, so identity survives the flash
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 6;
-      ctx.shadowColor = '#f87171'; ctx.shadowBlur = 16;
+      ctx.shadowColor = f.char.bladeColor; ctx.shadowBlur = 18;
       swordArc(sx,sy,ex,ey,arc);
     } else if(f.state==='recovery'){
       if(line==='torso'){ sx=10; sy=-80; ex=44; ey=-70; arc=6; }
       else if(line==='low'){ sx=10; sy=-22; ex=42; ey=-6; arc=3; }
       else { sx=10; sy=-40; ex=46; ey=-18; arc=4; }
-      ctx.strokeStyle = 'rgba(148,163,184,0.6)'; ctx.lineWidth = 4;
+      ctx.strokeStyle = bladeRgba(f.char, 0.55); ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
       swordArc(sx,sy,ex,ey,arc);
     } else {
       if(line==='torso'){ sx=10; sy=-76; ex=42; ey=-68; arc=4; }
       else if(line==='low'){ sx=10; sy=-20; ex=40; ey=-4; arc=2; }
       else { sx=10; sy=-46; ex=42; ey=-24; arc=3; }
-      ctx.strokeStyle = 'rgba(226,232,240,0.85)'; ctx.lineWidth = 4;
+      ctx.strokeStyle = bladeRgba(f.char, 0.85); ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
       swordArc(sx,sy,ex,ey,arc);
     }
@@ -793,7 +800,7 @@
       card.className = 'charCard' + (i===charIdx ? ' selected' : '');
       card.style.setProperty('--sel-color', c.color);
       card.title = c.pitch;
-      card.innerHTML = '<div class="sw" style="background:'+c.color+'"></div><div class="n">'+c.name+'</div><div class="t">'+c.title+'</div>';
+      card.innerHTML = '<div class="sw" style="background:linear-gradient(90deg,'+c.color+' 50%,'+c.bladeColor+' 50%)"></div><div class="n">'+c.name+'</div><div class="t">'+c.title+'</div>';
       card.addEventListener('click', ()=>{ charIdx = i; buildCharGrid(); });
       grid.appendChild(card);
     });
