@@ -54,8 +54,9 @@ const W = 960, H = 540;
 const CENTER_X = W / 2;
 const COURT_TOP = 60, COURT_BOTTOM = H - 40;
 const PLAYER_R = 20;
-const BALL_R = 9;
+const BALL_R = 8;
 const HIT_R = PLAYER_R + BALL_R - 6;
+const TRAIL_LENGTH = 6;
 
 const P1_MIN_X = 40, P1_MAX_X = CENTER_X - 30;
 const P2_MIN_X = CENTER_X + 30, P2_MAX_X = W - 40;
@@ -75,13 +76,59 @@ const TIER_DEFS = {
 
 const CATCH_ACTIVE_MS = 200;   // how long a catch press stays "live"
 const PERFECT_PRESS_MS = 90;   // press must be this recent (relative to contact) to count as perfect
+const WHIFF_RECOVERY_MS = 400; // penalty for pressing catch with no ball to catch: locked out + slowed
 const COUNTER_WINDOW_NORMAL_MS = 350;
 const COUNTER_WINDOW_PERFECT_MS = 600;
 
-const OBSTACLES = [
-  { x: CENTER_X - 160, y: COURT_TOP + 70, w: 26, h: 90 },
-  { x: CENTER_X + 160, y: COURT_BOTTOM - 70, w: 26, h: 90 }
-];
+// Five arenas, same physics/combat system throughout — only obstacle
+// placement changes, per the "physics and positioning are the depth
+// system" design philosophy. Each list is {x, y, w, h} rectangles.
+const ARENA_DEFS = {
+  duel: {
+    name: 'THE DUEL', tagline: '"Beat me in the open." Almost pure reaction and prediction.',
+    obstacles: [
+      { x: 175, y: 255, w: 45, h: 30 },
+      { x: 740, y: 255, w: 45, h: 30 }
+    ]
+  },
+  wallBender: {
+    name: 'WALL BENDER', tagline: '"Use the geometry." A bank-shot specialist\'s arena.',
+    obstacles: [
+      { x: 105, y: 105, w: 110, h: 24 },
+      { x: 105, y: 431, w: 110, h: 24 },
+      { x: 745, y: 105, w: 110, h: 24 },
+      { x: 745, y: 431, w: 110, h: 24 }
+    ]
+  },
+  gate: {
+    name: 'THE GATE', tagline: '"Control the distance." A dangerous center chokepoint.',
+    obstacles: [
+      { x: 385, y: 145, w: 55, h: 105 },
+      { x: 385, y: 290, w: 55, h: 105 },
+      { x: 520, y: 145, w: 55, h: 105 },
+      { x: 520, y: 290, w: 55, h: 105 }
+    ]
+  },
+  safeHarbor: {
+    name: 'SAFE HARBOR', tagline: '"You can hide, but only temporarily."',
+    obstacles: [
+      { x: 80, y: 125, w: 120, h: 90 },
+      { x: 80, y: 345, w: 120, h: 90 },
+      { x: 760, y: 125, w: 120, h: 90 },
+      { x: 760, y: 345, w: 120, h: 90 }
+    ]
+  },
+  cross: {
+    name: 'THE CROSS', tagline: '"Where you stand matters." Offset throwing lanes.',
+    obstacles: [
+      { x: 250, y: 125, w: 55, h: 115 },
+      { x: 145, y: 300, w: 55, h: 115 },
+      { x: 655, y: 125, w: 55, h: 115 },
+      { x: 760, y: 300, w: 55, h: 115 }
+    ]
+  }
+};
+const ARENA_ORDER = ['duel', 'wallBender', 'gate', 'safeHarbor', 'cross'];
 
 function toHexColor(n) { return '#' + n.toString(16).padStart(6, '0'); }
 function vibrate(pattern) {
@@ -93,18 +140,25 @@ class PlayScene extends Phaser.Scene {
 
   create() {
     this.mode = null; // 'ai' | '2p'
-    this.state = 'menu'; // menu | mode | countdown | playing | over
+    this.pendingMode = null;
+    this.state = 'menu'; // menu | mode | map | countdown | playing | over
+    this.currentObstacles = ARENA_DEFS.duel.obstacles;
+    this.currentArenaName = ARENA_DEFS.duel.name;
 
     this.buildBackground();
     this.buildMenu();
     this.buildModeSelect();
+    this.buildMapSelect();
     this.buildHUD();
     this.buildOverPanel();
     this.buildEntities();
     this.buildInput();
 
+    this.drawObstaclesForCurrentMap();
+
     this.setMenuVisible(true);
     this.setModeVisible(false);
+    this.setMapVisible(false);
     this.setHUDVisible(false);
     this.setOverVisible(false);
   }
@@ -125,11 +179,34 @@ class PlayScene extends Phaser.Scene {
     g.lineTo(CENTER_X, COURT_BOTTOM);
     g.strokePath();
 
-    OBSTACLES.forEach(o => {
+    this.obstaclesG = this.add.graphics();
+  }
+
+  drawObstaclesForCurrentMap() {
+    const g = this.obstaclesG;
+    g.clear();
+    this.currentObstacles.forEach(o => {
       g.fillStyle(0x3a3f4a, 1);
       g.fillRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
       g.lineStyle(1, 0x5a6070, 1);
       g.strokeRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
+      // faint bank-shot chevrons — reads as "the ball bounces off this",
+      // not just scenery sitting in the arena
+      g.lineStyle(1, 0x6b7280, 0.5);
+      const cx = o.x, top = o.y - o.h / 2, bot = o.y + o.h / 2;
+      for (let i = 1; i <= 2; i++) {
+        const cy = top + (bot - top) * (i / 3);
+        g.beginPath();
+        g.moveTo(cx - o.w / 2 - 6, cy - 5);
+        g.lineTo(cx - o.w / 2 + 2, cy);
+        g.lineTo(cx - o.w / 2 - 6, cy + 5);
+        g.strokePath();
+        g.beginPath();
+        g.moveTo(cx + o.w / 2 + 6, cy - 5);
+        g.lineTo(cx + o.w / 2 - 2, cy);
+        g.lineTo(cx + o.w / 2 + 6, cy + 5);
+        g.strokePath();
+      }
     });
   }
 
@@ -181,19 +258,89 @@ class PlayScene extends Phaser.Scene {
       bg.on('pointerout', () => bg.setFillStyle(0x1a1d24));
       bg.on('pointerdown', () => {
         if (window.SFX) SFX.select();
+        this.pendingMode = d.mode;
         this.setModeVisible(false);
-        this.startMatch(d.mode);
+        this.setMapVisible(true);
       });
       this.modeGroup.push(bg, label);
     });
 
-    const hint = this.add.text(W / 2, 370, 'VS AI: Arrows to move, SPACE to throw (hold to charge), SHIFT to catch.\nVS PLAYER 2 — P1: WASD / F throw / G catch.  P2: Arrows / L throw / \' catch.', {
+    const hint = this.add.text(W / 2, 370, 'VS AI: Arrows to move, SPACE to throw (hold to charge), C to catch.\nVS PLAYER 2 — P1: WASD / F throw / G catch.  P2: Arrows / L throw / \' catch.', {
       fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a', align: 'center', lineSpacing: 6
     }).setOrigin(0.5);
     this.modeGroup.push(hint);
   }
 
   setModeVisible(v) { this.modeGroup.forEach(o => o.setVisible(v)); }
+
+  buildMapSelect() {
+    const title = this.add.text(W / 2, 60, 'CHOOSE ARENA', {
+      fontFamily: 'Arial Black, Arial', fontSize: '26px', color: '#e8ecf1'
+    }).setOrigin(0.5);
+    this.mapGroup = [title];
+
+    const cardW = 176, cardH = 150, gap = 14;
+    const totalW = ARENA_ORDER.length * cardW + (ARENA_ORDER.length - 1) * gap;
+    const startX = W / 2 - totalW / 2 + cardW / 2;
+
+    ARENA_ORDER.forEach((key, i) => {
+      const def = ARENA_DEFS[key];
+      const x = startX + i * (cardW + gap);
+      const y = 250;
+
+      const bg = this.add.rectangle(x, y, cardW, cardH, 0x14161b).setStrokeStyle(2, 0x3a3f4a);
+      const nameText = this.add.text(x, y - cardH / 2 + 20, def.name, {
+        fontFamily: 'Arial Black, Arial', fontSize: '14px', color: '#e8ecf1', align: 'center', wordWrap: { width: cardW - 20 }
+      }).setOrigin(0.5);
+
+      // tiny preview of the obstacle layout, scaled into the card
+      const preview = this.add.graphics();
+      const pw = cardW - 30, ph = 60, px = x - pw / 2, py = y - 6;
+      preview.lineStyle(1, 0x3a3f4a, 1);
+      preview.strokeRect(px, py, pw, ph);
+      preview.lineStyle(1, 0xff5a5a, 0.4);
+      preview.beginPath();
+      preview.moveTo(px + pw / 2, py);
+      preview.lineTo(px + pw / 2, py + ph);
+      preview.strokePath();
+      def.obstacles.forEach(o => {
+        const ox = px + (o.x / W) * pw, oy = py + (o.y / H) * ph;
+        const ow = (o.w / W) * pw, oh = (o.h / H) * ph;
+        preview.fillStyle(0x5a6070, 1);
+        preview.fillRect(ox - ow / 2, oy - oh / 2, Math.max(ow, 2), Math.max(oh, 2));
+      });
+
+      const tagline = this.add.text(x, y + cardH / 2 - 26, def.tagline, {
+        fontFamily: 'Arial', fontSize: '10px', color: '#7f8a9a', align: 'center', wordWrap: { width: cardW - 16 }, lineSpacing: 2
+      }).setOrigin(0.5);
+
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerover', () => bg.setStrokeStyle(2, 0xffd23f));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, 0x3a3f4a));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.select();
+        this.currentObstacles = def.obstacles;
+        this.currentArenaName = def.name;
+        this.drawObstaclesForCurrentMap();
+        this.setMapVisible(false);
+        this.startMatch(this.pendingMode);
+      });
+
+      this.mapGroup.push(bg, nameText, preview, tagline);
+    });
+
+    const backBtn = this.add.text(W / 2, H - 40, '< back to mode', {
+      fontFamily: 'Arial', fontSize: '13px', color: '#5a6070'
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    backBtn.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setMapVisible(false);
+      this.setModeVisible(true);
+    });
+    this.mapGroup.push(backBtn);
+  }
+
+  setMapVisible(v) { this.mapGroup.forEach(o => o.setVisible(v)); }
 
   buildHUD() {
     this.modeText = this.add.text(W / 2, 20, '', {
@@ -265,13 +412,14 @@ class PlayScene extends Phaser.Scene {
   buildEntities() {
     const g1 = this.add.graphics();
     const g2 = this.add.graphics();
-    this.p1 = { x: 160, y: H / 2, color: 0x8fd3ff, dark: 0x3f6fa8, g: g1, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, counterUntil: 0, hasBall: true };
-    this.p2 = { x: W - 160, y: H / 2, color: 0xff9f6b, dark: 0xa85f3f, g: g2, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, counterUntil: 0, hasBall: false };
+    this.p1 = { x: 160, y: H / 2, color: 0x8fd3ff, dark: 0x3f6fa8, g: g1, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, hasBall: true };
+    this.p2 = { x: W - 160, y: H / 2, color: 0xff9f6b, dark: 0xa85f3f, g: g2, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, hasBall: false };
 
     this.ballG = this.add.graphics();
-    this.ball = { active: false, x: 0, y: 0, vx: 0, vy: 0, progress: 0, totalDist: 1, tier: 'normal', owner: null, height: 0 };
+    this.ball = { active: false, x: 0, y: 0, vx: 0, vy: 0, progress: 0, totalDist: 1, tier: 'normal', owner: null, height: 0, trail: [] };
 
     this.aimG = this.add.graphics();
+    this.snapG = this.add.graphics();
     this.impactFlash = this.add.circle(0, 0, 40, 0xffffff, 0.5).setVisible(false);
   }
 
@@ -301,7 +449,7 @@ class PlayScene extends Phaser.Scene {
       p1LeftAlt: Phaser.Input.Keyboard.KeyCodes.LEFT,
       p1RightAlt: Phaser.Input.Keyboard.KeyCodes.RIGHT,
       p1ThrowAlt: Phaser.Input.Keyboard.KeyCodes.SPACE,
-      p1CatchAlt: Phaser.Input.Keyboard.KeyCodes.SHIFT,
+      p1CatchAlt: Phaser.Input.Keyboard.KeyCodes.C,
 
       p2Up: Phaser.Input.Keyboard.KeyCodes.UP,
       p2Down: Phaser.Input.Keyboard.KeyCodes.DOWN,
@@ -321,7 +469,7 @@ class PlayScene extends Phaser.Scene {
     this.updatePips();
     this.resetForServe(true);
 
-    this.modeText.setText(mode === 'ai' ? '1P VS AI' : '2P LOCAL').setVisible(true);
+    this.modeText.setText((mode === 'ai' ? '1P VS AI' : '2P LOCAL') + '  —  ' + this.currentArenaName).setVisible(true);
     this.p2NameText.setText(mode === 'ai' ? 'CPU' : 'P2');
     this.setHUDVisible(true);
     this.setOverVisible(false);
@@ -376,6 +524,7 @@ class PlayScene extends Phaser.Scene {
     this.updateThrowInput();
     this.updateBall(dt);
     this.updateCatchAttempts(time);
+    this.updateWhiffExpiry(time);
     this.drawPlayers();
     this.drawBall();
     this.drawAim();
@@ -386,7 +535,7 @@ class PlayScene extends Phaser.Scene {
     const maxX = isP1 ? P1_MAX_X : P2_MAX_X;
     f.x = Phaser.Math.Clamp(f.x, minX, maxX);
     f.y = Phaser.Math.Clamp(f.y, COURT_TOP + PLAYER_R, COURT_BOTTOM - PLAYER_R);
-    OBSTACLES.forEach(o => {
+    this.currentObstacles.forEach(o => {
       const halfW = o.w / 2 + PLAYER_R, halfH = o.h / 2 + PLAYER_R;
       if (Math.abs(f.x - o.x) < halfW && Math.abs(f.y - o.y) < halfH) {
         const overlapX = halfW - Math.abs(f.x - o.x);
@@ -410,8 +559,9 @@ class PlayScene extends Phaser.Scene {
     if (p1Left) vx -= 1;
     if (p1Right) vx += 1;
     const len = Math.hypot(vx, vy) || 1;
-    this.p1.x += (vx / len) * MOVE_SPEED * (dt / 1000);
-    this.p1.y += (vy / len) * MOVE_SPEED * (dt / 1000);
+    const p1Speed = MOVE_SPEED * (this.time.now < this.p1.whiffUntil ? 0.4 : 1);
+    this.p1.x += (vx / len) * p1Speed * (dt / 1000);
+    this.p1.y += (vy / len) * p1Speed * (dt / 1000);
     this.clampToHalf(this.p1, true);
 
     if (this.mode === '2p') {
@@ -421,8 +571,9 @@ class PlayScene extends Phaser.Scene {
       if (this.keys.p2Left.isDown) vx2 -= 1;
       if (this.keys.p2Right.isDown) vx2 += 1;
       const len2 = Math.hypot(vx2, vy2) || 1;
-      this.p2.x += (vx2 / len2) * MOVE_SPEED * (dt / 1000);
-      this.p2.y += (vy2 / len2) * MOVE_SPEED * (dt / 1000);
+      const p2Speed = MOVE_SPEED * (this.time.now < this.p2.whiffUntil ? 0.4 : 1);
+      this.p2.x += (vx2 / len2) * p2Speed * (dt / 1000);
+      this.p2.y += (vy2 / len2) * p2Speed * (dt / 1000);
       this.clampToHalf(this.p2, false);
     }
   }
@@ -458,10 +609,11 @@ class PlayScene extends Phaser.Scene {
     if (this.ball.active && this.ball.owner === null) {
       const dist = Math.hypot(this.ball.x - ai.x, this.ball.y - ai.y);
       const headingToAI = (this.ball.vx > 0);
-      if (headingToAI && dist < 140 && dist > 20 && ai.catchActiveUntil < this.time.now) {
+      if (headingToAI && dist < 140 && dist > 20 && ai.catchActiveUntil < this.time.now && this.time.now >= ai.whiffUntil) {
         if (Phaser.Math.Between(0, 100) < 6) {
           ai.catchPressAt = this.time.now;
           ai.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+          ai.catchWindowOpen = true;
         }
       }
     }
@@ -478,9 +630,10 @@ class PlayScene extends Phaser.Scene {
       : Phaser.Input.Keyboard.JustDown(this.keys.p1Catch);
 
     this.handleThrowFor(this.p1, this.p2, p1ThrowDown, p1ThrowJustUp);
-    if (p1CatchJustDown) {
+    if (p1CatchJustDown && this.time.now >= this.p1.whiffUntil) {
       this.p1.catchPressAt = this.time.now;
       this.p1.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+      this.p1.catchWindowOpen = true;
     }
 
     if (this.mode === '2p') {
@@ -488,11 +641,22 @@ class PlayScene extends Phaser.Scene {
       const p2ThrowJustUp = Phaser.Input.Keyboard.JustUp(this.keys.p2Throw);
       const p2CatchJustDown = Phaser.Input.Keyboard.JustDown(this.keys.p2Catch);
       this.handleThrowFor(this.p2, this.p1, p2ThrowDown, p2ThrowJustUp);
-      if (p2CatchJustDown) {
+      if (p2CatchJustDown && this.time.now >= this.p2.whiffUntil) {
         this.p2.catchPressAt = this.time.now;
         this.p2.catchActiveUntil = this.time.now + CATCH_ACTIVE_MS;
+        this.p2.catchWindowOpen = true;
       }
     }
+  }
+
+  updateWhiffExpiry(time) {
+    [this.p1, this.p2].forEach(f => {
+      if (f.catchWindowOpen && time >= f.catchActiveUntil) {
+        f.catchWindowOpen = false;
+        f.whiffUntil = time + WHIFF_RECOVERY_MS;
+        if (window.SFX) SFX.blip();
+      }
+    });
   }
 
   handleThrowFor(f, opponent, throwDown, throwJustUp) {
@@ -532,6 +696,7 @@ class PlayScene extends Phaser.Scene {
     this.ball.progress = 0;
     this.ball.totalDist = dist;
     this.ball.height = 0;
+    this.ball.trail = [];
 
     f.hasBall = false;
     f.charging = false;
@@ -551,12 +716,15 @@ class PlayScene extends Phaser.Scene {
     const t = Phaser.Math.Clamp(b.progress / Math.max(b.totalDist, 1), 0, 1);
     b.height = Math.sin(Math.PI * Math.min(t, 1)) * TIER_DEFS[b.tier].arcHeight;
 
+    b.trail.push({ x: b.x, y: b.y, height: b.height });
+    if (b.trail.length > TRAIL_LENGTH) b.trail.shift();
+
     // wall bounce (top/bottom)
     if (b.y < COURT_TOP + BALL_R) { b.y = COURT_TOP + BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
     if (b.y > COURT_BOTTOM - BALL_R) { b.y = COURT_BOTTOM - BALL_R; b.vy *= -1; if (window.SFX) SFX.blip(); }
 
     // obstacle bounce
-    OBSTACLES.forEach(o => {
+    this.currentObstacles.forEach(o => {
       const halfW = o.w / 2 + BALL_R, halfH = o.h / 2 + BALL_R;
       if (Math.abs(b.x - o.x) < halfW && Math.abs(b.y - o.y) < halfH) {
         const overlapX = halfW - Math.abs(b.x - o.x);
@@ -586,6 +754,7 @@ class PlayScene extends Phaser.Scene {
 
       const catchActive = time < f.catchActiveUntil;
       if (catchActive) {
+        f.catchWindowOpen = false; // resolved here, not a whiff
         const pressRecency = time - f.catchPressAt;
         const isPowerBall = b.tier === 'power';
         const perfect = pressRecency <= PERFECT_PRESS_MS;
@@ -602,6 +771,7 @@ class PlayScene extends Phaser.Scene {
         f.hasBall = true;
         f.counterUntil = time + (perfect ? COUNTER_WINDOW_PERFECT_MS : COUNTER_WINDOW_NORMAL_MS);
         this.showCatchFeedback(f, perfect ? 'PERFECT CATCH!' : 'CAUGHT!', perfect ? '#5be37b' : '#8fd3ff');
+        this.showCatchSnap(f, perfect);
         if (window.SFX) SFX[perfect ? 'success' : 'pickup']();
         vibrate(perfect ? 25 : 12);
         this.ball.active = false;
@@ -611,6 +781,21 @@ class PlayScene extends Phaser.Scene {
 
       // no active catch attempt — hit
       this.registerHit(f);
+    });
+  }
+
+  showCatchSnap(f, perfect) {
+    const ring = { r: PLAYER_R + 4 };
+    const color = perfect ? 0x5be37b : 0x8fd3ff;
+    this.tweens.add({
+      targets: ring, r: perfect ? PLAYER_R + 42 : PLAYER_R + 30,
+      duration: perfect ? 320 : 240, ease: 'Quad.easeOut',
+      onUpdate: () => {
+        this.snapG.clear();
+        this.snapG.lineStyle(perfect ? 3 : 2, color, 1 - (ring.r - PLAYER_R) / 42);
+        this.snapG.strokeCircle(f.x, f.y, ring.r);
+      },
+      onComplete: () => this.snapG.clear()
     });
   }
 
@@ -674,9 +859,10 @@ class PlayScene extends Phaser.Scene {
       const pulse = charging ? 1 + Math.sin(this.time.now * 0.02) * 0.04 * chargeT : 1;
       const r = PLAYER_R * pulse;
 
-      f.g.fillStyle(f.color, 1);
+      const whiffed = this.time.now < f.whiffUntil;
+      f.g.fillStyle(f.color, whiffed ? (0.5 + Math.sin(this.time.now * 0.03) * 0.2) : 1);
       f.g.fillCircle(f.x, f.y, r);
-      f.g.lineStyle(2, f.dark, 1);
+      f.g.lineStyle(2, whiffed ? 0xff5a5a : f.dark, 1);
       f.g.strokeCircle(f.x, f.y, r);
 
       if (f.hasBall && !this.ball.active) {
@@ -711,8 +897,9 @@ class PlayScene extends Phaser.Scene {
       this.aimG.strokePath();
 
       if (tierKey === 'power') {
-        this.aimG.fillStyle(0xff5a5a, 0.5 + Math.sin(this.time.now * 0.02) * 0.3);
-        this.aimG.fillCircle(f.x, f.y, PLAYER_R + 10);
+        const pulse = 0.35 + Math.sin(this.time.now * 0.02) * 0.25;
+        this.aimG.lineStyle(2, 0xff5a5a, pulse);
+        this.aimG.strokeCircle(f.x, f.y, PLAYER_R + 8);
       }
     });
   }
@@ -722,15 +909,27 @@ class PlayScene extends Phaser.Scene {
     if (!this.ball.active) return;
     const b = this.ball;
     const def = TIER_DEFS[b.tier];
-    const scale = 1 + (b.height / 80);
+    const scale = 1 + (b.height / 90);
+
+    // ground shadow first, for readability of the arc height
+    this.ballG.fillStyle(0x000000, 0.3);
+    this.ballG.fillEllipse(b.x, b.y + 4, BALL_R * 1.5, BALL_R * 0.55);
+
+    // fading motion trail — the eye should catch this before anything else on screen
+    b.trail.forEach((p, i) => {
+      const t = (i + 1) / b.trail.length;
+      this.ballG.fillStyle(def.color, t * 0.22);
+      this.ballG.fillCircle(p.x, p.y - p.height, BALL_R * scale * 0.7 * t);
+    });
+
+    // soft outer glow so the ball reads as "the important thing" against the arena
+    this.ballG.fillStyle(def.color, 0.18);
+    this.ballG.fillCircle(b.x, b.y - b.height, BALL_R * scale + 6);
+
     this.ballG.fillStyle(def.color, 1);
     this.ballG.fillCircle(b.x, b.y - b.height, BALL_R * scale);
-    this.ballG.lineStyle(1, 0x0a0a0d, 0.6);
+    this.ballG.lineStyle(1.5, 0xffffff, 0.85);
     this.ballG.strokeCircle(b.x, b.y - b.height, BALL_R * scale);
-
-    // ground shadow for readability of the arc height
-    this.ballG.fillStyle(0x000000, 0.25);
-    this.ballG.fillEllipse(b.x, b.y + 4, BALL_R * 1.6, BALL_R * 0.6);
   }
 }
 
