@@ -73,16 +73,21 @@ const SPIN_CLAMP = 0.9; // hard ceiling so curve stays readable, not chaotic
 const SHRINK_MIN_HALF_SPAN = 14;
 const SHRINK_DURATION_MS = 90000; // time to shrink from full size down to the floor
 const SHRINK_SCORE_TO_WIN = 5;
+const SHRINK_WARNING_HALF_SPAN = SHRINK_MIN_HALF_SPAN + 6; // last stretch of shrink triggers the warning pulse
 
 const PHASE_NORMAL_MS = 60000;   // phase 1 length
 const PHASE_DOUBLE_MS = 30000;   // phase 2 length (starts right after phase 1)
 // sudden death begins at PHASE_NORMAL_MS + PHASE_DOUBLE_MS (1:30) and runs until a miss
 
+// reactionDelayMs: how long the AI freezes in place after a ball first turns
+// toward it, before it starts moving at all (a real reaction lag).
+// noiseAmount: random positioning error (px) added to its target each time a
+// ball turns toward it — "poor positioning," not just slow feet.
 const DIFFICULTY_DEFS = {
-  easy:   { name: 'Easy',   trackingMult: 0.5,  predictAccuracy: 0.10, anticipate: false, aggro: 0.0 },
-  normal: { name: 'Normal', trackingMult: 0.78, predictAccuracy: 0.5,  anticipate: false, aggro: 0.15 },
-  hard:   { name: 'Hard',   trackingMult: 1.0,  predictAccuracy: 0.85, anticipate: true,  aggro: 0.35 },
-  expert: { name: 'Expert', trackingMult: 1.15, predictAccuracy: 1.0,  anticipate: true,  aggro: 0.55 }
+  easy:   { name: 'Easy',   trackingMult: 0.42, predictAccuracy: 0.10, anticipate: false, aggro: 0.0,  reactionDelayMs: 260, noiseAmount: 30 },
+  normal: { name: 'Normal', trackingMult: 0.78, predictAccuracy: 0.5,  anticipate: false, aggro: 0.15, reactionDelayMs: 90,  noiseAmount: 10 },
+  hard:   { name: 'Hard',   trackingMult: 1.0,  predictAccuracy: 0.85, anticipate: true,  aggro: 0.35, reactionDelayMs: 0,   noiseAmount: 4 },
+  expert: { name: 'Expert', trackingMult: 1.15, predictAccuracy: 1.0,  anticipate: true,  aggro: 0.55, reactionDelayMs: 0,   noiseAmount: 0 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'paddleDuel_difficulty';
@@ -115,7 +120,8 @@ const Sound = {
   milestone() { if (!window.SFX) return; SFX.tone(900, 0.08, 'sine', 0.14, 1400); SFX.tone(1200, 0.1, 'sine', 0.12, 1600, 60); },
   phaseDouble() { if (!window.SFX) return; SFX.tone(200, 0.16, 'sawtooth', 0.16, 500); SFX.tone(500, 0.14, 'square', 0.14, 900, 90); },
   phaseSuddenDeath() { if (!window.SFX) return; SFX.tone(140, 0.28, 'sawtooth', 0.2, 70); SFX.tone(1400, 0.1, 'square', 0.12, 1600, 120); },
-  suddenDeathEnd() { if (!window.SFX) return; SFX.tone(1500, 0.12, 'square', 0.18, 2000); SFX.tone(900, 0.18, 'sawtooth', 0.16, 300, 80); }
+  suddenDeathEnd() { if (!window.SFX) return; SFX.tone(1500, 0.12, 'square', 0.18, 2000); SFX.tone(900, 0.18, 'sawtooth', 0.16, 300, 80); },
+  shrinkWarning() { if (!window.SFX) return; SFX.tone(320, 0.14, 'sawtooth', 0.14, 120); SFX.tone(880, 0.08, 'square', 0.1, 1100, 70); }
 };
 
 class PaddleDuelScene extends Phaser.Scene {
@@ -185,6 +191,7 @@ class PaddleDuelScene extends Phaser.Scene {
     return {
       x: NET_X, y: H / 2, vx: 0, vy: 0, spin: 0, active: false,
       prevX: NET_X, quality: null, rally: 0, lastMilestone: 0, trail: [],
+      aiWasIncoming: false, aiNoiseOffset: 0,
       graphic: this.add.circle(NET_X, H / 2, BALL_R, 0xffffff)
     };
   }
@@ -380,6 +387,10 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p2.halfSpan = PADDLE_HALF_SPAN;
     this.p1.rect.setSize(PADDLE_W, PADDLE_HALF_SPAN * 2);
     this.p2.rect.setSize(PADDLE_W, PADDLE_HALF_SPAN * 2);
+    this.p1.rect.setStrokeStyle(2, 0x3f6fa8);
+    this.p2.rect.setStrokeStyle(2, 0xa85f3f);
+    this.shrinkWarningShown = false;
+    this.aiReactionUntil = 0;
 
     this.ball2.active = false;
     this.ball2.graphic.setVisible(false);
@@ -403,6 +414,8 @@ class PaddleDuelScene extends Phaser.Scene {
     ball.rally = 0;
     ball.lastMilestone = 0;
     ball.trail = [];
+    ball.aiWasIncoming = false;
+    ball.aiNoiseOffset = 0;
     ball.graphic.setVisible(true);
   }
 
@@ -437,10 +450,25 @@ class PaddleDuelScene extends Phaser.Scene {
   updatePaddleShrink() {
     const t = Phaser.Math.Clamp(this.matchElapsed / SHRINK_DURATION_MS, 0, 1);
     const halfSpan = Phaser.Math.Linear(PADDLE_HALF_SPAN, SHRINK_MIN_HALF_SPAN, t);
+    const nearMin = halfSpan <= SHRINK_WARNING_HALF_SPAN;
+
+    if (nearMin && !this.shrinkWarningShown) {
+      this.shrinkWarningShown = true;
+      this.announce('MINIMUM SIZE', '#ff5a5a');
+      Sound.shrinkWarning();
+    }
+
+    // pulse the paddle outline red as it nears the floor, so the shrink isn't
+    // just a number in the corner — it's visibly urgent right on the paddle
+    const pulse = nearMin ? 0.5 + 0.5 * Math.sin(this.time.now * 0.012) : 0;
+
     [this.p1, this.p2].forEach(p => {
       p.halfSpan = halfSpan;
       p.rect.setSize(PADDLE_W, halfSpan * 2);
       p.y = Phaser.Math.Clamp(p.y, COURT_TOP + halfSpan, COURT_BOTTOM - halfSpan);
+      if (nearMin) {
+        p.rect.setStrokeStyle(2 + pulse * 2, 0xff5a5a, 0.6 + pulse * 0.4);
+      }
     });
   }
 
@@ -551,10 +579,21 @@ class PaddleDuelScene extends Phaser.Scene {
     const targetBall = this.pickAITargetBall();
     const ballComingToAI = targetBall && targetBall.active && targetBall.vx > 0;
 
+    // the moment a ball first turns toward the AI, it commits a fresh
+    // positioning error and (on lower tiers) freezes for a real reaction lag —
+    // this is what actually makes Easy miss returns, not just move slower
+    if (targetBall && ballComingToAI && !targetBall.aiWasIncoming) {
+      this.aiReactionUntil = this.time.now + def.reactionDelayMs;
+      targetBall.aiNoiseOffset = Phaser.Math.Between(-def.noiseAmount, def.noiseAmount);
+    }
+    if (targetBall) targetBall.aiWasIncoming = ballComingToAI;
+    const reacting = this.time.now < this.aiReactionUntil;
+
     let targetY = H / 2;
     if (targetBall && (ballComingToAI || def.anticipate)) {
       const predicted = this.predictArrivalY(targetBall, P2_X);
       targetY = Phaser.Math.Linear(targetBall.y, predicted, def.predictAccuracy);
+      targetY += targetBall.aiNoiseOffset || 0;
       // expert: bias using a *tendency* read on the human's recent contact points
       // (weighted average of their last few hits), not a perfect read of intent —
       // it plays the odds, so a deliberate change in habit throws it off
@@ -569,7 +608,7 @@ class PaddleDuelScene extends Phaser.Scene {
     targetY = Phaser.Math.Clamp(targetY, COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
 
     const dy = targetY - p.y;
-    const maxStep = MOVE_SPEED * def.trackingMult * (dt / 1000);
+    const maxStep = reacting ? 0 : MOVE_SPEED * def.trackingMult * (dt / 1000);
     const step = Phaser.Math.Clamp(dy, -maxStep, maxStep);
     p.y += step;
     p.y = Phaser.Math.Clamp(p.y, COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
