@@ -85,14 +85,14 @@ const COUNTER_WINDOW_PERFECT_MS = 600;
 // system" design philosophy. Each list is {x, y, w, h} rectangles.
 const ARENA_DEFS = {
   duel: {
-    name: 'THE DUEL', tagline: 'OPEN • REACTION',
+    name: 'THE DUEL', tagline: 'OPEN FIGHT',
     obstacles: [
       { x: 175, y: 255, w: 45, h: 30 },
       { x: 740, y: 255, w: 45, h: 30 }
     ]
   },
   wallBender: {
-    name: 'WALL BENDER', tagline: 'RICOCHETS • ANGLES',
+    name: 'WALL BENDER', tagline: 'BANK SHOTS',
     obstacles: [
       { x: 105, y: 105, w: 110, h: 24 },
       { x: 105, y: 431, w: 110, h: 24 },
@@ -101,7 +101,7 @@ const ARENA_DEFS = {
     ]
   },
   gate: {
-    name: 'THE GATE', tagline: 'CLOSE RANGE • RISK',
+    name: 'THE GATE', tagline: 'CENTER CHOKEPOINT',
     obstacles: [
       { x: 385, y: 145, w: 55, h: 105 },
       { x: 385, y: 290, w: 55, h: 105 },
@@ -110,7 +110,7 @@ const ARENA_DEFS = {
     ]
   },
   safeHarbor: {
-    name: 'SAFE HARBOR', tagline: 'COVER • PATIENCE',
+    name: 'SAFE HARBOR', tagline: 'CORNER COVER',
     obstacles: [
       { x: 80, y: 125, w: 120, h: 90 },
       { x: 80, y: 345, w: 120, h: 90 },
@@ -119,7 +119,7 @@ const ARENA_DEFS = {
     ]
   },
   cross: {
-    name: 'THE CROSS', tagline: 'POSITIONING • LANES',
+    name: 'THE CROSS', tagline: 'OFFSET LANES',
     obstacles: [
       { x: 250, y: 125, w: 55, h: 115 },
       { x: 145, y: 300, w: 55, h: 115 },
@@ -409,8 +409,8 @@ class PlayScene extends Phaser.Scene {
       }).setOrigin(0.5);
 
       bg.setInteractive({ useHandCursor: true });
-      bg.on('pointerover', () => bg.setStrokeStyle(2, 0xffd23f));
-      bg.on('pointerout', () => bg.setStrokeStyle(2, 0x3a3f4a));
+      bg.on('pointerover', () => { bg.setStrokeStyle(2, 0xffd23f); nameText.setColor('#ffd23f'); });
+      bg.on('pointerout', () => { bg.setStrokeStyle(2, 0x3a3f4a); nameText.setColor('#e8ecf1'); });
       bg.on('pointerdown', () => {
         if (window.SFX) SFX.select();
         this.currentObstacles = def.obstacles;
@@ -508,8 +508,8 @@ class PlayScene extends Phaser.Scene {
   buildEntities() {
     const g1 = this.add.graphics();
     const g2 = this.add.graphics();
-    this.p1 = { x: 160, y: H / 2, color: 0x8fd3ff, dark: 0x3f6fa8, g: g1, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, hasBall: true };
-    this.p2 = { x: W - 160, y: H / 2, color: 0xff9f6b, dark: 0xa85f3f, g: g2, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, hasBall: false };
+    this.p1 = { x: 160, y: H / 2, facing: 1, color: 0x8fd3ff, dark: 0x3f6fa8, g: g1, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, throwFollowUntil: 0, hasBall: true };
+    this.p2 = { x: W - 160, y: H / 2, facing: -1, color: 0xff9f6b, dark: 0xa85f3f, g: g2, charging: false, chargeStart: 0, catchActiveUntil: 0, catchPressAt: -9999, catchWindowOpen: false, whiffUntil: 0, counterUntil: 0, throwFollowUntil: 0, hasBall: false };
 
     this.ballG = this.add.graphics();
     this.ball = { active: false, x: 0, y: 0, vx: 0, vy: 0, progress: 0, totalDist: 1, tier: 'normal', owner: null, height: 0, trail: [] };
@@ -829,6 +829,7 @@ class PlayScene extends Phaser.Scene {
     f.hasBall = false;
     f.charging = false;
     f.counterUntil = 0;
+    f.throwFollowUntil = this.time.now + 150;
 
     if (window.SFX) SFX.shoot();
     vibrate(tierKey === 'power' ? 20 : 8);
@@ -982,23 +983,64 @@ class PlayScene extends Phaser.Scene {
   drawPlayers() {
     [this.p1, this.p2].forEach(f => {
       f.g.clear();
+      const now = this.time.now;
       const charging = f.charging;
-      const chargeT = charging ? Phaser.Math.Clamp((this.time.now - f.chargeStart) / THROW_MAX_CHARGE_MS, 0, 1) : 0;
-      const pulse = charging ? 1 + Math.sin(this.time.now * 0.02) * 0.04 * chargeT : 1;
+      const chargeT = charging ? Phaser.Math.Clamp((now - f.chargeStart) / THROW_MAX_CHARGE_MS, 0, 1) : 0;
+      const pulse = charging ? 1 + Math.sin(now * 0.02) * 0.04 * chargeT : 1;
       const r = PLAYER_R * pulse;
+      const whiffed = now < f.whiffUntil;
+      const followThrough = now < f.throwFollowUntil;
+      const catchReady = now < f.catchActiveUntil;
+      const facing = f.facing;
 
-      const whiffed = this.time.now < f.whiffUntil;
-      f.g.fillStyle(f.color, whiffed ? (0.5 + Math.sin(this.time.now * 0.03) * 0.2) : 1);
+      // top-down figure: torso, an offset head, and two arms that pose
+      // through idle / windup / release / catch-ready / whiff — the arms
+      // are what actually sell the commitment-throw read at a glance
+      let armX, armSpread;
+      if (whiffed) {
+        armX = facing * r * 0.1; armSpread = 0.4;
+      } else if (followThrough) {
+        armX = facing * r * 1.25; armSpread = 0.5;
+      } else if (catchReady) {
+        armX = facing * r * 0.85; armSpread = 0.9;
+      } else if (charging) {
+        armX = -facing * r * (0.5 + 0.75 * chargeT); armSpread = 0.55;
+      } else {
+        armX = facing * r * 0.3; armSpread = 0.55;
+      }
+      const armY = r * armSpread;
+
+      const bodyAlpha = whiffed ? (0.5 + Math.sin(now * 0.03) * 0.2) : 1;
+      const armColor = whiffed ? 0xff5a5a : 0xffffff;
+
+      // arms drawn first so the torso overlaps their base, reading as "attached"
+      f.g.lineStyle(4, armColor, whiffed ? 0.8 : 0.9);
+      f.g.beginPath();
+      f.g.moveTo(f.x, f.y - armY * 0.5);
+      f.g.lineTo(f.x + armX, f.y - armY);
+      f.g.strokePath();
+      f.g.beginPath();
+      f.g.moveTo(f.x, f.y + armY * 0.5);
+      f.g.lineTo(f.x + armX, f.y + armY);
+      f.g.strokePath();
+
+      // torso
+      f.g.fillStyle(f.color, bodyAlpha);
       f.g.fillCircle(f.x, f.y, r);
       f.g.lineStyle(2, whiffed ? 0xff5a5a : f.dark, 1);
       f.g.strokeCircle(f.x, f.y, r);
 
+      // head, offset toward whichever side the player faces
+      const headX = f.x + facing * r * 0.7, headY = f.y;
+      f.g.fillStyle(f.dark, bodyAlpha);
+      f.g.fillCircle(headX, headY, r * 0.4);
+
       if (f.hasBall && !this.ball.active) {
         f.g.fillStyle(0xffffff, 0.9);
-        f.g.fillCircle(f.x, f.y - r - 8, 6);
+        f.g.fillCircle(f.x + facing * r * 0.35, f.y, 6);
       }
 
-      if (this.time.now < f.counterUntil) {
+      if (now < f.counterUntil) {
         f.g.lineStyle(2, 0x5be37b, 0.8);
         f.g.strokeCircle(f.x, f.y, r + 6);
       }
