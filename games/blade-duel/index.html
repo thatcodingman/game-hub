@@ -64,6 +64,7 @@
     background: radial-gradient(circle at 50% 30%, #14141f 0%, #060608 75%);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     text-align: center; padding: 24px;
+    overflow-y: auto;
   }
   .hidden { display: none !important; }
   .overlay h1 {
@@ -89,6 +90,15 @@
   .tierCard .t { font-size: 15px; font-weight: 700; margin: 3px 0 6px; }
   .tierCard .d { font-size: 11px; color: #94a3b8; line-height: 1.4; }
   .tierCard .w { font-size: 11px; color: #4ade80; margin-top: 6px; }
+
+  .sectionLabel { font-size: 11px; color: #64748b; letter-spacing: 0.1em; text-transform: uppercase; margin: 8px 0 6px; }
+  #charGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px,1fr)); gap: 8px; max-width: 640px; width: 100%; }
+  .charCard { background: rgba(20,20,32,0.7); border: 1px solid rgba(148,163,184,0.2); border-radius: 10px; padding: 8px; cursor: pointer; text-align: left; }
+  .charCard:hover { border-color: #fb923c; }
+  .charCard.selected { border-color: var(--sel-color, #4ade80); box-shadow: 0 0 0 1px var(--sel-color, #4ade80); }
+  .charCard .sw { width: 14px; height: 14px; border-radius: 4px; margin-bottom: 4px; }
+  .charCard .n { font-size: 12px; font-weight: 700; }
+  .charCard .t { font-size: 9px; color: #94a3b8; }
 </style>
 </head>
 <body>
@@ -120,6 +130,9 @@
   <div id="menuOverlay" class="overlay">
     <h1>BLADE DUEL</h1>
     <div class="sub">Every attack is a commitment. Every guard is a read. Two fighters, four verbs — attack, guard, feint, step — and one well-timed decision beats ten fast ones.</div>
+    <div class="sectionLabel">Choose Your Fighter</div>
+    <div id="charGrid"></div>
+    <div class="sectionLabel">Choose Opponent</div>
     <div id="tierGrid"></div>
     <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · tap Shift for a brief Block-anything window (chip damage, no parry, then a cooldown) · 1 alone = quick hit · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
   </div>
@@ -193,6 +206,41 @@
     low:   { damage: 30, stagger: 0.28, effect: 'slow',       effectDuration: 2.0, mult: 0.75 }
   };
 
+  const BASE_GUARD_CHIP = 0.12; // a correctly-matched directional guard still takes this fraction of damage by default
+
+  // Data-driven roster: everyone shares the same High/Torso/Low/guard/parry/Block/Feint/Step
+  // vocabulary — no unique moves. Identity comes entirely from multipliers/overrides on the
+  // existing systems. Unlisted fields default to a neutral 1x (or 0/none) at lookup time.
+  const CHARACTERS = [
+    { id:0, name:'Vex', title:'The Duelist', color:'#38bdf8',
+      pitch:'Cocky, surgical, aggressive — wins by committing faster than expected.',
+      windupMult:0.88, recoveryMult:1.09, stepDistMult:0.90, parryWindowMult:0.80 },
+    { id:1, name:'Brutus', title:'The Heavy', color:'#f97316',
+      pitch:'Slow, intimidating, brutally efficient — every opening costs more.',
+      dmg:{high:37,torso:35,low:33}, windupMult:1.15, recoveryMult:1.15, stepDistMult:0.85 },
+    { id:2, name:'Sable', title:'The Counterfighter', color:'#a78bfa',
+      pitch:'Patient and calculating — prefers making the opponent attack first.',
+      parryWindowMult:1.40, parryDamageMult:1.15, windupMult:1.08, stepCooldownMult:1.11 },
+    { id:3, name:'Rook', title:'The Bulwark', color:'#94a3b8',
+      pitch:'Defensive and stubborn — wins by frustrating aggression.',
+      guardChipMult:0.80, blockDurationMult:0.80, blockCooldownMult:0.80, windupMult:1.10 },
+    { id:4, name:'Nyx', title:'The Trickster', color:'#f472b6',
+      pitch:'Unpredictable and slippery — specializes in baiting reactions to attacks that never land.',
+      feintRecoveryMult:0.75, windupMult:1.05, stepCooldownMult:0.78, stepDistMult:0.90 },
+    { id:5, name:'Mara', title:'The Legbreaker', color:'#4ade80',
+      pitch:'Ruthless and methodical — attacks mobility rather than chasing raw damage.',
+      dmg:{high:32,torso:32,low:34}, lowSlow:{duration:3.5, mult:0.70} },
+    { id:6, name:'Calder', title:'The Displacer', color:'#facc15',
+      pitch:'Controls engagement distance with heavy body shots.',
+      dmg:{high:34,torso:30,low:30}, staggerMult:{torso:1.30}, knockbackMult:{torso:1.35}, stepDistMult:1.15 },
+    { id:7, name:'Iris', title:'The Glass Blade', color:'#fb7185',
+      pitch:'Precise but fragile — rewards consistently winning exchanges.',
+      dmg:{high:36,torso:34,low:32}, windupMult:0.95, hpMax:90, blockDurationMult:0.80 }
+  ];
+  function charDmg(char, line){ return (char.dmg && char.dmg[line] !== undefined) ? char.dmg[line] : HIT_LINES[line].damage; }
+  function charStagger(char, line){ return HIT_LINES[line].stagger * ((char.staggerMult && char.staggerMult[line]) || 1); }
+  function charHpMax(char){ return char.hpMax || HP_MAX; }
+
   const TIERS = [
     { id:0, name:"Practice", desc:"Attacks steadily, guards more often than you'd expect.", think:[0.45,0.8], feintChance:0.10, guardChance:0.35, guardDelay:0.20, guardAccuracy:0.62 },
     { id:1, name:"Apprentice", desc:"Good spacing, varies attack lines, guards often.", think:[0.3,0.55], feintChance:0.20, guardChance:0.68, guardDelay:0.12, guardAccuracy:0.85 },
@@ -201,6 +249,7 @@
 
   let state = 'menu'; // menu | duel | result
   let tierIdx = 0;
+  let charIdx = 0; // player's chosen character (index into CHARACTERS)
   let P, A; // player, ai fighters
   let elapsed = 0;
   let shakeT = 0, shakeMag = 0;
@@ -211,14 +260,14 @@
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-  function newFighter(x, color, isAI){
+  function newFighter(x, color, isAI, char){
     return {
-      x, color, isAI,
-      hp: HP_MAX,
+      x, color, isAI, char,
+      hp: charHpMax(char),
       state: 'idle', stateT: 0,
       attackLine: 'high', isFeint: false, resolved: false,
       guardLine: null, guardFreshT: -99,
-      staggerT: 0, slowT: 0, dazedT: 0, offBalanceT: 0, blockT: 0, blockCooldown: 0,
+      staggerT: 0, slowT: 0, slowMult: HIT_LINES.low.mult, dazedT: 0, offBalanceT: 0, blockT: 0, blockCooldown: 0,
       stepDir: 0, stepFromX: x, stepToX: x, stepCooldown: 0,
       // ai only
       aiThinkT: 0.6
@@ -227,12 +276,15 @@
 
   function startDuel(idx){
     tierIdx = idx;
-    P = newFighter(280, '#38bdf8', false);
-    A = newFighter(680, '#f87171', true);
+    const pChar = CHARACTERS[charIdx];
+    const aiChar = CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
+    P = newFighter(280, pChar.color, false, pChar);
+    A = newFighter(680, '#f87171', true, aiChar);
     elapsed = 0; fx = []; shakeT = 0;
     keys.up=false; keys.down=false; touchGuard=null;
     document.getElementById('tierLabel').textContent = 'vs ' + TIERS[idx].name;
-    document.getElementById('nameA').textContent = TIERS[idx].name;
+    document.getElementById('nameP').textContent = pChar.name;
+    document.getElementById('nameA').textContent = aiChar.name + ' · ' + TIERS[idx].name;
     setState('duel');
   }
 
@@ -260,8 +312,9 @@
 
   function tryBlock(f){
     if(f.blockCooldown > 0) return;
-    f.blockT = BLOCK_DURATION;
-    f.blockCooldown = BLOCK_DURATION + BLOCK_COOLDOWN;
+    const dur = BLOCK_DURATION * (f.char.blockDurationMult||1);
+    f.blockT = dur;
+    f.blockCooldown = dur + BLOCK_COOLDOWN * (f.char.blockCooldownMult||1);
   }
 
   const ATTACK_LINES = ['high','torso','low'];
@@ -280,9 +333,9 @@
     if(f.state !== 'idle' || f.stepCooldown > 0) return;
     const opp = f===P ? A : P;
     // Dazed (High) and Slow (Low) both cut step distance; if both are active, use the stronger one
-    let mult = 1;
+    let mult = f.char.stepDistMult || 1;
     if(f.dazedT > 0) mult = Math.min(mult, HIT_LINES.high.mult);
-    if(f.slowT > 0) mult = Math.min(mult, HIT_LINES.low.mult);
+    if(f.slowT > 0) mult = Math.min(mult, f.slowMult);
     let target = f.x + dir*STEP_DIST*mult;
     const towardOpp = (opp.x - f.x) * dir > 0; // only clamp separation when actually closing distance
     if(towardOpp){
@@ -304,44 +357,54 @@
       return;
     }
     const dLine = currentGuardLine(defender);
+    const line = attacker.attackLine;
     if(dLine === 'block'){
       // universal chip block: stops every line, but for reduced (not zero) damage, and never parries
-      const chip = Math.round(HIT_LINES[attacker.attackLine].damage * 0.3);
-      defender.hp = clamp(defender.hp - chip, 0, HP_MAX);
+      const chip = Math.round(charDmg(attacker.char, line) * 0.3);
+      defender.hp = clamp(defender.hp - chip, 0, charHpMax(defender.char));
       fx.push({type:'clash', x:(attacker.x+defender.x)/2, y:FLOOR_Y-90, t:0, dur:0.3});
       sfx.clash();
       return;
     }
     const freshT = defender===P ? Math.max(keyPressT.up, keyPressT.down) : defender.guardFreshT;
-    const isFreshParry = dLine === attacker.attackLine && (elapsed - freshT) <= PARRY_WINDOW;
+    const isFreshParry = dLine === line && (elapsed - freshT) <= PARRY_WINDOW * (defender.char.parryWindowMult||1);
     if(isFreshParry){
-      attacker.hp = clamp(attacker.hp - PARRY_PUNISH_DMG, 0, HP_MAX);
+      const punish = PARRY_PUNISH_DMG * (defender.char.parryDamageMult||1);
+      attacker.hp = clamp(attacker.hp - punish, 0, charHpMax(attacker.char));
       attacker.state = 'stagger'; attacker.stateT = 0; attacker.staggerT = STAGGER_PARRIED;
       fx.push({type:'parry', x:defender.x + (attacker.x-defender.x)*0.3, y:FLOOR_Y-90, t:0, dur:0.5});
       triggerShake(10);
       sfx.parry();
-    } else if(dLine === attacker.attackLine){
+    } else if(dLine === line){
+      // matched-but-not-fresh directional guard: still a correct read, but imperfect — some chip gets through
+      const chip = Math.round(charDmg(attacker.char, line) * BASE_GUARD_CHIP * (defender.char.guardChipMult||1));
+      defender.hp = clamp(defender.hp - chip, 0, charHpMax(defender.char));
       fx.push({type:'clash', x:(attacker.x+defender.x)/2, y:FLOOR_Y-90, t:0, dur:0.3});
       sfx.clash();
     } else {
-      const def = HIT_LINES[attacker.attackLine];
-      defender.hp = clamp(defender.hp - def.damage, 0, HP_MAX);
-      defender.state = 'stagger'; defender.stateT = 0; defender.staggerT = def.stagger;
+      const dmg = charDmg(attacker.char, line);
+      const stagger = charStagger(attacker.char, line);
+      defender.hp = clamp(defender.hp - dmg, 0, charHpMax(defender.char));
+      defender.state = 'stagger'; defender.stateT = 0; defender.staggerT = stagger;
 
-      // knockback — bigger if the defender was already Off-Balance (consumes that effect)
+      // knockback — a character's own torso knockback bonus (if any) stacks with Off-Balance's
       const wasOffBalance = defender.offBalanceT > 0;
-      let kb = BASE_KNOCKBACK;
+      let kb = BASE_KNOCKBACK * ((attacker.char.knockbackMult && attacker.char.knockbackMult[line]) || 1);
       if(wasOffBalance){ kb *= HIT_LINES.torso.knockbackMult; defender.offBalanceT = 0; }
       const kbDir = defender.x >= attacker.x ? 1 : -1;
       defender.x = clamp(defender.x + kbDir*kb, ARENA_MIN, ARENA_MAX);
 
       // location status refreshes rather than stacking — a second High doesn't double-Dazed
-      if(attacker.attackLine === 'high') defender.dazedT = def.effectDuration;
-      else if(attacker.attackLine === 'torso') defender.offBalanceT = def.effectDuration;
-      else if(attacker.attackLine === 'low') defender.slowT = def.effectDuration;
+      if(line === 'high'){ defender.dazedT = HIT_LINES.high.effectDuration; }
+      else if(line === 'torso'){ defender.offBalanceT = HIT_LINES.torso.effectDuration; }
+      else if(line === 'low'){
+        const lowFx = attacker.char.lowSlow || { duration: HIT_LINES.low.effectDuration, mult: HIT_LINES.low.mult };
+        defender.slowT = lowFx.duration;
+        defender.slowMult = lowFx.mult;
+      }
 
       fx.push({type:'hit', x:defender.x, y:FLOOR_Y-90, t:0, dur:0.35});
-      triggerShake(attacker.attackLine==='torso' ? (wasOffBalance?12:9) : (attacker.attackLine==='low' ? 5 : 6));
+      triggerShake(line==='torso' ? (wasOffBalance?12:9) : (line==='low' ? 5 : 6));
       sfx.hit();
     }
   }
@@ -400,7 +463,7 @@
     switch(f.state){
       case 'windup':
         f.stateT += dt;
-        if(f.stateT >= WINDUP_TIME){
+        if(f.stateT >= WINDUP_TIME * (f.char.windupMult||1)){
           if(f.isFeint){
             f.state = 'recovery'; f.stateT = 0;
           } else {
@@ -416,7 +479,7 @@
         break;
       case 'recovery': {
         f.stateT += dt;
-        const dur = f.isFeint ? RECOVERY_FEINT : RECOVERY_HIT;
+        const dur = f.isFeint ? RECOVERY_FEINT * (f.char.feintRecoveryMult||1) : RECOVERY_HIT * (f.char.recoveryMult||1);
         if(f.stateT >= dur){ f.state = 'idle'; f.stateT = 0; f.isFeint = false; }
         break;
       }
@@ -429,7 +492,7 @@
         const p = clamp(f.stateT / STEP_TIME, 0, 1);
         const ease = p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2;
         f.x = f.stepFromX + (f.stepToX - f.stepFromX)*ease;
-        if(p >= 1){ f.state = 'idle'; f.stateT = 0; f.stepCooldown = STEP_COOLDOWN; }
+        if(p >= 1){ f.state = 'idle'; f.stateT = 0; f.stepCooldown = STEP_COOLDOWN * (f.char.stepCooldownMult||1); }
         break;
       }
       default: break;
@@ -589,7 +652,7 @@
     let sx=30, sy=-40, ex=60, ey=-70, arc=0;
     const line = f.attackLine;
     if(f.state==='windup'){
-      const p = f.stateT/WINDUP_TIME;
+      const p = f.stateT/(WINDUP_TIME*(f.char.windupMult||1));
       const pe = 1 - Math.pow(1-p, 3); // ease-out cubic — fast pull, soft settle at the top of the windup
       const glow = 0.3 + pe*0.7;
       if(line==='high'){ sx=8; sy=-95; ex=8+pe*10; ey=-95-pe*46; arc=-8; }
@@ -690,8 +753,8 @@
 
     ctx.restore();
 
-    document.getElementById('hpFillP').style.width = Math.max(0,P.hp) + '%';
-    document.getElementById('hpFillA').style.width = Math.max(0,A.hp) + '%';
+    document.getElementById('hpFillP').style.width = Math.max(0, P.hp/charHpMax(P.char)*100) + '%';
+    document.getElementById('hpFillA').style.width = Math.max(0, A.hp/charHpMax(A.char)*100) + '%';
   }
 
   // ---------- loop ----------
@@ -722,10 +785,24 @@
       grid.appendChild(card);
     });
   }
+  function buildCharGrid(){
+    const grid = document.getElementById('charGrid');
+    grid.innerHTML = '';
+    CHARACTERS.forEach((c,i)=>{
+      const card = document.createElement('div');
+      card.className = 'charCard' + (i===charIdx ? ' selected' : '');
+      card.style.setProperty('--sel-color', c.color);
+      card.title = c.pitch;
+      card.innerHTML = '<div class="sw" style="background:'+c.color+'"></div><div class="n">'+c.name+'</div><div class="t">'+c.title+'</div>';
+      card.addEventListener('click', ()=>{ charIdx = i; buildCharGrid(); });
+      grid.appendChild(card);
+    });
+  }
   document.getElementById('retryBtn').addEventListener('click', ()=> startDuel(tierIdx));
-  document.getElementById('menuBtn').addEventListener('click', ()=>{ setState('menu'); buildTierGrid(); });
+  document.getElementById('menuBtn').addEventListener('click', ()=>{ setState('menu'); buildTierGrid(); buildCharGrid(); });
 
   buildTierGrid();
+  buildCharGrid();
   setState('menu');
 })();
 </script>
