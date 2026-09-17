@@ -621,8 +621,20 @@ class SumoPushScene extends Phaser.Scene {
     b.x += nx * overlap / 2; b.y += ny * overlap / 2;
 
     const aAlong = a.vx * nx + a.vy * ny;   // a's speed toward b
-    const bAlong = b.vx * nx + b.vy * ny;   // b's speed away from a (same sign convention)
-    const netForce = aAlong - bAlong;       // positive => a is winning the exchange
+    const bAlong = b.vx * nx + b.vy * ny;   // b's speed away from a (positive = retreating, negative = charging at a)
+    // BUG FIX: this was "aAlong - bAlong", which is the relative velocity of
+    // approach, NOT a measure of who has more momentum. When both wrestlers
+    // dash directly at each other (the single most common collision in the
+    // game), aAlong is positive and bAlong is negative, so aAlong - bAlong
+    // summed BOTH wrestlers' speed into one huge always-positive number -
+    // meaning "a" (the human player, p1) won essentially every head-on
+    // exchange regardless of which side actually dashed harder. b's own
+    // "aggression toward a" is -bAlong, so the correct comparison is
+    // aAlong - (-bAlong) = aAlong + bAlong. This also means genuinely
+    // balanced head-on hits now correctly land near zero and can trigger
+    // a Clash, instead of the old sum almost always blowing past the
+    // Clash threshold.
+    const netForce = aAlong + bAlong;       // positive => a is winning the exchange
 
     const aSpeedTotal = Math.hypot(a.vx, a.vy) || 1;
     const bSpeedTotal = Math.hypot(b.vx, b.vy) || 1;
