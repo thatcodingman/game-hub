@@ -56,7 +56,7 @@ const BALL_R = 8;
 const TRAIL_LENGTH = 8;
 
 const PADDLE_W = 11;
-const PADDLE_HALF_SPAN = 38;
+const PADDLE_HALF_SPAN = 38; // starting/default half-span; Shrinking Paddles mode shrinks this per-paddle over time
 const PADDLE_H = PADDLE_HALF_SPAN * 2;
 const P1_X = 66, P2_X = W - 66;
 const MOVE_SPEED = 380;
@@ -66,6 +66,13 @@ const BASE_BALL_SPEED = 350;
 const MAX_PADDLE_ANGLE = 0.5; // radians, ~29 degrees
 const SPIN_DECAY = 0.5;
 const SPIN_CLAMP = 0.9; // hard ceiling so curve stays readable, not chaotic
+
+// SHRINKING PADDLES mode (alternate to Classic): no Double Ball/Sudden Death —
+// instead both paddles shrink continuously the longer the match runs, down to
+// a floor, and it's simply first-to-N points.
+const SHRINK_MIN_HALF_SPAN = 14;
+const SHRINK_DURATION_MS = 90000; // time to shrink from full size down to the floor
+const SHRINK_SCORE_TO_WIN = 5;
 
 const PHASE_NORMAL_MS = 60000;   // phase 1 length
 const PHASE_DOUBLE_MS = 30000;   // phase 2 length (starts right after phase 1)
@@ -125,13 +132,15 @@ class PaddleDuelScene extends Phaser.Scene {
     this.buildHUD();
     this.buildInput();
     this.buildOverPanel();
+    this.buildMatchModeSelect();
     this.buildModeSelect();
     this.buildDifficultySelect();
 
     this.setHudVisible(false);
     this.setOverVisible(false);
     this.setDifficultySelectVisible(false);
-    this.setModeSelectVisible(true);
+    this.setModeSelectVisible(false);
+    this.setMatchModeSelectVisible(true);
   }
 
   // ---------------------------------------------------------------- COURT
@@ -152,11 +161,11 @@ class PaddleDuelScene extends Phaser.Scene {
   // -------------------------------------------------------------- ENTITIES
   buildEntities() {
     this.p1 = {
-      x: P1_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0x8fd3ff,
+      x: P1_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0x8fd3ff, halfSpan: PADDLE_HALF_SPAN,
       rect: this.add.rectangle(P1_X, H / 2, PADDLE_W, PADDLE_H, 0x8fd3ff).setStrokeStyle(2, 0x3f6fa8)
     };
     this.p2 = {
-      x: P2_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0xff9f6b,
+      x: P2_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0xff9f6b, halfSpan: PADDLE_HALF_SPAN,
       rect: this.add.rectangle(P2_X, H / 2, PADDLE_W, PADDLE_H, 0xff9f6b).setStrokeStyle(2, 0xa85f3f)
     };
 
@@ -169,6 +178,7 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p2Score = 0;
     this.phase = 'normal';
     this.matchElapsed = 0;
+    this.matchMode = 'classic';
   }
 
   createBallState() {
@@ -206,12 +216,45 @@ class PaddleDuelScene extends Phaser.Scene {
     });
   }
 
+  // ----------------------------------------------------- MATCH MODE SELECT
+  buildMatchModeSelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 110, 'PADDLE DUEL', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, 153, 'Control the rally. Break their timing.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
+    items.push(title, sub);
+
+    const makeModeButton = (y, label, tagline, color, onClick) => {
+      const bg = this.add.rectangle(W / 2, y, 360, 68, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(W / 2, y - 10, label, { fontFamily: 'Arial Black', fontSize: '19px', color: '#ffffff' }).setOrigin(0.5);
+      const tag = this.add.text(W / 2, y + 16, tagline, { fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, color));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, color));
+      bg.on('pointerdown', () => { if (window.SFX) SFX.click(); onClick(); });
+      items.push(bg, txt, tag);
+    };
+
+    makeModeButton(230, 'CLASSIC', 'Normal Rally → Double Ball → Sudden Death', 0x8fd3ff, () => {
+      this.matchMode = 'classic';
+      this.setMatchModeSelectVisible(false);
+      this.showModeSelect();
+    });
+    makeModeButton(320, 'SHRINKING PADDLES', 'Both paddles shrink the longer you rally — first to 5', 0xff5a5a, () => {
+      this.matchMode = 'shrink';
+      this.setMatchModeSelectVisible(false);
+      this.showModeSelect();
+    });
+
+    this.matchModeSelectItems = items;
+  }
+  setMatchModeSelectVisible(v) { this.matchModeSelectItems.forEach(o => o.setVisible(v)); }
+
   // --------------------------------------------------------- MODE SELECT
   buildModeSelect() {
     const items = [];
-    const title = this.add.text(W / 2, 120, 'PADDLE DUEL', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
-    const sub = this.add.text(W / 2, 163, 'Control the rally. Break their timing.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
+    const title = this.add.text(W / 2, 120, '', { fontFamily: 'Arial Black', fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, 158, 'Choose your opponent', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
     items.push(title, sub);
+    this.modeSelectTitle = title;
 
     const makeButton = (y, label, color, onClick) => {
       const bg = this.add.rectangle(W / 2, y, 320, 62, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
@@ -236,14 +279,23 @@ class PaddleDuelScene extends Phaser.Scene {
     const controlsHint = this.add.text(W / 2, 420,
       'VS AI: Arrow Keys move   •   2P Local: P1 = W/S   P2 = Up/Down',
       { fontFamily: 'Arial', fontSize: '13px', color: '#5a6578' }).setOrigin(0.5);
-    const phaseHint = this.add.text(W / 2, 445,
-      '60s Normal Rally  →  30s Double Ball  →  Sudden Death (next miss ends it)',
-      { fontFamily: 'Arial', fontSize: '12px', color: '#4a5268' }).setOrigin(0.5);
-    items.push(controlsHint, phaseHint);
+    items.push(controlsHint);
+
+    const back = this.add.text(W / 2, 450, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    back.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setModeSelectVisible(false);
+      this.setMatchModeSelectVisible(true);
+    });
+    items.push(back);
 
     this.modeSelectItems = items;
   }
   setModeSelectVisible(v) { this.modeSelectItems.forEach(o => o.setVisible(v)); }
+  showModeSelect() {
+    this.modeSelectTitle.setText(this.matchMode === 'shrink' ? 'SHRINKING PADDLES' : 'CLASSIC');
+    this.setModeSelectVisible(true);
+  }
 
   // ------------------------------------------------------ DIFFICULTY SEL
   buildDifficultySelect() {
@@ -303,7 +355,7 @@ class PaddleDuelScene extends Phaser.Scene {
       this.setOverVisible(false);
       this.setHudVisible(false);
       this.state = 'menu';
-      this.setModeSelectVisible(true);
+      this.setMatchModeSelectVisible(true);
     });
 
     items.push(dim, headline, sub, rematchBg, rematchLabel, menuLabel);
@@ -322,8 +374,12 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p1OffsetHistory = [];
     this.phase = 'normal';
     this.matchElapsed = 0;
-    this.phaseText.setText('NORMAL RALLY');
+    this.phaseText.setText(this.matchMode === 'shrink' ? 'SHRINKING PADDLES' : 'NORMAL RALLY');
     this.p1.y = H / 2; this.p2.y = H / 2;
+    this.p1.halfSpan = PADDLE_HALF_SPAN;
+    this.p2.halfSpan = PADDLE_HALF_SPAN;
+    this.p1.rect.setSize(PADDLE_W, PADDLE_HALF_SPAN * 2);
+    this.p2.rect.setSize(PADDLE_W, PADDLE_HALF_SPAN * 2);
 
     this.ball2.active = false;
     this.ball2.graphic.setVisible(false);
@@ -355,7 +411,8 @@ class PaddleDuelScene extends Phaser.Scene {
     if (this.state !== 'playing') return;
     const dt = Math.min(delta, 40);
     this.matchElapsed += dt;
-    this.updatePhaseTransitions();
+    if (this.matchMode === 'classic') this.updatePhaseTransitions();
+    else this.updatePaddleShrink();
 
     this.updatePlayerPaddle(dt);
     if (this.mode === 'ai') this.updateAIPaddle(dt);
@@ -372,6 +429,19 @@ class PaddleDuelScene extends Phaser.Scene {
     } else if (this.phase === 'double' && this.matchElapsed >= PHASE_NORMAL_MS + PHASE_DOUBLE_MS) {
       this.enterSuddenDeath();
     }
+  }
+
+  // SHRINKING PADDLES mode: both paddles shrink continuously toward a floor
+  // size as the match runs, re-clamped to court bounds so a paddle never
+  // gets stranded partway off-screen as it shrinks.
+  updatePaddleShrink() {
+    const t = Phaser.Math.Clamp(this.matchElapsed / SHRINK_DURATION_MS, 0, 1);
+    const halfSpan = Phaser.Math.Linear(PADDLE_HALF_SPAN, SHRINK_MIN_HALF_SPAN, t);
+    [this.p1, this.p2].forEach(p => {
+      p.halfSpan = halfSpan;
+      p.rect.setSize(PADDLE_W, halfSpan * 2);
+      p.y = Phaser.Math.Clamp(p.y, COURT_TOP + halfSpan, COURT_BOTTOM - halfSpan);
+    });
   }
 
   enterDoubleBall() {
@@ -398,6 +468,13 @@ class PaddleDuelScene extends Phaser.Scene {
   }
 
   updatePhaseText() {
+    if (this.matchMode === 'shrink') {
+      const size = Math.round(this.p1.halfSpan * 2);
+      this.phaseText.setText(size <= SHRINK_MIN_HALF_SPAN * 2
+        ? `PADDLES AT MINIMUM SIZE — FIRST TO ${SHRINK_SCORE_TO_WIN}`
+        : `SHRINKING — paddle ${size}px — first to ${SHRINK_SCORE_TO_WIN}`);
+      return;
+    }
     if (this.phase === 'normal') {
       const remain = Math.max(0, PHASE_NORMAL_MS - this.matchElapsed);
       this.phaseText.setText(`NORMAL RALLY — DOUBLE BALL IN ${Math.ceil(remain / 1000)}s`);
@@ -420,7 +497,7 @@ class PaddleDuelScene extends Phaser.Scene {
       else if (this.keys.down.isDown) dir = 1;
     }
     p.vy = dir * MOVE_SPEED;
-    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
     // smoothed velocity drives angle so the paddle reflects committed movement,
     // not a single-frame direction flip (kills the "wiggle for spin" exploit)
     p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
@@ -435,7 +512,7 @@ class PaddleDuelScene extends Phaser.Scene {
     if (this.keys.arrowUp.isDown) dir = -1;
     else if (this.keys.arrowDown.isDown) dir = 1;
     p.vy = dir * MOVE_SPEED;
-    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
     p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
     p.angle = Phaser.Math.Clamp((p.vySmoothed / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
     p.rect.setPosition(p.x, p.y);
@@ -483,19 +560,19 @@ class PaddleDuelScene extends Phaser.Scene {
       // it plays the odds, so a deliberate change in habit throws it off
       if (def.aggro > 0 && ballComingToAI) {
         const tendency = this.getP1OffsetTendency();
-        const edgeBias = -tendency * def.aggro * PADDLE_HALF_SPAN * 0.4;
+        const edgeBias = -tendency * def.aggro * p.halfSpan * 0.4;
         targetY += edgeBias;
       }
     } else if (targetBall) {
       targetY = targetBall.y;
     }
-    targetY = Phaser.Math.Clamp(targetY, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    targetY = Phaser.Math.Clamp(targetY, COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
 
     const dy = targetY - p.y;
     const maxStep = MOVE_SPEED * def.trackingMult * (dt / 1000);
     const step = Phaser.Math.Clamp(dy, -maxStep, maxStep);
     p.y += step;
-    p.y = Phaser.Math.Clamp(p.y, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
+    p.y = Phaser.Math.Clamp(p.y, COURT_TOP + p.halfSpan, COURT_BOTTOM - p.halfSpan);
     p.vy = step / (dt / 1000 || 1);
     p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
     p.angle = Phaser.Math.Clamp((p.vySmoothed / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
@@ -518,7 +595,7 @@ class PaddleDuelScene extends Phaser.Scene {
   }
 
   resolveContact(paddle, isP1, ball) {
-    const offset = Phaser.Math.Clamp((ball.y - paddle.y) / PADDLE_HALF_SPAN, -1, 1);
+    const offset = Phaser.Math.Clamp((ball.y - paddle.y) / paddle.halfSpan, -1, 1);
     const angle = paddle.angle;
     const absOffset = Math.abs(offset);
     let quality;
@@ -611,12 +688,12 @@ class PaddleDuelScene extends Phaser.Scene {
 
     // paddle plane crossing
     if (ball.vx < 0 && ball.prevX > P1_X && ball.x <= P1_X) {
-      if (Math.abs(ball.y - this.p1.y) <= PADDLE_HALF_SPAN + BALL_R) {
+      if (Math.abs(ball.y - this.p1.y) <= this.p1.halfSpan + BALL_R) {
         ball.x = P1_X + 1;
         this.resolveContact(this.p1, true, ball);
       }
     } else if (ball.vx > 0 && ball.prevX < P2_X && ball.x >= P2_X) {
-      if (Math.abs(ball.y - this.p2.y) <= PADDLE_HALF_SPAN + BALL_R) {
+      if (Math.abs(ball.y - this.p2.y) <= this.p2.halfSpan + BALL_R) {
         ball.x = P2_X - 1;
         this.resolveContact(this.p2, false, ball);
       }
@@ -672,6 +749,11 @@ class PaddleDuelScene extends Phaser.Scene {
     this.updateScoreText();
     Sound.score();
 
+    if (this.matchMode === 'shrink' && (this.p1Score >= SHRINK_SCORE_TO_WIN || this.p2Score >= SHRINK_SCORE_TO_WIN)) {
+      this.time.delayedCall(300, () => this.endMatch(who, 'score'));
+      return;
+    }
+
     this.time.delayedCall(550, () => {
       if (this.state !== 'playing') return;
       // loser of the point (the one who missed) serves next
@@ -679,14 +761,15 @@ class PaddleDuelScene extends Phaser.Scene {
     });
   }
 
-  endMatch(winnerSide) {
+  endMatch(winnerSide, reason) {
     this.state = 'over';
     const p1Won = winnerSide === 'p1';
     const headline = this.mode === 'ai'
       ? (p1Won ? 'YOU WIN' : 'CPU WINS')
       : (p1Won ? 'P1 WINS' : 'P2 WINS');
     this.overHeadline.setText(headline);
-    this.overSub.setText(`Sudden Death — ${this.p1Score} — ${this.p2Score}`);
+    const subLabel = reason === 'score' ? 'Final Score' : 'Sudden Death';
+    this.overSub.setText(`${subLabel} — ${this.p1Score} — ${this.p2Score}`);
     this.setOverVisible(true);
   }
 }
