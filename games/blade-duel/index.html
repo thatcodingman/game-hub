@@ -51,8 +51,10 @@
   }
   #btnGuardHigh { left: 16px; bottom: 128px; width: 64px; height: 64px; }
   #btnGuardLow  { left: 16px; bottom: 54px;  width: 64px; height: 64px; }
-  #btnAttack    { right: 16px; bottom: 128px; width: 72px; height: 72px; border-color:#f87171 !important; color:#f87171 !important; }
-  #btnFeint     { right: 96px; bottom: 54px; width: 56px; height: 56px; }
+  #btnAttackHigh  { right: 16px; bottom: 194px; width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
+  #btnAttackTorso { right: 16px; bottom: 128px; width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
+  #btnAttackLow   { right: 16px; bottom: 62px;  width: 58px; height: 58px; border-color:#f87171 !important; color:#f87171 !important; font-size:10px; }
+  #btnFeint     { right: 84px; bottom: 128px; width: 52px; height: 52px; }
   #btnStepBack  { right: 168px; bottom: 20px; width: 56px; height: 44px; }
   #btnStepFwd   { right: 16px;  bottom: 20px; width: 56px; height: 44px; }
 
@@ -100,12 +102,14 @@
     <div id="tierLabel">—</div>
   </div>
 
-  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · 1 attack (uses held line) · 2 feint · ←/→ step</div>
+  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · 1 = quick hit (random line) · Q+1 high · W+2 torso · E+3 low · Space feint · ←/→ step</div>
 
   <div id="touchControls">
     <button id="btnGuardHigh">GUARD<br>HIGH</button>
     <button id="btnGuardLow">GUARD<br>LOW</button>
-    <button id="btnAttack">STRIKE</button>
+    <button id="btnAttackHigh">HIGH</button>
+    <button id="btnAttackTorso">BODY</button>
+    <button id="btnAttackLow">LOW</button>
     <button id="btnFeint">FEINT</button>
     <button id="btnStepBack">◀ STEP</button>
     <button id="btnStepFwd">STEP ▶</button>
@@ -115,7 +119,7 @@
     <h1>BLADE DUEL</h1>
     <div class="sub">Every attack is a commitment. Every guard is a read. Two fighters, four verbs — attack, guard, feint, step — and one well-timed decision beats ten fast ones.</div>
     <div id="tierGrid"></div>
-    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · 1 to strike in the held line · 2 to feint · ←/→ to step</div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · 1 alone = quick hit on a random line · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
   </div>
 
   <div id="resultOverlay" class="overlay hidden">
@@ -186,7 +190,7 @@
   let elapsed = 0;
   let shakeT = 0, shakeMag = 0;
   let fx = []; // transient visual effects {type,x,y,t,dur,...}
-  let keys = { up:false, down:false, left:false, right:false };
+  let keys = { up:false, down:false, left:false, right:false, q:false, w:false, e:false };
   let keyPressT = { up:-99, down:-99 }; // last keydown timestamp for freshness/parry detection
   let touchGuard = null;
 
@@ -228,14 +232,18 @@
   function isTouch(){ return 'ontouchstart' in window || navigator.maxTouchPoints > 0; }
 
   // ---------- fighter actions ----------
+  // Player guard defaults to 'torso' when no direction is held — a neutral stance that can
+  // block but never parry (parries need a fresh, deliberate key press; there's no press for
+  // "holding still"). Up/Down commit you to high/low, which CAN parry if timed right.
   function currentGuardLine(f){
-    if(f === P) return keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || null));
+    if(f === P) return keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || 'torso'));
     return f.guardLine;
   }
 
-  function tryAttack(f, feint){
+  const ATTACK_LINES = ['high','torso','low'];
+
+  function tryAttack(f, feint, line){
     if(f.state !== 'idle') return;
-    const line = currentGuardLine(f) || 'high';
     f.attackLine = line;
     f.isFeint = feint;
     f.resolved = false;
@@ -305,7 +313,8 @@
       }
       if(A._reactAt !== undefined && P.stateT >= A._reactAt && P.state==='windup'){
         const correct = Math.random() < tier.guardAccuracy;
-        A.guardLine = correct ? P.attackLine : (P.attackLine==='high'?'low':'high');
+        if(correct){ A.guardLine = P.attackLine; }
+        else{ const wrong = ATTACK_LINES.filter(l=>l!==P.attackLine); A.guardLine = wrong[Math.floor(Math.random()*wrong.length)]; }
         A.guardFreshT = elapsed;
         A._reactAt = undefined;
       }
@@ -325,7 +334,8 @@
         } else {
           const wantFeint = Math.random() < tier.feintChance;
           A.guardLine = null;
-          tryAttack(A, wantFeint);
+          const aiLine = ATTACK_LINES[Math.floor(Math.random()*ATTACK_LINES.length)];
+          tryAttack(A, wantFeint, aiLine);
         }
       }
     }
@@ -408,9 +418,20 @@
   window.addEventListener('keydown', e=>{
     if(e.code==='ArrowUp'){ if(!keys.up) keyPressT.up = elapsed; keys.up = true; }
     if(e.code==='ArrowDown'){ if(!keys.down) keyPressT.down = elapsed; keys.down = true; }
+    if(e.code==='KeyQ') keys.q = true;
+    if(e.code==='KeyW') keys.w = true;
+    if(e.code==='KeyE') keys.e = true;
     if(state!=='duel') return;
-    if(e.code==='Digit1') tryAttack(P, false);
-    if(e.code==='Digit2') tryAttack(P, true);
+    // targeting: Q+1 = real high, W+2 = real torso, E+3 = real low — a deliberate, aimed strike.
+    // bare 1 (no modifier) is the quick option: a real hit, but on a random line you don't get
+    // to pick — fast and simple, at the cost of precision. Space is the dedicated feint key.
+    if(e.code==='Digit1'){
+      if(keys.q) tryAttack(P, false, 'high');
+      else tryAttack(P, false, ATTACK_LINES[Math.floor(Math.random()*ATTACK_LINES.length)]);
+    }
+    if(e.code==='Digit2' && keys.w) tryAttack(P, false, 'torso');
+    if(e.code==='Digit3' && keys.e) tryAttack(P, false, 'low');
+    if(e.code==='Space'){ e.preventDefault(); tryAttack(P, true, 'high'); }
     if(e.code==='ArrowLeft') keys.left = true;
     if(e.code==='ArrowRight') keys.right = true;
   });
@@ -419,6 +440,9 @@
     if(e.code==='ArrowDown') keys.down = false;
     if(e.code==='ArrowLeft') keys.left = false;
     if(e.code==='ArrowRight') keys.right = false;
+    if(e.code==='KeyQ') keys.q = false;
+    if(e.code==='KeyW') keys.w = false;
+    if(e.code==='KeyE') keys.e = false;
   });
 
   function bindTap(id, fn){ document.getElementById(id).addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); }); }
@@ -430,12 +454,19 @@
   }
   bindHold('btnGuardHigh', ()=>{ if(touchGuard!=='high') keyPressT.up = elapsed; touchGuard='high'; }, ()=>{ if(touchGuard==='high') touchGuard=null; });
   bindHold('btnGuardLow',  ()=>{ if(touchGuard!=='low') keyPressT.down = elapsed; touchGuard='low'; },  ()=>{ if(touchGuard==='low') touchGuard=null; });
-  bindTap('btnAttack', ()=> state==='duel' && tryAttack(P, false));
-  bindTap('btnFeint',  ()=> state==='duel' && tryAttack(P, true));
+  bindTap('btnAttackHigh',  ()=> state==='duel' && tryAttack(P, false, 'high'));
+  bindTap('btnAttackTorso', ()=> state==='duel' && tryAttack(P, false, 'torso'));
+  bindTap('btnAttackLow',   ()=> state==='duel' && tryAttack(P, false, 'low'));
+  bindTap('btnFeint',  ()=> state==='duel' && tryAttack(P, true, 'high'));
   bindHold('btnStepBack', ()=>keys.left=true,  ()=>keys.left=false);
   bindHold('btnStepFwd',  ()=>keys.right=true, ()=>keys.right=false);
 
   // ---------- rendering ----------
+  function swordArc(sx,sy,ex,ey,arc){
+    const midX = (sx+ex)/2, midY = (sy+ey)/2 + arc;
+    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.quadraticCurveTo(midX,midY,ex,ey); ctx.stroke();
+  }
+
   function drawFighter(f, opp){
     const facing = f.x < opp.x ? 1 : -1;
     const cx = f.x, cy = FLOOR_Y;
@@ -476,35 +507,55 @@
       ctx.lineWidth = 4;
       ctx.beginPath();
       if(gLine==='high'){ ctx.moveTo(4,-100); ctx.lineTo(40,-118); }
-      else { ctx.moveTo(4,-60); ctx.lineTo(42,-48); }
+      else if(gLine==='low'){ ctx.moveTo(4,-60); ctx.lineTo(42,-48); }
+      else { ctx.moveTo(2,-80); ctx.lineTo(44,-80); }
       ctx.stroke();
     }
 
     // sword by state
     ctx.lineCap='round';
-    let sx=30, sy=-40, ex=60, ey=-70;
+    let sx=30, sy=-40, ex=60, ey=-70, arc=0;
     const line = f.attackLine;
     if(f.state==='windup'){
       const p = f.stateT/WINDUP_TIME;
-      const glow = 0.3 + p*0.7;
-      if(line==='high'){ sx=8; sy=-95; ex= 8+p*10; ey=-95-p*46; } else { sx=8; sy=-70; ex=8-p*40; ey=-70+p*18; }
+      const pe = 1 - Math.pow(1-p, 3); // ease-out cubic — fast pull, soft settle at the top of the windup
+      const glow = 0.3 + pe*0.7;
+      if(line==='high'){ sx=8; sy=-95; ex=8+pe*10; ey=-95-pe*46; arc=-8; }
+      else if(line==='torso'){ sx=8; sy=-80; ex=8-pe*48; ey=-80-pe*6; arc=10; }
+      else { sx=8; sy=-70; ex=8-pe*40; ey=-70+pe*18; arc=8; }
       ctx.strokeStyle = `rgba(251,191,36,${glow})`;
       ctx.lineWidth = 5;
-      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6+p*10;
+      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6+pe*10;
+      swordArc(sx,sy,ex,ey,arc);
     } else if(f.state==='active'){
-      if(line==='high'){ sx=10; sy=-118; ex=64; ey=-58; } else { sx=-30; sy=-50; ex=66; ey=-78; }
+      const p = clamp(f.stateT/ACTIVE_TIME, 0, 1);
+      if(line==='high'){ sx=10; sy=-118; ex=64; ey=-58; arc=-26; }
+      else if(line==='torso'){ sx=-24; sy=-78; ex=70; ey=-82; arc=-32; }
+      else { sx=-30; sy=-50; ex=66; ey=-78; arc=26; }
+      // motion-blur trail: two faded prior-position arcs behind the live swing, for a fluid slash
+      for(let i=2;i>=1;i--){
+        const tp = clamp(p - i*0.22, 0, 1);
+        const mx = sx + (ex-sx)*tp, my = sy + (ey-sy)*tp;
+        ctx.strokeStyle = `rgba(255,255,255,${0.10*(3-i)})`;
+        ctx.lineWidth = 4;
+        swordArc(sx, sy, mx, my, arc*tp);
+      }
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 6;
       ctx.shadowColor = '#f87171'; ctx.shadowBlur = 16;
+      swordArc(sx,sy,ex,ey,arc);
     } else if(f.state==='recovery'){
-      sx=10; sy=-40; ex=46; ey=-18;
+      if(line==='torso'){ sx=10; sy=-80; ex=44; ey=-70; arc=6; }
+      else { sx=10; sy=-40; ex=46; ey=-18; arc=4; }
       ctx.strokeStyle = 'rgba(148,163,184,0.6)'; ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
+      swordArc(sx,sy,ex,ey,arc);
     } else {
-      sx=10; sy=-46; ex=42; ey=-24;
+      if(line==='torso'){ sx=10; sy=-76; ex=42; ey=-68; arc=4; }
+      else { sx=10; sy=-46; ex=42; ey=-24; arc=3; }
       ctx.strokeStyle = 'rgba(226,232,240,0.85)'; ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
+      swordArc(sx,sy,ex,ey,arc);
     }
-    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey); ctx.stroke();
     ctx.shadowBlur = 0;
 
     ctx.restore();
