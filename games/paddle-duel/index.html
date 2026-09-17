@@ -49,16 +49,17 @@ const COURT_TOP = 50, COURT_BOTTOM = H - 50;
 const BALL_R = 8;
 const TRAIL_LENGTH = 8;
 
-const PADDLE_W = 14;
-const PADDLE_HALF_SPAN = 45;
+const PADDLE_W = 11;
+const PADDLE_HALF_SPAN = 38;
 const PADDLE_H = PADDLE_HALF_SPAN * 2;
 const P1_X = 66, P2_X = W - 66;
 const MOVE_SPEED = 380;
+const VELOCITY_SMOOTHING = 0.72; // paddle angle reacts to committed movement, not one-frame twitches
 
 const BASE_BALL_SPEED = 350;
 const MAX_PADDLE_ANGLE = 0.5; // radians, ~29 degrees
 const SPIN_DECAY = 0.5;
-const SPIN_CLAMP = 1.5;
+const SPIN_CLAMP = 0.9; // hard ceiling so curve stays readable, not chaotic
 
 const SCORE_TO_WIN = 7;
 
@@ -103,8 +104,7 @@ class PaddleDuelScene extends Phaser.Scene {
     this.mode = null;
     this.difficulty = loadDifficulty();
     this.state = 'menu';
-    this.p1LastOffset = 0;
-    this.p1LastAngle = 0;
+    this.p1OffsetHistory = []; // last few P1 contact-point offsets, most recent first
 
     this.buildCourt();
     this.buildEntities();
@@ -138,11 +138,11 @@ class PaddleDuelScene extends Phaser.Scene {
   // -------------------------------------------------------------- ENTITIES
   buildEntities() {
     this.p1 = {
-      x: P1_X, y: H / 2, vy: 0, angle: 0, color: 0x8fd3ff,
+      x: P1_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0x8fd3ff,
       rect: this.add.rectangle(P1_X, H / 2, PADDLE_W, PADDLE_H, 0x8fd3ff).setStrokeStyle(2, 0x3f6fa8)
     };
     this.p2 = {
-      x: P2_X, y: H / 2, vy: 0, angle: 0, color: 0xff9f6b,
+      x: P2_X, y: H / 2, vy: 0, vySmoothed: 0, angle: 0, color: 0xff9f6b,
       rect: this.add.rectangle(P2_X, H / 2, PADDLE_W, PADDLE_H, 0xff9f6b).setStrokeStyle(2, 0xa85f3f)
     };
 
@@ -296,6 +296,7 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p1Score = 0;
     this.p2Score = 0;
     this.updateScoreText();
+    this.p1OffsetHistory = [];
     this.servingP1 = true;
     this.rally = 0;
     this.lastMilestone = 0;
@@ -347,7 +348,10 @@ class PaddleDuelScene extends Phaser.Scene {
     }
     p.vy = dir * MOVE_SPEED;
     p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
-    p.angle = Phaser.Math.Clamp(dir * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    // smoothed velocity drives angle so the paddle reflects committed movement,
+    // not a single-frame direction flip (kills the "wiggle for spin" exploit)
+    p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
+    p.angle = Phaser.Math.Clamp((p.vySmoothed / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
     p.rect.setPosition(p.x, p.y);
     p.rect.setRotation(p.angle);
   }
@@ -359,7 +363,8 @@ class PaddleDuelScene extends Phaser.Scene {
     else if (this.keys.arrowDown.isDown) dir = 1;
     p.vy = dir * MOVE_SPEED;
     p.y = Phaser.Math.Clamp(p.y + p.vy * (dt / 1000), COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
-    p.angle = Phaser.Math.Clamp(dir * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
+    p.angle = Phaser.Math.Clamp((p.vySmoothed / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
     p.rect.setPosition(p.x, p.y);
     p.rect.setRotation(p.angle);
   }
@@ -385,10 +390,12 @@ class PaddleDuelScene extends Phaser.Scene {
     if (ballComingToAI || def.anticipate) {
       const predicted = this.predictArrivalY(ball, P2_X);
       targetY = Phaser.Math.Linear(ball.y, predicted, def.predictAccuracy);
-      // expert: bias toward the extreme edges away from the human's last contact point,
-      // to set up its own return before it even hits (reads the human's habits, not the future)
+      // expert: bias using a *tendency* read on the human's recent contact points
+      // (weighted average of their last few hits), not a perfect read of intent —
+      // it plays the odds, so a deliberate change in habit throws it off
       if (def.aggro > 0 && ballComingToAI) {
-        const edgeBias = -this.p1LastOffset * def.aggro * PADDLE_HALF_SPAN * 0.4;
+        const tendency = this.getP1OffsetTendency();
+        const edgeBias = -tendency * def.aggro * PADDLE_HALF_SPAN * 0.4;
         targetY += edgeBias;
       }
     } else {
@@ -402,9 +409,24 @@ class PaddleDuelScene extends Phaser.Scene {
     p.y += step;
     p.y = Phaser.Math.Clamp(p.y, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
     p.vy = step / (dt / 1000 || 1);
-    p.angle = Phaser.Math.Clamp((p.vy / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
+    p.vySmoothed = p.vySmoothed * VELOCITY_SMOOTHING + p.vy * (1 - VELOCITY_SMOOTHING);
+    p.angle = Phaser.Math.Clamp((p.vySmoothed / MOVE_SPEED) * MAX_PADDLE_ANGLE, -MAX_PADDLE_ANGLE, MAX_PADDLE_ANGLE);
     p.rect.setPosition(p.x, p.y);
     p.rect.setRotation(p.angle);
+  }
+
+  // Weighted average of the human's last few contact-point offsets (most recent
+  // weighted highest) — a "tendency" read rather than a perfect memory of intent.
+  getP1OffsetTendency() {
+    const hist = this.p1OffsetHistory;
+    if (!hist.length) return 0;
+    const weights = [0.5, 0.3, 0.2];
+    let sum = 0, wSum = 0;
+    for (let i = 0; i < hist.length && i < weights.length; i++) {
+      sum += hist[i] * weights[i];
+      wSum += weights[i];
+    }
+    return wSum > 0 ? sum / wSum : 0;
   }
 
   resolveContact(paddle, isP1) {
@@ -434,7 +456,10 @@ class PaddleDuelScene extends Phaser.Scene {
     ball.vy = newSpin * speed * 0.55 + offset * 110;
     ball.quality = quality;
 
-    if (isP1) { this.p1LastOffset = offset; this.p1LastAngle = angle; }
+    if (isP1) {
+      this.p1OffsetHistory.unshift(offset);
+      if (this.p1OffsetHistory.length > 3) this.p1OffsetHistory.pop();
+    }
 
     Sound.contact(quality);
     this.flashPaddle(paddle, quality);
