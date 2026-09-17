@@ -57,6 +57,9 @@ const WRESTLER_R = 34;
 const MOVE_ACCEL = 900;
 const MOVE_MAX_SPEED = 220;
 const FRICTION = 700;
+const STAGGER_FRICTION = 650; // separate, much lower decel than movement friction would suggest —
+  // this is what actually stops a knocked-back wrestler; too low and any real hit crosses the
+  // whole ring (the bug that made every match end in ~3-5s regardless of AI tier)
 const CHARGE_MOVE_MULT = 0.35;
 const RECOVERY_MOVE_MULT = 0.5;
 const STAGGER_MOVE_MULT = 0.4;
@@ -74,7 +77,15 @@ const STAGGER_MS = 480;
 const CRITICAL_EDGE_DIST = 45;
 const CLASH_SPEED_THRESHOLD = 45; // if both dashing, hitting reasonably head-on, and closing-speed diff is under this, it's a mutual clash
 const CLASH_HEADON_MIN = 0.6; // fraction of each wrestler's speed that must be along the contact normal — keeps glancing hits from becoming Clashes
-const PUSH_BASE = 45, PUSH_SCALE = 1.05, PUSH_CAP = 520; // lower guaranteed base, more of the shove comes from the actual momentum difference
+// Rebalanced down hard: the old values (BASE 45 / SCALE 1.05 / CAP 520 with the
+// old low STAGGER friction) launched a knocked-back wrestler 150-320px on any
+// solid hit — more than the entire ring's radius — so literally any landed
+// dash was an automatic ring-out regardless of AI tier, and matches ended in
+// 3-5 seconds every time. These numbers, paired with STAGGER_FRICTION above,
+// mean a clean hit is a real shove (needs several to ring out from center)
+// and only a hit landed while the loser is already in the Critical zone
+// reliably finishes the round.
+const PUSH_BASE = 30, PUSH_SCALE = 0.6, PUSH_CAP = 280;
 const CRITICAL_PUSH_MULT = 1.4;
 
 const ROUNDS_TO_WIN = 2;
@@ -554,7 +565,7 @@ class SumoPushScene extends Phaser.Scene {
       if (now >= f.recoveryUntil) f.state = 'idle';
     } else if (f.state === 'staggered') {
       if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * STAGGER_MOVE_MULT * (dt / 1000); f.vy += dirY * MOVE_ACCEL * STAGGER_MOVE_MULT * (dt / 1000); }
-      this.applyFriction(f, dt, FRICTION * 0.6);
+      this.applyFriction(f, dt, STAGGER_FRICTION);
       if (now >= f.staggerUntil) f.state = 'idle';
     } else { // idle
       if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * (dt / 1000); f.vy += dirY * MOVE_ACCEL * (dt / 1000); f.facing = Math.atan2(dirY, dirX); }
