@@ -39,8 +39,14 @@
    input. Contact is automatic when the ball reaches your paddle's plane —
    skill is entirely about *where* you are and *how* you got there.
 
-   Rally speed escalates the longer a point runs (1.00x -> 1.35x), so long
-   rallies are earned tension, not free grinding.
+   MATCH STRUCTURE (3 phases, same paddle rules throughout):
+     0:00-1:00  NORMAL RALLY   — one ball, rally speed escalates as usual.
+     1:00-1:30  DOUBLE BALL    — a second ball joins. Still ONE paddle each;
+                                 now you have to decide which ball to meet.
+     1:30+      SUDDEN DEATH   — score stops mattering. Next miss, by
+                                 either player, ends the match immediately.
+   This guarantees every match has a real climax instead of a rally that
+   can coast on forever.
    ========================================================================= */
 
 const W = 960, H = 540;
@@ -61,7 +67,9 @@ const MAX_PADDLE_ANGLE = 0.5; // radians, ~29 degrees
 const SPIN_DECAY = 0.5;
 const SPIN_CLAMP = 0.9; // hard ceiling so curve stays readable, not chaotic
 
-const SCORE_TO_WIN = 5; // quick-session length, matching the rest of the hub
+const PHASE_NORMAL_MS = 60000;   // phase 1 length
+const PHASE_DOUBLE_MS = 30000;   // phase 2 length (starts right after phase 1)
+// sudden death begins at PHASE_NORMAL_MS + PHASE_DOUBLE_MS (1:30) and runs until a miss
 
 const DIFFICULTY_DEFS = {
   easy:   { name: 'Easy',   trackingMult: 0.5,  predictAccuracy: 0.10, anticipate: false, aggro: 0.0 },
@@ -97,7 +105,10 @@ const Sound = {
   },
   wall() { if (!window.SFX) return; SFX.tone(950, 0.04, 'triangle', 0.08, 1300); },
   score() { if (!window.SFX) return; SFX.chime([440, 660, 880], 'sine', 0.12); },
-  milestone() { if (!window.SFX) return; SFX.tone(900, 0.08, 'sine', 0.14, 1400); SFX.tone(1200, 0.1, 'sine', 0.12, 1600, 60); }
+  milestone() { if (!window.SFX) return; SFX.tone(900, 0.08, 'sine', 0.14, 1400); SFX.tone(1200, 0.1, 'sine', 0.12, 1600, 60); },
+  phaseDouble() { if (!window.SFX) return; SFX.tone(200, 0.16, 'sawtooth', 0.16, 500); SFX.tone(500, 0.14, 'square', 0.14, 900, 90); },
+  phaseSuddenDeath() { if (!window.SFX) return; SFX.tone(140, 0.28, 'sawtooth', 0.2, 70); SFX.tone(1400, 0.1, 'square', 0.12, 1600, 120); },
+  suddenDeathEnd() { if (!window.SFX) return; SFX.tone(1500, 0.12, 'square', 0.18, 2000); SFX.tone(900, 0.18, 'sawtooth', 0.16, 300, 80); }
 };
 
 class PaddleDuelScene extends Phaser.Scene {
@@ -149,19 +160,23 @@ class PaddleDuelScene extends Phaser.Scene {
       rect: this.add.rectangle(P2_X, H / 2, PADDLE_W, PADDLE_H, 0xff9f6b).setStrokeStyle(2, 0xa85f3f)
     };
 
-    this.ball = {
-      x: NET_X, y: H / 2, vx: 0, vy: 0, spin: 0, active: false,
-      prevX: NET_X, quality: null
-    };
-    this.ballG = this.add.circle(NET_X, H / 2, BALL_R, 0xffffff);
-    this.trail = [];
-    this.trailG = this.add.graphics();
+    this.ball1 = this.createBallState();
+    this.ball2 = this.createBallState();
+    this.ball2.graphic.setVisible(false);
+    this.balls = [this.ball1]; // active set; ball2 joins at the Double Ball phase
 
-    this.rally = 0;
     this.p1Score = 0;
     this.p2Score = 0;
-    this.servingP1 = true;
-    this.lastMilestone = 0;
+    this.phase = 'normal';
+    this.matchElapsed = 0;
+  }
+
+  createBallState() {
+    return {
+      x: NET_X, y: H / 2, vx: 0, vy: 0, spin: 0, active: false,
+      prevX: NET_X, quality: null, rally: 0, lastMilestone: 0, trail: [],
+      graphic: this.add.circle(NET_X, H / 2, BALL_R, 0xffffff)
+    };
   }
 
   // ------------------------------------------------------------------ HUD
@@ -170,9 +185,11 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p2ScoreText = this.add.text(W / 2 + 90, 16, '0', { fontFamily: 'Arial Black', fontSize: '30px', color: '#ff9f6b' }).setOrigin(0.5);
     this.dashText = this.add.text(W / 2, 16, '—', { fontFamily: 'Arial', fontSize: '22px', color: '#4a5268' }).setOrigin(0.5);
     this.rallyText = this.add.text(W / 2, 50, '', { fontFamily: 'Arial', fontSize: '13px', color: '#7f8a9a', fontStyle: 'bold' }).setOrigin(0.5);
+    this.phaseText = this.add.text(W / 2, H - 22, '', { fontFamily: 'Arial', fontSize: '12px', color: '#5a6578' }).setOrigin(0.5);
     this.milestoneText = this.add.text(W / 2, H / 2 - 70, '', { fontFamily: 'Arial Black', fontSize: '26px', color: '#ffd23f' }).setOrigin(0.5).setAlpha(0);
+    this.bannerText = this.add.text(W / 2, H / 2 - 40, '', { fontFamily: 'Arial Black', fontSize: '40px', color: '#ffffff' }).setOrigin(0.5).setAlpha(0).setDepth(5);
 
-    this.hudGroup = [this.p1ScoreText, this.p2ScoreText, this.dashText, this.rallyText];
+    this.hudGroup = [this.p1ScoreText, this.p2ScoreText, this.dashText, this.rallyText, this.phaseText];
   }
 
   setHudVisible(v) { this.hudGroup.forEach(o => o.setVisible(v)); }
@@ -192,8 +209,8 @@ class PaddleDuelScene extends Phaser.Scene {
   // --------------------------------------------------------- MODE SELECT
   buildModeSelect() {
     const items = [];
-    const title = this.add.text(W / 2, 130, 'PADDLE DUEL', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
-    const sub = this.add.text(W / 2, 175, 'Control the rally. Break their timing.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
+    const title = this.add.text(W / 2, 120, 'PADDLE DUEL', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, 163, 'Control the rally. Break their timing.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
     items.push(title, sub);
 
     const makeButton = (y, label, color, onClick) => {
@@ -206,20 +223,23 @@ class PaddleDuelScene extends Phaser.Scene {
       return { bg, txt };
     };
 
-    makeButton(280, 'VS AI', 0x8fd3ff, () => {
+    makeButton(265, 'VS AI', 0x8fd3ff, () => {
       this.pendingMode = 'ai';
       this.setModeSelectVisible(false);
       this.setDifficultySelectVisible(true);
     });
-    makeButton(360, '2 PLAYER LOCAL', 0xff9f6b, () => {
+    makeButton(345, '2 PLAYER LOCAL', 0xff9f6b, () => {
       this.setModeSelectVisible(false);
       this.startMatch('local');
     });
 
-    const controlsHint = this.add.text(W / 2, 440,
+    const controlsHint = this.add.text(W / 2, 420,
       'VS AI: Arrow Keys move   •   2P Local: P1 = W/S   P2 = Up/Down',
       { fontFamily: 'Arial', fontSize: '13px', color: '#5a6578' }).setOrigin(0.5);
-    items.push(controlsHint);
+    const phaseHint = this.add.text(W / 2, 445,
+      '60s Normal Rally  →  30s Double Ball  →  Sudden Death (next miss ends it)',
+      { fontFamily: 'Arial', fontSize: '12px', color: '#4a5268' }).setOrigin(0.5);
+    items.push(controlsHint, phaseHint);
 
     this.modeSelectItems = items;
   }
@@ -300,43 +320,93 @@ class PaddleDuelScene extends Phaser.Scene {
     this.p2Score = 0;
     this.updateScoreText();
     this.p1OffsetHistory = [];
-    this.servingP1 = true;
-    this.rally = 0;
-    this.lastMilestone = 0;
-    this.rallyText.setText('');
+    this.phase = 'normal';
+    this.matchElapsed = 0;
+    this.phaseText.setText('NORMAL RALLY');
     this.p1.y = H / 2; this.p2.y = H / 2;
+
+    this.ball2.active = false;
+    this.ball2.graphic.setVisible(false);
+    this.balls = [this.ball1];
+
     this.setHudVisible(true);
-    this.serveBall();
+    this.serveBallInstance(this.ball1, true);
     this.state = 'playing';
   }
 
-  serveBall() {
-    this.ball.x = this.servingP1 ? P1_X + 30 : P2_X - 30;
-    this.ball.y = Phaser.Math.Between(COURT_TOP + 60, COURT_BOTTOM - 60);
-    this.ball.prevX = this.ball.x;
-    this.ball.spin = 0;
-    this.ball.quality = null;
-    const dir = this.servingP1 ? 1 : -1;
-    this.ball.vx = dir * BASE_BALL_SPEED * 0.75;
-    this.ball.vy = Phaser.Math.Between(-80, 80);
-    this.ball.active = true;
-    this.rally = 0;
-    this.lastMilestone = 0;
-    this.rallyText.setText('');
-    this.trail = [];
+  serveBallInstance(ball, servingP1) {
+    ball.x = servingP1 ? P1_X + 30 : P2_X - 30;
+    ball.y = Phaser.Math.Between(COURT_TOP + 60, COURT_BOTTOM - 60);
+    ball.prevX = ball.x;
+    ball.spin = 0;
+    ball.quality = null;
+    const dir = servingP1 ? 1 : -1;
+    ball.vx = dir * BASE_BALL_SPEED * 0.75;
+    ball.vy = Phaser.Math.Between(-80, 80);
+    ball.active = true;
+    ball.rally = 0;
+    ball.lastMilestone = 0;
+    ball.trail = [];
+    ball.graphic.setVisible(true);
   }
 
   // --------------------------------------------------------------- UPDATE
   update(time, delta) {
     if (this.state !== 'playing') return;
     const dt = Math.min(delta, 40);
+    this.matchElapsed += dt;
+    this.updatePhaseTransitions();
 
     this.updatePlayerPaddle(dt);
     if (this.mode === 'ai') this.updateAIPaddle(dt);
     else this.updateP2LocalPaddle(dt);
 
-    this.updateBall(dt);
-    this.drawTrail();
+    this.balls.forEach(ball => this.updateSingleBall(ball, dt));
+    this.drawTrails();
+    this.updatePhaseText();
+  }
+
+  updatePhaseTransitions() {
+    if (this.phase === 'normal' && this.matchElapsed >= PHASE_NORMAL_MS) {
+      this.enterDoubleBall();
+    } else if (this.phase === 'double' && this.matchElapsed >= PHASE_NORMAL_MS + PHASE_DOUBLE_MS) {
+      this.enterSuddenDeath();
+    }
+  }
+
+  enterDoubleBall() {
+    this.phase = 'double';
+    this.announce('DOUBLE BALL', '#ff9f6b');
+    Sound.phaseDouble();
+    // second ball serves from whichever side didn't just serve ball1, for variety
+    this.serveBallInstance(this.ball2, Phaser.Math.Between(0, 1) === 0);
+    this.balls = [this.ball1, this.ball2];
+  }
+
+  enterSuddenDeath() {
+    this.phase = 'suddenDeath';
+    this.announce('SUDDEN DEATH', '#ff5a5a');
+    Sound.phaseSuddenDeath();
+  }
+
+  announce(text, color) {
+    this.bannerText.setText(text).setColor(color).setAlpha(1).setScale(0.6);
+    this.tweens.add({ targets: this.bannerText, scale: 1.05, duration: 220, ease: 'Back.Out' });
+    this.tweens.add({ targets: this.bannerText, alpha: 0, delay: 1100, duration: 450 });
+    this.bgFlash.setFillStyle(0xffffff, 0.12);
+    this.tweens.add({ targets: this.bgFlash, alpha: 0, duration: 400, onComplete: () => this.bgFlash.setFillStyle(0xffffff, 0) });
+  }
+
+  updatePhaseText() {
+    if (this.phase === 'normal') {
+      const remain = Math.max(0, PHASE_NORMAL_MS - this.matchElapsed);
+      this.phaseText.setText(`NORMAL RALLY — DOUBLE BALL IN ${Math.ceil(remain / 1000)}s`);
+    } else if (this.phase === 'double') {
+      const remain = Math.max(0, PHASE_NORMAL_MS + PHASE_DOUBLE_MS - this.matchElapsed);
+      this.phaseText.setText(`DOUBLE BALL — SUDDEN DEATH IN ${Math.ceil(remain / 1000)}s`);
+    } else {
+      this.phaseText.setText('SUDDEN DEATH — NEXT MISS ENDS IT');
+    }
   }
 
   updatePlayerPaddle(dt) {
@@ -384,15 +454,30 @@ class PaddleDuelScene extends Phaser.Scene {
     return COURT_TOP + rel;
   }
 
+  // Picks whichever active ball the AI should react to: the one already
+  // headed its way with the soonest arrival, falling back to the nearest
+  // active ball for "anticipate"-tier prep positioning.
+  pickAITargetBall() {
+    const incoming = this.balls.filter(b => b.active && b.vx > 0);
+    if (incoming.length) {
+      return incoming.reduce((a, b) => {
+        const ta = (P2_X - a.x) / a.vx, tb = (P2_X - b.x) / b.vx;
+        return ta <= tb ? a : b;
+      });
+    }
+    return this.balls.find(b => b.active) || null;
+  }
+
   updateAIPaddle(dt) {
-    const p = this.p2, ball = this.ball;
+    const p = this.p2;
     const def = DIFFICULTY_DEFS[this.difficulty];
-    const ballComingToAI = ball.active && ball.vx > 0;
+    const targetBall = this.pickAITargetBall();
+    const ballComingToAI = targetBall && targetBall.active && targetBall.vx > 0;
 
     let targetY = H / 2;
-    if (ballComingToAI || def.anticipate) {
-      const predicted = this.predictArrivalY(ball, P2_X);
-      targetY = Phaser.Math.Linear(ball.y, predicted, def.predictAccuracy);
+    if (targetBall && (ballComingToAI || def.anticipate)) {
+      const predicted = this.predictArrivalY(targetBall, P2_X);
+      targetY = Phaser.Math.Linear(targetBall.y, predicted, def.predictAccuracy);
       // expert: bias using a *tendency* read on the human's recent contact points
       // (weighted average of their last few hits), not a perfect read of intent —
       // it plays the odds, so a deliberate change in habit throws it off
@@ -401,8 +486,8 @@ class PaddleDuelScene extends Phaser.Scene {
         const edgeBias = -tendency * def.aggro * PADDLE_HALF_SPAN * 0.4;
         targetY += edgeBias;
       }
-    } else {
-      targetY = ball.y;
+    } else if (targetBall) {
+      targetY = targetBall.y;
     }
     targetY = Phaser.Math.Clamp(targetY, COURT_TOP + PADDLE_HALF_SPAN, COURT_BOTTOM - PADDLE_HALF_SPAN);
 
@@ -432,8 +517,7 @@ class PaddleDuelScene extends Phaser.Scene {
     return wSum > 0 ? sum / wSum : 0;
   }
 
-  resolveContact(paddle, isP1) {
-    const ball = this.ball;
+  resolveContact(paddle, isP1, ball) {
     const offset = Phaser.Math.Clamp((ball.y - paddle.y) / PADDLE_HALF_SPAN, -1, 1);
     const angle = paddle.angle;
     const absOffset = Math.abs(offset);
@@ -442,8 +526,8 @@ class PaddleDuelScene extends Phaser.Scene {
     else if (absOffset < 0.75) quality = 'normal';
     else quality = 'late';
 
-    this.rally++;
-    const speedMult = rallySpeedMult(this.rally);
+    ball.rally++;
+    const speedMult = rallySpeedMult(ball.rally);
     let speed = BASE_BALL_SPEED * speedMult;
     if (quality === 'perfect') speed *= 1.12;
     else if (quality === 'late') speed *= 0.72;
@@ -466,7 +550,7 @@ class PaddleDuelScene extends Phaser.Scene {
 
     Sound.contact(quality);
     this.flashPaddle(paddle, quality);
-    this.updateRallyFeedback();
+    this.updateRallyFeedback(ball);
   }
 
   flashPaddle(paddle, quality) {
@@ -479,19 +563,21 @@ class PaddleDuelScene extends Phaser.Scene {
     });
   }
 
-  updateRallyFeedback() {
-    this.rallyText.setText(this.rally >= 3 ? `RALLY ${this.rally}` : '');
+  updateRallyFeedback(ball) {
+    const displayRally = Math.max(0, ...this.balls.map(b => b.rally || 0));
+    this.rallyText.setText(displayRally >= 3 ? `RALLY ${displayRally}` : '');
+
     const milestones = [3, 6, 10, 15, 20];
     for (const m of milestones) {
-      if (this.rally === m && this.lastMilestone < m) {
-        this.lastMilestone = m;
+      if (ball.rally === m && ball.lastMilestone < m) {
+        ball.lastMilestone = m;
         this.popMilestone(m);
         break;
       }
     }
-    if (this.rally >= 20) {
+    if (displayRally >= 20) {
       this.bgFlash.setFillStyle(0xff5a5a, 0.04);
-    } else if (this.rally >= 10) {
+    } else if (displayRally >= 10) {
       this.bgFlash.setFillStyle(0xffd23f, 0.025);
     } else {
       this.bgFlash.setFillStyle(0xffffff, 0);
@@ -506,8 +592,7 @@ class PaddleDuelScene extends Phaser.Scene {
     this.tweens.add({ targets: this.milestoneText, alpha: 0, delay: 500, duration: 400 });
   }
 
-  updateBall(dt) {
-    const ball = this.ball;
+  updateSingleBall(ball, dt) {
     if (!ball.active) return;
     ball.prevX = ball.x;
     ball.x += ball.vx * (dt / 1000);
@@ -528,68 +613,80 @@ class PaddleDuelScene extends Phaser.Scene {
     if (ball.vx < 0 && ball.prevX > P1_X && ball.x <= P1_X) {
       if (Math.abs(ball.y - this.p1.y) <= PADDLE_HALF_SPAN + BALL_R) {
         ball.x = P1_X + 1;
-        this.resolveContact(this.p1, true);
+        this.resolveContact(this.p1, true, ball);
       }
     } else if (ball.vx > 0 && ball.prevX < P2_X && ball.x >= P2_X) {
       if (Math.abs(ball.y - this.p2.y) <= PADDLE_HALF_SPAN + BALL_R) {
         ball.x = P2_X - 1;
-        this.resolveContact(this.p2, false);
+        this.resolveContact(this.p2, false, ball);
       }
     }
 
-    // scoring
+    // scoring / miss
     if (ball.x < 6) {
-      this.awardPoint('p2');
+      this.handleMiss(ball, 'p1'); // p1 failed to return -> p2 scores
     } else if (ball.x > W - 6) {
-      this.awardPoint('p1');
+      this.handleMiss(ball, 'p2'); // p2 failed to return -> p1 scores
     }
 
-    this.ballG.setPosition(ball.x, ball.y);
-    this.trail.unshift({ x: ball.x, y: ball.y });
-    if (this.trail.length > TRAIL_LENGTH) this.trail.pop();
+    ball.graphic.setPosition(ball.x, ball.y);
+    ball.trail.unshift({ x: ball.x, y: ball.y });
+    if (ball.trail.length > TRAIL_LENGTH) ball.trail.pop();
   }
 
-  drawTrail() {
+  drawTrails() {
+    if (!this.trailG) this.trailG = this.add.graphics();
     this.trailG.clear();
-    const speed = Math.hypot(this.ball.vx, this.ball.vy);
-    const heat = Phaser.Math.Clamp(speed / (BASE_BALL_SPEED * 1.5), 0, 1);
-    const color = Phaser.Display.Color.Interpolate.ColorWithColor(
-      Phaser.Display.Color.ValueToColor(0x8fd3ff),
-      Phaser.Display.Color.ValueToColor(0xff5a5a),
-      100, Math.floor(heat * 100)
-    );
-    const colorInt = Phaser.Display.Color.GetColor(color.r, color.g, color.b);
-    this.trail.forEach((p, i) => {
-      const a = (1 - i / TRAIL_LENGTH) * 0.35;
-      const r = BALL_R * (1 - i / (TRAIL_LENGTH * 1.4));
-      if (r > 0) this.trailG.fillStyle(colorInt, a).fillCircle(p.x, p.y, r);
+    this.balls.forEach(ball => {
+      if (!ball.active) return;
+      const speed = Math.hypot(ball.vx, ball.vy);
+      const heat = Phaser.Math.Clamp(speed / (BASE_BALL_SPEED * 1.5), 0, 1);
+      const color = Phaser.Display.Color.Interpolate.ColorWithColor(
+        Phaser.Display.Color.ValueToColor(0x8fd3ff),
+        Phaser.Display.Color.ValueToColor(0xff5a5a),
+        100, Math.floor(heat * 100)
+      );
+      const colorInt = Phaser.Display.Color.GetColor(color.r, color.g, color.b);
+      ball.trail.forEach((p, i) => {
+        const a = (1 - i / TRAIL_LENGTH) * 0.35;
+        const r = BALL_R * (1 - i / (TRAIL_LENGTH * 1.4));
+        if (r > 0) this.trailG.fillStyle(colorInt, a).fillCircle(p.x, p.y, r);
+      });
     });
   }
 
-  awardPoint(who) {
-    this.state = 'point';
-    this.ball.active = false;
-    if (who === 'p1') { this.p1Score++; this.servingP1 = false; }
-    else { this.p2Score++; this.servingP1 = true; }
+  // missedSide: which player's zone the ball got past unreturned.
+  handleMiss(ball, missedSide) {
+    const who = missedSide === 'p1' ? 'p2' : 'p1'; // who scores the point
+    ball.active = false;
+    ball.graphic.setVisible(false);
+    ball.trail = [];
+
+    if (this.phase === 'suddenDeath') {
+      Sound.suddenDeathEnd();
+      this.endMatch(who);
+      return;
+    }
+
+    if (who === 'p1') this.p1Score++; else this.p2Score++;
     this.updateScoreText();
     Sound.score();
-    this.rallyText.setText('');
 
-    const matchDecided = this.p1Score >= SCORE_TO_WIN || this.p2Score >= SCORE_TO_WIN;
-    this.time.delayedCall(matchDecided ? 200 : 550, () => {
-      if (matchDecided) this.finishMatch();
-      else { this.state = 'playing'; this.serveBall(); }
+    this.time.delayedCall(550, () => {
+      if (this.state !== 'playing') return;
+      // loser of the point (the one who missed) serves next
+      this.serveBallInstance(ball, missedSide === 'p1');
     });
   }
 
-  finishMatch() {
+  endMatch(winnerSide) {
     this.state = 'over';
-    const p1Won = this.p1Score > this.p2Score;
+    const p1Won = winnerSide === 'p1';
     const headline = this.mode === 'ai'
       ? (p1Won ? 'YOU WIN' : 'CPU WINS')
       : (p1Won ? 'P1 WINS' : 'P2 WINS');
     this.overHeadline.setText(headline);
-    this.overSub.setText(`${this.p1Score} — ${this.p2Score}`);
+    this.overSub.setText(`Sudden Death — ${this.p1Score} — ${this.p2Score}`);
     this.setOverVisible(true);
   }
 }
