@@ -99,6 +99,11 @@
   .charCard .sw { width: 14px; height: 14px; border-radius: 4px; margin-bottom: 4px; }
   .charCard .n { font-size: 12px; font-weight: 700; }
   .charCard .t { font-size: 9px; color: #94a3b8; }
+
+  .pips { display: flex; gap: 4px; margin-top: 5px; }
+  .hpBox.right .pips { justify-content: flex-end; }
+  .pip { width: 8px; height: 8px; border-radius: 50%; background: rgba(148,163,184,0.25); border: 1px solid rgba(148,163,184,0.35); }
+  .pip.filled { background: #4ade80; border-color: #4ade80; }
 </style>
 </head>
 <body>
@@ -107,8 +112,8 @@
 
   <div id="hud" class="hidden">
     <div class="hpRow">
-      <div class="hpBox"><div class="name" id="nameP">You</div><div class="hpBar"><div class="hpFill" id="hpFillP" style="width:100%"></div></div></div>
-      <div class="hpBox right"><div class="name" id="nameA">Opponent</div><div class="hpBar"><div class="hpFill" id="hpFillA" style="width:100%"></div></div></div>
+      <div class="hpBox"><div class="name" id="nameP">You</div><div class="hpBar"><div class="hpFill" id="hpFillP" style="width:100%"></div></div><div class="pips" id="pipsP"></div></div>
+      <div class="hpBox right"><div class="name" id="nameA">Opponent</div><div class="hpBar"><div class="hpFill" id="hpFillA" style="width:100%"></div></div><div class="pips" id="pipsA"></div></div>
     </div>
     <div id="tierLabel">—</div>
   </div>
@@ -135,6 +140,14 @@
     <div class="sectionLabel">Choose Opponent</div>
     <div id="tierGrid"></div>
     <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · tap Shift for a brief Block-anything window (chip damage, no parry, then a cooldown) · 1 alone = quick hit · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
+  </div>
+
+  <div id="roundOverlay" class="overlay hidden">
+    <h1 id="roundTitle">ROUND WON</h1>
+    <div class="sub" id="roundSub"></div>
+    <div>
+      <button class="btn primary" id="nextRoundBtn">Next Round</button>
+    </div>
   </div>
 
   <div id="resultOverlay" class="overlay hidden">
@@ -252,9 +265,12 @@
     { id:2, name:"Duelist", desc:"Aggressive footwork, mixes timing and lines, punishes hesitation.", think:[0.22,0.45], feintChance:0.30, guardChance:0.78, guardDelay:0.08, guardAccuracy:0.92 }
   ];
 
-  let state = 'menu'; // menu | duel | result
+  const ROUNDS_TO_WIN = 2; // best of 3
+  let state = 'menu'; // menu | duel | roundOver | result
   let tierIdx = 0;
   let charIdx = 0; // player's chosen character (index into CHARACTERS)
+  let curPChar = null, curAiChar = null; // characters locked in for the whole match
+  let roundWinsP = 0, roundWinsA = 0;
   let P, A; // player, ai fighters
   let elapsed = 0;
   let shakeT = 0, shakeMag = 0;
@@ -281,23 +297,41 @@
 
   function startDuel(idx){
     tierIdx = idx;
-    const pChar = CHARACTERS[charIdx];
-    const aiChar = CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
-    P = newFighter(280, pChar.color, false, pChar);
-    A = newFighter(680, '#f87171', true, aiChar);
+    curPChar = CHARACTERS[charIdx];
+    curAiChar = CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
+    roundWinsP = 0; roundWinsA = 0;
+    updatePips();
+    setupRound();
+  }
+
+  // Called both to start a fresh match (after startDuel resets the tally) and between rounds
+  // of the same match — characters and tier stay locked in, only the fighters reset.
+  function setupRound(){
+    P = newFighter(280, curPChar.color, false, curPChar);
+    A = newFighter(680, '#f87171', true, curAiChar);
     elapsed = 0; fx = []; shakeT = 0;
     keys.up=false; keys.down=false; touchGuard=null;
-    document.getElementById('tierLabel').textContent = 'vs ' + TIERS[idx].name;
-    document.getElementById('nameP').textContent = pChar.name;
-    document.getElementById('nameA').textContent = aiChar.name + ' · ' + TIERS[idx].name;
+    document.getElementById('tierLabel').textContent = 'vs ' + TIERS[tierIdx].name;
+    document.getElementById('nameP').textContent = curPChar.name;
+    document.getElementById('nameA').textContent = curAiChar.name + ' · ' + TIERS[tierIdx].name;
     setState('duel');
+  }
+
+  function updatePips(){
+    let h = '';
+    for(let i=0;i<ROUNDS_TO_WIN;i++) h += '<div class="pip'+(i<roundWinsP?' filled':'')+'"></div>';
+    document.getElementById('pipsP').innerHTML = h;
+    h = '';
+    for(let i=0;i<ROUNDS_TO_WIN;i++) h += '<div class="pip'+(i<roundWinsA?' filled':'')+'"></div>';
+    document.getElementById('pipsA').innerHTML = h;
   }
 
   function setState(s){
     state = s;
     document.getElementById('menuOverlay').classList.toggle('hidden', s!=='menu');
+    document.getElementById('roundOverlay').classList.toggle('hidden', s!=='roundOver');
     document.getElementById('resultOverlay').classList.toggle('hidden', s!=='result');
-    document.getElementById('hud').classList.toggle('hidden', s!=='duel');
+    document.getElementById('hud').classList.toggle('hidden', s==='menu');
     document.getElementById('hint').classList.toggle('hidden', s!=='duel');
     document.getElementById('touchControls').style.display = (s==='duel' && isTouch()) ? 'block' : 'none';
   }
@@ -523,12 +557,29 @@
     fx.forEach(e=> e.t += dt);
     fx = fx.filter(e=> e.t < e.dur);
     if(P.hp <= 0 || A.hp <= 0){
-      const playerWon = A.hp <= 0 && P.hp > 0;
-      endDuel(playerWon);
+      const roundPlayerWon = A.hp <= 0 && P.hp > 0;
+      if(roundPlayerWon) roundWinsP++; else roundWinsA++;
+      updatePips();
+      if(roundWinsP >= ROUNDS_TO_WIN || roundWinsA >= ROUNDS_TO_WIN){
+        endMatch(roundWinsP > roundWinsA);
+      } else {
+        endRound(roundPlayerWon);
+      }
     }
   }
 
-  function endDuel(playerWon){
+  function endRound(playerWon){
+    setState('roundOver');
+    if(playerWon){ sfx.win(); } else { sfx.lose(); }
+    document.getElementById('roundTitle').textContent = playerWon ? 'ROUND WON' : 'ROUND LOST';
+    document.getElementById('roundTitle').style.background = playerWon
+      ? 'linear-gradient(90deg,#4ade80,#38bdf8)' : 'linear-gradient(90deg,#f87171,#fb923c)';
+    document.getElementById('roundTitle').style.webkitBackgroundClip = 'text';
+    document.getElementById('roundTitle').style.backgroundClip = 'text';
+    document.getElementById('roundSub').textContent = 'Score: ' + roundWinsP + ' – ' + roundWinsA + '. First to ' + ROUNDS_TO_WIN + ' wins the match.';
+  }
+
+  function endMatch(playerWon){
     setState('result');
     if(playerWon){ sfx.win(); } else { sfx.lose(); }
     document.getElementById('resultTitle').textContent = playerWon ? 'VICTORY' : 'DEFEAT';
@@ -536,9 +587,10 @@
       ? 'linear-gradient(90deg,#4ade80,#38bdf8)' : 'linear-gradient(90deg,#f87171,#fb923c)';
     document.getElementById('resultTitle').style.webkitBackgroundClip = 'text';
     document.getElementById('resultTitle').style.backgroundClip = 'text';
-    document.getElementById('resultSub').textContent = playerWon
+    document.getElementById('resultSub').textContent = (playerWon
       ? 'A clean read. Every exchange came down to one decision — and you made it first.'
-      : 'You reacted to the sword after it was already moving. Watch the windup, not the strike.';
+      : 'You reacted to the sword after it was already moving. Watch the windup, not the strike.')
+      + ' Final score ' + roundWinsP + '–' + roundWinsA + '.';
   }
 
   // ---------- input ----------
@@ -718,7 +770,7 @@
     grad.addColorStop(0,'#0d0d18'); grad.addColorStop(1,'#06060a');
     ctx.fillStyle = grad; ctx.fillRect(0,0,VW,VH);
 
-    if(state!=='duel'){ return; }
+    if(state!=='duel' && state!=='roundOver' && state!=='result'){ return; }
 
     ctx.save();
     let sx=0,sy=0;
@@ -805,6 +857,7 @@
       grid.appendChild(card);
     });
   }
+  document.getElementById('nextRoundBtn').addEventListener('click', ()=> setupRound());
   document.getElementById('retryBtn').addEventListener('click', ()=> startDuel(tierIdx));
   document.getElementById('menuBtn').addEventListener('click', ()=>{ setState('menu'); buildTierGrid(); buildCharGrid(); });
 
