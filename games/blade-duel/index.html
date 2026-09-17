@@ -103,7 +103,7 @@
     <div id="tierLabel">—</div>
   </div>
 
-  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · Shift = block all (chip dmg, no parry) · 1 = quick hit · Q+1 high · W+2 torso · E+3 low · Space feint · ←/→ step</div>
+  <div id="hint" class="hidden">↑/↓ hold = guard high/low (fresh press = parry) · tap Shift = brief block-anything window (chip dmg, no parry, has cooldown) · 1 = quick hit · Q+1 high · W+2 torso · E+3 low · Space feint · ←/→ step</div>
 
   <div id="touchControls">
     <button id="btnGuardHigh">GUARD<br>HIGH</button>
@@ -121,7 +121,7 @@
     <h1>BLADE DUEL</h1>
     <div class="sub">Every attack is a commitment. Every guard is a read. Two fighters, four verbs — attack, guard, feint, step — and one well-timed decision beats ten fast ones.</div>
     <div id="tierGrid"></div>
-    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · hold Shift to Block anything for chip damage, no parry · 1 alone = quick hit · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
+    <div style="font-size:11px;color:#475569;margin-top:6px;">Hold ↑/↓ for high/low guard (a fresh press is a parry attempt) · tap Shift for a brief Block-anything window (chip damage, no parry, then a cooldown) · 1 alone = quick hit · Q+1 = high · W+2 = torso · E+3 = low · Space = feint · ←/→ to step</div>
   </div>
 
   <div id="resultOverlay" class="overlay hidden">
@@ -180,6 +180,7 @@
   const HP_MAX = 100, PARRY_PUNISH_DMG = 40;
   const STAGGER_PARRIED = 0.42;
   const BASE_KNOCKBACK = 16; // px pushed away from the attacker on any landed hit
+  const BLOCK_DURATION = 0.35, BLOCK_COOLDOWN = 0.45; // Block is a tapped window, not a hold — can't be left up permanently
 
   // Per-line hit identity: High = damage/pressure, Torso = control/displacement,
   // Low = mobility denial. Small damage spread on purpose — stagger + status carry
@@ -193,8 +194,8 @@
   };
 
   const TIERS = [
-    { id:0, name:"Practice", desc:"Attacks steadily, occasional guard.", think:[0.6,1.0], feintChance:0.05, guardChance:0.25, guardDelay:0.25, guardAccuracy:0.55 },
-    { id:1, name:"Apprentice", desc:"Good spacing, varies attack lines, guards often.", think:[0.4,0.75], feintChance:0.14, guardChance:0.55, guardDelay:0.16, guardAccuracy:0.78 },
+    { id:0, name:"Practice", desc:"Attacks steadily, guards more often than you'd expect.", think:[0.45,0.8], feintChance:0.10, guardChance:0.35, guardDelay:0.20, guardAccuracy:0.62 },
+    { id:1, name:"Apprentice", desc:"Good spacing, varies attack lines, guards often.", think:[0.3,0.55], feintChance:0.20, guardChance:0.68, guardDelay:0.12, guardAccuracy:0.85 },
     { id:2, name:"Duelist", desc:"Aggressive footwork, mixes timing and lines, punishes hesitation.", think:[0.22,0.45], feintChance:0.30, guardChance:0.78, guardDelay:0.08, guardAccuracy:0.92 }
   ];
 
@@ -207,7 +208,6 @@
   let keys = { up:false, down:false, left:false, right:false, q:false, w:false, e:false, block:false };
   let keyPressT = { up:-99, down:-99 }; // last keydown timestamp for freshness/parry detection
   let touchGuard = null;
-  let touchBlock = false;
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
@@ -218,7 +218,7 @@
       state: 'idle', stateT: 0,
       attackLine: 'high', isFeint: false, resolved: false,
       guardLine: null, guardFreshT: -99,
-      staggerT: 0, slowT: 0, dazedT: 0, offBalanceT: 0,
+      staggerT: 0, slowT: 0, dazedT: 0, offBalanceT: 0, blockT: 0, blockCooldown: 0,
       stepDir: 0, stepFromX: x, stepToX: x, stepCooldown: 0,
       // ai only
       aiThinkT: 0.6
@@ -230,7 +230,7 @@
     P = newFighter(280, '#38bdf8', false);
     A = newFighter(680, '#f87171', true);
     elapsed = 0; fx = []; shakeT = 0;
-    keys.up=false; keys.down=false; keys.block=false; touchGuard=null; touchBlock=false;
+    keys.up=false; keys.down=false; touchGuard=null;
     document.getElementById('tierLabel').textContent = 'vs ' + TIERS[idx].name;
     document.getElementById('nameA').textContent = TIERS[idx].name;
     setState('duel');
@@ -254,8 +254,14 @@
   // guessed wrong on, but it only chips (partial damage) instead of fully no-selling the hit,
   // and it can never parry. High/Low guard stay the precise, full-stop-or-parry option.
   function currentGuardLine(f){
-    if(f === P) return (keys.block || touchBlock) ? 'block' : (keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || 'torso')));
+    if(f === P) return f.blockT > 0 ? 'block' : (keys.up ? 'high' : (keys.down ? 'low' : (touchGuard || 'torso')));
     return f.guardLine;
+  }
+
+  function tryBlock(f){
+    if(f.blockCooldown > 0) return;
+    f.blockT = BLOCK_DURATION;
+    f.blockCooldown = BLOCK_DURATION + BLOCK_COOLDOWN;
   }
 
   const ATTACK_LINES = ['high','torso','low'];
@@ -432,6 +438,8 @@
     if(f.slowT > 0) f.slowT = Math.max(0, f.slowT - dt);
     if(f.dazedT > 0) f.dazedT = Math.max(0, f.dazedT - dt);
     if(f.offBalanceT > 0) f.offBalanceT = Math.max(0, f.offBalanceT - dt);
+    if(f.blockT > 0) f.blockT = Math.max(0, f.blockT - dt);
+    if(f.blockCooldown > 0) f.blockCooldown = Math.max(0, f.blockCooldown - dt);
   }
 
   function stepDuel(dt){
@@ -472,8 +480,8 @@
     if(e.code==='KeyQ') keys.q = true;
     if(e.code==='KeyW') keys.w = true;
     if(e.code==='KeyE') keys.e = true;
-    if(e.code==='ShiftLeft' || e.code==='ShiftRight') keys.block = true;
     if(state!=='duel') return;
+    if((e.code==='ShiftLeft' || e.code==='ShiftRight') && !e.repeat) tryBlock(P);
     // targeting: Q+1 = real high, W+2 = real torso, E+3 = real low — a deliberate, aimed strike.
     // bare 1 (no modifier) is the quick option: a real hit, but on a random line you don't get
     // to pick — fast and simple, at the cost of precision. Space is the dedicated feint key.
@@ -495,7 +503,6 @@
     if(e.code==='KeyQ') keys.q = false;
     if(e.code==='KeyW') keys.w = false;
     if(e.code==='KeyE') keys.e = false;
-    if(e.code==='ShiftLeft' || e.code==='ShiftRight') keys.block = false;
   });
 
   function bindTap(id, fn){ document.getElementById(id).addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); }); }
@@ -507,7 +514,7 @@
   }
   bindHold('btnGuardHigh', ()=>{ if(touchGuard!=='high') keyPressT.up = elapsed; touchGuard='high'; }, ()=>{ if(touchGuard==='high') touchGuard=null; });
   bindHold('btnGuardLow',  ()=>{ if(touchGuard!=='low') keyPressT.down = elapsed; touchGuard='low'; },  ()=>{ if(touchGuard==='low') touchGuard=null; });
-  bindHold('btnBlock', ()=>touchBlock=true, ()=>touchBlock=false);
+  bindTap('btnBlock', ()=> state==='duel' && tryBlock(P));
   bindTap('btnAttackHigh',  ()=> state==='duel' && tryAttack(P, false, 'high'));
   bindTap('btnAttackTorso', ()=> state==='duel' && tryAttack(P, false, 'torso'));
   bindTap('btnAttackLow',   ()=> state==='duel' && tryAttack(P, false, 'low'));
