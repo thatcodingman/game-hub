@@ -1,321 +1,800 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Arcade</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Sumo Push — The Arcade</title>
 <style>
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 0;
-    background: #0a0a0f;
-    background-image: radial-gradient(circle at 20% 20%, #1a1a2e 0%, #0a0a0f 60%);
-    color: #f8fafc;
-    font-family: system-ui, -apple-system, sans-serif;
-    min-height: 100vh;
+  html, body {
+    margin:0; padding:0; background:#0a0a0d; overflow:hidden; height:100%;
+    overscroll-behavior: none;
   }
-  header {
-    text-align: center;
-    padding: 48px 20px 24px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 2.2rem;
-    letter-spacing: 0.08em;
-    background: linear-gradient(90deg, #4ade80, #38bdf8, #fbbf24);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-  header p {
-    color: #94a3b8;
-    margin-top: 8px;
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 20px;
-    max-width: 1000px;
-    margin: 0 auto;
-    padding: 0 20px 60px;
-  }
-  .card {
-    position: relative;
-    border-radius: 16px;
-    overflow: hidden;
-    text-decoration: none;
-    color: inherit;
-    display: block;
-    height: 220px;
-    transition: transform 0.15s ease;
-  }
-  .card:hover { transform: translateY(-4px); }
-  .card .art {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 3.5rem;
-  }
-  .card .info {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    padding: 14px 16px;
-    background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
-  }
-  .card .info h2 { margin: 0; font-size: 1.1rem; }
-  .card .info p { margin: 4px 0 0; font-size: 0.85rem; color: #cbd5e1; }
-  footer {
-    text-align: center;
-    color: #475569;
-    font-size: 0.8rem;
-    padding: 20px;
+  #game-container { width:100vw; height:100vh; }
+  canvas {
+    display:block; touch-action:none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 </style>
 </head>
 <body>
-<style>
-  .quote-rail {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    width: 220px;
-    overflow: hidden;
-    pointer-events: none;
-    z-index: 0;
-    mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
-  }
-  .quote-rail--left { left: 0; }
-  .quote-rail--right { right: 0; }
-  .quote-track {
-    display: flex;
-    flex-direction: column;
-    gap: 36px;
-    padding: 40px 24px;
-    animation: quote-scroll 220s linear infinite;
-  }
-  .quote-rail--right .quote-track {
-    animation-duration: 260s;
-    animation-direction: reverse;
-  }
-  .quote-item {
-    font-family: monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    color: rgba(226, 232, 240, 0.28);
-  }
-  .quote-item .quote-author {
-    display: block;
-    margin-top: 4px;
-    color: rgba(148, 163, 184, 0.24);
-    font-size: 11px;
-  }
-  @keyframes quote-scroll {
-    from { transform: translateY(0); }
-    to { transform: translateY(-50%); }
-  }
-  @media (max-width: 1100px) {
-    .quote-rail { display: none; }
-  }
-</style>
-
-<div class="quote-rail quote-rail--left">
-  <div class="quote-track" id="quoteTrackLeft"></div>
-</div>
-<div class="quote-rail quote-rail--right">
-  <div class="quote-track" id="quoteTrackRight"></div>
-</div>
-
-<script src="assets/quotes.js"></script>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
 <script>
-(function () {
-  function shuffle(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
+/* =========================================================================
+   SUMO PUSH
+   "One ring. One shove. One mistake."
+
+   A minimalist 1v1 sumo duel built on momentum, not a moveset. There is no
+   punch/kick/grapple/block button — just movement and ONE charge-dash.
+   Hold to charge (the longer you hold, the harder and more committed the
+   dash), release to shove. Two wrestlers colliding resolve as a physical
+   momentum exchange: whoever is carrying more speed into the hit shoves the
+   other back. Two equally-committed dashes colliding is a CLASH — a
+   dedicated slow-mo/camera-shake moment, not a scripted special move.
+
+   Distance from the ring's edge is the resource that matters, not HP. A
+   missed dash leaves you in a brief recovery window (slow, vulnerable) —
+   the dash is a bet: commit right and shove them out, miss and you're the
+   one who's exposed.
+
+   AI difficulty (per design) comes from decision-making and timing, never
+   from faster reactions or hidden stat boosts:
+     Easy   — overcommits, ignores its own edge risk.
+     Normal — reacts to an obvious charge with a basic counter-charge.
+     Hard   — holds the center, baits you into over-extending.
+     Expert — waits for you to commit before reacting, and bait-positions
+              you toward the edge first.
+   ========================================================================= */
+
+const W = 960, H = 540;
+const RING_CX = 480, RING_CY = 285;
+const RING_RADIUS_BASE = 190;
+const WRESTLER_R = 34;
+
+const MOVE_ACCEL = 900;
+const MOVE_MAX_SPEED = 220;
+const FRICTION = 700;
+const CHARGE_MOVE_MULT = 0.35;
+const RECOVERY_MOVE_MULT = 0.5;
+const STAGGER_MOVE_MULT = 0.4;
+
+const MAX_CHARGE_MS = 900;
+const CHARGE_STAGE1_MS = 300;
+const CHARGE_STAGE2_MS = 600;
+const DASH_MIN_SPEED = 380;
+const DASH_MAX_SPEED = 760;
+const DASH_FRICTION = 500;
+const DASH_MAX_DURATION_MS = 320;
+const RECOVERY_MS = 550;
+const STAGGER_MS = 480;
+
+const CRITICAL_EDGE_DIST = 45;
+const CLASH_SPEED_THRESHOLD = 70; // if both dashing and closing-speed diff is under this, it's a mutual clash
+const PUSH_BASE = 80, PUSH_SCALE = 0.9, PUSH_CAP = 520;
+const CRITICAL_PUSH_MULT = 1.4;
+
+const ROUNDS_TO_WIN = 2;
+const ROUND_SUDDEN_DEATH_MS = 30000;
+const RING_SHRINK_DURATION_MS = 20000;
+const RING_MIN_RADIUS = 125;
+
+const DIFFICULTY_DEFS = {
+  // chargeChance/minCharge/maxCharge: how often & how long the AI commits on its own.
+  // edgeAwareness: how much it avoids charging when IT is the one near the edge.
+  // reactChance: odds it responds at all to seeing the opponent visibly charging.
+  // waitForCommit: of those reactions, odds it holds off and waits for the opponent's
+  //   release instead of pre-emptively charging (a true counter-timing read).
+  // centerPull: how strongly it drifts back toward the ring's center by default.
+  easy:   { name: 'Easy',   chargeChance: 0.030, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0, centerPull: 0.10 },
+  normal: { name: 'Normal', chargeChance: 0.022, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30 },
+  hard:   { name: 'Hard',   chargeChance: 0.016, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.65, waitForCommit: 0.50, centerPull: 0.55 },
+  expert: { name: 'Expert', chargeChance: 0.012, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.88, waitForCommit: 0.80, centerPull: 0.70 }
+};
+const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
+const DIFFICULTY_KEY = 'sumoPush_difficulty';
+function loadDifficulty() {
+  try { const d = localStorage.getItem(DIFFICULTY_KEY); return DIFFICULTY_DEFS[d] ? d : 'normal'; }
+  catch (err) { return 'normal'; }
+}
+function saveDifficulty(key) { try { localStorage.setItem(DIFFICULTY_KEY, key); } catch (err) {} }
+
+const Sound = {
+  chargeTick(stage) {
+    if (!window.SFX) return;
+    if (stage === 1) SFX.tone(200, 0.08, 'sawtooth', 0.1, 150);
+    else SFX.tone(140, 0.12, 'sawtooth', 0.14, 90);
+  },
+  dash(tier) {
+    if (!window.SFX) return;
+    if (tier === 'strong') { SFX.tone(120, 0.16, 'sawtooth', 0.2, 60); SFX.tone(650, 0.06, 'square', 0.12, 1500); }
+    else if (tier === 'medium') SFX.tone(220, 0.1, 'sawtooth', 0.16, 140);
+    else SFX.tone(520, 0.06, 'square', 0.12, 1200);
+  },
+  impact(big) {
+    if (!window.SFX) return;
+    if (big) { SFX.tone(90, 0.22, 'sawtooth', 0.25, 45); SFX.tone(1500, 0.05, 'square', 0.14, 1900); }
+    else SFX.tone(240, 0.1, 'triangle', 0.16, 700);
+  },
+  clash() {
+    if (!window.SFX) return;
+    SFX.tone(70, 0.3, 'sawtooth', 0.3, 35);
+    SFX.tone(1700, 0.08, 'square', 0.16, 2100, 40);
+  },
+  ringOut() {
+    if (!window.SFX) return;
+    SFX.tone(300, 0.2, 'sawtooth', 0.2, 80);
+    SFX.tone(150, 0.35, 'sawtooth', 0.22, 50, 120);
+  },
+  suddenDeath() { if (!window.SFX) return; SFX.tone(140, 0.28, 'sawtooth', 0.2, 70); SFX.tone(1400, 0.1, 'square', 0.12, 1600, 120); }
+};
+
+class SumoPushScene extends Phaser.Scene {
+  constructor() { super('SumoPushScene'); }
+
+  create() {
+    this.mode = null;
+    this.difficulty = loadDifficulty();
+    this.state = 'menu';
+
+    this.buildRing();
+    this.buildEntities();
+    this.buildHUD();
+    this.buildInput();
+    this.buildOverPanel();
+    this.buildModeSelect();
+    this.buildDifficultySelect();
+
+    this.setHudVisible(false);
+    this.setOverVisible(false);
+    this.setDifficultySelectVisible(false);
+    this.setModeSelectVisible(true);
+  }
+
+  // ----------------------------------------------------------------- RING
+  buildRing() {
+    this.ringG = this.add.graphics();
+    this.ringRadius = RING_RADIUS_BASE;
+    this.drawRing();
+    this.bgFlash = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(-1);
+    this.dustParticles = [];
+    this.dustG = this.add.graphics();
+  }
+
+  drawRing() {
+    this.ringG.clear();
+    this.ringG.fillStyle(0x1b140d, 1);
+    this.ringG.fillRect(0, 0, W, H);
+    // dohyo (sand circle) + raised straw-rope border rings
+    this.ringG.fillStyle(0x3a2c1a, 1);
+    this.ringG.fillCircle(RING_CX, RING_CY, this.ringRadius + 16);
+    this.ringG.fillStyle(0xc9a15a, 1);
+    this.ringG.fillCircle(RING_CX, RING_CY, this.ringRadius);
+    this.ringG.lineStyle(5, 0x8a6a35, 1);
+    this.ringG.strokeCircle(RING_CX, RING_CY, this.ringRadius);
+    this.ringG.lineStyle(2, 0x6b4f24, 0.6);
+    this.ringG.strokeCircle(RING_CX, RING_CY, this.ringRadius - 10);
+  }
+
+  // -------------------------------------------------------------- ENTITIES
+  buildEntities() {
+    this.p1 = this.createWrestler(0x8fd3ff, 0x3f6fa8, 0);
+    this.p2 = this.createWrestler(0xff9f6b, 0xa85f3f, Math.PI);
+    this.slowUntil = 0;
+    this.p1RoundWins = 0;
+    this.p2RoundWins = 0;
+  }
+
+  createWrestler(color, dark, facing) {
+    return {
+      x: 0, y: 0, vx: 0, vy: 0, facing, color, dark,
+      state: 'idle', // idle | charging | dashing | recovering | staggered
+      chargeStart: 0, chargeKeyWasDown: false, dashStartedAt: 0, staggerUntil: 0, recoveryUntil: 0,
+      dashTier: 'quick', reachedStage1: false, reachedStage2: false,
+      // AI-only bookkeeping (inert for the human-controlled wrestler)
+      reactedToThisCharge: false, pendingCounter: false, plannedReleaseAt: 0,
+      graphic: this.add.graphics()
+    };
+  }
+
+  resetWrestler(f, x, y, facing) {
+    f.x = x; f.y = y; f.vx = 0; f.vy = 0; f.facing = facing;
+    f.state = 'idle'; f.chargeStart = 0; f.chargeKeyWasDown = false;
+    f.dashStartedAt = 0; f.staggerUntil = 0; f.recoveryUntil = 0;
+    f.reachedStage1 = false; f.reachedStage2 = false;
+    f.reactedToThisCharge = false; f.pendingCounter = false; f.plannedReleaseAt = 0;
+  }
+
+  // ------------------------------------------------------------------ HUD
+  buildHUD() {
+    this.p1PipRow = [];
+    this.p2PipRow = [];
+    for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+      this.p1PipRow.push(this.add.circle(W / 2 - 60 - i * 20, 20, 6, 0x2a2e36).setStrokeStyle(1, 0x5a5030, 1));
+      this.p2PipRow.push(this.add.circle(W / 2 + 60 + i * 20, 20, 6, 0x2a2e36).setStrokeStyle(1, 0x5a5030, 1));
     }
-    return a;
+    this.roundText = this.add.text(W / 2, 20, 'ROUND 1', { fontFamily: 'Arial Black', fontSize: '16px', color: '#cbd5e1' }).setOrigin(0.5);
+    this.phaseText = this.add.text(W / 2, H - 18, '', { fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a' }).setOrigin(0.5);
+    this.bannerText = this.add.text(W / 2, H / 2 - 30, '', { fontFamily: 'Arial Black', fontSize: '42px', color: '#ffffff' }).setOrigin(0.5).setAlpha(0).setDepth(5);
+
+    this.hudGroup = [...this.p1PipRow, ...this.p2PipRow, this.roundText, this.phaseText];
   }
 
-  function renderTrack(elementId, quoteSubset) {
-    const el = document.getElementById(elementId);
-    if (!el || typeof QUOTES === 'undefined') return;
-    // render the subset twice back-to-back so the -50% translateY loop is seamless
-    const doubled = quoteSubset.concat(quoteSubset);
-    el.innerHTML = doubled.map(q =>
-      '<div class="quote-item">"' + q.text.replace(/</g, '&lt;') + '"' +
-      '<span class="quote-author">— ' + q.author.replace(/</g, '&lt;') + '</span></div>'
-    ).join('');
+  setHudVisible(v) { this.hudGroup.forEach(o => o.setVisible(v)); }
+  updateRoundPips() {
+    this.p1PipRow.forEach((p, i) => p.setFillStyle(i < this.p1RoundWins ? 0x8fd3ff : 0x2a2e36));
+    this.p2PipRow.forEach((p, i) => p.setFillStyle(i < this.p2RoundWins ? 0xff9f6b : 0x2a2e36));
   }
 
-  if (typeof QUOTES !== 'undefined' && QUOTES.length > 0) {
-    const shuffled = shuffle(QUOTES);
-    const half = Math.floor(shuffled.length / 2);
-    renderTrack('quoteTrackLeft', shuffled.slice(0, half).slice(0, 60));
-    renderTrack('quoteTrackRight', shuffled.slice(half).slice(0, 60));
+  // ---------------------------------------------------------------- INPUT
+  buildInput() {
+    this.keys = this.input.keyboard.addKeys({
+      w: 'W', a: 'A', s: 'S', d: 'D', f: 'F',
+      up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', l: 'L',
+      space: 'SPACE'
+    });
   }
-})();
-</script>
 
-<header>
-  <h1>THE ARCADE</h1>
-  <p>Free browser games. No installs, no accounts, just play.</p>
-</header>
-<div class="grid" id="game-grid"></div>
-<footer>New games added regularly.</footer>
+  // --------------------------------------------------------- MODE SELECT
+  buildModeSelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 110, 'SUMO PUSH', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, 155, 'One ring. One shove. One mistake.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
+    items.push(title, sub);
 
-<script>
-  // Add one entry here per game — the hub renders itself, so shipping a new
-  // game never requires touching this page's HTML/CSS.
-  const GAMES = [
-    {
-      title: 'The Shrink',
-      tagline: 'Dodge, shoot, and survive as you shrink to nothing.',
-      path: 'games/the-shrink/',
-      emoji: '\ud83d\udd3b',
-      gradient: 'linear-gradient(135deg, #14532d, #052e16)'
-    },
-    {
-      title: 'Gap Flyer',
-      tagline: 'Fly a horse through the gaps, catch hay, beat your best.',
-      path: 'games/gap-flyer/',
-      emoji: '\ud83d\udc0e',
-      gradient: 'linear-gradient(135deg, #7dd3fc, #fed7aa)'
-    },
-    {
-      title: 'DirtySet',
-      tagline: 'Whack the cleaning supplies, dodge the dirt, beat the clock.',
-      path: 'games/dirtyset/',
-      emoji: '\ud83e\uddfd',
-      gradient: 'linear-gradient(135deg, #e0f2fe, #bae6fd)'
-    },
-    {
-      title: 'Stack Shift',
-      tagline: 'Stack ice over lava \u2014 every few blocks, the tower turns a corner.',
-      path: 'games/stack-shift/',
-      emoji: '\ud83e\uddca',
-      gradient: 'linear-gradient(135deg, #431407, #ea580c)'
-    },
-    {
-      title: 'Home Run Derby',
-      tagline: 'Time your swing perfectly \u2014 three strikes and you\'re out.',
-      path: 'games/home-run-derby/',
-      emoji: '\u26be',
-      gradient: 'linear-gradient(135deg, #4d7c0f, #7dd3fc)'
-    },
-    {
-      title: 'Crossword',
-      tagline: 'A mini word puzzle \u2014 no timer pressure, just clues and letters.',
-      path: 'games/crossword/',
-      emoji: '\ud83d\udcdd',
-      gradient: 'linear-gradient(135deg, #fffbeb, #fde047)'
-    },
-    {
-      title: 'Color Drop',
-      tagline: 'Choose your color, become it, and shrink with every success.',
-      path: 'games/color-drop/',
-      emoji: '\ud83c\udfae',
-      gradient: 'linear-gradient(135deg, #ef4444, #22c55e, #3b82f6)'
-    },
-    {
-      title: 'Highway Heat',
-      tagline: 'Weave through traffic and stay ahead of the cops on your tail.',
-      path: 'games/highway-heat/',
-      emoji: '\ud83d\ude94',
-      gradient: 'linear-gradient(135deg, #18181b, #ef4444)'
-    },
-    {
-      title: 'Trick or Die',
-      tagline: 'Stack tricks for a bigger score, then stick a landing the game demands.',
-      path: 'games/trick-or-die/',
-      emoji: '\ud83d\udd25',
-      gradient: 'linear-gradient(135deg, #0c0a09, #f97316, #fde047)'
-    },
-    {
-      title: 'One More Second',
-      tagline: 'Freeze the world for one second \u2014 you keep moving.',
-      path: 'games/one-more-second/',
-      emoji: '\u23f1',
-      gradient: 'linear-gradient(135deg, #0b0e14, #2f7bff)'
-    },
-    {
-      title: 'Wok Star',
-      tagline: 'Read the ticket, build the order, beat the patience meter.',
-      path: 'games/wok-star/',
-      emoji: '\ud83e\udd61',
-      gradient: 'linear-gradient(135deg, #7f1d1d, #f59e0b)'
-    },
-    {
-      title: 'Tank Duel',
-      tagline: 'Every shell reshapes the arena \u2014 one hit ends the round.',
-      path: 'games/tank-duel/',
-      emoji: '\ud83d\udca5',
-      gradient: 'linear-gradient(135deg, #1c1814, #5be37b)'
-    },
-    {
-      title: 'Rhythm Shift',
-      tagline: 'You don\u2019t follow the beat \u2014 your tap IS the beat.',
-      path: 'games/rhythm-shift/',
-      emoji: '\ud83c\udfb5',
-      gradient: 'linear-gradient(135deg, #0a0a0d, #4fd1ff, #ffd23f)'
-    },
-    {
-      title: 'Last Fist',
-      tagline: 'Panda vs Bear \u2014 full fight system, best-of-3 rounds.',
-      path: 'games/last-fist/',
-      emoji: '\ud83d\udc3c',
-      gradient: 'linear-gradient(135deg, #0a0a0d, #f4f4f4, #8b5a2b)'
-    },
-    {
-      title: 'Grapple Swing',
-      tagline: 'You don\u2019t control where you go. You control when you let go.',
-      path: 'games/grapple-swing/',
-      emoji: '\ud83e\udd8d',
-      gradient: 'linear-gradient(135deg, #0c0a1a, #38bdf8, #a78bfa)'
-    },
-    {
-      title: 'Blade Duel',
-      tagline: 'Every attack is a commitment. One good read wins the exchange.',
-      path: 'games/blade-duel/',
-      emoji: '\u2694\ufe0f',
-      gradient: 'linear-gradient(135deg, #1a0a0a, #f87171, #fde047)'
-    },
-    {
-      title: 'Dodgeball Arena',
-      tagline: 'Charge your throw, read theirs \u2014 a caught ball is an instant counter.',
-      path: 'games/dodgeball-arena/',
-      emoji: '\ud83c\udfd0',
-      gradient: 'linear-gradient(135deg, #0a0f1a, #ff5a5a, #ffd23f)'
-    },
-    {
-      title: 'Paddle Duel',
-      tagline: 'The ball remembers every hit — control the rally, break their timing.',
-      path: 'games/paddle-duel/',
-      emoji: '🏓',
-      gradient: 'linear-gradient(135deg, #0a0f1a, #8fd3ff, #ff9f6b)'
-    },
-    {
-      title: 'Sumo Push',
-      tagline: 'One ring. One shove. One mistake.',
-      path: 'games/sumo-push/',
-      emoji: '🤼',
-      gradient: 'linear-gradient(135deg, #1b140d, #c9a15a, #ff5a5a)'
+    const makeButton = (y, label, color, onClick) => {
+      const bg = this.add.rectangle(W / 2, y, 320, 62, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(W / 2, y, label, { fontFamily: 'Arial Black', fontSize: '20px', color: '#ffffff' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, color));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, color));
+      bg.on('pointerdown', () => { if (window.SFX) SFX.click(); onClick(); });
+      items.push(bg, txt);
+    };
+
+    makeButton(255, 'VS AI', 0x8fd3ff, () => {
+      this.pendingMode = 'ai';
+      this.setModeSelectVisible(false);
+      this.setDifficultySelectVisible(true);
+    });
+    makeButton(335, '2 PLAYER LOCAL', 0xff9f6b, () => {
+      this.setModeSelectVisible(false);
+      this.startMatch('local');
+    });
+
+    const controlsHint = this.add.text(W / 2, 410,
+      'VS AI: Arrow Keys move, SPACE charge/dash',
+      { fontFamily: 'Arial', fontSize: '13px', color: '#5a6578' }).setOrigin(0.5);
+    const controlsHint2 = this.add.text(W / 2, 432,
+      '2P Local: P1 = WASD + F   •   P2 = Arrows + L',
+      { fontFamily: 'Arial', fontSize: '13px', color: '#5a6578' }).setOrigin(0.5);
+    items.push(controlsHint, controlsHint2);
+
+    this.modeSelectItems = items;
+  }
+  setModeSelectVisible(v) { this.modeSelectItems.forEach(o => o.setVisible(v)); }
+
+  // ------------------------------------------------------ DIFFICULTY SEL
+  buildDifficultySelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 150, 'CHOOSE DIFFICULTY', { fontFamily: 'Arial Black', fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    items.push(title);
+
+    const colors = { easy: 0x5be37b, normal: 0xffd23f, hard: 0xff9f6b, expert: 0xff5a5a };
+    DIFFICULTY_ORDER.forEach((key, i) => {
+      const y = 230 + i * 66;
+      const def = DIFFICULTY_DEFS[key];
+      const bg = this.add.rectangle(W / 2, y, 300, 52, 0x151a24).setStrokeStyle(2, colors[key]).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(W / 2, y, def.name.toUpperCase(), { fontFamily: 'Arial Black', fontSize: '18px', color: '#ffffff' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, colors[key]));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, colors[key]));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.click();
+        this.difficulty = key;
+        saveDifficulty(key);
+        this.setDifficultySelectVisible(false);
+        this.startMatch(this.pendingMode);
+      });
+      items.push(bg, txt);
+    });
+
+    const back = this.add.text(W / 2, 230 + DIFFICULTY_ORDER.length * 66 + 20, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    back.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setDifficultySelectVisible(false);
+      this.setModeSelectVisible(true);
+    });
+    items.push(back);
+
+    this.difficultySelectItems = items;
+  }
+  setDifficultySelectVisible(v) { this.difficultySelectItems.forEach(o => o.setVisible(v)); }
+
+  // ------------------------------------------------------------ OVER PANEL
+  buildOverPanel() {
+    const items = [];
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.55);
+    const headline = this.add.text(W / 2, H / 2 - 40, '', { fontFamily: 'Arial Black', fontSize: '30px', color: '#ffffff' }).setOrigin(0.5);
+    const sub = this.add.text(W / 2, H / 2, '', { fontFamily: 'Arial', fontSize: '16px', color: '#cbd5e1' }).setOrigin(0.5);
+    const rematchBg = this.add.rectangle(W / 2, H / 2 + 60, 220, 50, 0x151a24).setStrokeStyle(2, 0xffd23f).setInteractive({ useHandCursor: true });
+    const rematchLabel = this.add.text(W / 2, H / 2 + 60, 'REMATCH', { fontFamily: 'Arial Black', fontSize: '18px', color: '#ffd23f' }).setOrigin(0.5);
+    const menuLabel = this.add.text(W / 2, H / 2 + 110, 'MENU', { fontFamily: 'Arial', fontSize: '14px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    rematchBg.on('pointerover', () => rematchBg.setStrokeStyle(3, 0xffd23f));
+    rematchBg.on('pointerout', () => rematchBg.setStrokeStyle(2, 0xffd23f));
+    rematchBg.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setOverVisible(false);
+      const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+      if (matchDecided) this.startMatch(this.mode);
+      else this.startNextRound();
+    });
+    menuLabel.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setOverVisible(false);
+      this.setHudVisible(false);
+      this.state = 'menu';
+      this.setModeSelectVisible(true);
+    });
+
+    items.push(dim, headline, sub, rematchBg, rematchLabel, menuLabel);
+    this.overItems = items;
+    this.overHeadline = headline;
+    this.overSub = sub;
+    this.rematchLabel = rematchLabel;
+  }
+  setOverVisible(v) { this.overItems.forEach(o => o.setVisible(v)); }
+
+  // --------------------------------------------------------------- MATCH
+  startMatch(mode) {
+    this.mode = mode;
+    this.p1RoundWins = 0;
+    this.p2RoundWins = 0;
+    this.updateRoundPips();
+    this.currentRound = 1;
+    this.setHudVisible(true);
+    this.startRound();
+  }
+
+  startNextRound() {
+    this.currentRound++;
+    this.startRound();
+  }
+
+  startRound() {
+    this.ringRadius = RING_RADIUS_BASE;
+    this.drawRing();
+    this.roundElapsed = 0;
+    this.suddenDeath = false;
+    this.resetWrestler(this.p1, RING_CX - 90, RING_CY, 0);
+    this.resetWrestler(this.p2, RING_CX + 90, RING_CY, Math.PI);
+    this.roundText.setText(`ROUND ${this.currentRound}`);
+    this.phaseText.setText('');
+    this.state = 'countdown';
+    this.countdownUntil = this.time.now + 900;
+    this.announce(`ROUND ${this.currentRound}`, '#ffd23f');
+    this.time.delayedCall(900, () => { if (this.state === 'countdown') this.state = 'playing'; });
+  }
+
+  announce(text, color) {
+    this.bannerText.setText(text).setColor(color).setAlpha(1).setScale(0.6);
+    this.tweens.add({ targets: this.bannerText, scale: 1.05, duration: 220, ease: 'Back.Out' });
+    this.tweens.add({ targets: this.bannerText, alpha: 0, delay: 900, duration: 400 });
+  }
+
+  // --------------------------------------------------------------- UPDATE
+  update(time, delta) {
+    if (this.state !== 'playing' && this.state !== 'countdown') return;
+    const realDt = Math.min(delta, 40);
+    if (this.state === 'countdown') return; // frozen, waiting for the round to open
+
+    this.roundElapsed += realDt;
+    this.updateRingShrink();
+
+    const slowMo = this.time.now < this.slowUntil;
+    const dt = slowMo ? realDt * 0.28 : realDt;
+
+    this.handleWrestlerInput(this.p1, this.mode === 'ai' ? 'p1ArrowsSpace' : 'p1WasdF', dt);
+    if (this.mode === 'ai') this.updateAI(dt);
+    else this.handleWrestlerInput(this.p2, 'p2ArrowsL', dt);
+
+    this.integrateWrestler(this.p1, dt);
+    this.integrateWrestler(this.p2, dt);
+    this.resolveCollision();
+    this.clampToCanvas(this.p1);
+    this.clampToCanvas(this.p2);
+    this.checkRingOut();
+    this.updateDust(realDt);
+    this.drawWrestlers();
+    this.updatePhaseText();
+  }
+
+  // -------------------------------------------------------------- RING SHRINK
+  updateRingShrink() {
+    if (!this.suddenDeath && this.roundElapsed >= ROUND_SUDDEN_DEATH_MS) {
+      this.suddenDeath = true;
+      this.suddenDeathAt = this.roundElapsed;
+      this.announce('SUDDEN DEATH', '#ff5a5a');
+      Sound.suddenDeath();
     }
-  ];
+    if (this.suddenDeath) {
+      const t = Phaser.Math.Clamp((this.roundElapsed - this.suddenDeathAt) / RING_SHRINK_DURATION_MS, 0, 1);
+      this.ringRadius = Phaser.Math.Linear(RING_RADIUS_BASE, RING_MIN_RADIUS, t);
+      this.drawRing();
+    }
+  }
 
-  const grid = document.getElementById('game-grid');
-  GAMES.forEach(function (game) {
-    const card = document.createElement('a');
-    card.className = 'card';
-    card.href = game.path;
-    card.style.background = game.gradient;
-    card.innerHTML =
-      '<div class="art">' + game.emoji + '</div>' +
-      '<div class="info">' +
-        '<h2>' + game.title + '</h2>' +
-        '<p>' + game.tagline + '</p>' +
-      '</div>';
-    grid.appendChild(card);
-  });
+  updatePhaseText() {
+    if (this.suddenDeath) {
+      this.phaseText.setText('SUDDEN DEATH — the ring is closing in');
+    } else {
+      const remain = Math.max(0, ROUND_SUDDEN_DEATH_MS - this.roundElapsed);
+      this.phaseText.setText(`Sudden Death in ${Math.ceil(remain / 1000)}s`);
+    }
+  }
+
+  // --------------------------------------------------------------- INPUT
+  // scheme: 'p1WasdF' | 'p1ArrowsSpace' | 'p2ArrowsL'
+  handleWrestlerInput(f, scheme, dt) {
+    let dirX = 0, dirY = 0, chargeKeyDown = false;
+    if (scheme === 'p1WasdF') {
+      if (this.keys.a.isDown) dirX = -1; else if (this.keys.d.isDown) dirX = 1;
+      if (this.keys.w.isDown) dirY = -1; else if (this.keys.s.isDown) dirY = 1;
+      chargeKeyDown = this.keys.f.isDown;
+    } else if (scheme === 'p1ArrowsSpace') {
+      if (this.keys.left.isDown) dirX = -1; else if (this.keys.right.isDown) dirX = 1;
+      if (this.keys.up.isDown) dirY = -1; else if (this.keys.down.isDown) dirY = 1;
+      chargeKeyDown = this.keys.space.isDown;
+    } else { // p2ArrowsL
+      if (this.keys.left.isDown) dirX = -1; else if (this.keys.right.isDown) dirX = 1;
+      if (this.keys.up.isDown) dirY = -1; else if (this.keys.down.isDown) dirY = 1;
+      chargeKeyDown = this.keys.l.isDown;
+    }
+
+    if (dirX !== 0 && dirY !== 0) { dirX *= 0.7071; dirY *= 0.7071; }
+    f.inputX = dirX; f.inputY = dirY;
+
+    // charge start/release on key edge, human wrestlers only (AI drives its own state machine)
+    if (chargeKeyDown && !f.chargeKeyWasDown && f.state === 'idle') {
+      f.state = 'charging'; f.chargeStart = this.time.now; f.reachedStage1 = false; f.reachedStage2 = false;
+    } else if (!chargeKeyDown && f.chargeKeyWasDown && f.state === 'charging') {
+      this.releaseDash(f);
+    }
+    f.chargeKeyWasDown = chargeKeyDown;
+
+    if (f.state === 'charging') {
+      const held = this.time.now - f.chargeStart;
+      if (held >= CHARGE_STAGE1_MS && !f.reachedStage1) { f.reachedStage1 = true; Sound.chargeTick(1); }
+      if (held >= CHARGE_STAGE2_MS && !f.reachedStage2) { f.reachedStage2 = true; Sound.chargeTick(2); }
+    }
+  }
+
+  releaseDash(f) {
+    const heldMs = Phaser.Math.Clamp(this.time.now - f.chargeStart, 0, MAX_CHARGE_MS);
+    const t = heldMs / MAX_CHARGE_MS;
+    const speed = Phaser.Math.Linear(DASH_MIN_SPEED, DASH_MAX_SPEED, t);
+    // dash direction: whatever direction is currently held, else last facing, else toward opponent
+    let dx = f.inputX, dy = f.inputY;
+    if (dx === 0 && dy === 0) { dx = Math.cos(f.facing); dy = Math.sin(f.facing); }
+    const mag = Math.hypot(dx, dy) || 1;
+    dx /= mag; dy /= mag;
+    f.facing = Math.atan2(dy, dx);
+    f.vx = dx * speed; f.vy = dy * speed;
+    f.state = 'dashing'; f.dashStartedAt = this.time.now;
+    f.dashTier = heldMs < CHARGE_STAGE1_MS ? 'quick' : (heldMs < CHARGE_STAGE2_MS ? 'medium' : 'strong');
+    Sound.dash(f.dashTier);
+  }
+
+  // ------------------------------------------------------------- PHYSICS
+  integrateWrestler(f, dt) {
+    const now = this.time.now;
+    const dirX = f.inputX || 0, dirY = f.inputY || 0;
+
+    if (f.state === 'charging') {
+      if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * CHARGE_MOVE_MULT * (dt / 1000); f.vy += dirY * MOVE_ACCEL * CHARGE_MOVE_MULT * (dt / 1000); f.facing = Math.atan2(dirY, dirX); }
+      this.applyFriction(f, dt, FRICTION);
+      this.clampSpeed(f, MOVE_MAX_SPEED * CHARGE_MOVE_MULT);
+    } else if (f.state === 'dashing') {
+      this.applyFriction(f, dt, DASH_FRICTION);
+      const speed = Math.hypot(f.vx, f.vy);
+      if (now - f.dashStartedAt >= DASH_MAX_DURATION_MS || speed < 40) {
+        f.state = 'recovering'; f.recoveryUntil = now + RECOVERY_MS;
+      }
+    } else if (f.state === 'recovering') {
+      if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * RECOVERY_MOVE_MULT * (dt / 1000); f.vy += dirY * MOVE_ACCEL * RECOVERY_MOVE_MULT * (dt / 1000); f.facing = Math.atan2(dirY, dirX); }
+      this.applyFriction(f, dt, FRICTION);
+      this.clampSpeed(f, MOVE_MAX_SPEED * RECOVERY_MOVE_MULT);
+      if (now >= f.recoveryUntil) f.state = 'idle';
+    } else if (f.state === 'staggered') {
+      if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * STAGGER_MOVE_MULT * (dt / 1000); f.vy += dirY * MOVE_ACCEL * STAGGER_MOVE_MULT * (dt / 1000); }
+      this.applyFriction(f, dt, FRICTION * 0.6);
+      if (now >= f.staggerUntil) f.state = 'idle';
+    } else { // idle
+      if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * (dt / 1000); f.vy += dirY * MOVE_ACCEL * (dt / 1000); f.facing = Math.atan2(dirY, dirX); }
+      this.applyFriction(f, dt, FRICTION);
+      this.clampSpeed(f, MOVE_MAX_SPEED);
+    }
+
+    f.x += f.vx * (dt / 1000);
+    f.y += f.vy * (dt / 1000);
+  }
+
+  applyFriction(f, dt, amount) {
+    const speed = Math.hypot(f.vx, f.vy);
+    if (speed <= 0) return;
+    const drop = amount * (dt / 1000);
+    const newSpeed = Math.max(0, speed - drop);
+    const scale = speed > 0 ? newSpeed / speed : 0;
+    f.vx *= scale; f.vy *= scale;
+  }
+
+  clampSpeed(f, max) {
+    const speed = Math.hypot(f.vx, f.vy);
+    if (speed > max) { const s = max / speed; f.vx *= s; f.vy *= s; }
+  }
+
+  clampToCanvas(f) {
+    f.x = Phaser.Math.Clamp(f.x, WRESTLER_R, W - WRESTLER_R);
+    f.y = Phaser.Math.Clamp(f.y, WRESTLER_R + 30, H - WRESTLER_R - 10);
+  }
+
+  edgeDistance(f) {
+    const d = Phaser.Math.Distance.Between(f.x, f.y, RING_CX, RING_CY);
+    return this.ringRadius - d;
+  }
+
+  // ------------------------------------------------------------ COLLISION
+  resolveCollision() {
+    const a = this.p1, b = this.p2;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.001;
+    const minDist = WRESTLER_R * 2;
+    if (dist >= minDist) return;
+
+    const nx = dx / dist, ny = dy / dist;
+    const overlap = minDist - dist;
+    a.x -= nx * overlap / 2; a.y -= ny * overlap / 2;
+    b.x += nx * overlap / 2; b.y += ny * overlap / 2;
+
+    const aAlong = a.vx * nx + a.vy * ny;   // a's speed toward b
+    const bAlong = b.vx * nx + b.vy * ny;   // b's speed away from a (same sign convention)
+    const netForce = aAlong - bAlong;       // positive => a is winning the exchange
+
+    const bothDashing = a.state === 'dashing' && b.state === 'dashing';
+    if (bothDashing && Math.abs(netForce) < CLASH_SPEED_THRESHOLD) {
+      this.triggerClash(a, b, nx, ny);
+      return;
+    }
+
+    const winner = netForce >= 0 ? a : b;
+    const loser = netForce >= 0 ? b : a;
+    const dir = netForce >= 0 ? 1 : -1;
+    let pushMag = Math.min(Math.abs(netForce) * PUSH_SCALE + PUSH_BASE, PUSH_CAP);
+    const loserCritical = this.edgeDistance(loser) <= CRITICAL_EDGE_DIST;
+    if (loserCritical) pushMag *= CRITICAL_PUSH_MULT;
+
+    loser.vx += nx * dir * pushMag;
+    loser.vy += ny * dir * pushMag;
+    winner.vx -= nx * dir * pushMag * 0.15;
+    winner.vy -= ny * dir * pushMag * 0.15;
+
+    this.applyStagger(loser);
+    if (winner.state === 'charging') { winner.state = 'idle'; } // a clean win also cancels a charge-in-progress
+    Sound.impact(pushMag > 300);
+    this.cameras.main.shake(pushMag > 350 ? 90 : 50, pushMag > 350 ? 0.006 : 0.003);
+    this.spawnDust((a.x + b.x) / 2, (a.y + b.y) / 2, Math.min(pushMag / 40, 10));
+  }
+
+  applyStagger(f) {
+    f.state = 'staggered';
+    f.staggerUntil = this.time.now + STAGGER_MS;
+  }
+
+  triggerClash(a, b, nx, ny) {
+    Sound.clash();
+    this.cameras.main.shake(140, 0.012);
+    this.slowUntil = this.time.now + 260;
+    this.announce('CLASH!', '#ffd23f');
+    const bounce = 260;
+    a.vx -= nx * bounce; a.vy -= ny * bounce;
+    b.vx += nx * bounce; b.vy += ny * bounce;
+    a.state = 'recovering'; a.recoveryUntil = this.time.now + RECOVERY_MS;
+    b.state = 'recovering'; b.recoveryUntil = this.time.now + RECOVERY_MS;
+    this.spawnDust((a.x + b.x) / 2, (a.y + b.y) / 2, 16);
+  }
+
+  spawnDust(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 60 + Math.random() * 120;
+      this.dustParticles.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, life: 300 + Math.random() * 200, maxLife: 500 });
+    }
+  }
+
+  updateDust(dt) {
+    this.dustG.clear();
+    this.dustParticles = this.dustParticles.filter(p => {
+      p.life -= dt;
+      if (p.life <= 0) return false;
+      p.x += p.vx * (dt / 1000); p.y += p.vy * (dt / 1000);
+      p.vx *= 0.92; p.vy *= 0.92;
+      const a = Phaser.Math.Clamp(p.life / p.maxLife, 0, 1) * 0.5;
+      this.dustG.fillStyle(0xc9a15a, a).fillCircle(p.x, p.y, 3 + a * 4);
+      return true;
+    });
+  }
+
+  // ------------------------------------------------------------ RING-OUT
+  checkRingOut() {
+    if (this.state !== 'playing') return;
+    const p1Out = this.edgeDistance(this.p1) <= 0;
+    const p2Out = this.edgeDistance(this.p2) <= 0;
+    if (!p1Out && !p2Out) return;
+    Sound.ringOut();
+    if (p1Out && p2Out) { this.finishRound(Math.random() < 0.5 ? 'p2' : 'p1'); return; }
+    this.finishRound(p1Out ? 'p2' : 'p1');
+  }
+
+  finishRound(winnerSide) {
+    this.state = 'roundOver';
+    if (winnerSide === 'p1') this.p1RoundWins++; else this.p2RoundWins++;
+    this.updateRoundPips();
+    const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
+    const p1Won = winnerSide === 'p1';
+
+    if (matchDecided) {
+      const headline = this.mode === 'ai' ? (p1Won ? 'YOU WIN THE MATCH' : 'CPU WINS THE MATCH') : (p1Won ? 'P1 WINS THE MATCH' : 'P2 WINS THE MATCH');
+      this.overHeadline.setText(headline);
+      this.overSub.setText(`Rounds: ${this.p1RoundWins} — ${this.p2RoundWins}`);
+      this.rematchLabel.setText('REMATCH');
+    } else {
+      const headline = this.mode === 'ai' ? (p1Won ? `YOU WIN ROUND ${this.currentRound}` : `CPU WINS ROUND ${this.currentRound}`) : (p1Won ? `P1 WINS ROUND ${this.currentRound}` : `P2 WINS ROUND ${this.currentRound}`);
+      this.overHeadline.setText(headline);
+      this.overSub.setText(`Round score: ${this.p1RoundWins} — ${this.p2RoundWins}`);
+      this.rematchLabel.setText('NEXT ROUND');
+    }
+    this.setOverVisible(true);
+  }
+
+  // ------------------------------------------------------------------ AI
+  updateAI(dt) {
+    const ai = this.p2, foe = this.p1;
+    const def = DIFFICULTY_DEFS[this.difficulty];
+    const now = this.time.now;
+
+    // reset the reaction flag once the foe stops charging (so it can react to the next charge)
+    if (foe.state !== 'charging') ai.reactedToThisCharge = false;
+
+    // reactive counter: foe has visibly lowered into a charge stance
+    if (foe.state === 'charging' && (now - foe.chargeStart) >= CHARGE_STAGE1_MS && !ai.reactedToThisCharge
+        && ai.state !== 'charging' && ai.state !== 'dashing') {
+      ai.reactedToThisCharge = true;
+      if (Math.random() < def.reactChance) {
+        if (Math.random() < def.waitForCommit) {
+          ai.pendingCounter = true; // hold off and counter the instant the foe releases
+        } else {
+          ai.state = 'charging'; ai.chargeStart = now; ai.reachedStage1 = false; ai.reachedStage2 = false;
+          ai.plannedReleaseAt = now + Phaser.Math.Between(def.minChargeMs, def.maxChargeMs);
+        }
+      }
+    }
+    if (ai.pendingCounter && foe.state === 'dashing') {
+      ai.pendingCounter = false;
+      ai.inputX = Math.cos(Math.atan2(foe.y - ai.y, foe.x - ai.x));
+      ai.inputY = Math.sin(Math.atan2(foe.y - ai.y, foe.x - ai.x));
+      ai.state = 'charging'; ai.chargeStart = now - 130; // short, reflexive charge — still a real bet, not instant
+      this.releaseDash(ai);
+    }
+
+    // spontaneous aggression: foe is exposed near the edge, or an opportunistic roll
+    if (ai.state === 'idle' && !ai.pendingCounter) {
+      const foeEdgeDist = this.edgeDistance(foe);
+      const aiEdgeDist = this.edgeDistance(ai);
+      const foeExposed = foeEdgeDist < this.ringRadius * 0.35;
+      const selfSafeToCommit = aiEdgeDist > this.ringRadius * 0.3 || def.edgeAwareness < 0.3;
+      if (selfSafeToCommit && (foeExposed || Math.random() < def.chargeChance)) {
+        ai.state = 'charging'; ai.chargeStart = now; ai.reachedStage1 = false; ai.reachedStage2 = false;
+        ai.plannedReleaseAt = now + Phaser.Math.Between(def.minChargeMs, def.maxChargeMs);
+      }
+    }
+
+    if (ai.state === 'charging' && ai.plannedReleaseAt && now >= ai.plannedReleaseAt) {
+      ai.plannedReleaseAt = 0;
+      this.releaseDash(ai);
+    }
+
+    // movement: chase the foe, blended toward holding the ring's center by centerPull
+    if (ai.state === 'idle' || ai.state === 'charging') {
+      const targetX = Phaser.Math.Linear(foe.x, RING_CX, def.centerPull);
+      const targetY = Phaser.Math.Linear(foe.y, RING_CY, def.centerPull);
+      const dx = targetX - ai.x, dy = targetY - ai.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      ai.inputX = dist > 8 ? dx / dist : 0;
+      ai.inputY = dist > 8 ? dy / dist : 0;
+    } else {
+      ai.inputX = 0; ai.inputY = 0;
+    }
+
+    if (ai.state === 'charging') {
+      const held = now - ai.chargeStart;
+      if (held >= CHARGE_STAGE1_MS && !ai.reachedStage1) { ai.reachedStage1 = true; Sound.chargeTick(1); }
+      if (held >= CHARGE_STAGE2_MS && !ai.reachedStage2) { ai.reachedStage2 = true; Sound.chargeTick(2); }
+    }
+  }
+
+  // ---------------------------------------------------------------- DRAW
+  drawWrestlers() {
+    [this.p1, this.p2].forEach(f => this.drawWrestler(f));
+  }
+
+  drawWrestler(f) {
+    const g = f.graphic;
+    g.clear();
+    const now = this.time.now;
+    const charging = f.state === 'charging';
+    const dashing = f.state === 'dashing';
+    const staggered = f.state === 'staggered';
+    const critical = this.edgeDistance(f) <= CRITICAL_EDGE_DIST;
+
+    const chargeT = charging ? Phaser.Math.Clamp((now - f.chargeStart) / MAX_CHARGE_MS, 0, 1) : 0;
+    const squat = charging ? 1 - chargeT * 0.22 : (dashing ? 1.12 : 1);
+    const stretch = dashing ? 1.25 : (charging ? 1 + chargeT * 0.12 : 1);
+    const r = WRESTLER_R;
+
+    const leanX = staggered ? -Math.cos(f.facing) * 10 : (dashing ? Math.cos(f.facing) * 6 : 0);
+    const leanY = staggered ? -Math.sin(f.facing) * 10 : (dashing ? Math.sin(f.facing) * 6 : 0);
+
+    const bodyColor = staggered ? Phaser.Display.Color.GetColor(255, 90, 90) : f.color;
+    const alpha = staggered ? 0.7 + Math.sin(now * 0.03) * 0.15 : 1;
+
+    // thick short legs (broad stance)
+    g.fillStyle(f.dark, alpha);
+    g.fillRect(f.x - r * 0.55, f.y + r * 0.35, r * 0.4, r * 0.55);
+    g.fillRect(f.x + r * 0.15, f.y + r * 0.35, r * 0.4, r * 0.55);
+
+    // body (squashed/stretched ellipse for weight + lean for stagger/dash)
+    g.fillStyle(bodyColor, alpha);
+    g.save && g.save();
+    g.fillEllipse(f.x + leanX, f.y + leanY, r * 1.7 * stretch, r * 1.5 * squat);
+    g.lineStyle(3, critical ? 0xff5a5a : f.dark, critical ? (0.6 + Math.sin(now * 0.015) * 0.4) : 1);
+    g.strokeEllipse(f.x + leanX, f.y + leanY, r * 1.7 * stretch, r * 1.5 * squat);
+
+    // head
+    const headX = f.x + leanX + Math.cos(f.facing) * r * 0.85;
+    const headY = f.y + leanY + Math.sin(f.facing) * r * 0.85 * 0.5;
+    g.fillStyle(f.dark, alpha);
+    g.fillCircle(headX, headY, r * 0.42);
+
+    // arms (thick lines, spread wide when charging/braced)
+    const armSpread = charging ? 0.9 : (dashing ? 0.5 : 0.65);
+    const armFwd = charging ? -0.3 - chargeT * 0.3 : (dashing ? 0.9 : 0.2);
+    const ax = f.x + leanX + Math.cos(f.facing) * r * armFwd;
+    const ay = f.y + leanY + Math.sin(f.facing) * r * armFwd;
+    g.lineStyle(6, f.dark, alpha);
+    g.beginPath(); g.moveTo(f.x + leanX, f.y + leanY - r * 0.5); g.lineTo(ax, ay - r * armSpread * 0.7); g.strokePath();
+    g.beginPath(); g.moveTo(f.x + leanX, f.y + leanY + r * 0.5); g.lineTo(ax, ay + r * armSpread * 0.7); g.strokePath();
+
+    if (dashing) {
+      // motion streak behind the dash
+      g.lineStyle(4, f.color, 0.35);
+      const bx = f.x - Math.cos(f.facing) * r * 1.6, by = f.y - Math.sin(f.facing) * r * 1.6;
+      g.beginPath(); g.moveTo(f.x, f.y); g.lineTo(bx, by); g.strokePath();
+    }
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  parent: 'game-container',
+  backgroundColor: '#0a0a0d',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [SumoPushScene]
+};
+
+new Phaser.Game(config);
 </script>
 </body>
 </html>
