@@ -67,6 +67,12 @@ const STAGGER_MOVE_MULT = 0.4;
 const MAX_CHARGE_MS = 900;
 const CHARGE_STAGE1_MS = 300;
 const CHARGE_STAGE2_MS = 600;
+// The AI's reaction check used to gate on CHARGE_STAGE1_MS (300ms) — the visible
+// "lowered stance" telegraph — which meant any player dash held for LESS than
+// 300ms (a quick tap, still a perfectly strong dash per the speed curve) was
+// completely invisible to the AI's reaction system at every difficulty tier.
+// This is a much shorter, decoupled "did I notice you moved" delay instead.
+const AI_REACT_DELAY_MS = 110;
 const DASH_MIN_SPEED = 380;
 const DASH_MAX_SPEED = 760;
 const DASH_FRICTION = 500;
@@ -759,8 +765,9 @@ class SumoPushScene extends Phaser.Scene {
     // reset the reaction flag once the foe stops charging (so it can react to the next charge)
     if (foe.state !== 'charging') ai.reactedToThisCharge = false;
 
-    // reactive counter: foe has visibly lowered into a charge stance
-    if (foe.state === 'charging' && (now - foe.chargeStart) >= CHARGE_STAGE1_MS && !ai.reactedToThisCharge
+    // reactive counter: foe has started charging (checked well before the
+    // visible telegraph so quick taps aren't invisible to the AI's reactions)
+    if (foe.state === 'charging' && (now - foe.chargeStart) >= AI_REACT_DELAY_MS && !ai.reactedToThisCharge
         && ai.state !== 'charging' && ai.state !== 'dashing') {
       ai.reactedToThisCharge = true;
       if (Math.random() < def.reactChance) {
@@ -804,6 +811,13 @@ class SumoPushScene extends Phaser.Scene {
 
     if (ai.state === 'charging' && ai.plannedReleaseAt && now >= ai.plannedReleaseAt) {
       ai.plannedReleaseAt = 0;
+      // Aim the actual dash straight at the foe's current position — NOT whatever
+      // inputX/Y was left over from this frame's movement (that's chase blended
+      // with centerPull, which points toward ring center for the higher tiers and
+      // was making every AI-initiated dash release increasingly off-target the
+      // harder the difficulty, the opposite of the intended effect).
+      const aimAngle = Math.atan2(foe.y - ai.y, foe.x - ai.x);
+      ai.inputX = Math.cos(aimAngle); ai.inputY = Math.sin(aimAngle);
       this.releaseDash(ai);
     }
 
