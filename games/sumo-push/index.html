@@ -105,7 +105,7 @@ const CRITICAL_PUSH_MULT = 1.4;
 // moment-to-moment player control instead of the result being fully locked
 // in the instant two bodies touch.
 const STRUGGLE_ROUNDS = 3;
-const STRUGGLE_WINDOW_MS = 550;   // time allowed to match each prompt
+const STRUGGLE_WINDOW_MS_LOCAL = 550; // 2P local has no difficulty tier — fair, fixed window for both humans
 const STRUGGLE_GAP_MS = 150;      // brief pause between prompts
 const STRUGGLE_MOMENTUM_WEIGHT = 0.35; // how much the original hit's momentum still counts
 const STRUGGLE_MATCH_FORCE = 85;  // force-equivalent per net round won
@@ -156,12 +156,20 @@ const DIFFICULTY_DEFS = {
   // it's supposed to be genuinely catchable by an instant opening rush.
   // struggleAccuracy: odds the AI correctly matches each push-struggle prompt
   // (rolled at a randomized moment within the prompt's window, not instantly,
-  // so it feels like a reaction rather than a read of the answer). Must
-  // ASCEND with difficulty like everything else here.
-  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS, struggleAccuracy: 0.30 },
-  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70, struggleAccuracy: 0.50 },
-  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45, struggleAccuracy: 0.72 },
-  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25, struggleAccuracy: 0.88 }
+  // so it feels like a reaction rather than a read of the answer).
+  // struggleWindowMs: how long the PLAYER gets to match each prompt. This is
+  // the one struggle stat that also affects the human side directly — a
+  // higher tier isn't just a sharper AI, the whole exchange is faster and
+  // less forgiving, the same way real sumo doesn't slow down for a weaker
+  // opponent. struggleReactMin/Max: the fraction of that (now shorter)
+  // window the AI's own hit is rolled within — a lower, tighter range means
+  // it reacts faster AND more consistently, not just more often.
+  // All three must move together with difficulty: window DESCENDS, accuracy
+  // and reaction speed ASCEND (tighter/earlier react range).
+  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS, struggleAccuracy: 0.30, struggleWindowMs: 700, struggleReactMin: 0.40, struggleReactMax: 0.90 },
+  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70, struggleAccuracy: 0.50, struggleWindowMs: 560, struggleReactMin: 0.30, struggleReactMax: 0.70 },
+  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45, struggleAccuracy: 0.72, struggleWindowMs: 440, struggleReactMin: 0.18, struggleReactMax: 0.50 },
+  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25, struggleAccuracy: 0.88, struggleWindowMs: 350, struggleReactMin: 0.08, struggleReactMax: 0.32 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'sumoPush_difficulty';
@@ -835,11 +843,15 @@ class SumoPushScene extends Phaser.Scene {
       s.dir = Phaser.Utils.Array.GetRandom(STRUGGLE_DIRS);
       s.aHit = false; s.bHit = false;
       s.phase = 'prompt';
-      s.phaseUntil = now + STRUGGLE_WINDOW_MS;
+      // The window itself scales with difficulty (not just AI accuracy) so a
+      // struggle against Expert genuinely doesn't feel like the same contest
+      // as Easy — less time to react on top of a sharper, faster opponent.
+      const windowMs = this.mode === 'ai' ? DIFFICULTY_DEFS[this.difficulty].struggleWindowMs : STRUGGLE_WINDOW_MS_LOCAL;
+      s.phaseUntil = now + windowMs;
       if (this.mode === 'ai') {
         const def = DIFFICULTY_DEFS[this.difficulty];
         s.aiWillHit = Math.random() < def.struggleAccuracy;
-        s.aiHitAt = now + STRUGGLE_WINDOW_MS * (0.25 + Math.random() * 0.5);
+        s.aiHitAt = now + windowMs * Phaser.Math.Linear(def.struggleReactMin, def.struggleReactMax, Math.random());
       }
       this.showStrugglePrompt();
       return;
