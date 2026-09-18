@@ -126,10 +126,14 @@ const DIFFICULTY_DEFS = {
   // at this tier (defaults to 1.0 = untouched). Normal gets a little extra
   // resistance so a match doesn't ring someone out on the first real hit -
   // this only softens Normal; Hard/Expert keep the tuned physics as-is.
-  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, knockbackMult: 1.0 },
-  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, knockbackMult: 0.8 },
-  hard:   { name: 'Hard',   chargeChance: 0.023, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, knockbackMult: 1.0 },
-  expert: { name: 'Expert', chargeChance: 0.032, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, knockbackMult: 1.0 }
+  // openingReactChance/openingReactDelayMs: how sharp the AI's reactions are
+  // ONLY during the ~1.5s "tachiai" window right as a round goes live (see
+  // startRound). Easy is left at its normal (slow) reaction values on purpose -
+  // it's supposed to be genuinely catchable by an instant opening rush.
+  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, knockbackMult: 1.0, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS },
+  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, knockbackMult: 0.8, openingReactChance: 0.55, openingReactDelayMs: 70 },
+  hard:   { name: 'Hard',   chargeChance: 0.023, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, knockbackMult: 1.0, openingReactChance: 0.85, openingReactDelayMs: 45 },
+  expert: { name: 'Expert', chargeChance: 0.032, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, knockbackMult: 1.0, openingReactChance: 0.97, openingReactDelayMs: 25 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'sumoPush_difficulty';
@@ -226,6 +230,7 @@ class SumoPushScene extends Phaser.Scene {
     this.p1 = this.createWrestler(0x8fd3ff, 0x3f6fa8, 0);
     this.p2 = this.createWrestler(0xff9f6b, 0xa85f3f, Math.PI);
     this.slowUntil = 0;
+    this.openingAlertUntil = 0;
     this.p1RoundWins = 0;
     this.p2RoundWins = 0;
   }
@@ -424,7 +429,28 @@ class SumoPushScene extends Phaser.Scene {
     this.state = 'countdown';
     this.countdownUntil = this.time.now + 900;
     this.announce(this.isDeciderRound ? 'FINAL ROUND' : `ROUND ${this.currentRound}`, this.isDeciderRound ? '#ff5a5a' : '#ffd23f');
-    this.time.delayedCall(900, () => { if (this.state === 'countdown') this.state = 'playing'; });
+    this.time.delayedCall(900, () => {
+      if (this.state !== 'countdown') return;
+      // Input is never processed during the countdown, so a key held through it
+      // would otherwise be read as a brand-new press the instant play starts -
+      // a guaranteed, zero-reaction-time opening dash. Arm the edge-detector
+      // with whatever's actually held right now so a pre-held key requires a
+      // real release+press before it counts.
+      this.armChargeKeys();
+      // Both wrestlers are primed for the tachiai (the sumo opening charge) -
+      // give the AI a brief window of much sharper reactions right as the round
+      // goes live, scaled by tier, so an instant opening rush isn't a free win
+      // at Hard/Expert. Easy keeps its normal (slow) reactions - it's supposed
+      // to be genuinely catchable off guard.
+      this.openingAlertUntil = this.time.now + 1500;
+      this.state = 'playing';
+    });
+  }
+
+  armChargeKeys() {
+    const p1Key = this.mode === 'ai' ? this.keys.space.isDown : this.keys.f.isDown;
+    this.p1.chargeKeyWasDown = p1Key;
+    if (this.mode === 'local') this.p2.chargeKeyWasDown = this.keys.l.isDown;
   }
 
   announce(text, color) {
@@ -786,11 +812,16 @@ class SumoPushScene extends Phaser.Scene {
     if (foe.state !== 'charging') ai.reactedToThisCharge = false;
 
     // reactive counter: foe has started charging (checked well before the
-    // visible telegraph so quick taps aren't invisible to the AI's reactions)
-    if (foe.state === 'charging' && (now - foe.chargeStart) >= AI_REACT_DELAY_MS && !ai.reactedToThisCharge
+    // visible telegraph so quick taps aren't invisible to the AI's reactions).
+    // During the opening tachiai window, use the tier's sharper opening
+    // reactions instead of its normal (slower) ones.
+    const inOpeningWindow = now < this.openingAlertUntil;
+    const reactDelay = inOpeningWindow ? def.openingReactDelayMs : AI_REACT_DELAY_MS;
+    const reactChance = inOpeningWindow ? def.openingReactChance : def.reactChance;
+    if (foe.state === 'charging' && (now - foe.chargeStart) >= reactDelay && !ai.reactedToThisCharge
         && ai.state !== 'charging' && ai.state !== 'dashing') {
       ai.reactedToThisCharge = true;
-      if (Math.random() < def.reactChance) {
+      if (Math.random() < reactChance) {
         if (Math.random() < def.waitForCommit) {
           // Start charging NOW and hold — the counter's own strength builds for
           // as long as it waits, so a foe who fully charges gets met with a
