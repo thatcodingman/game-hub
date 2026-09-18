@@ -213,16 +213,28 @@ const ARENA_DEFS = {
   risingsun: { name: 'Rising Sun', desc: 'Ring contracts in dramatic timed stages.', stageDrop: 25, stageFrac: 0.5 },
   // A small shared, slowly-rotating force nudges both wrestlers' movement
   // equally. Never touches collision normals or push strength.
-  tilt:      { name: 'Tilt Ring', desc: 'A subtle force nudges movement. Advanced.' }
+  tilt:      { name: 'Tilt Ring', desc: 'A subtle force nudges movement. Advanced.' },
+  // Menu-only entry — never read by gameplay code. Resolved to one of the
+  // real arenas above the moment a match is started (see buildArenaSelect),
+  // then this.arenaKey holds that concrete pick for the whole match.
+  random:    { name: 'Random', desc: 'A random arena, rolled fresh each match.' }
 };
+// ARENA_ORDER is the pool of REAL, playable arenas — also what Random rolls
+// from. 'random' itself is a menu-only entry (added in ARENA_MENU_ORDER
+// below) that resolves to one of these before a match ever starts, so none
+// of the gameplay code (drawRing/startRound/friction/tilt/etc.) ever has to
+// know 'random' exists — this.arenaKey is always a concrete arena by the
+// time it's read.
 const ARENA_ORDER = ['classic', 'iron', 'drifting', 'slipsand', 'risingsun', 'tilt'];
+const ARENA_MENU_ORDER = ARENA_ORDER.concat(['random']);
 const ARENA_VISUALS = {
   classic:   { bg: 0x1b140d, outer: 0x3a2c1a, inner: 0xc9a15a, strokeOuter: 0x8a6a35, strokeInner: 0x6b4f24 },
   iron:      { bg: 0x0c0d10, outer: 0x2a2e36, inner: 0x565f6b, strokeOuter: 0x8fa0b5, strokeInner: 0x3a4150 },
   drifting:  { bg: 0x0a0a18, outer: 0x1a1030, inner: 0x2e2255, strokeOuter: 0x7fd3ff, strokeInner: 0x4a3a80 },
   slipsand:  { bg: 0x241f14, outer: 0x4a4028, inner: 0xe8d9a8, strokeOuter: 0xc9b86a, strokeInner: 0xa89454 },
   risingsun: { bg: 0x1a0d0a, outer: 0x4a1f14, inner: 0xd9622f, strokeOuter: 0xff9f4a, strokeInner: 0x8a3a1a },
-  tilt:      { bg: 0x0d1114, outer: 0x2a3238, inner: 0x6b7880, strokeOuter: 0xb5c4cc, strokeInner: 0x3f4a50 }
+  tilt:      { bg: 0x0d1114, outer: 0x2a3238, inner: 0x6b7880, strokeOuter: 0xb5c4cc, strokeInner: 0x3f4a50 },
+  random:    { bg: 0x14101c, outer: 0x2e2438, inner: 0x6b5590, strokeOuter: 0xff3fa0, strokeInner: 0x4a3a80 }
 };
 const SLIP_SAND_BAND_WIDTH = 35;
 const SLIP_SAND_FRICTION_MULT = 0.65;
@@ -234,6 +246,15 @@ function loadArena() {
   catch (err) { return 'classic'; }
 }
 function saveArena(key) { try { localStorage.setItem(ARENA_KEY, key); } catch (err) {} }
+// Whether Random re-rolls a fresh arena every round instead of once per
+// match. Only has any effect when the menu SELECTION (this.arenaSelection,
+// not this.arenaKey) is 'random'.
+const ARENA_REROLL_KEY = 'sumoPush_arenaReroll';
+function loadReroll() {
+  try { return localStorage.getItem(ARENA_REROLL_KEY) === '1'; }
+  catch (err) { return false; }
+}
+function saveReroll(v) { try { localStorage.setItem(ARENA_REROLL_KEY, v ? '1' : '0'); } catch (err) {} }
 
 const Sound = {
   chargeTick(stage) {
@@ -359,6 +380,8 @@ class SumoPushScene extends Phaser.Scene {
     this.mode = null;
     this.difficulty = loadDifficulty();
     this.arenaKey = loadArena();
+    this.arenaSelection = this.arenaKey; // raw menu pick, may be 'random'
+    this.rerollPerRound = loadReroll();
     this.state = 'menu';
     this.isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
@@ -590,20 +613,31 @@ class SumoPushScene extends Phaser.Scene {
 
     const colX = [W / 2 - 165, W / 2 + 165];
     const startY = 118, rowH = 108;
-    ARENA_ORDER.forEach((key, i) => {
+    ARENA_MENU_ORDER.forEach((key, i) => {
+      const isRandom = key === 'random';
       const col = i % 2, row = Math.floor(i / 2);
-      const x = colX[col], y = startY + row * rowH;
+      const x = isRandom ? W / 2 : colX[col];
+      const y = isRandom ? startY + row * rowH - 20 : startY + row * rowH;
+      const boxW = isRandom ? 302 * 2 + 20 : 302;
+      const boxH = isRandom ? 66 : 92;
       const def = ARENA_DEFS[key];
       const vis = ARENA_VISUALS[key];
-      const bg = this.add.rectangle(x, y, 302, 92, 0x151a24).setStrokeStyle(2, vis.strokeOuter).setInteractive({ useHandCursor: true });
-      const nameTxt = this.add.text(x, y - 26, def.name.toUpperCase(), { fontFamily: 'Arial Black', fontSize: '14px', color: '#ffffff' }).setOrigin(0.5);
-      const descTxt = this.add.text(x, y + 4, def.desc, { fontFamily: 'Arial', fontSize: '11px', color: '#9aa5b5', wordWrap: { width: 270 }, align: 'center' }).setOrigin(0.5);
+      const bg = this.add.rectangle(x, y, boxW, boxH, 0x151a24).setStrokeStyle(2, vis.strokeOuter).setInteractive({ useHandCursor: true });
+      const nameTxt = this.add.text(x, y - (isRandom ? 14 : 26), def.name.toUpperCase(), { fontFamily: 'Arial Black', fontSize: '14px', color: '#ffffff' }).setOrigin(0.5);
+      const descTxt = this.add.text(x, y + (isRandom ? 12 : 4), def.desc, { fontFamily: 'Arial', fontSize: '11px', color: '#9aa5b5', wordWrap: { width: isRandom ? 560 : 270 }, align: 'center' }).setOrigin(0.5);
       bg.on('pointerover', () => bg.setStrokeStyle(3, vis.strokeOuter));
       bg.on('pointerout', () => bg.setStrokeStyle(2, vis.strokeOuter));
       bg.on('pointerdown', () => {
         if (window.SFX) SFX.click();
-        this.arenaKey = key;
+        this.arenaSelection = key;
         saveArena(key);
+        // Resolve 'random' to a concrete arena right here, once, so every
+        // system that reads this.arenaKey for the rest of the match
+        // (drawRing, startRound, friction, tilt, drift, etc.) just sees a
+        // normal arena and never needs to know Random was picked. If the
+        // reroll-every-round toggle is on, startRound() re-rolls this again
+        // at the top of every round (including this first one).
+        this.arenaKey = isRandom ? Phaser.Utils.Array.GetRandom(ARENA_ORDER) : key;
         this.setArenaSelectVisible(false);
         if (this.pendingMode === 'ai') this.setDifficultySelectVisible(true);
         else this.startMatch('local');
@@ -611,7 +645,19 @@ class SumoPushScene extends Phaser.Scene {
       items.push(bg, nameTxt, descTxt);
     });
 
-    const back = this.add.text(W / 2, startY + 3 * rowH - 12, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    const rerollLabel = () => (this.rerollPerRound ? '☑' : '☐') + ' Reroll every round (Random only)';
+    const rerollToggle = this.add.text(W / 2, 466, rerollLabel(), { fontFamily: 'Arial', fontSize: '13px', color: '#9aa5b5' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    rerollToggle.on('pointerover', () => rerollToggle.setColor('#c3cbd8'));
+    rerollToggle.on('pointerout', () => rerollToggle.setColor('#9aa5b5'));
+    rerollToggle.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.rerollPerRound = !this.rerollPerRound;
+      saveReroll(this.rerollPerRound);
+      rerollToggle.setText(rerollLabel());
+    });
+    items.push(rerollToggle);
+
+    const back = this.add.text(W / 2, 500, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
     back.on('pointerdown', () => {
       if (window.SFX) SFX.click();
       this.setArenaSelectVisible(false);
@@ -711,6 +757,9 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   startRound() {
+    if (this.arenaSelection === 'random' && this.rerollPerRound) {
+      this.arenaKey = Phaser.Utils.Array.GetRandom(ARENA_ORDER);
+    }
     this.isDeciderRound = this.p1RoundWins === ROUNDS_TO_WIN - 1 && this.p2RoundWins === ROUNDS_TO_WIN - 1;
     const timing = this.isDeciderRound ? ROUND_TIMING[ROUND_TIMING.length - 1] : ROUND_TIMING[Math.min(this.currentRound - 1, ROUND_TIMING.length - 1)];
     const arenaDef = ARENA_DEFS[this.arenaKey];
