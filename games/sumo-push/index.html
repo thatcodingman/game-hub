@@ -633,16 +633,41 @@ class SumoPushScene extends Phaser.Scene {
     const sub = this.add.text(W / 2, 155, 'One ring. One shove. One mistake.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
     items.push(title, sub);
 
-    const statsBtn = this.add.text(W - 20, 24, 'STATS', { fontFamily: 'Arial Black', fontSize: '13px', color: '#7f8a9a' }).setOrigin(1, 0.5).setInteractive({ useHandCursor: true });
-    statsBtn.on('pointerover', () => statsBtn.setColor('#c3cbd8'));
-    statsBtn.on('pointerout', () => statsBtn.setColor('#7f8a9a'));
-    statsBtn.on('pointerdown', () => {
+    // A pill button, top-LEFT — sfx.js auto-mounts a floating mute/volume
+    // pill at real-screen top-right on every game in the hub, so top-right
+    // in canvas space visually collides with it. Top-left is untouched by
+    // both that widget and everything else on this screen.
+    const statsX = 16, statsY = 26, statsW = 96, statsH = 32;
+    const statsColorOff = 0x5a6578, statsColorOn = 0xffd23f;
+    const statsBg = this.add.graphics();
+    const drawStatsBg = (stroke, fillA) => {
+      statsBg.clear();
+      statsBg.fillStyle(0x151a24, fillA);
+      statsBg.fillRoundedRect(statsX, statsY - statsH / 2, statsW, statsH, statsH / 2);
+      statsBg.lineStyle(2, stroke, 1);
+      statsBg.strokeRoundedRect(statsX, statsY - statsH / 2, statsW, statsH, statsH / 2);
+    };
+    drawStatsBg(statsColorOff, 0.75);
+    const statsTxt = this.add.text(statsX + statsW / 2, statsY, '\u{1F3C6} STATS', { fontFamily: 'Arial Black', fontSize: '13px', color: '#c3cbd8' }).setOrigin(0.5);
+    const statsHit = this.add.rectangle(statsX + statsW / 2, statsY, statsW, statsH, 0x000000, 0).setInteractive({ useHandCursor: true });
+    statsHit.on('pointerover', () => {
+      drawStatsBg(statsColorOn, 0.9);
+      statsTxt.setColor('#ffd23f');
+      this.tweens.add({ targets: statsTxt, scale: 1.08, duration: 120, ease: 'Quad.Out' });
+    });
+    statsHit.on('pointerout', () => {
+      drawStatsBg(statsColorOff, 0.75);
+      statsTxt.setColor('#c3cbd8');
+      this.tweens.add({ targets: statsTxt, scale: 1, duration: 120 });
+    });
+    statsHit.on('pointerdown', () => {
       if (window.SFX) SFX.click();
+      this.tweens.add({ targets: statsTxt, scale: 0.9, duration: 60, yoyo: true });
       this.setModeSelectVisible(false);
       this.refreshStatsPanel();
       this.setStatsVisible(true);
     });
-    items.push(statsBtn);
+    items.push(statsBg, statsTxt, statsHit);
 
     const makeButton = (y, label, color, onClick) => {
       const bg = this.add.rectangle(W / 2, y, 320, 62, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
@@ -1362,13 +1387,18 @@ class SumoPushScene extends Phaser.Scene {
     }
 
     // phase === 'prompt'
+    // Colorblind-safe hit/miss: a checkmark/cross glyph is appended to the
+    // arrow itself, so the outcome reads from SHAPE, not just the
+    // green/red color swap (the single worst color pair for red-green
+    // colorblindness, the most common form).
+    const glyph = STRUGGLE_DIR_GLYPH[s.dir];
     if (!s.aHit) {
       const keys = this.getWrestlerDirKeys(s.a);
       const touchHit = this.p1Touch && this.p1Touch.stick.consumeDir(s.dir);
       if (touchHit || Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
         s.aHit = true; s.aWins++;
         Sound.struggleHit();
-        this.struggleTextA.setColor('#5be37b');
+        this.struggleTextA.setColor('#5be37b').setText(glyph + ' ✓');
         this.punchStruggleGlyph(this.struggleTextA);
         this.updateStruggleBar();
       }
@@ -1377,7 +1407,7 @@ class SumoPushScene extends Phaser.Scene {
       if (this.mode === 'ai') {
         if (s.aiWillHit && now >= s.aiHitAt) {
           s.bHit = true; s.bWins++;
-          this.struggleTextB.setColor('#5be37b');
+          this.struggleTextB.setColor('#5be37b').setText(glyph + ' ✓');
           this.punchStruggleGlyph(this.struggleTextB);
           this.updateStruggleBar();
         }
@@ -1387,7 +1417,7 @@ class SumoPushScene extends Phaser.Scene {
         if (touchHit || Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
           s.bHit = true; s.bWins++;
           Sound.struggleHit();
-          this.struggleTextB.setColor('#5be37b');
+          this.struggleTextB.setColor('#5be37b').setText(glyph + ' ✓');
           this.punchStruggleGlyph(this.struggleTextB);
           this.updateStruggleBar();
         }
@@ -1395,8 +1425,8 @@ class SumoPushScene extends Phaser.Scene {
     }
 
     if (now >= s.phaseUntil) {
-      if (!s.aHit) { Sound.struggleMiss(); this.struggleTextA.setColor('#ff5a5a'); }
-      if (!s.bHit) this.struggleTextB.setColor('#ff5a5a');
+      if (!s.aHit) { Sound.struggleMiss(); this.struggleTextA.setColor('#ff5a5a').setText(glyph + ' ✗'); }
+      if (!s.bHit) this.struggleTextB.setColor('#ff5a5a').setText(glyph + ' ✗');
       s.phase = 'gap';
       s.phaseUntil = now + STRUGGLE_GAP_MS;
       this.hideStrugglePrompt();
