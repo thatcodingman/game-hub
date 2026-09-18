@@ -270,6 +270,13 @@ function distToPath(px,py){
   }
   return min;
 }
+function lerpColorToWhite(color, t){
+  const r = (color>>16)&0xFF, g=(color>>8)&0xFF, b=color&0xFF;
+  const nr = Math.round(r + (255-r)*t);
+  const ng = Math.round(g + (255-g)*t);
+  const nb = Math.round(b + (255-b)*t);
+  return (nr<<16)|(ng<<8)|nb;
+}
 
 // ---------- definitions ----------
 const TOWER_DEFS = {
@@ -365,6 +372,7 @@ class Balloon {
     this.color = def.color;
     this.alive = true;
     this.hasSplit = !!isLeak; // leaks never split again
+    this.sparkTimer = 0;
     this.g = scene.add.graphics();
     this.g.setDepth(10);
     const p = pointAtDistance(0);
@@ -387,6 +395,13 @@ class Balloon {
       return;
     }
     this.x = p.x; this.y = p.y;
+    if (this.pct() >= 0.9){
+      this.sparkTimer -= dt;
+      if (this.sparkTimer <= 0){
+        spawnSparkFx(this.x, this.y, 0xff4d5e);
+        this.sparkTimer = 0.1 + Math.random()*0.12;
+      }
+    }
     this.draw();
   }
   applySlow(factor, duration, boost){
@@ -441,27 +456,49 @@ class Balloon {
     const g = this.g;
     g.clear();
     const pct = this.pct();
-    const glow = pct > 0.75 ? 1 : 0.55;
-    g.fillStyle(this.color, 1);
-    g.fillCircle(this.x, this.y, this.radius);
-    g.lineStyle(2, 0xffffff, glow);
-    g.strokeCircle(this.x, this.y, this.radius);
-    // pressure gauge ring
-    const barW = this.radius*2, barH = 4;
-    const bx = this.x - this.radius, by = this.y - this.radius - 9;
-    g.fillStyle(0x0d1116, 0.85);
+    const r = this.radius * (1 + pct*0.45);
+    let stage = 0;
+    if (pct >= 0.9) stage = 3;
+    else if (pct >= 0.66) stage = 2;
+    else if (pct >= 0.33) stage = 1;
+
+    // glow rings escalate with stage; stage 3 pulses visibly
+    const rings = [0,1,2,3][stage];
+    for (let i=rings; i>=1; i--){
+      const ringR = r + i*5;
+      const pulse = stage===3 ? (0.55 + Math.sin(scene.time.now/70)*0.3) : 0.22;
+      g.lineStyle(1.5, this.color, Math.max(0.06, pulse/i));
+      g.strokeCircle(this.x, this.y, ringR);
+    }
+
+    // core brightens toward white as pressure rises
+    const coreColor = stage>=2 ? lerpColorToWhite(this.color, stage===3?0.55:0.3) : this.color;
+    g.fillStyle(coreColor, 1);
+    g.fillCircle(this.x, this.y, r);
+
+    // outline thickens and solidifies with stage
+    const outlineW = 1.5 + stage*0.6;
+    const outlineA = Math.min(1, 0.4 + stage*0.2);
+    g.lineStyle(outlineW, 0xffffff, outlineA);
+    g.strokeCircle(this.x, this.y, r);
+
+    // unmistakable overpressure warning ring
+    if (stage === 3){
+      const pulseR = r + 6 + Math.sin(scene.time.now/70)*3;
+      g.lineStyle(2, 0xff4d5e, 0.5 + Math.sin(scene.time.now/70)*0.35);
+      g.strokeCircle(this.x, this.y, pulseR);
+    }
+
+    // pressure gauge
+    const barW = Math.max(this.radius*2.1, r*1.5), barH = 5;
+    const bx = this.x - barW/2, by = this.y - r - 12;
+    g.fillStyle(0x0d1116, 0.9);
     g.fillRect(bx, by, barW, barH);
-    const fillColor = pct < 0.5 ? 0x3ad17d : (pct < 0.85 ? 0xffd23f : 0xff4d5e);
+    const fillColor = stage===0 ? 0x3ad17d : stage===1 ? 0xffd23f : stage===2 ? 0xff8a3d : 0xff4d5e;
     g.fillStyle(fillColor, 1);
     g.fillRect(bx, by, barW*pct, barH);
-    // hp notch
-    const hpPct = Phaser.Math.Clamp(this.hp/this.maxHp,0,1);
-    g.lineStyle(2, 0xffffff, 0.35);
+    g.lineStyle(1.2, 0xffffff, 0.4);
     g.strokeRect(bx, by, barW, barH);
-    if (pct > 0.85){
-      g.lineStyle(1, 0xff4d5e, 0.6 + Math.sin(scene.time.now/90)*0.3);
-      g.strokeCircle(this.x, this.y, this.radius+4);
-    }
   }
   destroy(){
     this.g.destroy();
@@ -602,6 +639,15 @@ function spawnEscapeFx(x,y){
   const flash = scene.add.circle(x,y,20,0xff4d5e,0.5);
   flash.setDepth(12);
   scene.tweens.add({ targets:flash, scale:2.2, alpha:0, duration:320, onComplete:()=>flash.destroy() });
+}
+function spawnSparkFx(x,y,color){
+  const p = scene.add.circle(x, y-4, 2, color, 0.95);
+  p.setDepth(11);
+  const dx = (Math.random()-0.5)*14;
+  scene.tweens.add({
+    targets:p, x:x+dx, y:y-18-Math.random()*8, alpha:0, duration:260+Math.random()*100,
+    onComplete:()=>p.destroy()
+  });
 }
 
 // ---------- spawning ----------
