@@ -94,6 +94,24 @@ const CLASH_HEADON_MIN = 0.6; // fraction of each wrestler's speed that must be 
 const PUSH_BASE = 30, PUSH_SCALE = 0.6, PUSH_CAP = 280;
 const CRITICAL_PUSH_MULT = 1.4;
 
+// ------------------------------------------------------------ PUSH STRUGGLE
+// The moment two wrestlers actually collide with real force behind it (at
+// least one of them dashing) no longer resolves instantly off pure momentum
+// alone. It freezes into a short skill-based tug-of-war: a few rounds of
+// on-screen directional prompts, matched on the SAME movement keys each
+// wrestler already uses to play. Momentum from the hit still seeds the
+// outcome (charging harder / hitting cleaner still counts for something),
+// but who actually keeps up with the prompts tips who wins the shove — real
+// moment-to-moment player control instead of the result being fully locked
+// in the instant two bodies touch.
+const STRUGGLE_ROUNDS = 3;
+const STRUGGLE_WINDOW_MS = 550;   // time allowed to match each prompt
+const STRUGGLE_GAP_MS = 150;      // brief pause between prompts
+const STRUGGLE_MOMENTUM_WEIGHT = 0.35; // how much the original hit's momentum still counts
+const STRUGGLE_MATCH_FORCE = 85;  // force-equivalent per net round won
+const STRUGGLE_DIR_GLYPH = { up: '↑', down: '↓', left: '←', right: '→' };
+const STRUGGLE_DIRS = ['up', 'down', 'left', 'right'];
+
 const ROUNDS_TO_WIN = 2;
 const RING_MIN_RADIUS = 125;
 // Each round of a match escalates — tighter starting ring and a faster fuse
@@ -136,10 +154,14 @@ const DIFFICULTY_DEFS = {
   // ONLY during the ~1.5s "tachiai" window right as a round goes live (see
   // startRound). Easy is left at its normal (slow) reaction values on purpose -
   // it's supposed to be genuinely catchable by an instant opening rush.
-  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS },
-  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70 },
-  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45 },
-  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25 }
+  // struggleAccuracy: odds the AI correctly matches each push-struggle prompt
+  // (rolled at a randomized moment within the prompt's window, not instantly,
+  // so it feels like a reaction rather than a read of the answer). Must
+  // ASCEND with difficulty like everything else here.
+  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS, struggleAccuracy: 0.30 },
+  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70, struggleAccuracy: 0.50 },
+  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45, struggleAccuracy: 0.72 },
+  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25, struggleAccuracy: 0.88 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'sumoPush_difficulty';
@@ -180,7 +202,10 @@ const Sound = {
     SFX.tone(300, 0.2, 'sawtooth', 0.2, 80);
     SFX.tone(150, 0.35, 'sawtooth', 0.22, 50, 120);
   },
-  suddenDeath() { if (!window.SFX) return; SFX.tone(140, 0.28, 'sawtooth', 0.2, 70); SFX.tone(1400, 0.1, 'square', 0.12, 1600, 120); }
+  suddenDeath() { if (!window.SFX) return; SFX.tone(140, 0.28, 'sawtooth', 0.2, 70); SFX.tone(1400, 0.1, 'square', 0.12, 1600, 120); },
+  struggleStart() { if (!window.SFX) return; SFX.tone(320, 0.08, 'sawtooth', 0.12, 500); },
+  struggleHit() { if (!window.SFX) return; SFX.tone(560, 0.05, 'square', 0.1, 1100); },
+  struggleMiss() { if (!window.SFX) return; SFX.tone(160, 0.06, 'sawtooth', 0.08, 200); }
 };
 
 class SumoPushScene extends Phaser.Scene {
@@ -198,6 +223,7 @@ class SumoPushScene extends Phaser.Scene {
     this.buildOverPanel();
     this.buildModeSelect();
     this.buildDifficultySelect();
+    this.buildStruggleUI();
 
     this.setHudVisible(false);
     this.setOverVisible(false);
@@ -237,6 +263,7 @@ class SumoPushScene extends Phaser.Scene {
     this.p2 = this.createWrestler(0xff9f6b, 0xa85f3f, Math.PI);
     this.slowUntil = 0;
     this.openingAlertUntil = 0;
+    this.struggle = null;
     this.p1RoundWins = 0;
     this.p2RoundWins = 0;
   }
@@ -282,6 +309,14 @@ class SumoPushScene extends Phaser.Scene {
   updateRoundPips() {
     this.p1PipRow.forEach((p, i) => p.setFillStyle(i < this.p1RoundWins ? 0x8fd3ff : 0x2a2e36));
     this.p2PipRow.forEach((p, i) => p.setFillStyle(i < this.p2RoundWins ? 0xff9f6b : 0x2a2e36));
+  }
+
+  // ------------------------------------------------------------ STRUGGLE UI
+  buildStruggleUI() {
+    const glyphStyle = { fontFamily: 'Arial Black', fontSize: '30px', color: '#ffffff', stroke: '#000000', strokeThickness: 4 };
+    this.struggleTextA = this.add.text(0, 0, '', glyphStyle).setOrigin(0.5).setDepth(6).setVisible(false);
+    this.struggleTextB = this.add.text(0, 0, '', glyphStyle).setOrigin(0.5).setDepth(6).setVisible(false);
+    this.struggleLabel = this.add.text(W / 2, H / 2 - 100, 'PUSH-OFF!', { fontFamily: 'Arial Black', fontSize: '20px', color: '#ffd23f', stroke: '#000000', strokeThickness: 3 }).setOrigin(0.5).setDepth(6).setVisible(false);
   }
 
   // ---------------------------------------------------------------- INPUT
@@ -474,6 +509,19 @@ class SumoPushScene extends Phaser.Scene {
     this.roundElapsed += realDt;
     this.updateRingShrink();
 
+    if (this.struggle) {
+      // Frozen mid-collision: normal input/AI/physics/collision all pause while
+      // the interactive push-struggle plays out, but the world keeps breathing
+      // around it (ring shrink already ticked above, dust settles, the edge
+      // glow keeps pulsing) so it never feels like the game itself stalled.
+      this.updateStruggle(realDt);
+      this.updateDust(realDt);
+      this.updateEdgeWarning();
+      this.drawWrestlers();
+      this.updatePhaseText();
+      return;
+    }
+
     const slowMo = this.time.now < this.slowUntil;
     const dt = slowMo ? realDt * 0.28 : realDt;
 
@@ -646,6 +694,7 @@ class SumoPushScene extends Phaser.Scene {
   // ------------------------------------------------------------ COLLISION
   resolveCollision() {
     const a = this.p1, b = this.p2;
+    if (this.struggle) return; // frozen mid push-struggle — nothing to resolve until it finishes
     const dx = b.x - a.x, dy = b.y - a.y;
     const dist = Math.hypot(dx, dy) || 0.001;
     const minDist = WRESTLER_R * 2;
@@ -682,6 +731,22 @@ class SumoPushScene extends Phaser.Scene {
       return;
     }
 
+    // Any hit that involves a real dash (i.e. one that actually matters) no
+    // longer resolves the instant two bodies touch. It freezes into the
+    // interactive push-struggle instead — momentum still seeds who's ahead,
+    // but the player's own key-matching now decides who actually wins it.
+    // A stray idle/idle jostle (nobody dashing, near-zero force either way)
+    // isn't worth a mini-game, so it still resolves instantly below.
+    const involvesDash = a.state === 'dashing' || b.state === 'dashing';
+    if (involvesDash) {
+      this.startStruggle(a, b, nx, ny, netForce);
+      return;
+    }
+
+    this.applyPushResolution(a, b, nx, ny, netForce);
+  }
+
+  applyPushResolution(a, b, nx, ny, netForce) {
     const winner = netForce >= 0 ? a : b;
     const loser = netForce >= 0 ? b : a;
     const dir = netForce >= 0 ? 1 : -1;
@@ -717,6 +782,121 @@ class SumoPushScene extends Phaser.Scene {
     const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
     this.spawnDust(midX, midY, Math.min(pushMag / 32, 14));
     this.spawnImpactFlash(midX, midY, nx, ny, dir, pushMag, winner.color);
+  }
+
+  // ------------------------------------------------------------ PUSH STRUGGLE
+  // Freezes both wrestlers at the point of contact for a short best-of-N
+  // key-matching contest. Each round shows one shared directional prompt;
+  // each side races to press their OWN matching movement key (the AI rolls
+  // its own success chance instead). Net rounds won converts to a force
+  // bonus that's blended with the original hit's momentum and fed straight
+  // into the same applyPushResolution() everything else already uses — so
+  // difficulty tuning (aiPushResist/aiPushBonus/critical multiplier/etc.)
+  // still governs the final shove exactly as before.
+  startStruggle(a, b, nx, ny, netForce) {
+    a.vx = 0; a.vy = 0; b.vx = 0; b.vy = 0;
+    a.state = 'struggling'; b.state = 'struggling';
+    this.struggle = {
+      a, b, nx, ny,
+      seedForce: netForce * STRUGGLE_MOMENTUM_WEIGHT,
+      aWins: 0, bWins: 0,
+      round: 0,
+      dir: null,
+      phase: 'gap',
+      phaseUntil: this.time.now + 200,
+      aHit: false, bHit: false,
+      aiWillHit: false, aiHitAt: 0
+    };
+    this.struggleLabel.setVisible(true);
+    Sound.struggleStart();
+  }
+
+  getWrestlerDirKeys(who) {
+    if (who === this.p1) {
+      return this.mode === 'ai'
+        ? { up: this.keys.up, down: this.keys.down, left: this.keys.left, right: this.keys.right }
+        : { up: this.keys.w, down: this.keys.s, left: this.keys.a, right: this.keys.d };
+    }
+    // p2's keys are only read here in local mode — the AI's own "input" is
+    // simulated in updateStruggle via struggleAccuracy, never read from keys.
+    return { up: this.keys.up, down: this.keys.down, left: this.keys.left, right: this.keys.right };
+  }
+
+  updateStruggle(dt) {
+    const s = this.struggle;
+    const now = this.time.now;
+
+    if (s.phase === 'gap') {
+      if (now < s.phaseUntil) return;
+      if (s.round >= STRUGGLE_ROUNDS) { this.resolveStruggle(); return; }
+      s.round++;
+      s.dir = Phaser.Utils.Array.GetRandom(STRUGGLE_DIRS);
+      s.aHit = false; s.bHit = false;
+      s.phase = 'prompt';
+      s.phaseUntil = now + STRUGGLE_WINDOW_MS;
+      if (this.mode === 'ai') {
+        const def = DIFFICULTY_DEFS[this.difficulty];
+        s.aiWillHit = Math.random() < def.struggleAccuracy;
+        s.aiHitAt = now + STRUGGLE_WINDOW_MS * (0.25 + Math.random() * 0.5);
+      }
+      this.showStrugglePrompt();
+      return;
+    }
+
+    // phase === 'prompt'
+    if (!s.aHit) {
+      const keys = this.getWrestlerDirKeys(s.a);
+      if (Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
+        s.aHit = true; s.aWins++;
+        Sound.struggleHit();
+        this.struggleTextA.setColor('#5be37b');
+      }
+    }
+    if (!s.bHit) {
+      if (this.mode === 'ai') {
+        if (s.aiWillHit && now >= s.aiHitAt) {
+          s.bHit = true; s.bWins++;
+          this.struggleTextB.setColor('#5be37b');
+        }
+      } else {
+        const keys = this.getWrestlerDirKeys(s.b);
+        if (Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
+          s.bHit = true; s.bWins++;
+          Sound.struggleHit();
+          this.struggleTextB.setColor('#5be37b');
+        }
+      }
+    }
+
+    if (now >= s.phaseUntil) {
+      if (!s.aHit) Sound.struggleMiss();
+      s.phase = 'gap';
+      s.phaseUntil = now + STRUGGLE_GAP_MS;
+      this.hideStrugglePrompt();
+    }
+  }
+
+  showStrugglePrompt() {
+    const s = this.struggle;
+    const glyph = STRUGGLE_DIR_GLYPH[s.dir];
+    this.struggleTextA.setText(glyph).setPosition(s.a.x, s.a.y - 58).setColor('#ffffff').setVisible(true);
+    this.struggleTextB.setText(glyph).setPosition(s.b.x, s.b.y - 58).setColor('#ffffff').setVisible(true);
+  }
+
+  hideStrugglePrompt() {
+    this.struggleTextA.setVisible(false);
+    this.struggleTextB.setVisible(false);
+  }
+
+  resolveStruggle() {
+    const s = this.struggle;
+    const matchDiff = s.aWins - s.bWins; // positive => p1 (a) matched more prompts
+    const netForce = s.seedForce + matchDiff * STRUGGLE_MATCH_FORCE;
+    this.hideStrugglePrompt();
+    this.struggleLabel.setVisible(false);
+    this.struggle = null;
+    s.a.state = 'idle'; s.b.state = 'idle';
+    this.applyPushResolution(s.a, s.b, s.nx, s.ny, netForce);
   }
 
   // ------------------------------------------------------------ IMPACT FLASH
