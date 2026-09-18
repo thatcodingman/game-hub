@@ -1434,15 +1434,30 @@ class SumoPushScene extends Phaser.Scene {
     // exactly the "I beat the AI on arrows and still got pushed out" bug.
     // Momentum still matters for how HARD the win lands (extra punch when
     // it agrees with the struggle winner) but is dampened, never flipped,
-    // when it disagrees. A tied struggle (matchDiff === 0) still falls
-    // back to pure momentum, same as before.
+    // when it disagrees.
+    //
+    // A tied struggle (matchDiff === 0) used to fall back to the RAW,
+    // uncapped seedForce — and a solo AI dash into an idle/slow-moving
+    // player (the single most common way a struggle even starts) routinely
+    // produces a seedForce far bigger than a whole difficulty tier's worth
+    // of struggle rounds. Since raw dash speed doesn't scale with
+    // difficulty at all (only the AI's decision-making does), that meant
+    // ties were decided by momentum almost every time, in the AI's favor,
+    // at EVERY tier equally — which is exactly why Easy could feel just as
+    // punishing as Expert: reacting perfectly still only bought you a tie
+    // often enough, and a tie was never actually a fair coin flip, it was
+    // a near-guaranteed loss. Capped now so momentum can nudge a tie but
+    // never single-handedly steamroll it, and the cap scales with this
+    // tier's own round count so it stays proportionate at every difficulty.
+    const momentumCap = s.totalRounds * STRUGGLE_MATCH_FORCE * 0.6;
+    const cappedSeed = Phaser.Math.Clamp(s.seedForce, -momentumCap, momentumCap);
     let netForce;
     if (matchDiff !== 0) {
       const dir = matchDiff > 0 ? 1 : -1;
-      const momentumAssist = Math.max(0, dir * s.seedForce);
+      const momentumAssist = Math.max(0, dir * cappedSeed);
       netForce = dir * (Math.abs(matchDiff) * STRUGGLE_MATCH_FORCE + momentumAssist);
     } else {
-      netForce = s.seedForce;
+      netForce = cappedSeed;
     }
     if (this.mode === 'ai') {
       if (matchDiff > 0) Sound.struggleWin();
