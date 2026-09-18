@@ -138,6 +138,7 @@
       </div>
     </div>
     <div class="hud-stat"><span class="label">Wave</span><span class="val" id="hudWave">0 / 13</span></div>
+    <div class="hud-stat"><span class="label">Wave Time</span><span class="val" id="hudWaveTime">0.0s</span></div>
     <div class="spacer"></div>
     <div class="segmented" id="targetModeSeg">
       <button data-mode="safe" class="active" title="Target balloons closest to the exit first">Safe</button>
@@ -316,8 +317,8 @@ const BALLOON_DEFS = {
 };
 
 const WAVES = [
-  [{t:'NORMAL',c:10,i:0.9}],
-  [{t:'NORMAL',c:6,i:0.8},{t:'FAST',c:6,i:0.55}],
+  [{t:'NORMAL',c:14,i:0.7}],
+  [{t:'NORMAL',c:6,i:0.7},{t:'FAST',c:7,i:0.5}],
   [{t:'FAST',c:8,i:0.5},{t:'NORMAL',c:8,i:0.7}],
   [{t:'NORMAL',c:6,i:0.75},{t:'HEAVY',c:3,i:1.4},{t:'NORMAL',c:6,i:0.65}],
   [{t:'FAST',c:10,i:0.45},{t:'HEAVY',c:2,i:1.6}],
@@ -344,7 +345,8 @@ const state = {
   towers: [],
   balloons: [],
   running: false,
-  ended: false
+  ended: false,
+  waveElapsed: 0
 };
 
 let scene = null;
@@ -373,6 +375,7 @@ class Balloon {
     this.alive = true;
     this.hasSplit = !!isLeak; // leaks never split again
     this.sparkTimer = 0;
+    this.flashTimer = 0;
     this.g = scene.add.graphics();
     this.g.setDepth(10);
     const p = pointAtDistance(0);
@@ -389,6 +392,9 @@ class Balloon {
     const move = this.baseSpeed * this.slowFactor * state.speedMult;
     this.distance += move * dt;
     this.value = Math.min(this.maxValue, this.value + this.pressureRate * this.pressureBoost * state.speedMult * dt);
+    if (this.flashTimer > 0) this.flashTimer = Math.max(0, this.flashTimer - dt);
+  }
+  render(dt){
     const p = pointAtDistance(this.distance);
     if (!p){
       this.escape();
@@ -411,6 +417,8 @@ class Balloon {
   }
   takeDamage(dmg){
     this.hp -= dmg;
+    this.flashTimer = 0.12;
+    spawnDamageFx(this.x, this.y - this.radius*0.6, dmg);
     if (this.hp <= 0 && this.alive){
       this.pop();
     }
@@ -476,6 +484,12 @@ class Balloon {
     g.fillStyle(coreColor, 1);
     g.fillCircle(this.x, this.y, r);
 
+    // hit flash — brief white overlay when damage is taken
+    if (this.flashTimer > 0){
+      g.fillStyle(0xffffff, (this.flashTimer/0.12) * 0.75);
+      g.fillCircle(this.x, this.y, r);
+    }
+
     // outline thickens and solidifies with stage
     const outlineW = 1.5 + stage*0.6;
     const outlineA = Math.min(1, 0.4 + stage*0.2);
@@ -489,7 +503,7 @@ class Balloon {
       g.strokeCircle(this.x, this.y, pulseR);
     }
 
-    // pressure gauge
+    // pressure gauge (top bar)
     const barW = Math.max(this.radius*2.1, r*1.5), barH = 5;
     const bx = this.x - barW/2, by = this.y - r - 12;
     g.fillStyle(0x0d1116, 0.9);
@@ -499,6 +513,14 @@ class Balloon {
     g.fillRect(bx, by, barW*pct, barH);
     g.lineStyle(1.2, 0xffffff, 0.4);
     g.strokeRect(bx, by, barW, barH);
+
+    // HP bar (separate, directly below pressure bar) — depletes as the unit is shot
+    const hpPct = Phaser.Math.Clamp(this.hp/this.maxHp, 0, 1);
+    const hpBy = by + barH + 3;
+    g.fillStyle(0x0d1116, 0.9);
+    g.fillRect(bx, hpBy, barW, 3);
+    g.fillStyle(0x8fd3ff, 1);
+    g.fillRect(bx, hpBy, barW*hpPct, 3);
   }
   destroy(){
     this.g.destroy();
@@ -649,6 +671,11 @@ function spawnSparkFx(x,y,color){
     onComplete:()=>p.destroy()
   });
 }
+function spawnDamageFx(x,y,dmg){
+  const txt = scene.add.text(x, y, '-'+Math.round(dmg), {fontFamily:'Arial', fontSize:'11px', color:'#ffffff', fontStyle:'bold'});
+  txt.setOrigin(0.5); txt.setDepth(14);
+  scene.tweens.add({ targets:txt, y:y-16, alpha:0, duration:340, onComplete:()=>txt.destroy() });
+}
 
 // ---------- spawning ----------
 let spawnQueue = [];
@@ -668,6 +695,7 @@ function startWave(){
   spawnTimer = 0;
   state.waveActive = true;
   state.spawning = true;
+  state.waveElapsed = 0;
   document.getElementById('waveBtn').disabled = true;
   document.getElementById('waveBtn').textContent = 'Wave In Progress';
   updateHud();
@@ -683,6 +711,17 @@ function processSpawning(dt){
     state.balloons.push(b);
     spawnTimer = next.gap || 0.5;
     if (!spawnQueue.length) state.spawning = false;
+  }
+}
+
+function enforcePathSpacing(){
+  const sorted = state.balloons.filter(b=>b.alive).sort((a,b)=> b.distance - a.distance);
+  for (let i=1;i<sorted.length;i++){
+    const leader = sorted[i-1], follower = sorted[i];
+    const minGap = (leader.radius + follower.radius) * 1.15 + 6;
+    if (leader.distance - follower.distance < minGap){
+      follower.distance = leader.distance - minGap;
+    }
   }
 }
 
@@ -889,8 +928,14 @@ class MainScene extends Phaser.Scene {
   update(time, delta){
     if (!state.running) return;
     const dt = Math.min(delta/1000, 0.05);
+    if (state.waveActive){
+      state.waveElapsed += dt;
+      document.getElementById('hudWaveTime').textContent = state.waveElapsed.toFixed(1)+'s';
+    }
     processSpawning(dt);
     for (const b of [...state.balloons]) b.update(dt);
+    enforcePathSpacing();
+    for (const b of [...state.balloons]) b.render(dt);
     for (const t of state.towers) t.update(dt);
     if (selectedTower) drawRangeIndicator(selectedTower.x, selectedTower.y, selectedTower.stat('range'), selectedTower.def.color);
   }
