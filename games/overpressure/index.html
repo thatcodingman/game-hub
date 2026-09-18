@@ -50,6 +50,7 @@
   .hud-stat{ display:flex; align-items:center; gap:6px; font-size:13px; white-space:nowrap; }
   .hud-stat .label{ color:var(--text-dim); font-size:10.5px; text-transform:uppercase; letter-spacing:1px; }
   .hud-stat .val{ font-weight:700; font-size:15px; }
+  .hud-stat .val.maxed{ color:#ff6b6b; }
   .cash .val{ color:var(--accent); }
   .integrity-wrap{ display:flex; flex-direction:column; gap:2px; min-width:110px; }
   .integrity-bar-bg{ width:110px; height:7px; background:#0e1216; border-radius:4px; overflow:hidden; border:1px solid var(--border); }
@@ -139,6 +140,7 @@
     </div>
     <div class="hud-stat"><span class="label">Wave</span><span class="val" id="hudWave">0 / 13</span></div>
     <div class="hud-stat"><span class="label">Wave Time</span><span class="val" id="hudWaveTime">0.0s</span></div>
+    <div class="hud-stat"><span class="label">Towers</span><span class="val" id="hudTowers">0 / 18</span></div>
     <div class="spacer"></div>
     <div class="segmented" id="targetModeSeg">
       <button data-mode="safe" class="active" title="Target balloons closest to the exit first">Safe</button>
@@ -164,6 +166,10 @@
           <span><i style="background:#c084fc"></i>Splitter</span>
         </div>
         <p style="font-size:11.5px;">Build towers along the conveyor. Pop units for cash based on their <b>current</b> value — the longer a unit survives, the more it's worth, but escaped units drain your Integrity by the same amount. Survive 13 waves, including the final Overpressure Tank.</p>
+        <p style="font-size:11.5px; text-align:left;"><b>Targeting mode</b> (top right) controls every tower's auto-target priority at once:<br>
+          <b style="color:var(--text);">Safe</b> — fires on whichever unit is closest to the exit first, to stop escapes.<br>
+          <b style="color:var(--text);">Greedy</b> — fires on the highest-value unit first, to farm max cash (riskiest).<br>
+          <b style="color:var(--text);">Efficient</b> — fires on the weakest unit first, for fast, cheap kills.</p>
         <button class="btn primary" id="startBtn" style="margin-top:10px; padding:10px 26px; font-size:14px;">Start Run</button>
       </div>
     </div>
@@ -205,6 +211,12 @@ const W = 960, H = 560;
 const TOTAL_WAVES = 13;
 const START_CASH = 110;
 const START_INTEGRITY = 100;
+// Hard cap on simultaneous towers. Without one, the persistent-tower economy
+// has no ceiling: any HP curve is eventually trivial once enough towers are
+// stacked, which is why balloons were never reaching threatening distance
+// even by Wave 13. This forces real placement/type decisions instead of
+// just building more.
+const MAX_TOWERS = 18;
 
 const PATH_POINTS = [
   {x:-30, y:90},
@@ -775,9 +787,13 @@ function updateHud(){
   document.getElementById('hudWave').textContent = state.wave + ' / ' + TOTAL_WAVES;
   const pct = Math.max(0, state.integrity/START_INTEGRITY*100);
   document.getElementById('integrityFill').style.width = pct + '%';
+  const towersEl = document.getElementById('hudTowers');
+  towersEl.textContent = state.towers.length + ' / ' + MAX_TOWERS;
+  towersEl.classList.toggle('maxed', state.towers.length >= MAX_TOWERS);
+  const atCap = state.towers.length >= MAX_TOWERS;
   document.querySelectorAll('.tower-btn').forEach(btn=>{
     const cost = parseInt(btn.dataset.cost,10);
-    btn.disabled = state.cash < cost || state.ended;
+    btn.disabled = state.cash < cost || state.ended || atCap;
   });
 }
 
@@ -821,6 +837,7 @@ function isValidPlacement(x,y){
 
 function tryPlaceTower(x,y){
   if (!state.selectedTowerType) return;
+  if (state.towers.length >= MAX_TOWERS) return;
   const def = TOWER_DEFS[state.selectedTowerType];
   if (state.cash < def.cost) return;
   if (!isValidPlacement(x,y)) return;
