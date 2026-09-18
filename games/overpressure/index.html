@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overpressure — The Arcade</title>
+<style>
+  :root{
+    --bg:#12161c;
+    --panel:#1b2129;
+    --panel-2:#232b35;
+    --border:#2d3742;
+    --accent:#ffcc33;
+    --accent-dim:#8a6d1a;
+    --teal:#3ad1c8;
+    --purple:#c084fc;
+    --danger:#ff4d5e;
+    --safe:#3ad17d;
+    --text:#e8ecf1;
+    --text-dim:#8b96a3;
+    --stripe:#f5b400;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI', Arial, sans-serif;
+    min-height:100vh;
+    display:flex; align-items:flex-start; justify-content:center;
+  }
+  .wrap{
+    width:100%; max-width:960px; padding:14px 14px 26px;
+  }
+  .title-bar{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:8px; flex-wrap:wrap; gap:6px;
+  }
+  .title-bar h1{
+    margin:0; font-size:26px; letter-spacing:2px; color:var(--accent);
+    text-shadow:0 0 12px rgba(255,204,51,0.35);
+  }
+  .title-bar .subtitle{ color:var(--text-dim); font-size:12.5px; }
+  .best-run{ font-size:11.5px; color:var(--text-dim); }
+  .best-run b{ color:var(--teal); }
+
+  .hud{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:8px 12px; margin-bottom:8px;
+  }
+  .hud-stat{ display:flex; align-items:center; gap:6px; font-size:13px; white-space:nowrap; }
+  .hud-stat .label{ color:var(--text-dim); font-size:10.5px; text-transform:uppercase; letter-spacing:1px; }
+  .hud-stat .val{ font-weight:700; font-size:15px; }
+  .cash .val{ color:var(--accent); }
+  .integrity-wrap{ display:flex; flex-direction:column; gap:2px; min-width:110px; }
+  .integrity-bar-bg{ width:110px; height:7px; background:#0e1216; border-radius:4px; overflow:hidden; border:1px solid var(--border); }
+  .integrity-bar-fill{ height:100%; background:linear-gradient(90deg,var(--danger),var(--safe)); width:100%; transition:width .25s; }
+  .spacer{ flex:1; }
+  .segmented{ display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .segmented button{
+    background:var(--panel-2); color:var(--text-dim); border:none; padding:6px 9px; font-size:11px;
+    cursor:pointer; border-right:1px solid var(--border); white-space:nowrap;
+  }
+  .segmented button:last-child{ border-right:none; }
+  .segmented button.active{ background:var(--teal); color:#08131a; font-weight:700; }
+  .btn{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px;
+    padding:7px 13px; font-size:12.5px; cursor:pointer; font-weight:600; white-space:nowrap;
+  }
+  .btn:hover{ border-color:var(--accent); }
+  .btn.primary{ background:var(--accent); color:#241b00; border-color:var(--accent); }
+  .btn.primary:hover{ filter:brightness(1.08); }
+  .btn:disabled{ opacity:.4; cursor:not-allowed; }
+
+  .stage{ position:relative; width:100%; aspect-ratio:960/560; background:#0d1116; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  #game-container{ position:absolute; inset:0; }
+  #game-container canvas{ width:100% !important; height:100% !important; display:block; }
+
+  .floating-panel{
+    position:absolute; background:var(--panel); border:1px solid var(--accent); border-radius:8px;
+    padding:10px 12px; font-size:12px; min-width:150px; z-index:20; pointer-events:auto;
+    box-shadow:0 6px 18px rgba(0,0,0,0.5);
+  }
+  .floating-panel h4{ margin:0 0 6px; font-size:13px; color:var(--accent); }
+  .floating-panel .row{ display:flex; justify-content:space-between; margin-bottom:4px; color:var(--text-dim); }
+  .floating-panel .row span:last-child{ color:var(--text); font-weight:600; }
+  .floating-panel .actions{ display:flex; gap:6px; margin-top:8px; }
+  .floating-panel .actions button{ flex:1; font-size:11px; padding:6px; }
+
+  .tower-bar{
+    display:flex; gap:8px; margin-top:8px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:8px; flex-wrap:wrap;
+  }
+  .tower-btn{
+    flex:1; min-width:118px; background:var(--panel-2); border:1px solid var(--border); border-radius:7px;
+    padding:8px; cursor:pointer; text-align:left; position:relative;
+  }
+  .tower-btn:hover{ border-color:var(--accent); }
+  .tower-btn.selected{ border-color:var(--accent); background:#2a2310; }
+  .tower-btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .tower-btn .swatch{ width:16px; height:16px; border-radius:4px; display:inline-block; vertical-align:middle; margin-right:6px; }
+  .tower-btn .tname{ font-size:12.5px; font-weight:700; }
+  .tower-btn .tcost{ float:right; font-size:11.5px; color:var(--accent); font-weight:700; }
+  .tower-btn .tdesc{ display:block; margin-top:4px; font-size:10.5px; color:var(--text-dim); line-height:1.35; }
+
+  .overlay{
+    position:absolute; inset:0; background:rgba(10,13,17,0.92); display:flex; align-items:center;
+    justify-content:center; z-index:50; text-align:center; padding:20px;
+  }
+  .overlay.hidden{ display:none; }
+  .overlay-card{ max-width:480px; }
+  .overlay-card h2{ font-size:28px; color:var(--accent); margin-bottom:6px; letter-spacing:1px; }
+  .overlay-card p{ color:var(--text-dim); font-size:13px; line-height:1.6; }
+  .overlay-card .pitch{ color:var(--teal); font-style:italic; margin:14px 0; }
+  .overlay-stats{ display:flex; justify-content:center; gap:22px; margin:16px 0; }
+  .overlay-stats div{ font-size:12px; color:var(--text-dim); }
+  .overlay-stats div b{ display:block; font-size:20px; color:var(--text); }
+  .legend{ display:flex; gap:14px; justify-content:center; flex-wrap:wrap; margin:14px 0; font-size:11px; color:var(--text-dim); }
+  .legend span{ display:inline-flex; align-items:center; gap:5px; }
+  .legend i{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title-bar">
+    <div>
+      <h1>OVERPRESSURE</h1>
+      <div class="subtitle">Don't pop too soon. Don't wait too long.</div>
+    </div>
+    <div class="best-run" id="bestRunLine">Best run: —</div>
+  </div>
+
+  <div class="hud">
+    <div class="hud-stat cash"><span class="label">Cash</span><span class="val" id="hudCash">150</span></div>
+    <div class="hud-stat">
+      <div class="integrity-wrap">
+        <span class="label">Integrity</span>
+        <div class="integrity-bar-bg"><div class="integrity-bar-fill" id="integrityFill"></div></div>
+      </div>
+    </div>
+    <div class="hud-stat"><span class="label">Wave</span><span class="val" id="hudWave">0 / 13</span></div>
+    <div class="spacer"></div>
+    <div class="segmented" id="targetModeSeg">
+      <button data-mode="safe" class="active" title="Target balloons closest to the exit first">Safe</button>
+      <button data-mode="greedy" title="Target the highest-value balloons first">Greedy</button>
+      <button data-mode="efficient" title="Target the weakest balloons first for fast, cheap kills">Efficient</button>
+    </div>
+    <button class="btn" id="speedBtn">1x</button>
+    <button class="btn primary" id="waveBtn">Start Wave</button>
+  </div>
+
+  <div class="stage">
+    <div id="game-container"></div>
+
+    <div class="overlay" id="startScreen">
+      <div class="overlay-card">
+        <h2>OVERPRESSURE</h2>
+        <p>Product units are escaping the line under rising internal pressure. Every unit you don't pop grows more valuable&nbsp;— and more dangerous if it reaches the dock.</p>
+        <p class="pitch">"How greedy can you be?"</p>
+        <div class="legend">
+          <span><i style="background:#3ad1c8"></i>Standard</span>
+          <span><i style="background:#ffd23f"></i>Rapid</span>
+          <span><i style="background:#ff8a3d"></i>Reinforced</span>
+          <span><i style="background:#c084fc"></i>Splitter</span>
+        </div>
+        <p style="font-size:11.5px;">Build towers along the conveyor. Pop units for cash based on their <b>current</b> value — the longer a unit survives, the more it's worth, but escaped units drain your Integrity by the same amount. Survive 13 waves, including the final Overpressure Tank.</p>
+        <button class="btn primary" id="startBtn" style="margin-top:10px; padding:10px 26px; font-size:14px;">Start Run</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="endScreen">
+      <div class="overlay-card">
+        <h2 id="endTitle">RUN OVER</h2>
+        <p id="endMsg"></p>
+        <div class="overlay-stats">
+          <div>Wave Reached<b id="endWave">0</b></div>
+          <div>Cash Earned<b id="endCash">0</b></div>
+          <div>Integrity Left<b id="endIntegrity">0</b></div>
+        </div>
+        <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Play Again</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tower-bar" id="towerBar"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ---------- defensive sfx wrapper (see handoff: never call SFX methods unguarded) ----------
+function sfx(name, ...args){
+  try{
+    if (typeof SFX !== 'undefined' && SFX && typeof SFX[name] === 'function'){
+      SFX[name](...args);
+    }
+  }catch(e){ /* audio must never break gameplay */ }
+}
+
+// ---------- constants ----------
+const W = 960, H = 560;
+const TOTAL_WAVES = 13;
+const START_CASH = 150;
+const START_INTEGRITY = 100;
+
+const PATH_POINTS = [
+  {x:-30, y:90},
+  {x:200, y:90},
+  {x:200, y:280},
+  {x:60,  y:280},
+  {x:60,  y:460},
+  {x:430, y:460},
+  {x:430, y:200},
+  {x:640, y:200},
+  {x:640, y:60},
+  {x:860, y:60},
+  {x:860, y:340},
+  {x:990, y:340}
+];
+
+function buildPath(points){
+  const segs = [];
+  let total = 0;
+  for (let i=0;i<points.length-1;i++){
+    const a=points[i], b=points[i+1];
+    const len = Math.hypot(b.x-a.x, b.y-a.y);
+    segs.push({a,b,len,angle:Math.atan2(b.y-a.y,b.x-a.x)});
+    total += len;
+  }
+  return {points, segs, total};
+}
+const PATH = buildPath(PATH_POINTS);
+
+function pointAtDistance(dist){
+  if (dist <= 0){
+    const s = PATH.segs[0];
+    return {x:s.a.x, y:s.a.y, angle:s.angle};
+  }
+  if (dist >= PATH.total) return null;
+  let d = dist;
+  for (const seg of PATH.segs){
+    if (d <= seg.len){
+      const t = seg.len === 0 ? 0 : d/seg.len;
+      return {
+        x: seg.a.x + (seg.b.x-seg.a.x)*t,
+        y: seg.a.y + (seg.b.y-seg.a.y)*t,
+        angle: seg.angle
+      };
+    }
+    d -= seg.len;
+  }
+  return null;
+}
+
+function distToSegment(px,py,a,b){
+  const dx=b.x-a.x, dy=b.y-a.y;
+  const lenSq = dx*dx+dy*dy;
+  let t = lenSq===0 ? 0 : ((px-a.x)*dx + (py-a.y)*dy)/lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = a.x + dx*t, cy = a.y + dy*t;
+  return Math.hypot(px-cx, py-cy);
+}
+function distToPath(px,py){
+  let min = Infinity;
+  for (const seg of PATH.segs){
+    const d = distToSegment(px,py,seg.a,seg.b);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+// ---------- definitions ----------
+const TOWER_DEFS = {
+  POPPER: {
+    key:'POPPER', name:'Popper', color:0x3ad1c8, cssColor:'#3ad1c8',
+    cost:50, upgradeCost:60,
+    range:[120,140], damage:[8,14], fireRate:[2.2,2.6],
+    desc:'Reliable rapid-fire piercer. Cheap, steady DPS.'
+  },
+  COLLECTOR: {
+    key:'COLLECTOR', name:'Collector', color:0xffd23f, cssColor:'#ffd23f',
+    cost:75, upgradeCost:65,
+    range:[115,140], bonusPct:[0.3,0.5],
+    desc:"Doesn't attack. Units popped in range yield bonus cash."
+  },
+  COMPRESSOR: {
+    key:'COMPRESSOR', name:'Compressor', color:0x8b6df0, cssColor:'#8b6df0',
+    cost:65, upgradeCost:55,
+    range:[100,120], slowFactor:[0.55,0.4], slowDuration:[1.4,1.8], pressureBoost:[1.5,1.8], pulseRate:[1,1.2],
+    desc:'Slows units in range and speeds up their pressure buildup while slowed.'
+  },
+  BURST: {
+    key:'BURST', name:'Burst', color:0xff5d5d, cssColor:'#ff5d5d',
+    cost:95, upgradeCost:80,
+    range:[130,150], damage:[26,42], fireRate:[0.6,0.75], valueDamageBonusMax:[0.6,0.9],
+    desc:'Slow, heavy hitter. Extra damage vs. high-pressure units.'
+  }
+};
+
+const BALLOON_DEFS = {
+  NORMAL:   {name:'Standard Unit',    hp:26, speed:70,  baseValue:10, pressureRate:3.2, maxValue:38,  radius:14, color:0x3ad1c8, escapeDivisor:2},
+  FAST:     {name:'Rapid Unit',       hp:16, speed:118, baseValue:6,  pressureRate:6.5, maxValue:52,  radius:11, color:0xffd23f, escapeDivisor:2},
+  HEAVY:    {name:'Reinforced Unit',  hp:70, speed:42,  baseValue:26, pressureRate:1.6, maxValue:75,  radius:20, color:0xff8a3d, escapeDivisor:2},
+  SPLITTER: {name:'Splitter Unit',    hp:34, speed:64,  baseValue:15, pressureRate:3.4, maxValue:46,  radius:15, color:0xc084fc, escapeDivisor:2, splits:true},
+  LEAK:     {name:'Leak',             hp:14, speed:80,  baseValue:4,  pressureRate:2.5, maxValue:30,  radius:9,  color:0xc084fc, escapeDivisor:2},
+  TANK:     {name:'Overpressure Tank',hp:900,speed:30,  baseValue:120,pressureRate:2.2, maxValue:260, radius:30, color:0xff4d6d, escapeDivisor:2}
+};
+
+const WAVES = [
+  [{t:'NORMAL',c:10,i:0.9}],
+  [{t:'NORMAL',c:6,i:0.8},{t:'FAST',c:6,i:0.55}],
+  [{t:'FAST',c:8,i:0.5},{t:'NORMAL',c:8,i:0.7}],
+  [{t:'NORMAL',c:6,i:0.75},{t:'HEAVY',c:3,i:1.4},{t:'NORMAL',c:6,i:0.65}],
+  [{t:'FAST',c:10,i:0.45},{t:'HEAVY',c:2,i:1.6}],
+  [{t:'NORMAL',c:6,i:0.7},{t:'SPLITTER',c:4,i:1.1},{t:'FAST',c:6,i:0.5}],
+  [{t:'HEAVY',c:4,i:1.3},{t:'SPLITTER',c:5,i:1.0},{t:'FAST',c:8,i:0.45}],
+  [{t:'NORMAL',c:10,i:0.55},{t:'HEAVY',c:3,i:1.2},{t:'SPLITTER',c:4,i:1.0}],
+  [{t:'FAST',c:14,i:0.4},{t:'HEAVY',c:4,i:1.2}],
+  [{t:'SPLITTER',c:7,i:0.9},{t:'HEAVY',c:5,i:1.1},{t:'FAST',c:10,i:0.4}],
+  [{t:'NORMAL',c:12,i:0.5},{t:'SPLITTER',c:6,i:0.85},{t:'HEAVY',c:4,i:1.0}],
+  [{t:'HEAVY',c:6,i:0.9},{t:'FAST',c:16,i:0.35},{t:'SPLITTER',c:6,i:0.8}],
+  [{t:'NORMAL',c:8,i:0.6},{t:'TANK',c:1,i:0}]
+];
+
+// ---------- game state ----------
+const state = {
+  cash: START_CASH,
+  integrity: START_INTEGRITY,
+  wave: 0,
+  waveActive: false,
+  spawning: false,
+  speedMult: 1,
+  targetMode: 'safe',
+  selectedTowerType: null,
+  towers: [],
+  balloons: [],
+  running: false,
+  ended: false
+};
+
+let scene = null;
+let ghostGraphic = null;
+let rangeGraphic = null;
+let selectedTower = null;
+
+// ---------- entities ----------
+class Balloon {
+  constructor(typeKey, hpMult, isLeak){
+    const def = BALLOON_DEFS[typeKey];
+    this.typeKey = typeKey;
+    this.def = def;
+    this.distance = 0;
+    this.baseSpeed = def.speed;
+    this.hp = isLeak ? def.hp : Math.round(def.hp * hpMult);
+    this.maxHp = this.hp;
+    this.value = def.baseValue;
+    this.maxValue = def.maxValue;
+    this.pressureRate = def.pressureRate;
+    this.slowFactor = 1;
+    this.slowTimer = 0;
+    this.pressureBoost = 1;
+    this.radius = def.radius;
+    this.color = def.color;
+    this.alive = true;
+    this.hasSplit = !!isLeak; // leaks never split again
+    this.g = scene.add.graphics();
+    this.g.setDepth(10);
+    const p = pointAtDistance(0);
+    this.x = p.x; this.y = p.y;
+    this.draw();
+  }
+  setInitialValue(v){ this.value = v; }
+  pct(){ return Phaser.Math.Clamp(this.value / this.maxValue, 0, 1); }
+  update(dt){
+    if (this.slowTimer > 0){
+      this.slowTimer -= dt;
+      if (this.slowTimer <= 0){ this.slowFactor = 1; this.pressureBoost = 1; }
+    }
+    const move = this.baseSpeed * this.slowFactor * state.speedMult;
+    this.distance += move * dt;
+    this.value = Math.min(this.maxValue, this.value + this.pressureRate * this.pressureBoost * state.speedMult * dt);
+    const p = pointAtDistance(this.distance);
+    if (!p){
+      this.escape();
+      return;
+    }
+    this.x = p.x; this.y = p.y;
+    this.draw();
+  }
+  applySlow(factor, duration, boost){
+    this.slowFactor = Math.min(this.slowFactor, factor);
+    this.slowTimer = Math.max(this.slowTimer, duration);
+    this.pressureBoost = Math.max(this.pressureBoost, boost);
+  }
+  takeDamage(dmg){
+    this.hp -= dmg;
+    if (this.hp <= 0 && this.alive){
+      this.pop();
+    }
+  }
+  pop(){
+    this.alive = false;
+    let bonus = 0;
+    for (const t of state.towers){
+      if (t.typeKey === 'COLLECTOR'){
+        const d = Phaser.Math.Distance.Between(this.x,this.y,t.x,t.y);
+        if (d <= t.stat('range')) bonus = Math.max(bonus, t.stat('bonusPct'));
+      }
+    }
+    const award = Math.round(this.value * (1+bonus));
+    state.cash += award;
+    updateHud();
+    spawnPopFx(this.x, this.y, this.color, award);
+    sfx('tone', 780 + this.pct()*400, 0.08, 'triangle', 0.18);
+    if (this.def.splits && !this.hasSplit){
+      const half = this.value/2;
+      for (let k=0;k<2;k++){
+        const leak = new Balloon('LEAK', 1, true);
+        leak.distance = this.distance - 6;
+        leak.value = half;
+        state.balloons.push(leak);
+      }
+    }
+    this.destroy();
+    checkWaveClear();
+  }
+  escape(){
+    this.alive = false;
+    const dmg = Math.max(1, Math.ceil(this.value / this.def.escapeDivisor));
+    state.integrity = Math.max(0, state.integrity - dmg);
+    updateHud();
+    sfx('tone', 140, 0.22, 'sawtooth', 0.22);
+    spawnEscapeFx(this.x, this.y);
+    this.destroy();
+    checkWaveClear();
+    if (state.integrity <= 0) endRun(false);
+  }
+  draw(){
+    const g = this.g;
+    g.clear();
+    const pct = this.pct();
+    const glow = pct > 0.75 ? 1 : 0.55;
+    g.fillStyle(this.color, 1);
+    g.fillCircle(this.x, this.y, this.radius);
+    g.lineStyle(2, 0xffffff, glow);
+    g.strokeCircle(this.x, this.y, this.radius);
+    // pressure gauge ring
+    const barW = this.radius*2, barH = 4;
+    const bx = this.x - this.radius, by = this.y - this.radius - 9;
+    g.fillStyle(0x0d1116, 0.85);
+    g.fillRect(bx, by, barW, barH);
+    const fillColor = pct < 0.5 ? 0x3ad17d : (pct < 0.85 ? 0xffd23f : 0xff4d5e);
+    g.fillStyle(fillColor, 1);
+    g.fillRect(bx, by, barW*pct, barH);
+    // hp notch
+    const hpPct = Phaser.Math.Clamp(this.hp/this.maxHp,0,1);
+    g.lineStyle(2, 0xffffff, 0.35);
+    g.strokeRect(bx, by, barW, barH);
+    if (pct > 0.85){
+      g.lineStyle(1, 0xff4d5e, 0.6 + Math.sin(scene.time.now/90)*0.3);
+      g.strokeCircle(this.x, this.y, this.radius+4);
+    }
+  }
+  destroy(){
+    this.g.destroy();
+    const idx = state.balloons.indexOf(this);
+    if (idx >= 0) state.balloons.splice(idx,1);
+  }
+}
+
+class Tower {
+  constructor(typeKey, x, y){
+    this.typeKey = typeKey;
+    this.def = TOWER_DEFS[typeKey];
+    this.x = x; this.y = y;
+    this.level = 0; // index into stat arrays (0 = lvl1, 1 = lvl2)
+    this.cooldown = 0;
+    this.spent = this.def.cost;
+    this.kills = 0;
+    this.g = scene.add.graphics();
+    this.g.setDepth(8);
+    this.draw();
+  }
+  stat(name){
+    const arr = this.def[name];
+    if (!arr) return 0;
+    return arr[Math.min(this.level, arr.length-1)];
+  }
+  canUpgrade(){ return this.level < 1; }
+  upgradeCost(){ return this.def.upgradeCost; }
+  upgrade(){
+    if (!this.canUpgrade()) return false;
+    if (state.cash < this.upgradeCost()) return false;
+    state.cash -= this.upgradeCost();
+    this.spent += this.upgradeCost();
+    this.level = 1;
+    updateHud();
+    this.draw();
+    return true;
+  }
+  sellValue(){ return Math.round(this.spent * 0.5); }
+  update(dt){
+    if (this.cooldown > 0) this.cooldown -= dt * state.speedMult;
+    if (this.typeKey === 'COLLECTOR') return; // passive
+    if (this.typeKey === 'COMPRESSOR'){
+      if (this.cooldown <= 0){
+        this.cooldown = 1/this.stat('pulseRate');
+        let hit = false;
+        for (const b of state.balloons){
+          if (!b.alive) continue;
+          const d = Phaser.Math.Distance.Between(this.x,this.y,b.x,b.y);
+          if (d <= this.stat('range')){
+            b.applySlow(this.stat('slowFactor'), this.stat('slowDuration'), this.stat('pressureBoost'));
+            hit = true;
+          }
+        }
+        if (hit){ this.pulseFx(); sfx('tone', 220, 0.12, 'sine', 0.12); }
+      }
+      return;
+    }
+    if (this.cooldown > 0) return;
+    const target = this.findTarget();
+    if (!target) return;
+    this.cooldown = 1/this.stat('fireRate');
+    let dmg = this.stat('damage');
+    if (this.typeKey === 'BURST'){
+      dmg *= (1 + target.pct() * this.stat('valueDamageBonusMax'));
+    }
+    target.takeDamage(dmg);
+    this.kills = target.alive ? this.kills : this.kills+1;
+    this.fireFx(target);
+    sfx('tone', this.typeKey==='BURST'?180:520, 0.05, this.typeKey==='BURST'?'sawtooth':'square', 0.1);
+  }
+  findTarget(){
+    const range = this.stat('range');
+    let candidates = state.balloons.filter(b => b.alive && Phaser.Math.Distance.Between(this.x,this.y,b.x,b.y) <= range);
+    if (!candidates.length) return null;
+    if (state.targetMode === 'greedy'){
+      candidates.sort((a,b)=> b.value - a.value);
+    } else if (state.targetMode === 'efficient'){
+      candidates.sort((a,b)=> a.hp - b.hp);
+    } else {
+      candidates.sort((a,b)=> b.distance - a.distance);
+    }
+    return candidates[0];
+  }
+  fireFx(target){
+    const line = scene.add.graphics();
+    line.setDepth(9);
+    line.lineStyle(this.typeKey==='BURST'?4:2, this.def.color, 0.9);
+    line.beginPath();
+    line.moveTo(this.x, this.y);
+    line.lineTo(target.x, target.y);
+    line.strokePath();
+    scene.tweens.add({ targets: line, alpha:0, duration:120, onComplete:()=>line.destroy() });
+    const hit = scene.add.circle(target.x, target.y, 6, this.def.color, 0.7);
+    hit.setDepth(11);
+    scene.tweens.add({ targets: hit, scale:2, alpha:0, duration:180, onComplete:()=>hit.destroy() });
+  }
+  pulseFx(){
+    const ring = scene.add.circle(this.x, this.y, this.stat('range'), this.def.color, 0);
+    ring.setStrokeStyle(2, this.def.color, 0.5);
+    ring.setDepth(7);
+    scene.tweens.add({ targets: ring, alpha:0, duration:260, onComplete:()=>ring.destroy() });
+  }
+  draw(){
+    const g = this.g;
+    g.clear();
+    g.fillStyle(0x0d1116, 1);
+    g.fillRoundedRect(this.x-18, this.y-18, 36, 36, 6);
+    g.lineStyle(2, this.def.color, 1);
+    g.strokeRoundedRect(this.x-18, this.y-18, 36, 36, 6);
+    g.fillStyle(this.def.color, 1);
+    g.fillCircle(this.x, this.y, this.level===1?12:9);
+    if (this.level === 1){
+      g.lineStyle(2, 0xffffff, 0.8);
+      g.strokeCircle(this.x, this.y, 15);
+    }
+  }
+  destroy(){ this.g.destroy(); }
+}
+
+// ---------- fx helpers ----------
+function spawnPopFx(x,y,color,award){
+  for (let i=0;i<8;i++){
+    const p = scene.add.circle(x,y,3,color,0.9);
+    p.setDepth(12);
+    const ang = Math.random()*Math.PI*2;
+    const dist = 18 + Math.random()*22;
+    scene.tweens.add({
+      targets:p, x:x+Math.cos(ang)*dist, y:y+Math.sin(ang)*dist, alpha:0, duration:280+Math.random()*120,
+      onComplete:()=>p.destroy()
+    });
+  }
+  const txt = scene.add.text(x, y-20, '+'+award, {fontFamily:'Arial', fontSize:'13px', color:'#ffcc33', fontStyle:'bold'});
+  txt.setOrigin(0.5); txt.setDepth(13);
+  scene.tweens.add({ targets:txt, y:y-46, alpha:0, duration:600, onComplete:()=>txt.destroy() });
+}
+function spawnEscapeFx(x,y){
+  const flash = scene.add.circle(x,y,20,0xff4d5e,0.5);
+  flash.setDepth(12);
+  scene.tweens.add({ targets:flash, scale:2.2, alpha:0, duration:320, onComplete:()=>flash.destroy() });
+}
+
+// ---------- spawning ----------
+let spawnQueue = [];
+let spawnTimer = 0;
+let liveCountThisWave = 0;
+
+function startWave(){
+  if (state.waveActive || state.ended) return;
+  state.wave += 1;
+  if (state.wave > TOTAL_WAVES){ endRun(true); return; }
+  const entries = WAVES[state.wave-1];
+  spawnQueue = [];
+  for (const e of entries){
+    for (let i=0;i<e.c;i++) spawnQueue.push({t:e.t, gap:e.i});
+  }
+  liveCountThisWave = spawnQueue.length;
+  spawnTimer = 0;
+  state.waveActive = true;
+  state.spawning = true;
+  document.getElementById('waveBtn').disabled = true;
+  document.getElementById('waveBtn').textContent = 'Wave In Progress';
+  updateHud();
+}
+
+function processSpawning(dt){
+  if (!state.spawning) return;
+  spawnTimer -= dt * state.speedMult;
+  if (spawnTimer <= 0 && spawnQueue.length){
+    const next = spawnQueue.shift();
+    const hpMult = 1 + (state.wave-1)*0.14;
+    const b = new Balloon(next.t, hpMult, false);
+    state.balloons.push(b);
+    spawnTimer = next.gap || 0.5;
+    if (!spawnQueue.length) state.spawning = false;
+  }
+}
+
+function checkWaveClear(){
+  if (!state.waveActive || state.spawning) return;
+  if (state.balloons.length === 0){
+    state.waveActive = false;
+    const bonus = 15 + state.wave*5;
+    state.cash += bonus;
+    state.integrity = Math.min(START_INTEGRITY, state.integrity + 3);
+    updateHud();
+    if (state.wave >= TOTAL_WAVES){
+      endRun(true);
+      return;
+    }
+    const btn = document.getElementById('waveBtn');
+    btn.disabled = false;
+    btn.textContent = 'Start Wave ' + (state.wave+1);
+  }
+}
+
+// ---------- HUD ----------
+function updateHud(){
+  document.getElementById('hudCash').textContent = state.cash;
+  document.getElementById('hudWave').textContent = state.wave + ' / ' + TOTAL_WAVES;
+  const pct = Math.max(0, state.integrity/START_INTEGRITY*100);
+  document.getElementById('integrityFill').style.width = pct + '%';
+  document.querySelectorAll('.tower-btn').forEach(btn=>{
+    const cost = parseInt(btn.dataset.cost,10);
+    btn.disabled = state.cash < cost || state.ended;
+  });
+}
+
+function endRun(won){
+  if (state.ended) return;
+  state.ended = true;
+  state.running = false;
+  const best = JSON.parse(localStorage.getItem('overpressure_best')||'{"wave":0,"cash":0}');
+  const improved = state.wave > best.wave || (state.wave === best.wave && state.cash > best.cash);
+  if (improved){
+    localStorage.setItem('overpressure_best', JSON.stringify({wave:state.wave, cash:state.cash}));
+  }
+  renderBestRun();
+  document.getElementById('endTitle').textContent = won ? 'LINE SECURED' : 'OVERPRESSURE';
+  document.getElementById('endMsg').textContent = won
+    ? 'You held the line through the Overpressure Tank. The factory survives another day.'
+    : 'Integrity hit zero. Too much escaped the line.';
+  document.getElementById('endWave').textContent = state.wave;
+  document.getElementById('endCash').textContent = state.cash;
+  document.getElementById('endIntegrity').textContent = Math.max(0, state.integrity);
+  document.getElementById('endScreen').classList.remove('hidden');
+  sfx('tone', won?880:110, won?0.4:0.5, won?'sine':'sawtooth', 0.25);
+}
+
+function renderBestRun(){
+  const best = JSON.parse(localStorage.getItem('overpressure_best')||'null');
+  const el = document.getElementById('bestRunLine');
+  if (!best){ el.textContent = 'Best run: —'; return; }
+  el.innerHTML = 'Best run: <b>Wave ' + best.wave + '</b> · $' + best.cash;
+}
+
+// ---------- placement ----------
+function isValidPlacement(x,y){
+  if (x < 24 || x > W-24 || y < 24 || y > H-24) return false;
+  if (distToPath(x,y) < 42) return false;
+  for (const t of state.towers){
+    if (Phaser.Math.Distance.Between(x,y,t.x,t.y) < 38) return false;
+  }
+  return true;
+}
+
+function tryPlaceTower(x,y){
+  if (!state.selectedTowerType) return;
+  const def = TOWER_DEFS[state.selectedTowerType];
+  if (state.cash < def.cost) return;
+  if (!isValidPlacement(x,y)) return;
+  state.cash -= def.cost;
+  const t = new Tower(state.selectedTowerType, x, y);
+  state.towers.push(t);
+  updateHud();
+  sfx('tone', 660, 0.1, 'triangle', 0.15);
+}
+
+function selectExistingTower(x,y){
+  for (const t of state.towers){
+    if (Phaser.Math.Distance.Between(x,y,t.x,t.y) <= 20){
+      return t;
+    }
+  }
+  return null;
+}
+
+function showTowerPanel(t){
+  hideTowerPanel();
+  selectedTower = t;
+  const stageEl = document.querySelector('.stage');
+  const panel = document.createElement('div');
+  panel.className = 'floating-panel';
+  panel.id = 'towerPanel';
+  const rect = stageEl.getBoundingClientRect();
+  const scaleX = rect.width / W;
+  const scaleY = rect.height / H;
+  let left = t.x*scaleX + 24;
+  let top = t.y*scaleY - 10;
+  if (left + 170 > rect.width) left = t.x*scaleX - 190;
+  panel.style.left = left+'px';
+  panel.style.top = Math.max(4, top)+'px';
+  const def = t.def;
+  let statsHtml = '';
+  if (t.typeKey === 'COLLECTOR'){
+    statsHtml = '<div class="row"><span>Cash bonus</span><span>+' + Math.round(t.stat('bonusPct')*100) + '%</span></div>';
+  } else if (t.typeKey === 'COMPRESSOR'){
+    statsHtml = '<div class="row"><span>Slow</span><span>' + Math.round((1-t.stat('slowFactor'))*100) + '%</span></div>'
+      + '<div class="row"><span>Pressure boost</span><span>x' + t.stat('pressureBoost').toFixed(1) + '</span></div>';
+  } else {
+    statsHtml = '<div class="row"><span>Damage</span><span>' + Math.round(t.stat('damage')) + '</span></div>'
+      + '<div class="row"><span>Fire rate</span><span>' + t.stat('fireRate').toFixed(1) + '/s</span></div>';
+  }
+  panel.innerHTML = '<h4>' + def.name + ' (Lv' + (t.level+1) + ')</h4>'
+    + '<div class="row"><span>Range</span><span>' + Math.round(t.stat('range')) + '</span></div>'
+    + statsHtml
+    + '<div class="row"><span>Kills</span><span>' + t.kills + '</span></div>'
+    + '<div class="actions">'
+    + (t.canUpgrade() ? '<button id="btnUpgrade">Upgrade $' + t.upgradeCost() + '</button>' : '<button disabled>Max Level</button>')
+    + '<button id="btnSell">Sell $' + t.sellValue() + '</button>'
+    + '</div>';
+  stageEl.appendChild(panel);
+  document.getElementById('btnUpgrade')?.addEventListener('click', ()=>{
+    if (t.upgrade()) showTowerPanel(t);
+  });
+  document.getElementById('btnSell')?.addEventListener('click', ()=>{
+    state.cash += t.sellValue();
+    const idx = state.towers.indexOf(t);
+    if (idx>=0) state.towers.splice(idx,1);
+    t.destroy();
+    updateHud();
+    hideTowerPanel();
+  });
+  drawRangeIndicator(t.x, t.y, t.stat('range'), def.color);
+}
+function hideTowerPanel(){
+  const el = document.getElementById('towerPanel');
+  if (el) el.remove();
+  selectedTower = null;
+  if (rangeGraphic) rangeGraphic.clear();
+}
+function drawRangeIndicator(x,y,range,color){
+  if (!rangeGraphic) return;
+  rangeGraphic.clear();
+  rangeGraphic.lineStyle(2, color, 0.5);
+  rangeGraphic.strokeCircle(x,y,range);
+  rangeGraphic.fillStyle(color, 0.06);
+  rangeGraphic.fillCircle(x,y,range);
+}
+
+// ---------- Phaser scene ----------
+class MainScene extends Phaser.Scene {
+  constructor(){ super('main'); }
+  create(){
+    scene = this;
+    this.pathGraphic = this.add.graphics();
+    this.pathGraphic.setDepth(1);
+    drawFactoryPath(this.pathGraphic);
+
+    ghostGraphic = this.add.graphics();
+    ghostGraphic.setDepth(15);
+    rangeGraphic = this.add.graphics();
+    rangeGraphic.setDepth(6);
+
+    this.input.on('pointermove', (p)=>{
+      if (!state.running) return;
+      if (state.selectedTowerType){
+        ghostGraphic.clear();
+        const valid = isValidPlacement(p.x, p.y);
+        const def = TOWER_DEFS[state.selectedTowerType];
+        ghostGraphic.lineStyle(2, valid?0x3ad17d:0xff4d5e, 0.8);
+        ghostGraphic.strokeCircle(p.x, p.y, def.range[0]);
+        ghostGraphic.fillStyle(valid?0x3ad17d:0xff4d5e, 0.12);
+        ghostGraphic.fillCircle(p.x, p.y, def.range[0]);
+        ghostGraphic.fillStyle(def.color, 0.9);
+        ghostGraphic.fillCircle(p.x, p.y, 10);
+      }
+    });
+
+    this.input.on('pointerdown', (p)=>{
+      if (!state.running) return;
+      if (state.selectedTowerType){
+        tryPlaceTower(p.x, p.y);
+        return;
+      }
+      const t = selectExistingTower(p.x, p.y);
+      if (t) showTowerPanel(t);
+      else hideTowerPanel();
+    });
+
+    this.input.keyboard.on('keydown-ESC', ()=>{ deselectTowerType(); hideTowerPanel(); });
+    this.input.keyboard.on('keydown-ONE', ()=> selectTowerType('POPPER'));
+    this.input.keyboard.on('keydown-TWO', ()=> selectTowerType('COLLECTOR'));
+    this.input.keyboard.on('keydown-THREE', ()=> selectTowerType('COMPRESSOR'));
+    this.input.keyboard.on('keydown-FOUR', ()=> selectTowerType('BURST'));
+    this.input.keyboard.on('keydown-SPACE', ()=> cycleSpeed());
+    this.input.keyboard.on('keydown-ENTER', ()=> { if (!state.waveActive) startWave(); });
+  }
+  update(time, delta){
+    if (!state.running) return;
+    const dt = Math.min(delta/1000, 0.05);
+    processSpawning(dt);
+    for (const b of [...state.balloons]) b.update(dt);
+    for (const t of state.towers) t.update(dt);
+    if (selectedTower) drawRangeIndicator(selectedTower.x, selectedTower.y, selectedTower.stat('range'), selectedTower.def.color);
+  }
+}
+
+function drawFactoryPath(g){
+  g.clear();
+  g.lineStyle(46, 0x1a2029, 1);
+  drawPolyline(g, PATH_POINTS);
+  g.lineStyle(2, 0x2d3742, 1);
+  drawPolyline(g, PATH_POINTS);
+  // hazard stripes (dashed effect via segments)
+  const dash = 16, gap = 12;
+  for (const seg of PATH.segs){
+    const len = seg.len;
+    let d = 0;
+    while (d < len){
+      const t1 = d/len, t2 = Math.min(len, d+dash)/len;
+      const x1 = seg.a.x + (seg.b.x-seg.a.x)*t1, y1 = seg.a.y + (seg.b.y-seg.a.y)*t1;
+      const x2 = seg.a.x + (seg.b.x-seg.a.x)*t2, y2 = seg.a.y + (seg.b.y-seg.a.y)*t2;
+      g.lineStyle(4, 0xf5b400, 0.55);
+      g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.strokePath();
+      d += dash+gap;
+    }
+  }
+  // entry / exit markers
+  const start = PATH_POINTS[0], end = PATH_POINTS[PATH_POINTS.length-1];
+  g.fillStyle(0x3ad1c8, 0.5);
+  g.fillCircle(Math.max(20,start.x), start.y, 16);
+  g.fillStyle(0xff4d5e, 0.5);
+  g.fillCircle(Math.min(W-20,end.x), end.y, 16);
+}
+function drawPolyline(g, pts){
+  g.beginPath();
+  g.moveTo(pts[0].x, pts[0].y);
+  for (let i=1;i<pts.length;i++) g.lineTo(pts[i].x, pts[i].y);
+  g.strokePath();
+}
+
+// ---------- UI wiring ----------
+function selectTowerType(key){
+  state.selectedTowerType = state.selectedTowerType === key ? null : key;
+  document.querySelectorAll('.tower-btn').forEach(b=>{
+    b.classList.toggle('selected', b.dataset.type === state.selectedTowerType);
+  });
+  if (ghostGraphic) ghostGraphic.clear();
+}
+function deselectTowerType(){
+  state.selectedTowerType = null;
+  document.querySelectorAll('.tower-btn').forEach(b=>b.classList.remove('selected'));
+  if (ghostGraphic) ghostGraphic.clear();
+}
+function cycleSpeed(){
+  const order = [1,2,3];
+  const idx = order.indexOf(state.speedMult);
+  state.speedMult = order[(idx+1)%order.length];
+  document.getElementById('speedBtn').textContent = state.speedMult + 'x';
+}
+
+function buildTowerBar(){
+  const bar = document.getElementById('towerBar');
+  bar.innerHTML = '';
+  Object.values(TOWER_DEFS).forEach((def, i)=>{
+    const btn = document.createElement('button');
+    btn.className = 'tower-btn';
+    btn.dataset.type = def.key;
+    btn.dataset.cost = def.cost;
+    btn.innerHTML = '<span class="tcost">$' + def.cost + '</span>'
+      + '<span class="swatch" style="background:'+def.cssColor+'"></span>'
+      + '<span class="tname">' + def.name + '</span>'
+      + '<span class="tdesc">' + def.desc + '</span>';
+    btn.addEventListener('click', ()=> selectTowerType(def.key));
+    bar.appendChild(btn);
+  });
+}
+
+document.getElementById('targetModeSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  state.targetMode = btn.dataset.mode;
+  document.querySelectorAll('#targetModeSeg button').forEach(b=>b.classList.toggle('active', b===btn));
+});
+document.getElementById('speedBtn').addEventListener('click', cycleSpeed);
+document.getElementById('waveBtn').addEventListener('click', startWave);
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  document.getElementById('startScreen').classList.add('hidden');
+  state.running = true;
+});
+document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
+
+buildTowerBar();
+renderBestRun();
+updateHud();
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  parent: 'game-container',
+  backgroundColor: '#0d1116',
+  scene: MainScene,
+  render: { antialias: true }
+};
+new Phaser.Game(config);
+
+})();
+</script>
+</body>
+</html>
