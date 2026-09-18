@@ -945,15 +945,16 @@ class SumoPushScene extends Phaser.Scene {
     const realDt = Math.min(delta, 40);
     if (this.state === 'countdown') return; // frozen, waiting for the round to open
 
-    this.roundElapsed += realDt;
-    this.updateRingShrink();
-    this.updateArenaEffects();
-
     if (this.struggle) {
-      // Frozen mid-collision: normal input/AI/physics/collision all pause while
-      // the interactive push-struggle plays out, but the world keeps breathing
-      // around it (ring shrink already ticked above, dust settles, the edge
-      // glow keeps pulsing) so it never feels like the game itself stalled.
+      // Frozen mid-collision: normal input/AI/physics/collision all pause
+      // while the interactive push-struggle plays out. The ROUND CLOCK
+      // pauses too now (no ring shrink, no Sudden Death onset, no Rising
+      // Sun stage) — a struggle can run over a second on higher tiers, and
+      // letting the ring keep closing in on a frozen, defenseless wrestler
+      // meant a struggle could be won outright and still end in a ring-out
+      // that had nothing to do with it. Only cosmetic motion (dust
+      // settling, the edge glow pulsing) keeps playing under it now, so it
+      // still never feels like the game itself stalled.
       this.updateStruggle(realDt);
       this.updateDust(realDt);
       this.updateEdgeWarning();
@@ -961,6 +962,10 @@ class SumoPushScene extends Phaser.Scene {
       this.updatePhaseText();
       return;
     }
+
+    this.roundElapsed += realDt;
+    this.updateRingShrink();
+    this.updateArenaEffects();
 
     const slowMo = this.time.now < this.slowUntil;
     const dt = slowMo ? realDt * 0.28 : realDt;
@@ -1420,7 +1425,25 @@ class SumoPushScene extends Phaser.Scene {
   resolveStruggle() {
     const s = this.struggle;
     const matchDiff = s.aWins - s.bWins; // positive => p1 (a) matched more prompts
-    const netForce = s.seedForce + matchDiff * STRUGGLE_MATCH_FORCE;
+    // Whoever wins the struggle wins the push, full stop — the original
+    // hit's momentum can no longer override that outright. It used to be
+    // able to: seedForce (up to 35% of the raw collision force) was just
+    // added straight onto matchDiff's contribution, so a big enough
+    // momentum mismatch (e.g. eating a max-charge dash) could out-vote a
+    // clean struggle sweep and shove the struggle's WINNER out instead —
+    // exactly the "I beat the AI on arrows and still got pushed out" bug.
+    // Momentum still matters for how HARD the win lands (extra punch when
+    // it agrees with the struggle winner) but is dampened, never flipped,
+    // when it disagrees. A tied struggle (matchDiff === 0) still falls
+    // back to pure momentum, same as before.
+    let netForce;
+    if (matchDiff !== 0) {
+      const dir = matchDiff > 0 ? 1 : -1;
+      const momentumAssist = Math.max(0, dir * s.seedForce);
+      netForce = dir * (Math.abs(matchDiff) * STRUGGLE_MATCH_FORCE + momentumAssist);
+    } else {
+      netForce = s.seedForce;
+    }
     if (this.mode === 'ai') {
       if (matchDiff > 0) Sound.struggleWin();
       else if (matchDiff < 0) Sound.struggleLose();
