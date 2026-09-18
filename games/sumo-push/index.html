@@ -256,6 +256,41 @@ function loadReroll() {
 }
 function saveReroll(v) { try { localStorage.setItem(ARENA_REROLL_KEY, v ? '1' : '0'); } catch (err) {} }
 
+// ------------------------------------------------------------ MATCH STATS
+// Lifetime stats, kept in localStorage across sessions. Everything here is
+// read-mostly (the results/stats panels display it) except the small set
+// of writes in finishRound() and resolveStruggle().
+const STATS_KEY = 'sumoPush_stats';
+function defaultArenaCounts() {
+  const o = {};
+  ARENA_ORDER.forEach(k => { o[k] = 0; });
+  return o;
+}
+function defaultStats() {
+  return {
+    matchesPlayed: 0,
+    aiWins: 0, aiLosses: 0,
+    currentStreak: 0, bestStreak: 0,
+    longestStruggleWin: 0,
+    arenaCounts: defaultArenaCounts()
+  };
+}
+function loadStats() {
+  try {
+    const raw = localStorage.getItem(STATS_KEY);
+    if (!raw) return defaultStats();
+    const parsed = JSON.parse(raw);
+    // Merge onto fresh defaults so a stats shape added in a later version
+    // (or a new arena added to ARENA_ORDER) never crashes on old saved data.
+    return Object.assign(defaultStats(), parsed, {
+      arenaCounts: Object.assign(defaultArenaCounts(), parsed.arenaCounts || {})
+    });
+  } catch (err) { return defaultStats(); }
+}
+function saveStats(stats) {
+  try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)); } catch (err) {}
+}
+
 const Sound = {
   chargeTick(stage) {
     if (!window.SFX) return;
@@ -305,17 +340,18 @@ const Sound = {
 // flick past the deadzone in a cardinal direction is a one-shot "press",
 // mirroring how the desktop version reuses each wrestler's own movement
 // keys to match struggle prompts instead of a separate button.
-function createTouchStick(container, side) {
+function createTouchStick(container, opts) {
+  const { hSide = 'left', hOffset = 28, bottom = 28 } = (typeof opts === 'string') ? { hSide: opts } : (opts || {});
   const base = document.createElement('div');
   const knob = document.createElement('div');
   base.appendChild(knob);
   container.appendChild(base);
-  base.style.cssText = `position:absolute; bottom:28px; ${side}:28px; width:112px; height:112px; border-radius:50%; background:rgba(255,255,255,0.07); border:2px solid rgba(255,255,255,0.22); touch-action:none; pointer-events:auto;`;
+  base.style.cssText = `position:absolute; bottom:${bottom}px; ${hSide}:${hOffset}px; width:112px; height:112px; border-radius:50%; background:rgba(255,255,255,0.07); border:2px solid rgba(255,255,255,0.22); touch-action:none; pointer-events:auto;`;
   knob.style.cssText = 'position:absolute; width:46px; height:46px; border-radius:50%; background:rgba(255,255,255,0.32); left:33px; top:33px;';
 
   const MAXD = 56 - 23;
   const state = {
-    x: 0, y: 0, lastDir: null, justDir: null,
+    x: 0, y: 0, lastDir: null, justDir: null, el: base,
     consumeDir(dir) { if (this.justDir === dir) { this.justDir = null; return true; } return false; }
   };
   let activeId = null;
@@ -356,11 +392,12 @@ function createTouchStick(container, side) {
   return state;
 }
 
-function createTouchChargeButton(container, side) {
+function createTouchChargeButton(container, opts) {
+  const { hSide = 'right', hOffset = 34, bottom = 38 } = (typeof opts === 'string') ? { hSide: opts } : (opts || {});
   const btn = document.createElement('div');
   container.appendChild(btn);
   btn.textContent = 'DASH';
-  btn.style.cssText = `position:absolute; bottom:38px; ${side}:34px; width:86px; height:86px; border-radius:50%; background:rgba(255,159,107,0.16); border:2px solid rgba(255,159,107,0.5); color:#fff; font:bold 13px Arial,sans-serif; display:flex; align-items:center; justify-content:center; touch-action:none; pointer-events:auto; user-select:none;`;
+  btn.style.cssText = `position:absolute; bottom:${bottom}px; ${hSide}:${hOffset}px; width:86px; height:86px; border-radius:50%; background:rgba(255,159,107,0.16); border:2px solid rgba(255,159,107,0.5); color:#fff; font:bold 13px Arial,sans-serif; display:flex; align-items:center; justify-content:center; touch-action:none; pointer-events:auto; user-select:none;`;
   let down = false;
   btn.addEventListener('pointerdown', e => {
     e.preventDefault(); down = true;
@@ -370,7 +407,7 @@ function createTouchChargeButton(container, side) {
   const up = () => { down = false; btn.style.background = 'rgba(255,159,107,0.16)'; };
   btn.addEventListener('pointerup', up);
   btn.addEventListener('pointercancel', up);
-  return { isDown: () => down };
+  return { isDown: () => down, el: btn };
 }
 
 class SumoPushScene extends Phaser.Scene {
@@ -382,6 +419,7 @@ class SumoPushScene extends Phaser.Scene {
     this.arenaKey = loadArena();
     this.arenaSelection = this.arenaKey; // raw menu pick, may be 'random'
     this.rerollPerRound = loadReroll();
+    this.stats = loadStats();
     this.state = 'menu';
     this.isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
@@ -391,6 +429,7 @@ class SumoPushScene extends Phaser.Scene {
     this.buildInput();
     this.buildOverPanel();
     this.buildModeSelect();
+    this.buildStatsPanel();
     this.buildArenaSelect();
     this.buildDifficultySelect();
     this.buildStruggleUI();
@@ -400,6 +439,7 @@ class SumoPushScene extends Phaser.Scene {
     this.setOverVisible(false);
     this.setDifficultySelectVisible(false);
     this.setArenaSelectVisible(false);
+    this.setStatsVisible(false);
     this.setModeSelectVisible(true);
   }
 
@@ -492,10 +532,11 @@ class SumoPushScene extends Phaser.Scene {
 
   setHudVisible(v) {
     this.hudGroup.forEach(o => o.setVisible(v));
-    // Touch controls are VS-AI only (2P local shares a keyboard on one
-    // device already; two on-screen stick clusters don't fit a phone
-    // screen well) and only ever shown during actual play, never menus.
-    if (this.touchUIWrap) this.touchUIWrap.style.display = (v && this.mode === 'ai') ? 'block' : 'none';
+    // Touch controls only ever show during actual play, never menus.
+    // Both VS AI and 2P Local get on-screen controls now — Local confines
+    // each player's stick+DASH to their own half of the screen (see
+    // setTouchControlsForMode) so two people sharing one device work.
+    if (this.touchUIWrap) this.touchUIWrap.style.display = (v && (this.mode === 'ai' || this.mode === 'local')) ? 'block' : 'none';
   }
   updateRoundPips() {
     this.p1PipRow.forEach((p, i) => p.setFillStyle(i < this.p1RoundWins ? 0x8fd3ff : 0x2a2e36));
@@ -554,10 +595,35 @@ class SumoPushScene extends Phaser.Scene {
     wrap.style.cssText = 'position:fixed; inset:0; pointer-events:none; z-index:40; display:none;';
     document.body.appendChild(wrap);
     this.touchUIWrap = wrap;
-    this.p1Touch = {
-      stick: createTouchStick(wrap, 'left'),
-      charge: createTouchChargeButton(wrap, 'right')
-    };
+
+    // P1's stick sits bottom-left in both modes — only where the DASH
+    // button goes changes: far right (spread across the full width, since
+    // only one pair of thumbs is on screen) for VS AI, or right next to the
+    // stick (confined to P1's own half) for 2P Local, where P2's cluster
+    // occupies the right half so two people sharing one device don't reach
+    // across each other.
+    this.p1Stick = createTouchStick(wrap, { hSide: 'left', hOffset: 28, bottom: 28 });
+    this.p1ChargeAI = createTouchChargeButton(wrap, { hSide: 'right', hOffset: 34, bottom: 38 });
+    this.p1ChargeLocal = createTouchChargeButton(wrap, { hSide: 'left', hOffset: 155, bottom: 28 });
+    this.p2Stick = createTouchStick(wrap, { hSide: 'right', hOffset: 28, bottom: 28 });
+    this.p2Charge = createTouchChargeButton(wrap, { hSide: 'right', hOffset: 155, bottom: 28 });
+
+    this.p1Touch = { stick: this.p1Stick, charge: this.p1ChargeAI };
+    this.p2Touch = { stick: this.p2Stick, charge: this.p2Charge };
+    this.setTouchControlsForMode('ai');
+  }
+
+  // Swaps which DASH element is visible/active per mode. this.p1Touch.charge
+  // always points at whichever button is currently showing, so
+  // handleWrestlerInput never needs to know which mode it's in.
+  setTouchControlsForMode(mode) {
+    if (!this.touchUIWrap) return;
+    const local = mode === 'local';
+    this.p1ChargeAI.el.style.display = local ? 'none' : 'flex';
+    this.p1ChargeLocal.el.style.display = local ? 'flex' : 'none';
+    this.p2Stick.el.style.display = local ? 'block' : 'none';
+    this.p2Charge.el.style.display = local ? 'flex' : 'none';
+    this.p1Touch.charge = local ? this.p1ChargeLocal : this.p1ChargeAI;
   }
 
   // --------------------------------------------------------- MODE SELECT
@@ -566,6 +632,17 @@ class SumoPushScene extends Phaser.Scene {
     const title = this.add.text(W / 2, 110, 'SUMO PUSH', { fontFamily: 'Arial Black', fontSize: '44px', color: '#ffffff' }).setOrigin(0.5);
     const sub = this.add.text(W / 2, 155, 'One ring. One shove. One mistake.', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5);
     items.push(title, sub);
+
+    const statsBtn = this.add.text(W - 20, 24, 'STATS', { fontFamily: 'Arial Black', fontSize: '13px', color: '#7f8a9a' }).setOrigin(1, 0.5).setInteractive({ useHandCursor: true });
+    statsBtn.on('pointerover', () => statsBtn.setColor('#c3cbd8'));
+    statsBtn.on('pointerout', () => statsBtn.setColor('#7f8a9a'));
+    statsBtn.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setModeSelectVisible(false);
+      this.refreshStatsPanel();
+      this.setStatsVisible(true);
+    });
+    items.push(statsBtn);
 
     const makeButton = (y, label, color, onClick) => {
       const bg = this.add.rectangle(W / 2, y, 320, 62, 0x151a24).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
@@ -596,7 +673,7 @@ class SumoPushScene extends Phaser.Scene {
     items.push(controlsHint, controlsHint2);
     if (this.isTouch) {
       const touchHint = this.add.text(W / 2, 454,
-        'Touch (VS AI): left stick to move, DASH button to charge/release',
+        'Touch: stick to move, DASH to charge/release  •  2P Local: each side is its own half',
         { fontFamily: 'Arial', fontSize: '12px', color: '#5a6578' }).setOrigin(0.5);
       items.push(touchHint);
     }
@@ -740,9 +817,51 @@ class SumoPushScene extends Phaser.Scene {
   }
   setOverVisible(v) { this.overItems.forEach(o => o.setVisible(v)); }
 
+  // ---------------------------------------------------------------- STATS
+  buildStatsPanel() {
+    const items = [];
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.7).setInteractive();
+    const title = this.add.text(W / 2, 80, 'YOUR STATS', { fontFamily: 'Arial Black', fontSize: '28px', color: '#ffffff' }).setOrigin(0.5);
+    const body = this.add.text(W / 2, 260, '', { fontFamily: 'Arial', fontSize: '17px', color: '#cbd5e1', align: 'center', lineSpacing: 12 }).setOrigin(0.5);
+    const back = this.add.text(W / 2, 460, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    back.on('pointerover', () => back.setColor('#c3cbd8'));
+    back.on('pointerout', () => back.setColor('#7f8a9a'));
+    back.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setStatsVisible(false);
+      this.setModeSelectVisible(true);
+    });
+
+    items.push(dim, title, body, back);
+    this.statsItems = items;
+    this.statsBody = body;
+  }
+  setStatsVisible(v) { this.statsItems.forEach(o => o.setVisible(v)); }
+
+  // Rebuilds the stats panel's text from this.stats right before it's shown,
+  // so it's never stale between visits.
+  refreshStatsPanel() {
+    const s = this.stats;
+    const record = `${s.aiWins}-${s.aiLosses}`;
+    let favArena = '—';
+    let favCount = 0;
+    ARENA_ORDER.forEach(key => {
+      if (s.arenaCounts[key] > favCount) { favCount = s.arenaCounts[key]; favArena = ARENA_DEFS[key].name; }
+    });
+    const lines = [
+      `Matches Played: ${s.matchesPlayed}`,
+      `VS AI Record: ${record}`,
+      `Win Streak: ${s.currentStreak}  (Best: ${s.bestStreak})`,
+      `Favorite Arena: ${favArena}${favCount ? ` (${favCount} rounds)` : ''}`,
+      `Best Push-Struggle Win: ${s.longestStruggleWin} round${s.longestStruggleWin === 1 ? '' : 's'}`
+    ];
+    this.statsBody.setText(lines.join('\n'));
+  }
+
   // --------------------------------------------------------------- MATCH
   startMatch(mode) {
     this.mode = mode;
+    if (this.isTouch) this.setTouchControlsForMode(mode);
     this.p1RoundWins = 0;
     this.p2RoundWins = 0;
     this.updateRoundPips();
@@ -953,6 +1072,11 @@ class SumoPushScene extends Phaser.Scene {
       if (this.keys.left.isDown) dirX = -1; else if (this.keys.right.isDown) dirX = 1;
       if (this.keys.up.isDown) dirY = -1; else if (this.keys.down.isDown) dirY = 1;
       chargeKeyDown = this.keys.l.isDown;
+      if (this.p2Touch) {
+        const st = this.p2Touch.stick;
+        if (st.x !== 0 || st.y !== 0) { dirX = st.x; dirY = st.y; usedStick = true; }
+        if (this.p2Touch.charge.isDown()) chargeKeyDown = true;
+      }
     }
 
     // The digital ±1/±1 correction only applies to keyboard's 8-way input —
@@ -1254,7 +1378,8 @@ class SumoPushScene extends Phaser.Scene {
         }
       } else {
         const keys = this.getWrestlerDirKeys(s.b);
-        if (Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
+        const touchHit = this.p2Touch && this.p2Touch.stick.consumeDir(s.dir);
+        if (touchHit || Phaser.Input.Keyboard.JustDown(keys[s.dir])) {
           s.bHit = true; s.bWins++;
           Sound.struggleHit();
           this.struggleTextB.setColor('#5be37b');
@@ -1300,6 +1425,14 @@ class SumoPushScene extends Phaser.Scene {
       if (matchDiff > 0) Sound.struggleWin();
       else if (matchDiff < 0) Sound.struggleLose();
       else Sound.struggleTie();
+    }
+    // Stats: how many rounds the WINNER of this exchange took, so a clean
+    // sweep (e.g. 5/5 on Expert) shows up as a personal best regardless of
+    // which side won it.
+    const winnerRounds = Math.max(s.aWins, s.bWins);
+    if (winnerRounds > this.stats.longestStruggleWin) {
+      this.stats.longestStruggleWin = winnerRounds;
+      saveStats(this.stats);
     }
     this.hideStrugglePrompt();
     this.struggleLabel.setVisible(false);
@@ -1399,10 +1532,32 @@ class SumoPushScene extends Phaser.Scene {
     const matchDecided = this.p1RoundWins >= ROUNDS_TO_WIN || this.p2RoundWins >= ROUNDS_TO_WIN;
     const p1Won = winnerSide === 'p1';
 
+    // Stats: every round finished counts toward that arena's play count
+    // (so a per-round reroll in Random still credits the arena actually
+    // played, not just whatever was picked at the menu); win/loss streaks
+    // only make sense against the AI, so those only update in VS AI mode,
+    // and only once the match itself is decided.
+    this.stats.arenaCounts[this.arenaKey] = (this.stats.arenaCounts[this.arenaKey] || 0) + 1;
+    if (matchDecided) {
+      this.stats.matchesPlayed++;
+      if (this.mode === 'ai') {
+        if (p1Won) {
+          this.stats.aiWins++;
+          this.stats.currentStreak++;
+          this.stats.bestStreak = Math.max(this.stats.bestStreak, this.stats.currentStreak);
+        } else {
+          this.stats.aiLosses++;
+          this.stats.currentStreak = 0;
+        }
+      }
+    }
+    saveStats(this.stats);
+
     if (matchDecided) {
       const headline = this.mode === 'ai' ? (p1Won ? 'YOU WIN THE MATCH' : 'CPU WINS THE MATCH') : (p1Won ? 'P1 WINS THE MATCH' : 'P2 WINS THE MATCH');
       this.overHeadline.setText(headline);
-      this.overSub.setText(`Rounds: ${this.p1RoundWins} — ${this.p2RoundWins}`);
+      const streakNote = this.mode === 'ai' ? `   •   Streak: ${this.stats.currentStreak} (Best: ${this.stats.bestStreak})` : '';
+      this.overSub.setText(`Rounds: ${this.p1RoundWins} — ${this.p2RoundWins}${streakNote}`);
       this.rematchLabel.setText('REMATCH');
     } else {
       const headline = this.mode === 'ai' ? (p1Won ? `YOU WIN ROUND ${this.currentRound}` : `CPU WINS ROUND ${this.currentRound}`) : (p1Won ? `P1 WINS ROUND ${this.currentRound}` : `P2 WINS ROUND ${this.currentRound}`);
