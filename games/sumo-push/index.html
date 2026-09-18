@@ -128,14 +128,18 @@ const DIFFICULTY_DEFS = {
   // isn't just smarter, it's also genuinely harder to ring out in the first
   // place, so 2-3 quick hits can't blow through Expert the way they could
   // through Easy. Replaces the old both-sides-equal knockbackMult.
+  // aiPushBonus: scales UP the push the AI deals when IT wins an exchange
+  // (never affects the player's own winning pushes). Pairs with aiPushResist
+  // so Hard/Expert aren't just harder to knock over — their own hits actually
+  // hurt more too, once they've correctly identified an opening.
   // openingReactChance/openingReactDelayMs: how sharp the AI's reactions are
   // ONLY during the ~1.5s "tachiai" window right as a round goes live (see
   // startRound). Easy is left at its normal (slow) reaction values on purpose -
   // it's supposed to be genuinely catchable by an instant opening rush.
-  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS },
-  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, openingReactChance: 0.55, openingReactDelayMs: 70 },
-  hard:   { name: 'Hard',   chargeChance: 0.023, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.65, openingReactChance: 0.85, openingReactDelayMs: 45 },
-  expert: { name: 'Expert', chargeChance: 0.032, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.50, openingReactChance: 0.97, openingReactDelayMs: 25 }
+  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS },
+  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70 },
+  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45 },
+  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'sumoPush_difficulty';
@@ -685,10 +689,18 @@ class SumoPushScene extends Phaser.Scene {
     // A little organic variance so identical inputs don't always produce the
     // identical outcome (a real shove is never perfectly repeatable).
     pushMag *= 0.87 + Math.random() * 0.26; // 0.87x - 1.13x
-    if (this.mode === 'ai' && loser === this.p2) {
-      // AI-only resistance, scaled by tier - a higher difficulty is genuinely
-      // harder to ring out, not just smarter. Never applies to the player.
-      pushMag *= DIFFICULTY_DEFS[this.difficulty].aiPushResist;
+    if (this.mode === 'ai') {
+      const def = DIFFICULTY_DEFS[this.difficulty];
+      if (loser === this.p2) {
+        // AI-only resistance, scaled by tier - a higher difficulty is genuinely
+        // harder to ring out, not just smarter. Never applies to the player.
+        pushMag *= def.aiPushResist;
+      } else if (winner === this.p2) {
+        // AI-only offense bonus - once it's correctly won an exchange, a
+        // higher tier's shove actually hurts more too. Never applies to the
+        // player's own winning pushes.
+        pushMag *= def.aiPushBonus;
+      }
     }
     const loserCritical = this.edgeDistance(loser) <= CRITICAL_EDGE_DIST;
     if (loserCritical) pushMag *= CRITICAL_PUSH_MULT;
