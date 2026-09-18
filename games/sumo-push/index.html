@@ -104,7 +104,7 @@ const CRITICAL_PUSH_MULT = 1.4;
 // but who actually keeps up with the prompts tips who wins the shove — real
 // moment-to-moment player control instead of the result being fully locked
 // in the instant two bodies touch.
-const STRUGGLE_ROUNDS = 3;
+const STRUGGLE_ROUNDS_LOCAL = 3;  // 2P local has no difficulty tier — fair, fixed round count for both humans
 const STRUGGLE_WINDOW_MS_LOCAL = 550; // 2P local has no difficulty tier — fair, fixed window for both humans
 const STRUGGLE_GAP_MS = 150;      // brief pause between prompts
 const STRUGGLE_MOMENTUM_WEIGHT = 0.35; // how much the original hit's momentum still counts
@@ -164,12 +164,22 @@ const DIFFICULTY_DEFS = {
   // opponent. struggleReactMin/Max: the fraction of that (now shorter)
   // window the AI's own hit is rolled within — a lower, tighter range means
   // it reacts faster AND more consistently, not just more often.
-  // All three must move together with difficulty: window DESCENDS, accuracy
+  // struggleRounds: how many prompts the WHOLE exchange runs for. Easy is a
+  // quick 2-round formality; Expert drags it out to 5 — a longer, more
+  // grueling tug-of-war where a single lucky/unlucky round matters less and
+  // genuine consistency matters more.
+  // driftScale/tiltScale: per-arena environmental-effect multipliers (see
+  // ARENA_DEFS below) — Drifting Dohyo's ring movement and Tilt Ring's
+  // nudging force are both barely-there on Easy and strongest on Expert, so
+  // the same arena stays fair for a beginner but genuinely tests adaptation
+  // at the top tier, without needing to restrict which arenas a tier can
+  // even pick.
+  // All four must move together with difficulty: window DESCENDS, accuracy
   // and reaction speed ASCEND (tighter/earlier react range).
-  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS, struggleAccuracy: 0.30, struggleWindowMs: 700, struggleReactMin: 0.40, struggleReactMax: 0.90 },
-  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70, struggleAccuracy: 0.50, struggleWindowMs: 560, struggleReactMin: 0.30, struggleReactMax: 0.70 },
-  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45, struggleAccuracy: 0.72, struggleWindowMs: 440, struggleReactMin: 0.18, struggleReactMax: 0.50 },
-  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25, struggleAccuracy: 0.88, struggleWindowMs: 350, struggleReactMin: 0.08, struggleReactMax: 0.32 }
+  easy:   { name: 'Easy',   chargeChance: 0.008, minChargeMs: 150, maxChargeMs: 450, edgeAwareness: 0.0, reactChance: 0.10, waitForCommit: 0.0,  centerPull: 0.10, punishChance: 0.05, aiPushResist: 1.00, aiPushBonus: 1.00, openingReactChance: 0.10, openingReactDelayMs: AI_REACT_DELAY_MS, struggleAccuracy: 0.30, struggleWindowMs: 700, struggleReactMin: 0.40, struggleReactMax: 0.90, struggleRounds: 2, driftScale: 0.25, tiltScale: 0.0 },
+  normal: { name: 'Normal', chargeChance: 0.015, minChargeMs: 250, maxChargeMs: 600, edgeAwareness: 0.45, reactChance: 0.40, waitForCommit: 0.20, centerPull: 0.30, punishChance: 0.35, aiPushResist: 0.85, aiPushBonus: 1.00, openingReactChance: 0.55, openingReactDelayMs: 70, struggleAccuracy: 0.50, struggleWindowMs: 560, struggleReactMin: 0.30, struggleReactMax: 0.70, struggleRounds: 3, driftScale: 0.6, tiltScale: 0.3 },
+  hard:   { name: 'Hard',   chargeChance: 0.028, minChargeMs: 350, maxChargeMs: 700, edgeAwareness: 0.80, reactChance: 0.78, waitForCommit: 0.60, centerPull: 0.60, punishChance: 0.85, aiPushResist: 0.50, aiPushBonus: 1.15, openingReactChance: 0.85, openingReactDelayMs: 45, struggleAccuracy: 0.72, struggleWindowMs: 440, struggleReactMin: 0.18, struggleReactMax: 0.50, struggleRounds: 4, driftScale: 1.0, tiltScale: 1.0 },
+  expert: { name: 'Expert', chargeChance: 0.040, minChargeMs: 380, maxChargeMs: 750, edgeAwareness: 1.0,  reactChance: 0.92, waitForCommit: 0.80, centerPull: 0.70, punishChance: 0.95, aiPushResist: 0.35, aiPushBonus: 1.30, openingReactChance: 0.97, openingReactDelayMs: 25, struggleAccuracy: 0.88, struggleWindowMs: 350, struggleReactMin: 0.08, struggleReactMax: 0.32, struggleRounds: 5, driftScale: 1.15, tiltScale: 1.3 }
 };
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'expert'];
 const DIFFICULTY_KEY = 'sumoPush_difficulty';
@@ -178,6 +188,52 @@ function loadDifficulty() {
   catch (err) { return 'normal'; }
 }
 function saveDifficulty(key) { try { localStorage.setItem(DIFFICULTY_KEY, key); } catch (err) {} }
+
+// ------------------------------------------------------------------ ARENAS
+// Six selectable rings that all share the exact same combat system —
+// movement, charging, collision, push-struggle, Critical state, ring-out.
+// Each arena changes exactly ONE thing about how the ring itself behaves,
+// never the fight rules underneath it, so a loss always traces back to a
+// readable cause: overcommitted, got baited, lost a collision, camped an
+// edge, mistimed a contraction, or failed to adapt — never "the physics
+// worked differently that round."
+const ARENA_DEFS = {
+  classic:   { name: 'Classic Dohyo', desc: 'Pure rules, no gimmicks.' },
+  // Smaller starting ring + a faster fuse to Sudden Death. No new mechanic —
+  // pure pressure from less room and less time.
+  iron:      { name: 'Iron Dohyo', desc: 'Smaller ring, faster shrink. Pure pressure.', radiusDelta: -15, timeMult: 0.85 },
+  // The ring's CENTER wanders slowly in a lazy figure-eight. The boundary
+  // math stays the same distance-from-center check — only the center moves.
+  drifting:  { name: 'Drifting Dohyo', desc: 'The ring itself slowly drifts.', ampX: 45, ampY: 22, periodMs: 9000 },
+  // Reuses the existing edge-distance check to detect a band near the
+  // boundary and softens friction there. The boundary itself never moves.
+  slipsand:  { name: 'Slip Sand', desc: 'Low-friction band near the edge.' },
+  // One dramatic mid-round contraction (with a clear announce+cue) on top
+  // of the normal Sudden-Death shrink, instead of one smooth taper.
+  risingsun: { name: 'Rising Sun', desc: 'Ring contracts in dramatic timed stages.', stageDrop: 25, stageFrac: 0.5 },
+  // A small shared, slowly-rotating force nudges both wrestlers' movement
+  // equally. Never touches collision normals or push strength.
+  tilt:      { name: 'Tilt Ring', desc: 'A subtle force nudges movement. Advanced.' }
+};
+const ARENA_ORDER = ['classic', 'iron', 'drifting', 'slipsand', 'risingsun', 'tilt'];
+const ARENA_VISUALS = {
+  classic:   { bg: 0x1b140d, outer: 0x3a2c1a, inner: 0xc9a15a, strokeOuter: 0x8a6a35, strokeInner: 0x6b4f24 },
+  iron:      { bg: 0x0c0d10, outer: 0x2a2e36, inner: 0x565f6b, strokeOuter: 0x8fa0b5, strokeInner: 0x3a4150 },
+  drifting:  { bg: 0x0a0a18, outer: 0x1a1030, inner: 0x2e2255, strokeOuter: 0x7fd3ff, strokeInner: 0x4a3a80 },
+  slipsand:  { bg: 0x241f14, outer: 0x4a4028, inner: 0xe8d9a8, strokeOuter: 0xc9b86a, strokeInner: 0xa89454 },
+  risingsun: { bg: 0x1a0d0a, outer: 0x4a1f14, inner: 0xd9622f, strokeOuter: 0xff9f4a, strokeInner: 0x8a3a1a },
+  tilt:      { bg: 0x0d1114, outer: 0x2a3238, inner: 0x6b7880, strokeOuter: 0xb5c4cc, strokeInner: 0x3f4a50 }
+};
+const SLIP_SAND_BAND_WIDTH = 35;
+const SLIP_SAND_FRICTION_MULT = 0.65;
+const TILT_ACCEL_BASE = MOVE_ACCEL * 0.035; // ~3.5% of normal move accel at full (Expert) scale
+const TILT_PERIOD_MS = 7000;
+const ARENA_KEY = 'sumoPush_arena';
+function loadArena() {
+  try { const a = localStorage.getItem(ARENA_KEY); return ARENA_DEFS[a] ? a : 'classic'; }
+  catch (err) { return 'classic'; }
+}
+function saveArena(key) { try { localStorage.setItem(ARENA_KEY, key); } catch (err) {} }
 
 const Sound = {
   chargeTick(stage) {
@@ -216,7 +272,8 @@ const Sound = {
   struggleMiss() { if (!window.SFX) return; SFX.tone(160, 0.06, 'sawtooth', 0.08, 200); },
   struggleWin() { if (!window.SFX) return; SFX.tone(500, 0.1, 'triangle', 0.16, 760); SFX.tone(720, 0.12, 'triangle', 0.16, 980, 90); },
   struggleLose() { if (!window.SFX) return; SFX.tone(260, 0.16, 'sawtooth', 0.15, 130); },
-  struggleTie() { if (!window.SFX) return; SFX.tone(380, 0.08, 'square', 0.1, 420); }
+  struggleTie() { if (!window.SFX) return; SFX.tone(380, 0.08, 'square', 0.1, 420); },
+  contraction() { if (!window.SFX) return; SFX.tone(200, 0.18, 'square', 0.15, 650); SFX.tone(500, 0.12, 'square', 0.1, 900, 90); }
 };
 
 // ------------------------------------------------------------- TOUCH INPUT
@@ -301,6 +358,7 @@ class SumoPushScene extends Phaser.Scene {
   create() {
     this.mode = null;
     this.difficulty = loadDifficulty();
+    this.arenaKey = loadArena();
     this.state = 'menu';
     this.isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
@@ -310,6 +368,7 @@ class SumoPushScene extends Phaser.Scene {
     this.buildInput();
     this.buildOverPanel();
     this.buildModeSelect();
+    this.buildArenaSelect();
     this.buildDifficultySelect();
     this.buildStruggleUI();
     if (this.isTouch) this.buildTouchControls();
@@ -317,6 +376,7 @@ class SumoPushScene extends Phaser.Scene {
     this.setHudVisible(false);
     this.setOverVisible(false);
     this.setDifficultySelectVisible(false);
+    this.setArenaSelectVisible(false);
     this.setModeSelectVisible(true);
   }
 
@@ -324,6 +384,8 @@ class SumoPushScene extends Phaser.Scene {
   buildRing() {
     this.ringG = this.add.graphics();
     this.ringRadius = RING_RADIUS_BASE;
+    this.ringCenterX = RING_CX;
+    this.ringCenterY = RING_CY;
     this.drawRing();
     this.bgFlash = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(-1);
     this.dustParticles = [];
@@ -332,18 +394,28 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   drawRing() {
+    const vis = ARENA_VISUALS[this.arenaKey] || ARENA_VISUALS.classic;
+    const cx = this.ringCenterX, cy = this.ringCenterY;
     this.ringG.clear();
-    this.ringG.fillStyle(0x1b140d, 1);
+    this.ringG.fillStyle(vis.bg, 1);
     this.ringG.fillRect(0, 0, W, H);
-    // dohyo (sand circle) + raised straw-rope border rings
-    this.ringG.fillStyle(0x3a2c1a, 1);
-    this.ringG.fillCircle(RING_CX, RING_CY, this.ringRadius + 16);
-    this.ringG.fillStyle(0xc9a15a, 1);
-    this.ringG.fillCircle(RING_CX, RING_CY, this.ringRadius);
-    this.ringG.lineStyle(5, 0x8a6a35, 1);
-    this.ringG.strokeCircle(RING_CX, RING_CY, this.ringRadius);
-    this.ringG.lineStyle(2, 0x6b4f24, 0.6);
-    this.ringG.strokeCircle(RING_CX, RING_CY, this.ringRadius - 10);
+    // dohyo (sand circle) + raised straw-rope border rings, recolored per arena
+    this.ringG.fillStyle(vis.outer, 1);
+    this.ringG.fillCircle(cx, cy, this.ringRadius + 16);
+    this.ringG.fillStyle(vis.inner, 1);
+    this.ringG.fillCircle(cx, cy, this.ringRadius);
+    this.ringG.lineStyle(5, vis.strokeOuter, 1);
+    this.ringG.strokeCircle(cx, cy, this.ringRadius);
+    this.ringG.lineStyle(2, vis.strokeInner, 0.6);
+    this.ringG.strokeCircle(cx, cy, this.ringRadius - 10);
+    // Slip Sand: draw the low-friction band's own inner boundary so the
+    // player can actually SEE where footing gets loose, per the "communicate
+    // mechanics visually" rule — this is a readout only, never a second
+    // collision boundary.
+    if (this.arenaKey === 'slipsand' && this.ringRadius - SLIP_SAND_BAND_WIDTH > RING_MIN_RADIUS * 0.5) {
+      this.ringG.lineStyle(2, 0xfff3c4, 0.5);
+      this.ringG.strokeCircle(cx, cy, this.ringRadius - SLIP_SAND_BAND_WIDTH);
+    }
   }
 
   // -------------------------------------------------------------- ENTITIES
@@ -389,9 +461,10 @@ class SumoPushScene extends Phaser.Scene {
     }
     this.roundText = this.add.text(W / 2, 20, 'ROUND 1', { fontFamily: 'Arial Black', fontSize: '16px', color: '#cbd5e1' }).setOrigin(0.5);
     this.phaseText = this.add.text(W / 2, H - 18, '', { fontFamily: 'Arial', fontSize: '12px', color: '#7f8a9a' }).setOrigin(0.5);
+    this.arenaLabelText = this.add.text(W - 10, 20, '', { fontFamily: 'Arial', fontSize: '11px', color: '#7f8a9a' }).setOrigin(1, 0.5);
     this.bannerText = this.add.text(W / 2, H / 2 - 30, '', { fontFamily: 'Arial Black', fontSize: '42px', color: '#ffffff' }).setOrigin(0.5).setAlpha(0).setDepth(5);
 
-    this.hudGroup = [...this.p1PipRow, ...this.p2PipRow, this.roundText, this.phaseText];
+    this.hudGroup = [...this.p1PipRow, ...this.p2PipRow, this.roundText, this.phaseText, this.arenaLabelText];
   }
 
   setHudVisible(v) {
@@ -426,7 +499,7 @@ class SumoPushScene extends Phaser.Scene {
   // Slides/recolors the tug-of-war marker to reflect the current round score.
   updateStruggleBar() {
     const s = this.struggle;
-    const frac = Phaser.Math.Clamp((s.aWins - s.bWins) / STRUGGLE_ROUNDS, -1, 1); // -1 = p2 fully ahead, +1 = p1 fully ahead
+    const frac = Phaser.Math.Clamp((s.aWins - s.bWins) / s.totalRounds, -1, 1); // -1 = p2 fully ahead, +1 = p1 fully ahead
     this.struggleBarMarker.setX(W / 2 + frac * (this.struggleBarW / 2 - 6));
     const t = (frac + 1) / 2; // 0 = fully p2's color, 1 = fully p1's color
     const c2 = Phaser.Display.Color.ValueToColor(this.p2.color);
@@ -483,11 +556,12 @@ class SumoPushScene extends Phaser.Scene {
     makeButton(255, 'VS AI', 0x8fd3ff, () => {
       this.pendingMode = 'ai';
       this.setModeSelectVisible(false);
-      this.setDifficultySelectVisible(true);
+      this.setArenaSelectVisible(true);
     });
     makeButton(335, '2 PLAYER LOCAL', 0xff9f6b, () => {
+      this.pendingMode = 'local';
       this.setModeSelectVisible(false);
-      this.startMatch('local');
+      this.setArenaSelectVisible(true);
     });
 
     const controlsHint = this.add.text(W / 2, 410,
@@ -507,6 +581,47 @@ class SumoPushScene extends Phaser.Scene {
     this.modeSelectItems = items;
   }
   setModeSelectVisible(v) { this.modeSelectItems.forEach(o => o.setVisible(v)); }
+
+  // --------------------------------------------------------- ARENA SELECT
+  buildArenaSelect() {
+    const items = [];
+    const title = this.add.text(W / 2, 45, 'CHOOSE ARENA', { fontFamily: 'Arial Black', fontSize: '26px', color: '#ffffff' }).setOrigin(0.5);
+    items.push(title);
+
+    const colX = [W / 2 - 165, W / 2 + 165];
+    const startY = 118, rowH = 108;
+    ARENA_ORDER.forEach((key, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const x = colX[col], y = startY + row * rowH;
+      const def = ARENA_DEFS[key];
+      const vis = ARENA_VISUALS[key];
+      const bg = this.add.rectangle(x, y, 302, 92, 0x151a24).setStrokeStyle(2, vis.strokeOuter).setInteractive({ useHandCursor: true });
+      const nameTxt = this.add.text(x, y - 26, def.name.toUpperCase(), { fontFamily: 'Arial Black', fontSize: '14px', color: '#ffffff' }).setOrigin(0.5);
+      const descTxt = this.add.text(x, y + 4, def.desc, { fontFamily: 'Arial', fontSize: '11px', color: '#9aa5b5', wordWrap: { width: 270 }, align: 'center' }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setStrokeStyle(3, vis.strokeOuter));
+      bg.on('pointerout', () => bg.setStrokeStyle(2, vis.strokeOuter));
+      bg.on('pointerdown', () => {
+        if (window.SFX) SFX.click();
+        this.arenaKey = key;
+        saveArena(key);
+        this.setArenaSelectVisible(false);
+        if (this.pendingMode === 'ai') this.setDifficultySelectVisible(true);
+        else this.startMatch('local');
+      });
+      items.push(bg, nameTxt, descTxt);
+    });
+
+    const back = this.add.text(W / 2, startY + 3 * rowH - 12, '← BACK', { fontFamily: 'Arial', fontSize: '15px', color: '#7f8a9a' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    back.on('pointerdown', () => {
+      if (window.SFX) SFX.click();
+      this.setArenaSelectVisible(false);
+      this.setModeSelectVisible(true);
+    });
+    items.push(back);
+
+    this.arenaSelectItems = items;
+  }
+  setArenaSelectVisible(v) { this.arenaSelectItems.forEach(o => o.setVisible(v)); }
 
   // ------------------------------------------------------ DIFFICULTY SEL
   buildDifficultySelect() {
@@ -536,7 +651,7 @@ class SumoPushScene extends Phaser.Scene {
     back.on('pointerdown', () => {
       if (window.SFX) SFX.click();
       this.setDifficultySelectVisible(false);
-      this.setModeSelectVisible(true);
+      this.setArenaSelectVisible(true);
     });
     items.push(back);
 
@@ -598,14 +713,27 @@ class SumoPushScene extends Phaser.Scene {
   startRound() {
     this.isDeciderRound = this.p1RoundWins === ROUNDS_TO_WIN - 1 && this.p2RoundWins === ROUNDS_TO_WIN - 1;
     const timing = this.isDeciderRound ? ROUND_TIMING[ROUND_TIMING.length - 1] : ROUND_TIMING[Math.min(this.currentRound - 1, ROUND_TIMING.length - 1)];
-    this.roundSuddenDeathMs = timing.suddenDeathMs;
-    this.roundShrinkMs = timing.shrinkMs;
-    this.ringRadius = timing.ringRadius;
+    const arenaDef = ARENA_DEFS[this.arenaKey];
+    if (this.arenaKey === 'iron') {
+      // Pure pressure: smaller starting ring, faster fuse to Sudden Death —
+      // no new mechanic, just less room and less time.
+      this.roundSuddenDeathMs = Math.round(timing.suddenDeathMs * arenaDef.timeMult);
+      this.roundShrinkMs = Math.round(timing.shrinkMs * arenaDef.timeMult);
+      this.ringRadius = Math.max(timing.ringRadius + arenaDef.radiusDelta, RING_MIN_RADIUS + 15);
+    } else {
+      this.roundSuddenDeathMs = timing.suddenDeathMs;
+      this.roundShrinkMs = timing.shrinkMs;
+      this.ringRadius = timing.ringRadius;
+    }
+    this.ringCenterX = RING_CX;
+    this.ringCenterY = RING_CY;
+    this.risingSunStaged = false;
+    this.arenaLabelText.setText(arenaDef.name);
     this.drawRing();
     this.roundElapsed = 0;
     this.suddenDeath = false;
-    this.resetWrestler(this.p1, RING_CX - 90, RING_CY, 0);
-    this.resetWrestler(this.p2, RING_CX + 90, RING_CY, Math.PI);
+    this.resetWrestler(this.p1, this.ringCenterX - 90, this.ringCenterY, 0);
+    this.resetWrestler(this.p2, this.ringCenterX + 90, this.ringCenterY, Math.PI);
     this.roundText.setText(this.isDeciderRound ? 'FINAL ROUND' : `ROUND ${this.currentRound}`);
     this.roundText.setColor(this.isDeciderRound ? '#ff5a5a' : '#cbd5e1');
     this.phaseText.setText('');
@@ -651,6 +779,7 @@ class SumoPushScene extends Phaser.Scene {
 
     this.roundElapsed += realDt;
     this.updateRingShrink();
+    this.updateArenaEffects();
 
     if (this.struggle) {
       // Frozen mid-collision: normal input/AI/physics/collision all pause while
@@ -696,11 +825,24 @@ class SumoPushScene extends Phaser.Scene {
     if (!anyCritical) return;
     const pulse = 0.35 + Math.sin(this.time.now * 0.012) * 0.25;
     this.edgeWarnG.lineStyle(7, 0xff5a5a, pulse);
-    this.edgeWarnG.strokeCircle(RING_CX, RING_CY, this.ringRadius);
+    this.edgeWarnG.strokeCircle(this.ringCenterX, this.ringCenterY, this.ringRadius);
   }
 
   // -------------------------------------------------------------- RING SHRINK
   updateRingShrink() {
+    // Rising Sun: one dramatic, clearly-announced mid-round contraction on
+    // top of the normal Sudden-Death shrink below, instead of one smooth
+    // taper — the ring visibly steps down in stages rather than creeping.
+    if (this.arenaKey === 'risingsun' && !this.suddenDeath && !this.risingSunStaged) {
+      const def = ARENA_DEFS.risingsun;
+      if (this.roundElapsed >= this.roundSuddenDeathMs * def.stageFrac) {
+        this.risingSunStaged = true;
+        const target = Math.max(this.ringRadius - def.stageDrop, RING_MIN_RADIUS + 10);
+        this.announce('HIGH SUN', '#ff9f4a');
+        Sound.contraction();
+        this.tweens.add({ targets: this, ringRadius: target, duration: 900, ease: 'Sine.InOut', onUpdate: () => this.drawRing() });
+      }
+    }
     if (!this.suddenDeath && this.roundElapsed >= this.roundSuddenDeathMs) {
       this.suddenDeath = true;
       this.suddenDeathAt = this.roundElapsed;
@@ -714,6 +856,22 @@ class SumoPushScene extends Phaser.Scene {
       this.ringRadius = Phaser.Math.Linear(this.suddenDeathStartRadius, RING_MIN_RADIUS, t);
       this.drawRing();
     }
+  }
+
+  // -------------------------------------------------------------- ARENA FX
+  // Drifting Dohyo's moving ring center. Everything else (Slip Sand's
+  // friction band, Tilt Ring's nudging force) hooks into existing physics
+  // functions instead, since they don't need their own per-frame driver.
+  updateArenaEffects() {
+    if (this.arenaKey !== 'drifting') return;
+    const def = ARENA_DEFS.drifting;
+    const tierScale = this.mode === 'ai' ? DIFFICULTY_DEFS[this.difficulty].driftScale : 0.6;
+    const t = this.roundElapsed;
+    // Two different frequencies/phases on X vs Y so the center wanders in a
+    // lazy figure-eight rather than a simple back-and-forth line.
+    this.ringCenterX = RING_CX + Math.sin(t / def.periodMs * Math.PI * 2) * def.ampX * tierScale;
+    this.ringCenterY = RING_CY + Math.sin(t / def.periodMs * Math.PI * 2 * 0.55 + 1.3) * def.ampY * tierScale;
+    this.drawRing();
   }
 
   updatePhaseText() {
@@ -789,6 +947,19 @@ class SumoPushScene extends Phaser.Scene {
     const now = this.time.now;
     const dirX = f.inputX || 0, dirY = f.inputY || 0;
 
+    // Tilt Ring: a small shared force nudges BOTH wrestlers' movement
+    // identically (never targeted, never applied mid-dash) — it modifies
+    // velocity only, so collision normals and push strength downstream are
+    // completely untouched.
+    if (this.arenaKey === 'tilt' && f.state !== 'dashing') {
+      const tierScale = this.mode === 'ai' ? DIFFICULTY_DEFS[this.difficulty].tiltScale : 0.6;
+      if (tierScale > 0) {
+        const ang = (this.time.now / TILT_PERIOD_MS) * Math.PI * 2;
+        f.vx += Math.cos(ang) * TILT_ACCEL_BASE * tierScale * (dt / 1000);
+        f.vy += Math.sin(ang) * TILT_ACCEL_BASE * tierScale * (dt / 1000) * 0.6;
+      }
+    }
+
     if (f.state === 'charging') {
       if (dirX || dirY) { f.vx += dirX * MOVE_ACCEL * CHARGE_MOVE_MULT * (dt / 1000); f.vy += dirY * MOVE_ACCEL * CHARGE_MOVE_MULT * (dt / 1000); f.facing = Math.atan2(dirY, dirX); }
       this.applyFriction(f, dt, FRICTION);
@@ -821,6 +992,12 @@ class SumoPushScene extends Phaser.Scene {
   applyFriction(f, dt, amount) {
     const speed = Math.hypot(f.vx, f.vy);
     if (speed <= 0) return;
+    // Slip Sand: the outer band near the boundary (same edgeDistance() check
+    // everything else uses) is looser footing — friction softens there, the
+    // boundary itself never moves.
+    if (this.arenaKey === 'slipsand' && this.edgeDistance(f) <= SLIP_SAND_BAND_WIDTH) {
+      amount *= SLIP_SAND_FRICTION_MULT;
+    }
     const drop = amount * (dt / 1000);
     const newSpeed = Math.max(0, speed - drop);
     const scale = speed > 0 ? newSpeed / speed : 0;
@@ -838,7 +1015,7 @@ class SumoPushScene extends Phaser.Scene {
   }
 
   edgeDistance(f) {
-    const d = Phaser.Math.Distance.Between(f.x, f.y, RING_CX, RING_CY);
+    const d = Phaser.Math.Distance.Between(f.x, f.y, this.ringCenterX, this.ringCenterY);
     return this.ringRadius - d;
   }
 
@@ -947,11 +1124,16 @@ class SumoPushScene extends Phaser.Scene {
   startStruggle(a, b, nx, ny, netForce) {
     a.vx = 0; a.vy = 0; b.vx = 0; b.vy = 0;
     a.state = 'struggling'; b.state = 'struggling';
+    // Total rounds scales with difficulty too — Easy is a quick 2-round
+    // formality, Expert drags it out to a grueling 5, same as the window
+    // and AI reaction speed.
+    const totalRounds = this.mode === 'ai' ? DIFFICULTY_DEFS[this.difficulty].struggleRounds : STRUGGLE_ROUNDS_LOCAL;
     this.struggle = {
       a, b, nx, ny,
       seedForce: netForce * STRUGGLE_MOMENTUM_WEIGHT,
       aWins: 0, bWins: 0,
       round: 0,
+      totalRounds,
       dir: null,
       phase: 'gap',
       phaseUntil: this.time.now + 200,
@@ -982,7 +1164,7 @@ class SumoPushScene extends Phaser.Scene {
 
     if (s.phase === 'gap') {
       if (now < s.phaseUntil) return;
-      if (s.round >= STRUGGLE_ROUNDS) { this.resolveStruggle(); return; }
+      if (s.round >= s.totalRounds) { this.resolveStruggle(); return; }
       s.round++;
       s.dir = Phaser.Utils.Array.GetRandom(STRUGGLE_DIRS);
       s.aHit = false; s.bHit = false;
@@ -1264,8 +1446,11 @@ class SumoPushScene extends Phaser.Scene {
     if (ai.pendingCounter) {
       ai.inputX = 0; ai.inputY = 0;
     } else if (ai.state === 'idle' || ai.state === 'charging') {
-      const targetX = Phaser.Math.Linear(foe.x, RING_CX, def.centerPull);
-      const targetY = Phaser.Math.Linear(foe.y, RING_CY, def.centerPull);
+      // Uses the CURRENT ring center (this.ringCenterX/Y), not the fixed
+      // canvas point — on Drifting Dohyo the AI needs to pull toward wherever
+      // the ring actually is right now, not a stale spot it wandered away from.
+      const targetX = Phaser.Math.Linear(foe.x, this.ringCenterX, def.centerPull);
+      const targetY = Phaser.Math.Linear(foe.y, this.ringCenterY, def.centerPull);
       const dx = targetX - ai.x, dy = targetY - ai.y;
       const dist = Math.hypot(dx, dy) || 1;
       ai.inputX = dist > 8 ? dx / dist : 0;
@@ -1279,7 +1464,7 @@ class SumoPushScene extends Phaser.Scene {
       // recover position. Easy (edgeAwareness 0) stays a sitting duck on
       // purpose - matches its "poor edge decisions" persona - but Normal and
       // up now genuinely fight to survive a knockback near the edge.
-      const dx = RING_CX - ai.x, dy = RING_CY - ai.y;
+      const dx = this.ringCenterX - ai.x, dy = this.ringCenterY - ai.y;
       const dist = Math.hypot(dx, dy) || 1;
       ai.inputX = dist > 8 ? dx / dist : 0;
       ai.inputY = dist > 8 ? dy / dist : 0;
@@ -1316,7 +1501,7 @@ class SumoPushScene extends Phaser.Scene {
     let leanX = staggered ? -Math.cos(f.facing) * 10 : (dashing ? Math.cos(f.facing) * 6 : 0);
     let leanY = staggered ? -Math.sin(f.facing) * 10 : (dashing ? Math.sin(f.facing) * 6 : 0);
     if (critical) {
-      const outAngle = Math.atan2(f.y - RING_CY, f.x - RING_CX);
+      const outAngle = Math.atan2(f.y - this.ringCenterY, f.x - this.ringCenterX);
       leanX += Math.cos(outAngle) * 4;
       leanY += Math.sin(outAngle) * 4;
     }
