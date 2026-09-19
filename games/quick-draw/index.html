@@ -99,12 +99,14 @@
     <div class="best-run">
       <div>Best reaction: <b id="bestReactionLine">—</b></div>
       <div>Best streak: <b id="bestStreakLine">—</b></div>
+      <div>Best close calls: <b id="bestCloseCallsLine">—</b></div>
     </div>
   </div>
 
   <div class="hud">
     <div class="hud-stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
     <div class="hud-stat"><span class="label">Round Reaction</span><span class="val" id="hudLastReaction">—</span></div>
+    <div class="hud-stat"><span class="label">Close Calls</span><span class="val" id="hudCloseCalls">0</span></div>
     <div class="spacer"></div>
     <div class="hud-stat"><span class="label">Status</span><span class="val hot" id="hudStatus">Get Ready</span></div>
   </div>
@@ -135,6 +137,7 @@
         <div class="overlay-stats">
           <div>Streak<b id="endStreak">0</b></div>
           <div>Best Reaction<b id="endReaction">—</b></div>
+          <div>Close Calls<b id="endCloseCalls">0</b></div>
         </div>
         <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Draw Again</button>
       </div>
@@ -167,6 +170,9 @@ const state = {
   streak: 0,
   bestStreak: 0,
   bestReactionMs: null,
+  closeCalls: 0,       // this run: dangerous bluffs (partial draw / flare) survived without flinching
+  bestCloseCalls: 0,
+  roundHadDangerousFeint: false, // set by doFeint(), read/reset per round
   phase: 'idle', // idle | standoff | armed | resolved
   running: false,
   ended: false,
@@ -182,6 +188,7 @@ function loadBest(){
       const v = JSON.parse(raw);
       state.bestStreak = v.bestStreak || 0;
       state.bestReactionMs = v.bestReactionMs || null;
+      state.bestCloseCalls = v.bestCloseCalls || 0;
     }
   }catch(e){}
   renderBest();
@@ -189,13 +196,14 @@ function loadBest(){
 function saveBest(){
   try{
     localStorage.setItem('quickdraw_best', JSON.stringify({
-      bestStreak: state.bestStreak, bestReactionMs: state.bestReactionMs
+      bestStreak: state.bestStreak, bestReactionMs: state.bestReactionMs, bestCloseCalls: state.bestCloseCalls
     }));
   }catch(e){}
 }
 function renderBest(){
   document.getElementById('bestReactionLine').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
   document.getElementById('bestStreakLine').textContent = state.bestStreak || '—';
+  document.getElementById('bestCloseCallsLine').textContent = state.bestCloseCalls || '—';
 }
 
 function clearTimers(){
@@ -210,7 +218,7 @@ function schedule(fn, delay){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx;
+let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx, bgAnimGfx;
 
 class DuelScene extends Phaser.Scene {
   constructor(){ super('duel'); }
@@ -227,6 +235,10 @@ class DuelScene extends Phaser.Scene {
 
     // sun
     this.add.circle(W*0.5, 90, 46, 0xffd97a, 0.85);
+
+    // background loop layer — tumbleweeds + a distant horse, created before
+    // the duelists so it always renders behind them
+    bgAnimGfx = this.add.graphics();
 
     // opponent silhouette (left)
     oppFig = this.add.graphics();
@@ -248,6 +260,19 @@ class DuelScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
   }
   update(time){
+    // Background loop — tumbleweeds and a distant horse, always running
+    // regardless of game phase, so the standoff never looks like a static
+    // painting. Kept low-opacity and behind the duelists on purpose.
+    if (bgAnimGfx){
+      bgAnimGfx.clear();
+      const tw1 = (time % 5000) / 5000;
+      drawTumbleweed(bgAnimGfx, -40 + tw1*(W+80), GROUND_Y+22 + Math.sin(tw1*Math.PI*8)*3, 11, tw1*Math.PI*12);
+      const tw2 = ((time+2500) % 5000) / 5000;
+      drawTumbleweed(bgAnimGfx, -40 + tw2*(W+80), GROUND_Y+34 + Math.sin(tw2*Math.PI*8+1)*3, 7, tw2*Math.PI*12);
+      const horseT = (time % 9000) / 9000;
+      drawHorseSilhouette(bgAnimGfx, W+60 - horseT*(W+120), GROUND_Y-28, 0.6, -1, time);
+    }
+
     // Small idle breathing bob so the standoff doesn't look frozen/dead
     // while the player is watching for the real signal.
     const bob = Math.sin(time*0.0028) * 2;
@@ -298,6 +323,36 @@ function drawFigure(g, x, groundY, color, facingRight, bob){
   g.fillRect(x-6, gy-84, 12, 20);
   g.fillStyle(0x1a1109, 1);
   g.fillRect(x-4, gy-90, 8, 10);
+}
+
+// Rolling tumbleweed — a fuzzy ball with a few crossing spokes that spin
+// as it travels, so it visibly "rolls" rather than just sliding.
+function drawTumbleweed(g, x, y, r, rot){
+  g.fillStyle(0x8a6a3f, 0.5);
+  g.fillCircle(x, y, r);
+  g.lineStyle(1.5, 0x5c4423, 0.45);
+  for (let i=0;i<4;i++){
+    const a = rot + i*(Math.PI/4);
+    g.beginPath();
+    g.moveTo(x - Math.cos(a)*r, y - Math.sin(a)*r);
+    g.lineTo(x + Math.cos(a)*r, y + Math.sin(a)*r);
+    g.strokePath();
+  }
+}
+
+// Minimal horse+rider silhouette crossing the far background, legs
+// alternating with a sine gait so it reads as trotting rather than gliding.
+function drawHorseSilhouette(g, x, y, scale, dir, t){
+  const legSwing = Math.sin(t*0.012) * 4 * scale;
+  g.fillStyle(0x1a1109, 0.4);
+  g.fillRoundedRect(x-16*scale, y-10*scale, 32*scale, 12*scale, 4*scale);
+  g.fillRoundedRect(x + dir*12*scale, y-18*scale, 8*scale, 12*scale, 3*scale);
+  g.fillRect(x-12*scale, y+2*scale, 3*scale, 10*scale+legSwing);
+  g.fillRect(x-4*scale, y+2*scale, 3*scale, 10*scale-legSwing);
+  g.fillRect(x+6*scale, y+2*scale, 3*scale, 10*scale+legSwing);
+  g.fillRect(x+12*scale, y+2*scale, 3*scale, 10*scale-legSwing);
+  g.fillCircle(x, y-16*scale, 4*scale);
+  g.fillRoundedRect(x-3*scale, y-14*scale, 6*scale, 8*scale, 2*scale);
 }
 
 function drawHandTwitch(g, x, groundY, offset){
@@ -384,6 +439,7 @@ function startRound(){
   clearBanner();
   state.phase = 'standoff';
   state.resultKind = null;
+  state.roundHadDangerousFeint = false;
   document.getElementById('hudStatus').textContent = 'Hold...';
   document.getElementById('hudLastReaction').textContent = '—';
   drawHandTwitch(oppHand, 220, GROUND_Y, 0);
@@ -437,6 +493,7 @@ function doFeint(kind){
   } else if (kind === 'partialDraw'){
     // opponent's hand drops toward the holster and pulls back — the most
     // convincing bluff, since it's the same motion as the real draw
+    state.roundHadDangerousFeint = true;
     drawHandTwitch(oppHand, 220, GROUND_Y, 56);
     schedule(()=>{ if (oppHand) drawHandTwitch(oppHand, 220, GROUND_Y, 0); }, 160);
     sfx('tone', 260, 0.06, 'square', 0.09);
@@ -447,6 +504,7 @@ function doFeint(kind){
   } else if (kind === 'flare'){
     // a dim, brief orange flash — shaped like the real draw but wrong
     // color, wrong duration, and a duller tone
+    state.roundHadDangerousFeint = true;
     if (flashGfx){
       flashGfx.clear();
       flashGfx.fillStyle(0xff7b39, 0.45);
@@ -506,6 +564,11 @@ function resolveRound(won, payload){
     }
     state.streak += 1;
     if (state.streak > state.bestStreak) state.bestStreak = state.streak;
+    if (state.roundHadDangerousFeint){
+      state.closeCalls += 1;
+      if (state.closeCalls > state.bestCloseCalls) state.bestCloseCalls = state.closeCalls;
+      document.getElementById('hudCloseCalls').textContent = state.closeCalls;
+    }
     saveBest();
     renderBest();
     document.getElementById('hudStreak').textContent = state.streak;
@@ -537,6 +600,7 @@ function endRun(reason){
   document.getElementById('hudStatus').textContent = 'Down';
   document.getElementById('endStreak').textContent = state.streak;
   document.getElementById('endReaction').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
+  document.getElementById('endCloseCalls').textContent = state.closeCalls;
   schedule(()=>{
     document.getElementById('endScreen').classList.remove('hidden');
   }, 700);
@@ -553,6 +617,17 @@ new Phaser.Game({
 
 loadBest();
 
+// Mount the shared mute/volume widget — this game was missing it entirely,
+// which meant a mute toggled from any other game on the site (the setting
+// is shared via localStorage) carried over here with no way to see or
+// undo it. This also calls ensureContext() on interaction like every
+// other game.
+try{
+  if (typeof SFX !== 'undefined' && SFX && typeof SFX.mountUI === 'function'){
+    SFX.mountUI({ corner: 'top-right' });
+  }
+}catch(e){}
+
 document.getElementById('startBtn').addEventListener('click', ()=>{
   // Browsers only unlock AudioContext on a sound played synchronously
   // inside a real user-gesture handler. Every feint/draw sound previously
@@ -564,7 +639,9 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.running = true;
   state.ended = false;
   state.streak = 0;
+  state.closeCalls = 0;
   document.getElementById('hudStreak').textContent = '0';
+  document.getElementById('hudCloseCalls').textContent = '0';
   startRound();
 });
 document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
