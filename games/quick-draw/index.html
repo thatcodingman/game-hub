@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Quick Draw — The Arcade</title>
 <style>
   :root{
@@ -45,8 +45,9 @@
     position:relative; width:100%; aspect-ratio:960/460; background:#000;
     border-radius:10px; overflow:hidden; border:1px solid var(--border);
     cursor:crosshair; user-select:none;
+    touch-action:manipulation; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
   }
-  .stage canvas{ display:block; width:100% !important; height:100% !important; }
+  .stage canvas{ display:block; width:100% !important; height:100% !important; touch-action:manipulation; }
 
   .banner{
     position:absolute; left:0; right:0; top:38%; text-align:center; pointer-events:none;
@@ -81,18 +82,29 @@
   .rule-list div{ margin:6px 0; }
   .rule-list b{ color:var(--text); }
 
-  .session-log{ text-align:left; margin:16px 0 4px; max-height:150px; overflow-y:auto; border-top:1px solid var(--border); padding-top:8px; }
+  .session-log{ text-align:left; margin:16px 0 4px; max-height:150px; overflow-y:auto; -webkit-overflow-scrolling:touch; border-top:1px solid var(--border); padding-top:8px; }
   .session-log-title{ font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px; }
   .session-log-row{ display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-dim); padding:3px 0; }
   .session-log-row span{ white-space:nowrap; }
   .session-log-row.latest{ color:var(--text); font-weight:700; }
-  .session-log-row.latest span:first-child{ color:var(--accent); }
+  .session-log-row.latest span:nth-child(2){ color:var(--accent); }
   .session-log-empty{ font-size:11.5px; color:var(--text-dim); }
+  .rank-badge{
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:18px; height:18px; padding:0 4px; border:1.5px solid; border-radius:4px;
+    font-weight:900; font-size:11px; letter-spacing:0;
+  }
+  .rank-badge-lg{
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:44px; height:44px; padding:0 10px; border:2.5px solid; border-radius:8px;
+    font-weight:900; font-size:26px; margin-bottom:8px;
+  }
 
   .diff-selector{ display:flex; justify-content:center; gap:8px; margin:14px 0 4px; }
   .diff-btn{
     background:transparent; border:1px solid var(--border); color:var(--text-dim);
-    padding:6px 18px; border-radius:6px; font-size:12.5px; cursor:pointer; letter-spacing:.03em;
+    padding:10px 18px; min-height:44px; border-radius:6px; font-size:13px; cursor:pointer; letter-spacing:.03em;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
   }
   .diff-btn:hover{ border-color:var(--accent); color:var(--text); }
   .diff-btn.active{ background:var(--accent); color:#2a1d00; border-color:var(--accent); font-weight:700; }
@@ -106,10 +118,27 @@
 
   .btn{
     background:transparent; border:1px solid var(--border); color:var(--text);
-    padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer;
+    padding:8px 16px; min-height:44px; border-radius:6px; font-size:13px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
   }
   .btn:hover{ border-color:var(--accent); }
   .btn.primary{ background:var(--accent); color:#2a1d00; border-color:var(--accent); font-weight:700; }
+
+  @media (max-width: 480px){
+    body{ padding:10px; }
+    .title-bar{ flex-direction:column; align-items:flex-start; gap:4px; }
+    .best-run{ text-align:left; }
+    .hud{ gap:6px 14px; font-size:11.5px; padding:8px 10px; }
+    .hud .spacer{ display:none; }
+    .hud-stat .val{ font-size:13.5px; }
+    .overlay-card h2{ font-size:21px; }
+    .overlay-card p{ font-size:12.5px; }
+    .banner{ font-size:30px; }
+    .banner .sub{ font-size:12.5px; }
+    .diff-btn{ padding:10px 14px; font-size:12.5px; }
+    .opponent-preview{ gap:5px; }
+    .opponent-preview .opp-chip{ padding:4px 7px; }
+  }
 </style>
 </head>
 <body>
@@ -161,6 +190,7 @@
       <div class="overlay-card">
         <h2 id="endTitle">DOWN</h2>
         <p id="endMsg"></p>
+        <div id="endRank"></div>
         <div class="overlay-stats">
           <div>Streak<b id="endStreak">0</b></div>
           <div>Best Reaction<b id="endReaction">—</b></div>
@@ -316,6 +346,7 @@ const state = {
   ended: false,
   drawCueTime: 0,
   resultKind: null, // null | 'win' | 'flinch' | 'slow' — drives the drawn-gun animation
+  hitStopUntil: 0, // performance.now() timestamp — figures/background hold their pose until this passes
   timers: [] // pending setTimeout ids for the current standoff, cleared on resolve
 };
 
@@ -353,6 +384,27 @@ function loadSessionLog(){
     return raw ? JSON.parse(raw) : [];
   }catch(e){ return []; }
 }
+// ---------- rank tiers ----------
+// A single composite score per run, weighting close calls heaviest (they're
+// the hardest thing to earn — surviving a bluff that actually resembled the
+// real signal), streak next, and fast reactions as a smaller bonus on top.
+const RANK_TIERS = [
+  { grade: 'S', min: 220, color: '#ffcc33' },
+  { grade: 'A', min: 130, color: '#8be9ff' },
+  { grade: 'B', min: 70,  color: '#5be37b' },
+  { grade: 'C', min: 30,  color: '#ff9f6b' },
+  { grade: 'D', min: 0,   color: '#b89f7c' }
+];
+function scoreForRun(run){
+  const reactionBonus = run.reactionMs != null ? Math.max(0, 60 - Math.round(run.reactionMs/10)) : 0;
+  return run.streak*10 + run.closeCalls*25 + reactionBonus;
+}
+function rankForRun(run){
+  const score = scoreForRun(run);
+  for (const t of RANK_TIERS){ if (score >= t.min) return t; }
+  return RANK_TIERS[RANK_TIERS.length-1];
+}
+
 function recordRun(reason){
   try{
     const log = loadSessionLog();
@@ -371,13 +423,15 @@ function renderSessionLog(){
   const log = loadSessionLog();
   const html = !log.length
     ? '<div class="session-log-empty">No runs yet — step up to the line.</div>'
-    : '<div class="session-log-title">Recent Runs</div>' + log.map((r, i)=>
-        '<div class="session-log-row'+(i===0?' latest':'')+'">' +
+    : '<div class="session-log-title">Recent Runs</div>' + log.map((r, i)=>{
+        const rank = rankForRun(r);
+        return '<div class="session-log-row'+(i===0?' latest':'')+'">' +
+          '<span class="rank-badge" style="color:'+rank.color+'; border-color:'+rank.color+';">'+rank.grade+'</span>' +
           '<span>'+(i===0?'Latest — ':'')+'Streak '+r.streak+'</span>' +
           '<span>'+r.closeCalls+' close call'+(r.closeCalls===1?'':'s')+'</span>' +
           '<span>'+(r.reactionMs != null ? Math.round(r.reactionMs)+'ms' : '—')+'</span>' +
-        '</div>'
-      ).join('');
+        '</div>';
+      }).join('');
   const elStart = document.getElementById('sessionLogStart');
   const elEnd = document.getElementById('sessionLogEnd');
   if (elStart) elStart.innerHTML = html;
@@ -426,7 +480,7 @@ class DuelScene extends Phaser.Scene {
 
     // player silhouette (right)
     playerFig = this.add.graphics();
-    drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, 0, null, 'player');
+    drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, 0, 0xffcc33, 'player');
     playerActionGfx = this.add.graphics(); // player's hand-on-holster draw animation
 
     dustGfx = this.add.graphics();
@@ -437,21 +491,32 @@ class DuelScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
   }
   update(time){
-    // Tumbleweeds — two, staggered, low-opacity and behind the duelists.
-    if (tumbleweedGfx){
-      tumbleweedGfx.clear();
-      const tw1 = (time % 6000) / 6000;
-      drawTumbleweed(tumbleweedGfx, -50 + tw1*(W+100), GROUND_Y+20, 15, tw1*Math.PI*14, tw1);
-      const tw2 = ((time + 3200) % 7000) / 7000;
-      drawTumbleweed(tumbleweedGfx, -50 + tw2*(W+100), GROUND_Y+36, 10, tw2*Math.PI*16, tw2);
+    // Hit-stop: right as the real draw fires, the figures and background
+    // hold their exact pose for a beat instead of continuing to animate —
+    // the flash/banner/sound keep going underneath, so the freeze reads as
+    // impact rather than the game stalling. Pure visual: it never touches
+    // input or the reaction-timing clock (performance.now()-based, below).
+    const hitStopped = performance.now() < state.hitStopUntil;
+
+    if (!hitStopped){
+      // Tumbleweeds — two, staggered, low-opacity and behind the duelists.
+      if (tumbleweedGfx){
+        tumbleweedGfx.clear();
+        const tw1 = (time % 6000) / 6000;
+        drawTumbleweed(tumbleweedGfx, -50 + tw1*(W+100), GROUND_Y+20, 15, tw1*Math.PI*14, tw1);
+        const tw2 = ((time + 3200) % 7000) / 7000;
+        drawTumbleweed(tumbleweedGfx, -50 + tw2*(W+100), GROUND_Y+36, 10, tw2*Math.PI*16, tw2);
+      }
     }
 
     // Small idle breathing bob so the standoff doesn't look frozen/dead
     // while the player is watching for the real signal.
     const bob = Math.sin(time*0.0028) * 2;
     const opp = opponentForStreak(state.streak);
-    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob, opp.accent, opp.key);
-    if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob, null, 'player');
+    if (!hitStopped){
+      if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob, opp.accent, opp.key);
+      if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob, 0xffcc33, 'player');
+    }
 
     // Opponent's hand snaps to the holster and pulls the gun the instant
     // the real draw is live, and stays drawn if they beat you to it.
@@ -511,7 +576,17 @@ function drawFigure(g, x, groundY, color, facingRight, bob, accentColor, outfitK
 // each reads distinctly even as a flat silhouette.
 function drawOutfit(g, x, gy, key, facingRight, accent){
   if (key === 'player'){
-    // gold neckerchief — the only figure wearing the accent color directly
+    // fitted vest with gold piping down each side — reads as "the hero",
+    // distinct from the outlaws' rougher leather vest/coat looks
+    g.fillStyle(0x241a12, 1);
+    g.fillRoundedRect(x-17, gy-149, 34, 56, 6);
+    g.fillStyle(0xffcc33, 0.85);
+    g.fillRect(x-17, gy-149, 2.5, 56);
+    g.fillRect(x+14.5, gy-149, 2.5, 56);
+    // small badge on the chest
+    g.fillStyle(0xffcc33, 0.95);
+    g.fillCircle(x-8, gy-128, 4);
+    // gold neckerchief
     g.fillStyle(0xffcc33, 0.9);
     g.fillRect(x-7, gy-150, 14, 5);
     return;
@@ -704,6 +779,7 @@ function startRound(){
   state.phase = 'standoff';
   state.resultKind = null;
   state.roundHadDangerousFeint = false;
+  state.hitStopUntil = 0;
   document.getElementById('hudStatus').textContent = 'Hold...';
   document.getElementById('hudLastReaction').textContent = '—';
   drawHandTwitch(oppHand, 220, GROUND_Y, 0);
@@ -846,6 +922,9 @@ function armDraw(reactionTimeout){
   sfx('tone', 1800, 0.05, 'square', 0.3, 300);
   sfx('chime', [1200, 1600], 'sine', 0.22);
 
+  // Hit-stop — hold the frame for a beat so the flash lands like an impact.
+  state.hitStopUntil = performance.now() + 70;
+
   schedule(()=>{
     if (state.phase === 'armed') resolveRound(false, null); // too slow
   }, reactionTimeout);
@@ -934,6 +1013,11 @@ function endRun(reason){
   document.getElementById('endStreak').textContent = state.streak;
   document.getElementById('endReaction').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
   document.getElementById('endCloseCalls').textContent = state.closeCalls;
+  const finishedRank = rankForRun({ streak: state.streak, closeCalls: state.closeCalls, reactionMs: state.bestReactionMs });
+  const endRankEl = document.getElementById('endRank');
+  if (endRankEl){
+    endRankEl.innerHTML = '<div class="rank-badge-lg" style="color:'+finishedRank.color+'; border-color:'+finishedRank.color+';">'+finishedRank.grade+'</div>';
+  }
   schedule(()=>{
     document.getElementById('endScreen').classList.remove('hidden');
   }, 700);
