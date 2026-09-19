@@ -118,6 +118,26 @@
   .rule-list div{ margin:6px 0; }
   .rule-list b{ color:var(--text); }
 
+  .garage-label{ font-size:10px; letter-spacing:2px; color:var(--text-dim); text-transform:uppercase; margin-top:12px; }
+  .skin-row{ display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:8px 0 2px; }
+  .skin-swatch{
+    width:34px; height:34px; border-radius:8px; border:2px solid var(--border); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; font-size:13px;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .skin-swatch.selected{ border-color:var(--text); box-shadow:0 0 0 2px rgba(255,255,255,0.18); }
+  .skin-swatch.locked{ opacity:0.32; cursor:not-allowed; }
+
+  .stage-row{ display:flex; gap:6px; justify-content:center; flex-wrap:wrap; margin:8px 0 2px; }
+  .stage-btn{
+    width:30px; height:30px; border-radius:6px; border:1px solid var(--border); background:transparent;
+    color:var(--text); font-size:12px; font-weight:700; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .stage-btn.locked{ opacity:0.3; cursor:not-allowed; color:var(--text-dim); }
+  .stage-btn:not(.locked):hover{ border-color:var(--amber); color:var(--amber); }
+  .practice-tag{ display:none; color:var(--amber-dim); font-size:10px; letter-spacing:1px; font-weight:700; }
+
   .rank-badge-lg{
     display:inline-flex; align-items:center; justify-content:center;
     width:54px; height:54px; border-radius:50%; font-size:26px; font-weight:900;
@@ -163,7 +183,7 @@
   </div>
 
   <div class="hud">
-    <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span></div>
+    <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span><span class="practice-tag" id="practiceTag">PRACTICE</span><span class="practice-tag" id="hardTag" style="color:var(--danger);">HARD</span></div>
     <div class="stat"><span class="label">Score</span><span class="val" id="hudScore">0</span></div>
     <div class="stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
     <div class="stat"><span class="label">Crashes</span><span class="val" id="hudCrashes">0</span></div>
@@ -196,8 +216,14 @@
           <div><b>Blind drive</b> — the map is gone. Watch for the approach cue, then call the turn from memory.</div>
           <div><b>Timing</b> — too early (before the cue window) or too late (past the intersection) both crash, same as calling the wrong direction.</div>
           <div><b>Escalation</b> — 10 stages, more turns and tighter memory load each time. Crash and you're straight back to a fresh preview — instantly.</div>
+          <div><b>Decoys</b> — later stages throw in a fake "straight ahead" branch at some forks. It's never a real option — controls stay left/right only. Trust what you memorized, not the intersection.</div>
         </div>
-        <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Start Run</button>
+        <div class="garage-label">Garage — pick your car</div>
+        <div class="skin-row" id="skinRow"></div>
+        <div class="garage-label">Practice — jump to a cleared stage</div>
+        <div class="stage-row" id="stageRow"></div>
+        <div id="hardModeWrap" style="margin-top:6px;"></div>
+        <button class="btn primary" id="startBtn" style="margin-top:10px; padding:10px 26px; font-size:14px;">Start Run</button>
       </div>
     </div>
 
@@ -246,13 +272,20 @@ const CAR_X = W/2, CAR_Y = H*0.76;
 const PX_PER_UNIT = 2.1;   // px on screen per 1 world unit of remaining distance
 const SPEED_BASE = 42;     // world units/sec at stage 1 — ramps up per stage so the run actually feels faster
 const STAGE_COUNT = 10;
-function speedForStage(stage){ return SPEED_BASE + (stage-1) * 3.4; }
+function speedForStage(stage){
+  const base = SPEED_BASE + (stage-1) * 3.4;
+  return state.hardMode ? base * 1.22 : base; // hard mode: faster ramp
+}
 
 // Cue thresholds, as a fraction of the CURRENT gap's total length remaining.
 // Fractions (not fixed distances) so compressed-spacing stages still cue proportionally.
-const FAR_FRAC = 0.62;      // subtle distant cue
-const NEAR_FRAC = 0.36;     // second, closer cue
-const WINDOW_FRAC = 0.15;   // final pulse — the call window opens here and stays open to the intersection
+const FAR_FRAC_BASE = 0.62;      // subtle distant cue
+const NEAR_FRAC_BASE = 0.36;     // second, closer cue
+const WINDOW_FRAC_BASE = 0.15;   // final pulse — the call window opens here and stays open to the intersection
+// hard mode tightens the call window and pulls the cues in closer, so there's less warning
+function farFrac(){ return state.hardMode ? FAR_FRAC_BASE * 0.85 : FAR_FRAC_BASE; }
+function nearFrac(){ return state.hardMode ? NEAR_FRAC_BASE * 0.78 : NEAR_FRAC_BASE; }
+function windowFrac(){ return state.hardMode ? WINDOW_FRAC_BASE * 0.65 : WINDOW_FRAC_BASE; }
 
 // ---------- per-stage route generation ----------
 // Turn count table straight from the design doc's escalation curve.
@@ -267,6 +300,14 @@ function repeatBiasForStage(stage){
   if (stage <= 3) return 0.28;   // early stages stay mostly alternating — learnable
   if (stage === 6) return 0.6;   // "repeated directions" is this stage's whole point
   return 0.42;
+}
+// decoy branches: from stage 4 on, some forks get an extra "straight ahead" branch
+// drawn with the exact same neutral styling as the real ones. It's never a valid call
+// (controls stay left/right only) and it's never part of what you memorize in preview —
+// it's pure visual clutter to cut through at the intersection, not a trick on direction.
+function decoyChanceForStage(stage){
+  if (stage < 4) return 0;
+  return clamp(0.12 + (stage - 4) * 0.045, 0, 0.45);
 }
 
 function mulberry32(seed){
@@ -303,7 +344,8 @@ function generateRoute(stage){
     else if (mode === 'compressed') gap = BASE_GAP * (0.5 + rng()*0.35);
     else gap = BASE_GAP * (0.82 + rng()*0.36);
 
-    turns.push({ dir, gap, farCued:false, nearCued:false, windowCued:false, called:false });
+    const decoy = rng() < decoyChanceForStage(stage);
+    turns.push({ dir, gap, decoy, farCued:false, nearCued:false, windowCued:false, called:false });
   }
   return turns;
 }
@@ -330,7 +372,13 @@ const state = {
   crossedNewBest: false,
   windowPulseAccum: 0,
   crashedThisStage: false,
-  milestonesHit: {}
+  milestonesHit: {},
+  isPractice: false,
+  hardMode: false,
+  crashSpin: { active:false, start:0, duration:560, kickX:0, dir:1 },
+  humAccum: 0,
+  sirenAccum: 0,
+  sirenPhaseHigh: false
 };
 
 function haptic(pattern){
@@ -373,6 +421,181 @@ function formatTime(ms){
 }
 function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
+// ---------- stage progress (which stages have been cleared, for stage select) ----------
+let clearedStages = [];
+function loadProgress(){
+  try{
+    const raw = localStorage.getItem('getawaydriver_progress');
+    if (raw){
+      const v = JSON.parse(raw);
+      if (Array.isArray(v.cleared)) clearedStages = v.cleared;
+    }
+  }catch(e){}
+}
+function saveProgress(){
+  try{ localStorage.setItem('getawaydriver_progress', JSON.stringify({ cleared: clearedStages })); }catch(e){}
+}
+function markStageCleared(stage){
+  if (clearedStages.indexOf(stage) === -1){
+    clearedStages.push(stage);
+    saveProgress();
+    renderStageSelect();
+  }
+}
+function stageUnlocked(stage){
+  return stage === 1 || clearedStages.indexOf(stage - 1) !== -1 || clearedStages.indexOf(stage) !== -1;
+}
+function renderStageSelect(){
+  const row = document.getElementById('stageRow');
+  if (!row) return;
+  row.innerHTML = '';
+  for (let i = 1; i <= STAGE_COUNT; i++){
+    const unlocked = stageUnlocked(i);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'stage-btn' + (unlocked ? '' : ' locked');
+    btn.textContent = i;
+    btn.disabled = !unlocked;
+    btn.title = unlocked ? ('Practice stage ' + i) : 'Clear stage ' + (i - 1) + ' first';
+    if (unlocked){
+      btn.addEventListener('click', function(){ beginRun(i); });
+    }
+    row.appendChild(btn);
+  }
+}
+
+// ---------- hard mode (unlocks after a first full, non-practice clear) ----------
+let hardModeUnlocked = false;
+let hardModeSelected = false;
+function loadHardMode(){
+  try{
+    const raw = localStorage.getItem('getawaydriver_hardmode');
+    if (raw){
+      const v = JSON.parse(raw);
+      hardModeUnlocked = !!v.unlocked;
+      hardModeSelected = !!v.selected;
+    }
+  }catch(e){}
+  renderHardModeToggle();
+}
+function saveHardMode(){
+  try{ localStorage.setItem('getawaydriver_hardmode', JSON.stringify({ unlocked: hardModeUnlocked, selected: hardModeSelected })); }catch(e){}
+}
+function unlockHardMode(){
+  // note: the end-screen overlay covers the banner immediately after this run completes,
+  // so the "unlocked" moment is surfaced via the end message instead of flashBanner here.
+  if (hardModeUnlocked) return false;
+  hardModeUnlocked = true;
+  saveHardMode();
+  renderHardModeToggle();
+  sfx('chime', [600, 500, 750, 950], 'triangle', 0.16);
+  return true;
+}
+function renderHardModeToggle(){
+  const wrap = document.getElementById('hardModeWrap');
+  if (!wrap) return;
+  if (!hardModeUnlocked){
+    wrap.innerHTML = '<div class="garage-label">Hard Mode — clear the game once to unlock</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  const label = document.createElement('div');
+  label.className = 'garage-label';
+  label.textContent = 'Hard Mode — faster ramp, tighter call windows';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn' + (hardModeSelected ? ' primary' : '');
+  btn.style.marginTop = '4px';
+  btn.style.fontSize = '12px';
+  btn.style.padding = '6px 14px';
+  btn.textContent = hardModeSelected ? 'HARD MODE: ON' : 'HARD MODE: OFF';
+  btn.addEventListener('click', function(){
+    hardModeSelected = !hardModeSelected;
+    saveHardMode();
+    renderHardModeToggle();
+    sfx('tone', hardModeSelected ? 620 : 420, 0.06, 'sine', 0.08);
+  });
+  wrap.appendChild(label);
+  wrap.appendChild(btn);
+}
+
+// ---------- unlockable car skins (tied to lifetime high score) ----------
+const SKINS = [
+  { id:'amber',   name:'Amber',        color:0xffc94d, threshold:0 },
+  { id:'crimson', name:'Crimson',      color:0xff3b3b, threshold:500 },
+  { id:'cyan',    name:'Cyan Ghost',   color:0x5be3ff, threshold:1500 },
+  { id:'violet',  name:'Violet Night', color:0x9b6bff, threshold:3000 },
+  { id:'emerald', name:'Emerald',      color:0x5be37b, threshold:5000 },
+  { id:'chrome',  name:'Chrome',       color:0xe8e8f0, threshold:8000 },
+  { id:'gold',    name:'Solid Gold',   color:0xffd700, threshold:12000 }
+];
+let unlockedSkins = ['amber'];
+let selectedSkin = 'amber';
+let carColor = SKINS[0].color;
+
+function loadSkins(){
+  try{
+    const raw = localStorage.getItem('getawaydriver_skins');
+    if (raw){
+      const v = JSON.parse(raw);
+      if (Array.isArray(v.unlocked) && v.unlocked.length) unlockedSkins = v.unlocked;
+      if (v.selected) selectedSkin = v.selected;
+    }
+  }catch(e){}
+  // in case the player's existing high score already clears thresholds added after they last played
+  SKINS.forEach(function(s){
+    if (state.bestScore != null && state.bestScore >= s.threshold && unlockedSkins.indexOf(s.id) === -1) unlockedSkins.push(s.id);
+  });
+  if (unlockedSkins.indexOf(selectedSkin) === -1) selectedSkin = 'amber';
+  saveSkins();
+  applySelectedSkin();
+}
+function saveSkins(){
+  try{ localStorage.setItem('getawaydriver_skins', JSON.stringify({ unlocked: unlockedSkins, selected: selectedSkin })); }catch(e){}
+}
+function applySelectedSkin(){
+  const s = SKINS.filter(function(s){ return s.id === selectedSkin; })[0] || SKINS[0];
+  carColor = s.color;
+}
+function checkSkinUnlocks(){
+  let newlyUnlocked = null;
+  SKINS.forEach(function(s){
+    if (state.bestScore != null && state.bestScore >= s.threshold && unlockedSkins.indexOf(s.id) === -1){
+      unlockedSkins.push(s.id);
+      newlyUnlocked = s;
+    }
+  });
+  if (newlyUnlocked){
+    saveSkins();
+    renderSkinPicker();
+    flashBanner('SKIN UNLOCKED', newlyUnlocked.name, 'good', 900);
+    sfx('chime', [750, 1000, 1250, 1500], 'triangle', 0.16);
+  }
+}
+function renderSkinPicker(){
+  const row = document.getElementById('skinRow');
+  if (!row) return;
+  row.innerHTML = '';
+  SKINS.forEach(function(s){
+    const unlocked = unlockedSkins.indexOf(s.id) !== -1;
+    const sw = document.createElement('div');
+    sw.className = 'skin-swatch' + (unlocked ? '' : ' locked') + (s.id === selectedSkin ? ' selected' : '');
+    sw.style.background = '#' + s.color.toString(16).padStart(6, '0');
+    sw.title = unlocked ? s.name : (s.name + ' — reach ' + s.threshold + ' score');
+    sw.textContent = unlocked ? '' : '🔒';
+    if (unlocked){
+      sw.addEventListener('click', function(){
+        selectedSkin = s.id;
+        applySelectedSkin();
+        saveSkins();
+        renderSkinPicker();
+        sfx('tone', 500, 0.05, 'sine', 0.06);
+      });
+    }
+    row.appendChild(sw);
+  });
+}
+
 // ---------- story ----------
 const STAGE_STORY = [
   "The vault door just closed behind you. Get us out of the district — quiet and clean.",
@@ -389,7 +612,7 @@ const STAGE_STORY = [
 
 // ---------- Phaser scene ----------
 let scene = null;
-let buildingGfx, roadGfx, trafficGfx, forkGfx, carGfx, cueGfx;
+let buildingGfx, roadGfx, trafficGfx, forkGfx, carGfx, cueGfx, rainGfx;
 
 class DriveScene extends Phaser.Scene {
   constructor(){ super('drive'); }
@@ -401,15 +624,19 @@ class DriveScene extends Phaser.Scene {
     forkGfx = this.add.graphics();
     cueGfx = this.add.graphics();
     carGfx = this.add.graphics();
+    rainGfx = this.add.graphics();
   }
   update(time, delta){
     const dt = Math.min(0.1, (delta||16)/1000);
     updateTraffic(dt);
+    const wet = rainIntensityForStage(state.stage);
+    updateRain(dt, wet);
     drawCity(time);
     drawRoad(time);
     drawTraffic();
     drawFork(time);
     drawCar(time);
+    drawRain(wet); // drawn last — rain sits in front of everything, like it's between camera and scene
   }
 }
 
@@ -484,21 +711,99 @@ function drawCity(time){
   }
 }
 
+// ---------- rain / wet-road (later stages only) ----------
+const RAIN_START_STAGE = 6;
+function rainIntensityForStage(stage){
+  if (stage < RAIN_START_STAGE) return 0;
+  return clamp((stage - RAIN_START_STAGE + 1) / (STAGE_COUNT - RAIN_START_STAGE + 1), 0.35, 1);
+}
+let rainDrops = [];
+let rainSpawnAccum = 0;
+let lightningCooldown = 3;
+function updateRain(dt, intensity){
+  if (intensity <= 0){
+    if (rainDrops.length) rainDrops.length = 0;
+    return;
+  }
+  rainSpawnAccum += dt;
+  const spawnInterval = 0.014 / intensity;
+  while (rainSpawnAccum >= spawnInterval){
+    rainSpawnAccum -= spawnInterval;
+    if (rainDrops.length < 40 + 220 * intensity){
+      rainDrops.push({
+        x: Math.random()*W,
+        y: -20,
+        len: 14 + Math.random()*18,
+        speed: 480 + Math.random()*220,
+        sway: (Math.random()*2 - 1) * 18
+      });
+    }
+  }
+  for (let i = rainDrops.length - 1; i >= 0; i--){
+    const d = rainDrops[i];
+    d.y += d.speed * dt;
+    d.x += d.sway * dt;
+    if (d.y > H + 20) rainDrops.splice(i, 1);
+  }
+  // distant lightning on the heaviest stages — a quick camera flash + low rumble, never gameplay-relevant
+  if (intensity >= 0.75){
+    lightningCooldown -= dt;
+    if (lightningCooldown <= 0){
+      lightningCooldown = 3 + Math.random()*4;
+      if (scene) scene.cameras.main.flash(90, 210, 225, 255, false);
+      sfx('tone', 55, 0.4, 'sawtooth', 0.05, 260);
+    }
+  }
+}
+function drawRain(intensity){
+  rainGfx.clear();
+  if (intensity > 0){
+    rainGfx.fillStyle(0x0a1420, 0.05 + intensity*0.10);
+    rainGfx.fillRect(0, 0, W, H);
+  }
+  if (!rainDrops.length) return;
+  rainGfx.lineStyle(1.4, 0xbfe3ff, 0.3 + intensity*0.25);
+  for (const d of rainDrops){
+    rainGfx.beginPath();
+    rainGfx.moveTo(d.x, d.y);
+    rainGfx.lineTo(d.x + d.sway*0.05, d.y + d.len);
+    rainGfx.strokePath();
+  }
+}
+
 function drawRoad(time){
   roadGfx.clear();
-  roadGfx.fillStyle(0x121218, 1);
+  const wet = rainIntensityForStage(state.stage);
+  roadGfx.fillStyle(wet > 0 ? 0x0c1016 : 0x121218, 1);
   roadGfx.fillRect(0, 0, W, H);
   // scrolling dashed center line, straight road, lateral sway purely cosmetic
   const cx = W/2 + state.laneOffset;
-  roadGfx.fillStyle(0x2a2a38, 1);
+  roadGfx.fillStyle(wet > 0 ? 0x232c38 : 0x2a2a38, 1);
   roadGfx.fillRect(cx-120, 0, 240, H);
-  roadGfx.lineStyle(4, 0xffc94d, 0.5);
+
+  if (wet > 0){
+    // glossy wet-asphalt sheen down the middle, gently shimmering
+    const shimmer = 0.03 + 0.03*Math.sin((time||0)*0.002);
+    roadGfx.fillStyle(0x8fd3ff, 0.05 + wet*0.05 + shimmer*wet);
+    roadGfx.fillRect(cx-70, 0, 50, H);
+  }
+
+  roadGfx.lineStyle(4, 0xffc94d, wet > 0 ? 0.42 : 0.5);
   const off = ((time||0)*0.09) % 44;
   for (let y=-44+off; y<H; y+=44){
     roadGfx.beginPath();
     roadGfx.moveTo(cx, y);
     roadGfx.lineTo(cx, y+22);
     roadGfx.strokePath();
+    if (wet > 0.3){
+      // faint reflection smeared just below each dash — wet-road puddle look
+      roadGfx.lineStyle(4, 0xffc94d, 0.12*wet);
+      roadGfx.beginPath();
+      roadGfx.moveTo(cx, y+24);
+      roadGfx.lineTo(cx, y+30);
+      roadGfx.strokePath();
+      roadGfx.lineStyle(4, 0xffc94d, wet > 0 ? 0.42 : 0.5);
+    }
   }
 }
 
@@ -529,13 +834,20 @@ function drawFork(time){
   forkGfx.moveTo(cx, Math.min(forkY, H+60));
   forkGfx.lineTo(cx + spread, forkY - 90);
   forkGfx.strokePath();
+  if (turn.decoy){
+    // decoy "straight ahead" branch — same neutral styling, never a valid call, never memorized
+    forkGfx.beginPath();
+    forkGfx.moveTo(cx, Math.min(forkY, H+60));
+    forkGfx.lineTo(cx, forkY - 100);
+    forkGfx.strokePath();
+  }
 
   // approach cue rings — neutral color, never reveals direction
   const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
   let cueAlpha = 0, cueScale = 1;
-  if (frac <= WINDOW_FRAC){ cueAlpha = 0.85; cueScale = 1.25; }
-  else if (frac <= NEAR_FRAC){ cueAlpha = 0.5; cueScale = 1.1; }
-  else if (frac <= FAR_FRAC){ cueAlpha = 0.22; cueScale = 1.0; }
+  if (frac <= windowFrac()){ cueAlpha = 0.85; cueScale = 1.25; }
+  else if (frac <= nearFrac()){ cueAlpha = 0.5; cueScale = 1.1; }
+  else if (frac <= farFrac()){ cueAlpha = 0.22; cueScale = 1.0; }
   if (cueAlpha > 0){
     cueGfx.lineStyle(2.5, 0xffffff, cueAlpha);
     cueGfx.strokeCircle(cx, forkY, 22*cueScale);
@@ -545,15 +857,66 @@ function drawFork(time){
 function drawCar(time){
   carGfx.clear();
   const bob = Math.sin((time||0)*0.006) * 1.5;
-  carGfx.fillStyle(0xffc94d, 1);
-  carGfx.fillRoundedRect(CAR_X-16, CAR_Y-24+bob, 32, 48, 6);
+  let cx = CAR_X, cy = CAR_Y + bob, angle = 0, scaleY = 1;
+
+  if (state.crashSpin.active){
+    const t = clamp(((time||0) - state.crashSpin.start) / state.crashSpin.duration, 0, 1);
+    const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic — fast then settling
+    angle = eased * Math.PI * 2 * 2.25 * state.crashSpin.dir;
+    cx = CAR_X + state.crashSpin.kickX * eased;
+    scaleY = 1 - 0.18 * Math.sin(Math.min(1, t*2.2) * Math.PI); // quick squash right at impact
+    if (t >= 1) state.crashSpin.active = false;
+  }
+
+  carGfx.save();
+  carGfx.translateCanvas(cx, cy);
+  carGfx.rotateCanvas(angle);
+  carGfx.scaleCanvas(1, scaleY);
+  carGfx.fillStyle(carColor, 1);
+  carGfx.fillRoundedRect(-16, -24, 32, 48, 6);
   carGfx.fillStyle(0x1a1206, 0.6);
-  carGfx.fillRect(CAR_X-10, CAR_Y-14+bob, 20, 14);
+  carGfx.fillRect(-10, -14, 20, 14);
+  carGfx.restore();
+}
+
+// ---------- ambient audio bed (engine hum + rising siren) ----------
+// Built from short, repeated sfx('tone', ...) pulses through the shared SFX wrapper
+// (rather than a raw independent AudioContext) so it still respects the global mute button.
+function updateAmbientAudio(dt){
+  if (state.phase === 'idle' || state.phase === 'run-complete' || state.phase === 'crashed') return;
+
+  const stageProgress = clamp((state.stage - 1) / (STAGE_COUNT - 1), 0, 1);
+
+  // engine hum — a low rumbling pulse that climbs in pitch/volume as the run escalates
+  state.humAccum += dt;
+  if (state.humAccum >= 0.16){
+    state.humAccum = 0;
+    const baseFreq = 68 + stageProgress * 26;
+    const wobble = Math.random()*6 - 3;
+    sfx('tone', baseFreq + wobble, 0.14, 'sawtooth', 0.032 + stageProgress*0.02, baseFreq*0.6);
+  }
+
+  // siren — silent on stage 1, then fades in and gets louder/more insistent stage by stage
+  if (state.stage >= 2){
+    state.sirenAccum += dt;
+    if (state.sirenAccum >= 0.82){
+      state.sirenAccum = 0;
+      state.sirenPhaseHigh = !state.sirenPhaseHigh;
+      const sirenProgress = clamp((state.stage - 2) / (STAGE_COUNT - 2), 0, 1);
+      const vol = 0.02 + sirenProgress * 0.075;
+      sfx('tone', state.sirenPhaseHigh ? 780 : 560, 0.3, 'sine', vol, 80);
+    }
+  }
 }
 
 // ---------- driving loop ----------
 let lastTick = null;
+let lastAmbientTime = null;
 function gameTick(now){
+  const adt = lastAmbientTime != null ? Math.min(0.1, (now-lastAmbientTime)/1000) : 0;
+  lastAmbientTime = now;
+  updateAmbientAudio(adt);
+
   if (state.phase === 'driving'){
     const dt = lastTick != null ? Math.min(0.1, (now-lastTick)/1000) : 0;
     lastTick = now;
@@ -567,12 +930,12 @@ function gameTick(now){
       state.distRemaining -= speedForStage(state.stage)*dt;
       const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
 
-      if (!turn.farCued && frac <= FAR_FRAC){ turn.farCued = true; sfx('tone', 520, 0.05, 'sine', 0.05); }
-      if (!turn.nearCued && frac <= NEAR_FRAC){ turn.nearCued = true; sfx('tone', 620, 0.06, 'sine', 0.08); }
-      if (!turn.windowCued && frac <= WINDOW_FRAC){ turn.windowCued = true; sfx('tone', 760, 0.09, 'triangle', 0.12); }
+      if (!turn.farCued && frac <= farFrac()){ turn.farCued = true; sfx('tone', 520, 0.05, 'sine', 0.05); }
+      if (!turn.nearCued && frac <= nearFrac()){ turn.nearCued = true; sfx('tone', 620, 0.06, 'sine', 0.08); }
+      if (!turn.windowCued && frac <= windowFrac()){ turn.windowCued = true; sfx('tone', 760, 0.09, 'triangle', 0.12); }
 
       // rising-tension heartbeat while the call window is open and uncalled — this is the adrenaline beat
-      if (frac <= WINDOW_FRAC && !turn.called){
+      if (frac <= windowFrac() && !turn.called){
         state.windowPulseAccum += dt;
         if (state.windowPulseAccum >= 0.15){
           state.windowPulseAccum = 0;
@@ -604,7 +967,7 @@ function callDirection(dir){
   if (!turn || turn.called) return;
 
   const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
-  if (frac > WINDOW_FRAC){
+  if (frac > windowFrac()){
     crashRun('TOO EARLY', 'Called it before the window opened.');
     return;
   }
@@ -615,11 +978,11 @@ function callDirection(dir){
   }
 
   // correct call — take the branch, continue
-  const isPerfect = frac <= WINDOW_FRAC * 0.3; // called right on the edge of the window — riskier, pays more
+  const isPerfect = frac <= windowFrac() * 0.3; // called right on the edge of the window — riskier, pays more
   state.streak++;
   state.bestStreakThisRun = Math.max(state.bestStreakThisRun, state.streak);
   const mult = multiplierForStreak(state.streak);
-  const gained = Math.round((100 + (isPerfect ? 60 : 0)) * mult);
+  const gained = Math.round((100 + (isPerfect ? 60 : 0)) * mult * (state.hardMode ? 1.15 : 1));
   state.score += gained;
   const multTag = mult > 1 ? ' x' + mult.toFixed(1).replace('.0','') : '';
   popScore((isPerfect ? 'PERFECT +' : '+') + gained + multTag, isPerfect ? 'perfect' : '');
@@ -637,7 +1000,7 @@ function callDirection(dir){
   state.targetLaneOffset = dir === 'L' ? -30 : 30;
   setTimeout(()=>{ state.targetLaneOffset = 0; }, 220);
 
-  if (state.bestScore == null || state.score > state.bestScore){
+  if (!state.isPractice && (state.bestScore == null || state.score > state.bestScore)){
     const firstCross = !state.crossedNewBest;
     state.bestScore = state.score;
     saveBest();
@@ -647,6 +1010,7 @@ function callDirection(dir){
       flashBanner('NEW HIGH SCORE!', '', 'good', 900);
       sfx('chime', [800, 1000, 1300], 'triangle', 0.15);
     }
+    checkSkinUnlocks();
   }
   updateHud();
 
@@ -663,6 +1027,10 @@ function crashRun(title, sub){
   state.crashesThisRun++;
   state.streak = 0;
   state.crashedThisStage = true;
+  state.crashSpin.active = true;
+  state.crashSpin.start = scene ? scene.time.now : 0;
+  state.crashSpin.dir = Math.random() < 0.5 ? -1 : 1;
+  state.crashSpin.kickX = state.crashSpin.dir * (26 + Math.random()*26);
   sfx('tone', 140, 0.28, 'sawtooth', 0.22, 40);
   sfx('tone', 90, 0.2, 'square', 0.15);
   flashBanner(title, sub, 'warn', 0);
@@ -672,8 +1040,9 @@ function crashRun(title, sub){
   setTimeout(()=>{
     document.getElementById('crashFlash').classList.remove('show');
     clearBanner();
+    state.crashSpin.active = false;
     startPreview(state.stage); // instant, fresh route — no memory carries over
-  }, 550);
+  }, 560);
 }
 
 function clearStage(){
@@ -687,6 +1056,7 @@ function clearStage(){
   }
   sfx('chime', [700, 950, 1200], 'triangle', 0.16);
   flashBanner('STAGE ' + state.stage + ' CLEAR', sub, 'good', 700);
+  markStageCleared(state.stage);
   setTimeout(()=>{
     if (state.stage >= STAGE_COUNT){
       completeRun();
@@ -702,23 +1072,29 @@ function clearStage(){
 function completeRun(){
   state.phase = 'run-complete';
   const totalMs = state.elapsed*1000;
-  const isNewBest = state.bestCrashes == null ||
-    state.crashesThisRun < state.bestCrashes ||
-    (state.crashesThisRun === state.bestCrashes && totalMs < state.bestTimeMs);
-  if (isNewBest){
-    state.bestCrashes = state.crashesThisRun;
-    state.bestTimeMs = totalMs;
-    saveBest();
-    renderBest();
+  let hardUnlockedNow = false;
+  if (!state.isPractice){
+    hardUnlockedNow = unlockHardMode();
+    const isNewBest = state.bestCrashes == null ||
+      state.crashesThisRun < state.bestCrashes ||
+      (state.crashesThisRun === state.bestCrashes && totalMs < state.bestTimeMs);
+    if (isNewBest){
+      state.bestCrashes = state.crashesThisRun;
+      state.bestTimeMs = totalMs;
+      saveBest();
+      renderBest();
+    }
   }
   sfx('chime', [700, 950, 1300, 1600], 'sine', 0.2);
-  document.getElementById('flawlessTag').style.display = state.crashesThisRun === 0 ? 'block' : 'none';
+  document.getElementById('flawlessTag').style.display = (state.crashesThisRun === 0 && !state.isPractice) ? 'block' : 'none';
   showRank();
   let endMsg;
-  if (state.crashesThisRun === 0) endMsg = "Not one wrong turn. The city never even knew you were there.";
+  if (state.isPractice) endMsg = "Practice run — nice work, but this one doesn't count toward your high score.";
+  else if (state.crashesThisRun === 0) endMsg = "Not one wrong turn. The city never even knew you were there.";
   else if (state.crashesThisRun <= 3) endMsg = "A few close calls back there, but you're through the gate and gone.";
   else endMsg = "Messy, loud, and lucky — but the safehouse door just closed behind you.";
-  document.getElementById('endTitle').textContent = 'GETAWAY COMPLETE';
+  if (hardUnlockedNow) endMsg += ' Hard Mode is now unlocked from the start screen.';
+  document.getElementById('endTitle').textContent = state.isPractice ? 'PRACTICE COMPLETE' : 'GETAWAY COMPLETE';
   document.getElementById('endMsg').textContent = endMsg;
   document.getElementById('endScore').textContent = state.score;
   document.getElementById('endStreak').textContent = state.bestStreakThisRun;
@@ -751,9 +1127,11 @@ function showRank(){
 // ---------- preview ----------
 let previewTimerHandle = null;
 function previewDuration(stage){
-  if (stage <= 3) return 3500;
-  if (stage <= 6) return 4500;
-  return 5500;
+  let ms;
+  if (stage <= 3) ms = 3500;
+  else if (stage <= 6) ms = 4500;
+  else ms = 5500;
+  return state.hardMode ? Math.round(ms * 0.8) : ms;
 }
 function startPreview(stage){
   state.route = generateRoute(stage);
@@ -845,6 +1223,8 @@ function updateHud(){
   else if (state.phase === 'stage-clear') status.textContent = 'Clear!';
   else if (state.phase === 'run-complete') status.textContent = 'Done';
   else status.textContent = 'Ready';
+  document.getElementById('practiceTag').style.display = state.isPractice ? 'inline' : 'none';
+  document.getElementById('hardTag').style.display = state.hardMode ? 'inline' : 'none';
 }
 
 // ---------- boot ----------
@@ -857,6 +1237,11 @@ new Phaser.Game({
 });
 
 loadBest();
+loadSkins();
+loadProgress();
+loadHardMode();
+renderSkinPicker();
+renderStageSelect();
 requestAnimationFrame(gameTick);
 
 try{
@@ -865,10 +1250,12 @@ try{
   }
 }catch(e){}
 
-document.getElementById('startBtn').addEventListener('click', ()=>{
+function beginRun(stage){
   sfx('tone', 440, 0.05, 'sine', 0.001); // unlock audio on the real user gesture
   document.getElementById('startScreen').classList.add('hidden');
-  state.stage = 1;
+  state.stage = stage;
+  state.isPractice = stage !== 1;
+  state.hardMode = hardModeUnlocked && hardModeSelected;
   state.crashesThisRun = 0;
   state.elapsed = 0;
   state.score = 0;
@@ -877,9 +1264,13 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.crossedNewBest = false;
   state.crashedThisStage = false;
   state.milestonesHit = {};
+  state.humAccum = 0;
+  state.sirenAccum = 0;
+  state.sirenPhaseHigh = false;
   lastTick = null;
-  startPreview(1);
-});
+  startPreview(stage);
+}
+document.getElementById('startBtn').addEventListener('click', ()=> beginRun(1));
 document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
 
 document.getElementById('leftBtn').addEventListener('click', ()=> callDirection('L'));
