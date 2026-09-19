@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Riptide — The Arcade</title>
+<style>
+  :root{
+    --deep:#08141f; --mid:#0f2436; --panel:#0f2436; --border:#1f3d52;
+    --cyan:#7fd8e8; --cyan-dim:#4a8a9a; --foam:#eaf6f8; --text:#e8f4f6; --text-dim:#8fb0bd;
+    --accent:#7fd8e8; --danger:#ff4d4d; --panic:#ff6b4d;
+  }
+  * { box-sizing:border-box; }
+  body{
+    margin:0; padding:16px; min-height:100vh;
+    background: radial-gradient(circle at 50% 0%, #123049 0%, #08141f 65%);
+    color:var(--text); font-family:system-ui,-apple-system,sans-serif;
+  }
+  .wrap{ max-width:1000px; margin:0 auto; }
+  .title-bar{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:6px; }
+  .title-bar h1{ margin:0; font-size:26px; letter-spacing:3px; color:var(--cyan); text-shadow:0 0 12px rgba(127,216,232,0.35); }
+  .title-bar .subtitle{ color:var(--text-dim); font-size:12.5px; }
+  .best-run{ font-size:11.5px; color:var(--text-dim); text-align:right; }
+  .best-run b{ color:var(--cyan); }
+
+  .hud{
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:10px 14px; margin-bottom:10px; font-size:12.5px;
+  }
+  .meter{ display:flex; flex-direction:column; gap:3px; min-width:110px; }
+  .meter .label{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); display:flex; justify-content:space-between; }
+  .meter-track{ height:8px; border-radius:4px; background:rgba(255,255,255,0.08); overflow:hidden; }
+  .meter-fill{ height:100%; border-radius:4px; transition:width .12s linear, background-color .2s; }
+  .meter-fill.stamina{ background:var(--cyan); }
+  .meter-fill.panic{ background:var(--panic); }
+  .meter-fill.progress{ background:var(--foam); }
+  .spacer{ flex:1; }
+  .hud-status{ display:flex; flex-direction:column; gap:1px; text-align:right; }
+  .hud-status .label{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); }
+  .hud-status .val{ font-weight:700; font-size:15px; color:var(--cyan); }
+
+  .stage{
+    position:relative; width:100%; aspect-ratio:960/540; background:#000;
+    border-radius:10px; overflow:hidden; border:1px solid var(--border);
+    cursor:crosshair; user-select:none;
+    touch-action:manipulation; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  }
+  .stage canvas{ display:block; width:100% !important; height:100% !important; touch-action:manipulation; }
+
+  .banner{
+    position:absolute; left:0; right:0; top:36%; text-align:center; pointer-events:none;
+    font-size:38px; font-weight:900; letter-spacing:3px; text-shadow:0 0 18px rgba(0,0,0,0.7);
+    opacity:0; transition:opacity .1s;
+  }
+  .banner.show{ opacity:1; }
+  .banner.warn{ color:var(--panic); }
+  .banner.good{ color:var(--foam); }
+  .banner .sub{ display:block; font-size:14px; font-weight:600; letter-spacing:1px; margin-top:6px; color:var(--text-dim); }
+
+  .hint{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:8px; }
+
+  .overlay{
+    position:absolute; inset:0; background:rgba(4,10,16,0.93); display:flex; align-items:center;
+    justify-content:center; z-index:50; text-align:center; padding:20px;
+  }
+  .overlay.hidden{ display:none; }
+  .overlay-card{ max-width:460px; }
+  .overlay-card h2{ font-size:26px; color:var(--cyan); margin-bottom:6px; letter-spacing:2px; }
+  .overlay-card p{ color:var(--text-dim); font-size:13px; line-height:1.6; }
+  .overlay-card .pitch{ color:var(--foam); font-style:italic; margin:12px 0; }
+  .overlay-stats{ display:flex; justify-content:center; gap:24px; margin:16px 0; }
+  .overlay-stats div{ font-size:12px; color:var(--text-dim); }
+  .overlay-stats div b{ display:block; font-size:22px; color:var(--text); }
+  .rule-list{ text-align:left; font-size:11.5px; margin:14px 0; }
+  .rule-list div{ margin:6px 0; }
+  .rule-list b{ color:var(--text); }
+
+  .btn{
+    background:transparent; border:1px solid var(--border); color:var(--text);
+    padding:8px 16px; min-height:44px; border-radius:6px; font-size:13px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .btn:hover{ border-color:var(--cyan); }
+  .btn.primary{ background:var(--cyan); color:#062028; border-color:var(--cyan); font-weight:700; }
+
+  @media (max-width: 480px){
+    body{ padding:10px; }
+    .title-bar{ flex-direction:column; align-items:flex-start; gap:4px; }
+    .best-run{ text-align:left; }
+    .hud{ gap:10px 14px; padding:8px 10px; }
+    .meter{ min-width:90px; }
+    .overlay-card h2{ font-size:21px; }
+    .overlay-card p{ font-size:12.5px; }
+    .banner{ font-size:28px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title-bar">
+    <div>
+      <h1>RIPTIDE</h1>
+      <div class="subtitle">Every stroke gets you closer — but every stroke makes you weaker.</div>
+    </div>
+    <div class="best-run">
+      <div>Best distance: <b id="bestDistLine">—</b></div>
+      <div>Best time: <b id="bestTimeLine">—</b></div>
+    </div>
+  </div>
+
+  <div class="hud">
+    <div class="meter">
+      <div class="label"><span>Progress</span><span id="progressPct">0%</span></div>
+      <div class="meter-track"><div class="meter-fill progress" id="progressFill" style="width:0%"></div></div>
+    </div>
+    <div class="meter">
+      <div class="label"><span>Stamina</span><span id="staminaPct">100%</span></div>
+      <div class="meter-track"><div class="meter-fill stamina" id="staminaFill" style="width:100%"></div></div>
+    </div>
+    <div class="meter">
+      <div class="label"><span>Panic</span><span id="panicPct">0%</span></div>
+      <div class="meter-track"><div class="meter-fill panic" id="panicFill" style="width:0%"></div></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="hud-status"><span class="label">Status</span><span class="val" id="hudStatus">On Shore</span></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div id="game-container"></div>
+    <div class="banner" id="banner"></div>
+
+    <div class="overlay" id="startScreen">
+      <div class="overlay-card">
+        <h2>RIPTIDE</h2>
+        <p>You're stranded in open water. Reach the shore before panic takes you.</p>
+        <p class="pitch">"Sometimes the safest move is to stop swimming."</p>
+        <div class="rule-list">
+          <div><b>Aim + Stroke</b> — move your pointer/finger toward where you want to go, then click/tap (or press Space) to stroke. Each stroke costs stamina.</div>
+          <div><b>Stamina</b> — regenerates only while you're not stroking. Run it to zero and you can't fight the water at all.</div>
+          <div><b>Panic</b> — climbs when your stamina hits zero, falls whenever you have any stamina left. Panic reaching 100% ends the swim.</div>
+          <div><b>The water</b> — currents, a whirlpool, jellyfish, and boat wakes all push you around whether you're moving or not. Sometimes drifting is safer than fighting.</div>
+        </div>
+        <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Enter The Water</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="endScreen">
+      <div class="overlay-card">
+        <h2 id="endTitle">DOWN</h2>
+        <p id="endMsg"></p>
+        <div class="overlay-stats">
+          <div>Distance<b id="endDist">0%</b></div>
+          <div>Time<b id="endTime">0:00</b></div>
+        </div>
+        <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Back In The Water</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">Aim with mouse/finger, click/tap or press <b>Space</b> to stroke. Rest to recover stamina — but the current never stops.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function(){
+'use strict';
+
+function sfx(name, ...args){
+  try{
+    if (typeof SFX !== 'undefined' && SFX && typeof SFX[name] === 'function'){
+      SFX[name](...args);
+    }
+  }catch(e){ /* audio must never break the game loop */ }
+}
+
+const W = 960, H = 540;
+const PLAYER_SCREEN_X = W/2, PLAYER_SCREEN_Y = H*0.7;
+const LANE_PX = 220;       // how far left/right the ±1 lane range spans on screen
+const PX_PER_PCT = 34;     // vertical px scrolled per 1% of progress
+
+// ---------- tuning ----------
+const STROKE_PROGRESS = 2.6;
+const STROKE_STAMINA_COST = 9;
+const STROKE_COOLDOWN_MS = 260;
+const STAMINA_REGEN = 15;      // per second, while not on cooldown
+const PANIC_RISE = 26;         // per second, while stamina <= 0
+const PANIC_FALL = 20;         // per second, while stamina > 0
+const MIN_STROKE_STAMINA = 4;  // can't stroke below this
+
+const state = {
+  phase: 'idle', // idle | playing | ended
+  progress: 0,
+  lane: 0,        // -1..1
+  stamina: 100,
+  panic: 0,
+  strokeCD: 0,
+  elapsed: 0,
+  running: false,
+  ended: false,
+  hazards: [],
+  bestProgress: 0,
+  bestTimeMs: null
+};
+
+function loadBest(){
+  try{
+    const raw = localStorage.getItem('riptide_best');
+    if (raw){
+      const v = JSON.parse(raw);
+      state.bestProgress = v.bestProgress || 0;
+      state.bestTimeMs = v.bestTimeMs || null;
+    }
+  }catch(e){}
+  renderBest();
+}
+function saveBest(){
+  try{
+    localStorage.setItem('riptide_best', JSON.stringify({
+      bestProgress: state.bestProgress, bestTimeMs: state.bestTimeMs
+    }));
+  }catch(e){}
+}
+function renderBest(){
+  document.getElementById('bestDistLine').textContent = state.bestProgress ? Math.round(state.bestProgress)+'%' : '—';
+  document.getElementById('bestTimeLine').textContent = state.bestTimeMs != null ? formatTime(state.bestTimeMs) : '—';
+}
+function formatTime(ms){
+  const s = Math.floor(ms/1000);
+  const m = Math.floor(s/60);
+  const rem = s % 60;
+  return m + ':' + (rem < 10 ? '0' : '') + rem;
+}
+
+// ---------- hazards ----------
+// Four kinds only, generated once per run across the 0-100% progress track.
+// Density/strength increases in later phases, per the design doc's timeline.
+function generateHazards(){
+  const hazards = [];
+  // Phase bands (by progress %): 0-15 calm, 15-35 currents, 35-60 combos, 60-90 gauntlet, 90-100 final stretch
+  function addCurrent(centerP, width, lane, strength){
+    hazards.push({ type:'current', startP: centerP-width/2, endP: centerP+width/2, lane, strength });
+  }
+  function addWhirlpool(centerP, lane, radius, strength){
+    hazards.push({ type:'whirlpool', centerP, lane, radius, strength });
+  }
+  function addJellyfish(atP, lane){
+    hazards.push({ type:'jellyfish', atP, lane, radius: 0.16, triggered:false });
+  }
+  function addWake(centerP, width, strength){
+    hazards.push({ type:'wake', startP: centerP-width/2, endP: centerP+width/2, strength });
+  }
+
+  // 15-35%: first currents, gentle
+  addCurrent(20, 7, -0.5 + Math.random()*1, 0.55);
+  addCurrent(30, 6, -0.5 + Math.random()*1, 0.6);
+
+  // 35-60%: combos — current + jellyfish, first whirlpool
+  addCurrent(42, 8, -0.6 + Math.random()*1.2, 0.75);
+  addJellyfish(44, -0.6 + Math.random()*1.2);
+  addJellyfish(48, -0.6 + Math.random()*1.2);
+  addWhirlpool(55, -0.3 + Math.random()*0.6, 9, 0.85);
+  addWake(50, 6, 0.7);
+
+  // 60-90%: the riptide gauntlet — dense, strong
+  addCurrent(66, 8, -0.7 + Math.random()*1.4, 1.0);
+  addJellyfish(68, -0.7 + Math.random()*1.4);
+  addWhirlpool(75, -0.4 + Math.random()*0.8, 10, 1.1);
+  addJellyfish(78, -0.7 + Math.random()*1.4);
+  addWake(82, 7, 1.0);
+  addCurrent(87, 7, -0.7 + Math.random()*1.4, 1.15);
+
+  // 90-100%: final stretch, one last gut-check
+  addJellyfish(93, -0.5 + Math.random()*1);
+  addCurrent(96, 5, -0.5 + Math.random()*1, 0.9);
+
+  return hazards;
+}
+
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+// ---------- Phaser scene ----------
+let scene = null;
+let waterGfx, waveGfx, hazardGfx, playerGfx, splashGfx, shoreGfx;
+let pointerX = PLAYER_SCREEN_X, pointerY = PLAYER_SCREEN_Y - 60;
+
+class SwimScene extends Phaser.Scene {
+  constructor(){ super('swim'); }
+  create(){
+    scene = this;
+    waterGfx = this.add.graphics();
+    waveGfx = this.add.graphics();
+    shoreGfx = this.add.graphics();
+    hazardGfx = this.add.graphics();
+    playerGfx = this.add.graphics();
+    splashGfx = this.add.graphics();
+
+    this.input.on('pointermove', (p)=>{ pointerX = p.x; pointerY = p.y; });
+    this.input.on('pointerdown', (p)=>{ pointerX = p.x; pointerY = p.y; tryStroke(); });
+    this.input.keyboard.on('keydown-SPACE', ()=> tryStroke());
+  }
+  update(time, delta){
+    drawWater(time);
+    drawHazards();
+    drawShore();
+    drawPlayer(time);
+  }
+}
+
+function drawWater(time){
+  waterGfx.clear();
+  waterGfx.fillGradientStyle(0x0a1a2e, 0x0a1a2e, 0x123049, 0x123049, 1);
+  waterGfx.fillRect(0, 0, W, H);
+
+  // slow directional wave bands
+  waveGfx.clear();
+  waveGfx.lineStyle(2, 0x2c5470, 0.35);
+  for (let row=0; row<7; row++){
+    const y = (row*90 + (time*0.02) % 90) % (H+40) - 20;
+    waveGfx.beginPath();
+    for (let x=0; x<=W; x+=20){
+      const yy = y + Math.sin((x*0.02) + time*0.0015 + row) * 6;
+      if (x===0) waveGfx.moveTo(x, yy); else waveGfx.lineTo(x, yy);
+    }
+    waveGfx.strokePath();
+  }
+}
+
+function drawShore(){
+  shoreGfx.clear();
+  // shore sits at progress=100; screenY of that line relative to player
+  const shoreScreenY = PLAYER_SCREEN_Y - (100 - state.progress) * PX_PER_PCT;
+  if (shoreScreenY > -40 && shoreScreenY < H+40){
+    shoreGfx.fillStyle(0xd9c99b, 0.9);
+    shoreGfx.fillRect(0, shoreScreenY, W, H - shoreScreenY + 40);
+    shoreGfx.fillStyle(0xeaf6f8, 0.5);
+    shoreGfx.fillRect(0, shoreScreenY-4, W, 6);
+  }
+}
+
+function screenYForP(p){
+  return PLAYER_SCREEN_Y - (p - state.progress) * PX_PER_PCT;
+}
+function screenXForLane(lane){
+  return PLAYER_SCREEN_X + lane * LANE_PX;
+}
+
+function drawHazards(){
+  hazardGfx.clear();
+  for (const hz of state.hazards){
+    if (hz.type === 'current'){
+      if (hz.endP < state.progress - 10 || hz.startP > state.progress + 16) continue;
+      const yTop = screenYForP(hz.endP), yBot = screenYForP(hz.startP);
+      const cx = screenXForLane(hz.lane);
+      hazardGfx.fillStyle(0x2f6b86, 0.18);
+      hazardGfx.fillRect(cx-170, yTop, 340, yBot-yTop);
+      hazardGfx.lineStyle(2, 0x7fd8e8, 0.35);
+      const dir = hz.lane >= 0 ? 1 : -1; // purely visual flow direction
+      for (let yy=yTop+10; yy<yBot; yy+=26){
+        hazardGfx.beginPath();
+        hazardGfx.moveTo(cx-40, yy);
+        hazardGfx.lineTo(cx+40*dir*0.4, yy+8);
+        hazardGfx.strokePath();
+      }
+    } else if (hz.type === 'whirlpool'){
+      const cy = screenYForP(hz.centerP), cx = screenXForLane(hz.lane);
+      if (cy < -80 || cy > H+80) continue;
+      const rPx = hz.radius * PX_PER_PCT;
+      hazardGfx.lineStyle(2, 0x7fd8e8, 0.4);
+      for (let ring=0; ring<3; ring++){
+        hazardGfx.strokeCircle(cx, cy, rPx*0.4 + ring*rPx*0.3);
+      }
+      hazardGfx.fillStyle(0x08141f, 0.6);
+      hazardGfx.fillCircle(cx, cy, rPx*0.22);
+    } else if (hz.type === 'jellyfish'){
+      if (hz.triggered) continue;
+      const cy = screenYForP(hz.atP), cx = screenXForLane(hz.lane);
+      if (cy < -40 || cy > H+40) continue;
+      hazardGfx.fillStyle(0xd39bff, 0.35);
+      hazardGfx.fillCircle(cx, cy, 14);
+      hazardGfx.lineStyle(1.5, 0xd39bff, 0.5);
+      for (let t=0;t<4;t++){
+        hazardGfx.beginPath();
+        hazardGfx.moveTo(cx-8+t*5, cy+8);
+        hazardGfx.lineTo(cx-8+t*5 + Math.sin(t)*3, cy+22);
+        hazardGfx.strokePath();
+      }
+    } else if (hz.type === 'wake'){
+      if (hz.endP < state.progress - 10 || hz.startP > state.progress + 16) continue;
+      const yTop = screenYForP(hz.endP), yBot = screenYForP(hz.startP);
+      hazardGfx.lineStyle(2.5, 0xeaf6f8, 0.3);
+      for (let yy=yTop; yy<yBot; yy+=18){
+        hazardGfx.beginPath();
+        hazardGfx.moveTo(0, yy);
+        hazardGfx.lineTo(W, yy);
+        hazardGfx.strokePath();
+      }
+    }
+  }
+}
+
+function drawPlayer(time){
+  playerGfx.clear();
+  const x = screenXForLane(state.lane), y = PLAYER_SCREEN_Y;
+  const bob = Math.sin(time*0.004) * 3;
+  playerGfx.fillStyle(0xeaf6f8, 0.95);
+  playerGfx.fillEllipse(x, y+bob, 22, 12);
+  playerGfx.fillStyle(0x123049, 1);
+  playerGfx.fillCircle(x, y+bob-9, 7);
+
+  splashGfx.clear();
+  if (state.strokeCD > STROKE_COOLDOWN_MS*0.5){
+    // splash burst — visible right after a stroke, fades as cooldown drops
+    const t = state.strokeCD / STROKE_COOLDOWN_MS;
+    splashGfx.fillStyle(0xeaf6f8, 0.5*t);
+    splashGfx.fillCircle(x-14, y+bob+4, 6*t);
+    splashGfx.fillCircle(x+16, y+bob+2, 5*t);
+    splashGfx.fillCircle(x, y+bob+10, 7*t);
+  }
+}
+
+// ---------- input ----------
+function tryStroke(){
+  if (state.phase !== 'playing') return;
+  if (state.strokeCD > 0) return;
+  if (state.stamina < MIN_STROKE_STAMINA){
+    sfx('tone', 140, 0.12, 'sawtooth', 0.08); // exhausted — can't fight the water right now
+    return;
+  }
+  const x = screenXForLane(state.lane), y = PLAYER_SCREEN_Y;
+  let dx = pointerX - x, dy = pointerY - y;
+  const len = Math.max(1, Math.hypot(dx, dy));
+  dx /= len; dy /= len;
+  const forward = clamp(-dy, 0, 1); // aiming up = forward progress
+  const lateral = clamp(dx, -1, 1);
+
+  state.progress = clamp(state.progress + STROKE_PROGRESS * (0.4 + 0.6*forward), 0, 100);
+  state.lane = clamp(state.lane + lateral * 0.16, -1, 1);
+  state.stamina = clamp(state.stamina - STROKE_STAMINA_COST, 0, 100);
+  state.strokeCD = STROKE_COOLDOWN_MS;
+
+  sfx('tone', 380 + forward*120, 0.09, 'sine', 0.12);
+  updateHud();
+}
+
+// ---------- hazard effects (applied every tick) ----------
+function applyHazards(dt){
+  for (const hz of state.hazards){
+    if (hz.type === 'current'){
+      if (state.progress >= hz.startP && state.progress <= hz.endP){
+        const dir = hz.lane >= 0 ? 1 : -1;
+        state.lane = clamp(state.lane + dir * hz.strength * 0.18 * dt, -1, 1);
+        state.progress = clamp(state.progress - hz.strength * 1.2 * dt, 0, 100); // undertow drags you back
+      }
+    } else if (hz.type === 'wake'){
+      if (state.progress >= hz.startP && state.progress <= hz.endP){
+        state.lane = clamp(state.lane + Math.sin(state.elapsed*1.3) * hz.strength * 0.35 * dt, -1, 1);
+      }
+    } else if (hz.type === 'whirlpool'){
+      const dp = state.progress - hz.centerP;
+      if (Math.abs(dp) <= hz.radius){
+        const pull = (1 - Math.abs(dp)/hz.radius) * hz.strength;
+        const dirToCenter = hz.lane - state.lane;
+        state.lane = clamp(state.lane + Math.sign(dirToCenter||1) * pull * 0.22 * dt, -1, 1);
+        state.progress = clamp(state.progress - pull * 0.9 * dt, 0, 100);
+      }
+    } else if (hz.type === 'jellyfish'){
+      if (!hz.triggered && Math.abs(state.progress - hz.atP) < 1.4 && Math.abs(state.lane - hz.lane) < hz.radius*6){
+        hz.triggered = true;
+        state.panic = clamp(state.panic + 15, 0, 100);
+        sfx('tone', 260, 0.16, 'square', 0.16, 120);
+        flashBanner('STUNG', '', 'warn', 500);
+      }
+    }
+  }
+}
+
+function flashBanner(text, sub, cls, duration){
+  const el = document.getElementById('banner');
+  el.className = 'banner show ' + (cls||'');
+  el.innerHTML = text + (sub ? '<span class="sub">'+sub+'</span>' : '');
+  if (duration){
+    setTimeout(()=>{ el.className = 'banner'; }, duration);
+  }
+}
+function clearBanner(){
+  document.getElementById('banner').className = 'banner';
+}
+
+// ---------- HUD ----------
+function updateHud(){
+  document.getElementById('progressPct').textContent = Math.round(state.progress)+'%';
+  document.getElementById('progressFill').style.width = state.progress+'%';
+  document.getElementById('staminaPct').textContent = Math.round(state.stamina)+'%';
+  document.getElementById('staminaFill').style.width = state.stamina+'%';
+  document.getElementById('panicPct').textContent = Math.round(state.panic)+'%';
+  document.getElementById('panicFill').style.width = state.panic+'%';
+  const status = document.getElementById('hudStatus');
+  if (state.panic > 60) status.textContent = 'Panicking';
+  else if (state.stamina < 15) status.textContent = 'Exhausted';
+  else if (state.strokeCD > 0) status.textContent = 'Swimming';
+  else status.textContent = 'Holding';
+}
+
+// ---------- main loop timer (separate from Phaser's render loop, so game
+// logic keeps running at a fixed tick regardless of frame rate hiccups) ----------
+let lastTick = null;
+function gameTick(now){
+  if (state.phase === 'playing'){
+    const dt = lastTick != null ? Math.min(0.1, (now - lastTick)/1000) : 0;
+    lastTick = now;
+    state.elapsed += dt;
+
+    if (state.strokeCD > 0){
+      state.strokeCD = Math.max(0, state.strokeCD - dt*1000);
+    } else {
+      state.stamina = clamp(state.stamina + STAMINA_REGEN*dt, 0, 100);
+    }
+
+    if (state.stamina <= 0){
+      state.panic = clamp(state.panic + PANIC_RISE*dt, 0, 100);
+    } else {
+      state.panic = clamp(state.panic - PANIC_FALL*dt, 0, 100);
+    }
+
+    applyHazards(dt);
+    updateHud();
+
+    if (state.progress >= 100){
+      winRun();
+    } else if (state.panic >= 100){
+      loseRun();
+    }
+  } else {
+    lastTick = now;
+  }
+  requestAnimationFrame(gameTick);
+}
+
+function winRun(){
+  state.phase = 'ended';
+  state.ended = true;
+  state.running = false;
+  if (state.progress > state.bestProgress) state.bestProgress = state.progress;
+  if (state.bestTimeMs == null || state.elapsed*1000 < state.bestTimeMs) state.bestTimeMs = state.elapsed*1000;
+  saveBest();
+  renderBest();
+  sfx('tone', 900, 0.14, 'triangle', 0.2);
+  sfx('chime', [700, 950, 1300], 'sine', 0.2);
+  flashBanner('SHORE', 'You made it', 'good', 0);
+  document.getElementById('endTitle').textContent = 'SHORE';
+  document.getElementById('endMsg').textContent = 'You made it in. The water lets you go.';
+  document.getElementById('endDist').textContent = '100%';
+  document.getElementById('endTime').textContent = formatTime(state.elapsed*1000);
+  setTimeout(()=> document.getElementById('endScreen').classList.remove('hidden'), 700);
+}
+function loseRun(){
+  state.phase = 'ended';
+  state.ended = true;
+  state.running = false;
+  if (state.progress > state.bestProgress) state.bestProgress = state.progress;
+  saveBest();
+  renderBest();
+  sfx('tone', 180, 0.4, 'sawtooth', 0.26, 50);
+  flashBanner('PANIC', 'The water took you', 'warn', 0);
+  document.getElementById('endTitle').textContent = 'PANIC';
+  document.getElementById('endMsg').textContent = 'You couldn’t hold it together. The current won.';
+  document.getElementById('endDist').textContent = Math.round(state.progress)+'%';
+  document.getElementById('endTime').textContent = formatTime(state.elapsed*1000);
+  setTimeout(()=> document.getElementById('endScreen').classList.remove('hidden'), 700);
+}
+
+// ---------- boot ----------
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W, height: H,
+  parent: 'game-container',
+  backgroundColor: '#08141f',
+  scene: [SwimScene]
+});
+
+loadBest();
+requestAnimationFrame(gameTick);
+
+try{
+  if (typeof SFX !== 'undefined' && SFX && typeof SFX.mountUI === 'function'){
+    SFX.mountUI({ corner: 'top-right' });
+  }
+}catch(e){}
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  sfx('tone', 440, 0.05, 'sine', 0.001); // unlock audio on the real user gesture
+  document.getElementById('startScreen').classList.add('hidden');
+  state.phase = 'playing';
+  state.running = true;
+  state.ended = false;
+  state.progress = 0;
+  state.lane = 0;
+  state.stamina = 100;
+  state.panic = 0;
+  state.strokeCD = 0;
+  state.elapsed = 0;
+  state.hazards = generateHazards();
+  clearBanner();
+  updateHud();
+});
+document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
+
+})();
+</script>
+</body>
+</html>
