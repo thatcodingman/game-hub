@@ -57,6 +57,10 @@
   .banner.real{ color:var(--real); }
   .banner.bad{ color:var(--danger); }
   .banner.good{ color:var(--accent); }
+  .banner.lightning{ color:#8be9ff; }
+  .banner.sharp{ color:var(--accent); }
+  .banner.steady{ color:var(--dusk); }
+  .banner.alive{ color:var(--text-dim); }
   .banner .sub{ display:block; font-size:15px; font-weight:600; letter-spacing:1px; margin-top:6px; color:var(--text); }
 
   .hint{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:8px; }
@@ -240,24 +244,38 @@ class DuelScene extends Phaser.Scene {
     this.input.on('pointerdown', ()=> handleInput());
     this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
   }
+  update(time){
+    // Small idle breathing bob so the standoff doesn't look frozen/dead
+    // while the player is watching for the real signal.
+    const bob = Math.sin(time*0.0028) * 2;
+    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob);
+    if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob);
+  }
 }
 
-function drawFigure(g, x, groundY, color, facingRight){
+function drawFigure(g, x, groundY, color, facingRight, bob){
+  bob = bob || 0;
+  const gy = groundY + bob;
   g.clear();
   g.fillStyle(color, 1);
   // legs
-  g.fillRect(x-14, groundY-70, 10, 70);
-  g.fillRect(x+4, groundY-70, 10, 70);
+  g.fillRect(x-14, gy-70, 10, 70);
+  g.fillRect(x+4, gy-70, 10, 70);
   // body
-  g.fillRoundedRect(x-20, groundY-150, 40, 84, 8);
+  g.fillRoundedRect(x-20, gy-150, 40, 84, 8);
   // head
-  g.fillCircle(x, groundY-168, 16);
+  g.fillCircle(x, gy-168, 16);
   // hat
-  g.fillRect(x-26, groundY-190, 52, 8);
-  g.fillRoundedRect(x-14, groundY-206, 28, 20, 6);
+  g.fillRect(x-26, gy-190, 52, 8);
+  g.fillRoundedRect(x-14, gy-206, 28, 20, 6);
   // arm (toward center)
   const dir = facingRight ? -1 : 1;
-  g.fillRect(x + dir*14, groundY-140, 26*Math.sign(dir)*-1 || 26, 10);
+  g.fillRect(x + dir*14, gy-140, 26*Math.sign(dir)*-1 || 26, 10);
+  // holstered gun at the hip — the thing you're watching for a draw on
+  g.fillStyle(0x3a2413, 1);
+  g.fillRect(x-6, gy-84, 12, 20);
+  g.fillStyle(0x1a1109, 1);
+  g.fillRect(x-4, gy-90, 8, 10);
 }
 
 function drawHandTwitch(g, x, groundY, offset){
@@ -386,7 +404,7 @@ function resolveRound(won, payload){
     saveBest();
     renderBest();
     document.getElementById('hudStreak').textContent = state.streak;
-    flashBanner(ratingFor(ms), Math.round(ms)+'ms', 'good', 500);
+    flashBanner(ratingFor(ms), Math.round(ms)+'ms', ratingFor(ms).toLowerCase(), 500);
     sfx('tone', 900, 0.1, 'triangle', 0.18);
     document.getElementById('hudStatus').textContent = 'Holstered';
     schedule(()=> startRound(), 900);
@@ -400,12 +418,13 @@ function endRun(reason){
   state.running = false;
   state.ended = true;
   clearTimers();
-  sfx('tone', 110, 0.3, 'sawtooth', 0.22);
   if (reason === 'flinch'){
+    sfx('tone', 220, 0.18, 'square', 0.2); // sharp "gasp/whip" — you jumped the gun
     flashBanner('YOU FLINCHED', 'Drew before the signal', 'bad', 0);
     document.getElementById('endTitle').textContent = 'YOU FLINCHED';
     document.getElementById('endMsg').textContent = 'You drew before the real signal. Discipline broke — game over.';
   } else {
+    sfx('tone', 90, 0.35, 'sawtooth', 0.28); // low, blunt "gunshot" — opponent won
     flashBanner('TOO SLOW', 'Opponent got the drop on you', 'bad', 0);
     document.getElementById('endTitle').textContent = 'TOO SLOW';
     document.getElementById('endMsg').textContent = 'The signal came and went. Your opponent was faster.';
