@@ -122,7 +122,7 @@
           <div><b>Feints</b> — hand twitches, dust puffs, crowd gasps. These are NOT the signal. Click during one and you flinch — game over.</div>
           <div><b>The Draw</b> — a bright white flash across the screen with a bell tone. That's the only real cue. React as fast as you can.</div>
           <div><b>Too slow</b> — miss the window after the real draw and your opponent gets the drop on you.</div>
-          <div>Every round you survive, the feints get faster and closer together. See how far your nerve holds.</div>
+          <div>Every round you survive, the feints get faster, closer together, and start looking a lot more like the real thing — a half-draw, a duller flash, a distant shot. Watch for the exact flash and tone, not just any movement or bang.</div>
         </div>
         <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Step Up To The Line</button>
       </div>
@@ -301,7 +301,10 @@ function clearBanner(){
 // draw-reaction timeout. This is the whole hook — the danger isn't reaction
 // speed dropping, it's discipline getting harder to hold onto.
 function difficultyForStreak(streak){
-  const feintCount = Math.min(5, Math.floor(streak/2));
+  // Always at least 1 feint, even on the very first round of a run — a
+  // silent hold-then-flash isn't a bluff mechanic, it's a fixed-length
+  // reaction timer, and that's what was making the draw feel same-timed.
+  const feintCount = Math.min(6, 1 + Math.floor(streak/2));
   const feintGapMin = Math.max(220, 650 - streak*22);
   const feintGapMax = Math.max(400, 1000 - streak*24);
   const preDrawDelayMin = Math.max(280, 700 - streak*18);
@@ -312,6 +315,28 @@ function difficultyForStreak(streak){
 
 function rand(min, max){ return min + Math.random()*(max-min); }
 
+// Draws `count` feint kinds from the streak's available pool without
+// repeats until the pool is exhausted, so dust puffs and crowd murmurs
+// actually show up regularly instead of getting starved by chance.
+function availableFeintPool(streak){
+  const pool = ['handTwitch', 'dustPuff', 'murmur'];
+  if (streak >= 3) pool.push('partialDraw');
+  if (streak >= 4) pool.push('echo');
+  if (streak >= 6) pool.push('flare');
+  return pool;
+}
+function pickFeintSequence(count, streak){
+  const pool = availableFeintPool(streak);
+  const seq = [];
+  let bag = [];
+  for (let i=0;i<count;i++){
+    if (bag.length === 0) bag = pool.slice();
+    const idx = Math.floor(Math.random()*bag.length);
+    seq.push(bag.splice(idx,1)[0]);
+  }
+  return seq;
+}
+
 function startRound(){
   clearTimers();
   clearBanner();
@@ -321,35 +346,59 @@ function startRound(){
   drawHandTwitch(oppHand, 220, GROUND_Y, 0);
 
   const diff = difficultyForStreak(state.streak);
-  let t = rand(400, 900); // initial hold before any feints
+  let t = rand(300, 1200); // initial hold before any feints — wide range so the pacing never settles into a fixed rhythm
 
-  for (let i=0;i<diff.feintCount;i++){
-    schedule(()=> doFeint(), t);
+  const feintKinds = pickFeintSequence(diff.feintCount, state.streak);
+  for (let i=0;i<feintKinds.length;i++){
+    const kind = feintKinds[i];
+    schedule(()=> doFeint(kind), t);
     t += rand(diff.feintGapMin, diff.feintGapMax);
   }
 
-  schedule(()=> armDraw(diff.reactionTimeout), t + rand(diff.preDrawDelayMin, diff.preDrawDelayMax));
+  const preDraw = rand(diff.preDrawDelayMin, diff.preDrawDelayMax) * rand(0.85, 1.2);
+  schedule(()=> armDraw(diff.reactionTimeout), t + preDraw);
 }
 
-function doFeint(){
+// Feint pool widens with streak — early on it's harmless noise (twitch, dust,
+// murmur); past streak 3-6 it starts mixing in feints that actually resemble
+// the real signal (a partial draw motion, a dim near-color flash, a distant
+// report), so late-game bluffs cost real discrimination, not just nerve.
+function doFeint(kind){
   if (state.phase !== 'standoff') return;
-  const kind = Math.floor(Math.random()*3);
-  if (kind === 0){
-    // hand twitch
+  if (kind === 'handTwitch'){
     drawHandTwitch(oppHand, 220, GROUND_Y, -10);
     schedule(()=>{ if (oppHand) drawHandTwitch(oppHand, 220, GROUND_Y, 0); }, 110);
     sfx('tone', 320, 0.05, 'square', 0.08);
-  } else if (kind === 1){
-    // dust puff
+  } else if (kind === 'dustPuff'){
     if (dustGfx){
       dustGfx.clear();
       dustGfx.fillStyle(0xd9b382, 0.35);
       dustGfx.fillCircle(220, GROUND_Y-4, 14);
       schedule(()=>{ if (dustGfx) dustGfx.clear(); }, 180);
     }
-  } else {
+  } else if (kind === 'murmur'){
     // crowd murmur, audio-only tell
     sfx('tone', 180, 0.09, 'sawtooth', 0.07);
+  } else if (kind === 'partialDraw'){
+    // opponent's hand drops toward the holster and pulls back — the most
+    // convincing bluff, since it's the same motion as the real draw
+    drawHandTwitch(oppHand, 220, GROUND_Y, 56);
+    schedule(()=>{ if (oppHand) drawHandTwitch(oppHand, 220, GROUND_Y, 0); }, 160);
+    sfx('tone', 260, 0.06, 'square', 0.09);
+  } else if (kind === 'echo'){
+    // a distant gunshot report, audio-only — baits anyone who reacts to
+    // "a bang" instead of waiting for the real cue's exact tone/flash
+    sfx('tone', 140, 0.12, 'sawtooth', 0.1);
+  } else if (kind === 'flare'){
+    // a dim, brief orange flash — shaped like the real draw but wrong
+    // color, wrong duration, and a duller tone
+    if (flashGfx){
+      flashGfx.clear();
+      flashGfx.fillStyle(0xff7b39, 0.45);
+      flashGfx.fillRect(0, 0, W, H);
+      schedule(()=>{ if (flashGfx) flashGfx.clear(); }, 60);
+    }
+    sfx('tone', 500, 0.08, 'triangle', 0.12);
   }
 }
 
