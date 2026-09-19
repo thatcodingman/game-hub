@@ -171,6 +171,7 @@ const state = {
   running: false,
   ended: false,
   drawCueTime: 0,
+  resultKind: null, // null | 'win' | 'flinch' | 'slow' — drives the drawn-gun animation
   timers: [] // pending setTimeout ids for the current standoff, cleared on resolve
 };
 
@@ -209,7 +210,7 @@ function schedule(fn, delay){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let playerFig, oppFig, oppHand, dustGfx, flashGfx;
+let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx;
 
 class DuelScene extends Phaser.Scene {
   constructor(){ super('duel'); }
@@ -232,10 +233,12 @@ class DuelScene extends Phaser.Scene {
     drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true);
     oppHand = this.add.graphics();
     drawHandTwitch(oppHand, 220, GROUND_Y, 0);
+    oppActionGfx = this.add.graphics(); // opponent's hand-on-holster draw animation
 
     // player silhouette (right)
     playerFig = this.add.graphics();
     drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false);
+    playerActionGfx = this.add.graphics(); // player's hand-on-holster draw animation
 
     dustGfx = this.add.graphics();
     flashGfx = this.add.graphics();
@@ -250,6 +253,25 @@ class DuelScene extends Phaser.Scene {
     const bob = Math.sin(time*0.0028) * 2;
     if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob);
     if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob);
+
+    // Opponent's hand snaps to the holster and pulls the gun the instant
+    // the real draw is live, and stays drawn if they beat you to it.
+    if (oppActionGfx){
+      if (state.phase === 'armed' || state.resultKind === 'slow'){
+        drawDrawnGun(oppActionGfx, 220, GROUND_Y, true, bob);
+      } else {
+        oppActionGfx.clear();
+      }
+    }
+    // Player's hand does the same the instant you win the round — visible
+    // payoff for the click, not just a banner.
+    if (playerActionGfx){
+      if (state.resultKind === 'win'){
+        drawDrawnGun(playerActionGfx, W-220, GROUND_Y, false, -bob);
+      } else {
+        playerActionGfx.clear();
+      }
+    }
   }
 }
 
@@ -282,6 +304,26 @@ function drawHandTwitch(g, x, groundY, offset){
   g.clear();
   g.fillStyle(0x1a1109, 1);
   g.fillRect(x + 14, groundY-140+offset, 8, 8);
+}
+
+// The actual "gun comes out of the holster" animation — arm extends toward
+// the center with the gun at the end of it and a muzzle spark, distinct
+// from the idle holstered pose and from the partial-draw feint (which
+// never extends this far or shows the gun clear of the holster).
+function drawDrawnGun(g, x, groundY, facingRight, bob){
+  bob = bob || 0;
+  const gy = groundY + bob;
+  g.clear();
+  const dir = facingRight ? 1 : -1;
+  g.fillStyle(0x1a1109, 1);
+  g.fillRect(x + dir*10, gy-148, dir*44, 11);
+  const gx = x + dir*54;
+  g.fillStyle(0x2b2b2b, 1);
+  g.fillRect(gx - (dir<0?20:2), gy-152, 20, 9);
+  g.fillStyle(0x1a1109, 1);
+  g.fillRect(gx - (dir<0?8:14), gy-146, 8, 12);
+  g.fillStyle(0xffe08a, 0.9);
+  g.fillCircle(gx + dir*22, gy-148, 7);
 }
 
 function flashBanner(text, sub, cls, duration){
@@ -341,6 +383,7 @@ function startRound(){
   clearTimers();
   clearBanner();
   state.phase = 'standoff';
+  state.resultKind = null;
   document.getElementById('hudStatus').textContent = 'Hold...';
   document.getElementById('hudLastReaction').textContent = '—';
   drawHandTwitch(oppHand, 220, GROUND_Y, 0);
@@ -372,9 +415,21 @@ function doFeint(kind){
   } else if (kind === 'dustPuff'){
     if (dustGfx){
       dustGfx.clear();
-      dustGfx.fillStyle(0xd9b382, 0.35);
-      dustGfx.fillCircle(220, GROUND_Y-4, 14);
-      schedule(()=>{ if (dustGfx) dustGfx.clear(); }, 180);
+      // three overlapping puffs, brighter and bigger, held longer — the old
+      // single 14px/0.35-alpha circle at 180ms was gone before it registered
+      dustGfx.fillStyle(0xe8c99b, 0.6);
+      dustGfx.fillCircle(214, GROUND_Y-2, 22);
+      dustGfx.fillCircle(232, GROUND_Y-8, 16);
+      dustGfx.fillCircle(200, GROUND_Y-10, 14);
+      schedule(()=>{
+        if (dustGfx){
+          dustGfx.clear();
+          dustGfx.fillStyle(0xe8c99b, 0.32);
+          dustGfx.fillCircle(220, GROUND_Y-14, 26);
+        }
+      }, 160);
+      schedule(()=>{ if (dustGfx) dustGfx.clear(); }, 340);
+      sfx('tone', 140, 0.06, 'sine', 0.06);
     }
   } else if (kind === 'murmur'){
     // crowd murmur, audio-only tell
@@ -441,6 +496,7 @@ function ratingFor(ms){
 function resolveRound(won, payload){
   clearTimers();
   state.phase = 'resolved';
+  state.resultKind = won ? 'win' : (payload === 'flinch' ? 'flinch' : 'slow');
 
   if (won){
     const ms = payload;
@@ -498,6 +554,12 @@ new Phaser.Game({
 loadBest();
 
 document.getElementById('startBtn').addEventListener('click', ()=>{
+  // Browsers only unlock AudioContext on a sound played synchronously
+  // inside a real user-gesture handler. Every feint/draw sound previously
+  // fired from a setTimeout callback, well after the click had ended, so
+  // the whole game was silently muted. This call unlocks it for everything
+  // scheduled afterward.
+  sfx('tone', 440, 0.05, 'sine', 0.001);
   document.getElementById('startScreen').classList.add('hidden');
   state.running = true;
   state.ended = false;
