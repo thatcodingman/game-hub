@@ -61,6 +61,19 @@
   }
   .crash-flash.show{ opacity:1; transition:opacity .04s ease; }
 
+  .score-pop{
+    position:absolute; left:50%; top:58%; transform:translate(-50%,-50%) scale(0.8);
+    font-size:24px; font-weight:900; color:var(--amber); text-shadow:0 0 14px rgba(255,201,77,0.55);
+    opacity:0; pointer-events:none; z-index:15; letter-spacing:1px;
+  }
+  .score-pop.show{ animation: popRise .6s ease-out forwards; }
+  .score-pop.perfect{ color:var(--good); text-shadow:0 0 14px rgba(91,227,123,0.55); }
+  @keyframes popRise{
+    0%{ opacity:0; transform:translate(-50%,-42%) scale(0.8); }
+    18%{ opacity:1; transform:translate(-50%,-58%) scale(1.1); }
+    100%{ opacity:0; transform:translate(-50%,-95%) scale(1); }
+  }
+
   .preview-overlay{
     position:absolute; inset:0; background:rgba(6,6,10,0.96); display:flex; flex-direction:column;
     align-items:center; justify-content:center; z-index:20; text-align:center; padding:16px;
@@ -149,6 +162,8 @@
 
   <div class="hud">
     <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span></div>
+    <div class="stat"><span class="label">Score</span><span class="val" id="hudScore">0</span></div>
+    <div class="stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
     <div class="stat"><span class="label">Crashes</span><span class="val" id="hudCrashes">0</span></div>
     <div class="spacer"></div>
     <div class="hud-status"><span class="label">Status</span><span class="val" id="hudStatus">Ready</span></div>
@@ -158,6 +173,7 @@
     <div id="game-container"></div>
     <div class="banner" id="banner"></div>
     <div class="crash-flash" id="crashFlash"></div>
+    <div class="score-pop" id="scorePop"></div>
 
     <div class="preview-overlay hidden" id="previewOverlay">
       <div class="preview-stage-label" id="previewStageLabel">STAGE 1</div>
@@ -190,6 +206,7 @@
         <div class="rank-badge-lg" id="rankBadge">-</div>
         <div class="rank-note" id="rankNote"></div>
         <div class="overlay-stats">
+          <div>Score<b id="endScore">0</b></div>
           <div>Crashes<b id="endCrashes">0</b></div>
           <div>Time<b id="endTime">0:00</b></div>
         </div>
@@ -223,8 +240,9 @@ function sfx(name, ...args){
 const W = 960, H = 540;
 const CAR_X = W/2, CAR_Y = H*0.76;
 const PX_PER_UNIT = 2.1;   // px on screen per 1 world unit of remaining distance
-const SPEED = 42;          // world units/sec — constant; difficulty comes from route design, not speed
+const SPEED_BASE = 42;     // world units/sec at stage 1 — ramps up per stage so the run actually feels faster
 const STAGE_COUNT = 10;
+function speedForStage(stage){ return SPEED_BASE + (stage-1) * 3.4; }
 
 // Cue thresholds, as a fraction of the CURRENT gap's total length remaining.
 // Fractions (not fixed distances) so compressed-spacing stages still cue proportionally.
@@ -300,7 +318,10 @@ const state = {
   runStartTime: 0,
   elapsed: 0,
   bestCrashes: null,
-  bestTimeMs: null
+  bestTimeMs: null,
+  score: 0,
+  streak: 0,
+  windowPulseAccum: 0
 };
 
 function loadBest(){
@@ -525,12 +546,23 @@ function gameTick(now){
     const turn = state.route[state.turnIndex];
     if (turn){
       const prevDist = state.distRemaining;
-      state.distRemaining -= SPEED*dt;
+      state.distRemaining -= speedForStage(state.stage)*dt;
       const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
 
       if (!turn.farCued && frac <= FAR_FRAC){ turn.farCued = true; sfx('tone', 520, 0.05, 'sine', 0.05); }
       if (!turn.nearCued && frac <= NEAR_FRAC){ turn.nearCued = true; sfx('tone', 620, 0.06, 'sine', 0.08); }
       if (!turn.windowCued && frac <= WINDOW_FRAC){ turn.windowCued = true; sfx('tone', 760, 0.09, 'triangle', 0.12); }
+
+      // rising-tension heartbeat while the call window is open and uncalled — this is the adrenaline beat
+      if (frac <= WINDOW_FRAC && !turn.called){
+        state.windowPulseAccum += dt;
+        if (state.windowPulseAccum >= 0.15){
+          state.windowPulseAccum = 0;
+          sfx('tone', 900, 0.03, 'square', 0.05);
+        }
+      } else {
+        state.windowPulseAccum = 0;
+      }
 
       if (state.distRemaining <= 0){
         if (!turn.called){
@@ -565,9 +597,16 @@ function callDirection(dir){
   }
 
   // correct call — take the branch, continue
-  sfx('tone', 880, 0.08, 'sine', 0.14);
+  const isPerfect = frac <= WINDOW_FRAC * 0.3; // called right on the edge of the window — riskier, pays more
+  state.streak++;
+  const gained = 100 + state.streak*8 + (isPerfect ? 60 : 0);
+  state.score += gained;
+  popScore(isPerfect ? 'PERFECT +' + gained : '+' + gained, isPerfect ? 'perfect' : '');
+  sfx('tone', isPerfect ? 980 : 880, 0.08, 'sine', 0.14);
+  if (scene) scene.cameras.main.flash(80, 255, 201, 77, false);
   state.targetLaneOffset = dir === 'L' ? -30 : 30;
   setTimeout(()=>{ state.targetLaneOffset = 0; }, 220);
+  updateHud();
 
   state.turnIndex++;
   if (state.turnIndex >= state.route.length){
@@ -580,10 +619,12 @@ function callDirection(dir){
 function crashRun(title, sub){
   state.phase = 'crashed';
   state.crashesThisRun++;
+  state.streak = 0;
   sfx('tone', 140, 0.28, 'sawtooth', 0.22, 40);
   sfx('tone', 90, 0.2, 'square', 0.15);
   flashBanner(title, sub, 'warn', 0);
   document.getElementById('crashFlash').classList.add('show');
+  if (scene) scene.cameras.main.shake(180, 0.012);
   updateHud();
   setTimeout(()=>{
     document.getElementById('crashFlash').classList.remove('show');
@@ -627,6 +668,7 @@ function completeRun(){
   else endMsg = "Messy, loud, and lucky — but the safehouse door just closed behind you.";
   document.getElementById('endTitle').textContent = 'GETAWAY COMPLETE';
   document.getElementById('endMsg').textContent = endMsg;
+  document.getElementById('endScore').textContent = state.score;
   document.getElementById('endCrashes').textContent = state.crashesThisRun;
   document.getElementById('endTime').textContent = formatTime(totalMs);
   document.getElementById('endScreen').classList.remove('hidden');
@@ -702,6 +744,18 @@ function startPreview(stage){
   }, duration);
 }
 
+let popScoreHandle = null;
+function popScore(text, cls){
+  const el = document.getElementById('scorePop');
+  el.classList.remove('show');
+  void el.offsetWidth; // restart the animation even if it's still mid-run from the last call
+  el.textContent = text;
+  el.className = 'score-pop ' + (cls || '');
+  requestAnimationFrame(()=>{ el.classList.add('show'); });
+  clearTimeout(popScoreHandle);
+  popScoreHandle = setTimeout(()=>{ el.className = 'score-pop'; }, 650);
+}
+
 function flashBanner(text, sub, cls, duration){
   const el = document.getElementById('banner');
   el.className = 'banner show ' + (cls||'');
@@ -712,6 +766,8 @@ function clearBanner(){ document.getElementById('banner').className = 'banner'; 
 
 function updateHud(){
   document.getElementById('hudStage').textContent = state.stage + ' / ' + STAGE_COUNT;
+  document.getElementById('hudScore').textContent = state.score;
+  document.getElementById('hudStreak').textContent = state.streak;
   document.getElementById('hudCrashes').textContent = state.crashesThisRun;
   const status = document.getElementById('hudStatus');
   if (state.phase === 'preview') status.textContent = 'Memorize';
@@ -746,6 +802,8 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.stage = 1;
   state.crashesThisRun = 0;
   state.elapsed = 0;
+  state.score = 0;
+  state.streak = 0;
   lastTick = null;
   startPreview(1);
 });
