@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Getaway Driver — The Arcade</title>
+<style>
+  :root{
+    --asphalt:#0a0a10; --asphalt-mid:#15151d; --panel:#15151d; --border:#2a2a38;
+    --amber:#ffc94d; --amber-dim:#a8863a; --text:#eae8f0; --text-dim:#8e8ba0;
+    --accent:#ffc94d; --danger:#ff3b3b; --good:#5be37b;
+  }
+  * { box-sizing:border-box; }
+  body{
+    margin:0; padding:16px; min-height:100vh;
+    background: radial-gradient(circle at 50% 0%, #1c1c28 0%, #0a0a10 65%);
+    color:var(--text); font-family:system-ui,-apple-system,sans-serif;
+    overscroll-behavior-y:none; -webkit-overflow-scrolling:touch;
+  }
+  .wrap{ max-width:1000px; margin:0 auto; }
+  .title-bar{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:6px; }
+  .title-bar h1{ margin:0; font-size:26px; letter-spacing:3px; color:var(--amber); text-shadow:0 0 12px rgba(255,201,77,0.3); }
+  .title-bar .subtitle{ color:var(--text-dim); font-size:12.5px; }
+  .best-run{ font-size:11.5px; color:var(--text-dim); text-align:right; }
+  .best-run b{ color:var(--amber); }
+
+  .hud{
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:10px 14px; margin-bottom:10px; font-size:12.5px;
+  }
+  .hud .stat{ display:flex; flex-direction:column; gap:1px; }
+  .hud .stat .label{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); }
+  .hud .stat .val{ font-weight:700; font-size:15px; color:var(--amber); }
+  .spacer{ flex:1; }
+  .hud-status{ display:flex; flex-direction:column; gap:1px; text-align:right; }
+  .hud-status .label{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); }
+  .hud-status .val{ font-weight:700; font-size:15px; color:var(--text); }
+
+  .stage{
+    position:relative; width:100%; aspect-ratio:960/540; background:#000;
+    border-radius:10px; overflow:hidden; border:1px solid var(--border);
+    user-select:none; touch-action:manipulation;
+    -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  }
+  .stage canvas{ display:block; width:100% !important; height:100% !important; touch-action:manipulation; }
+
+  .banner{
+    position:absolute; left:0; right:0; top:36%; text-align:center; pointer-events:none;
+    font-size:36px; font-weight:900; letter-spacing:3px; text-shadow:0 0 18px rgba(0,0,0,0.8);
+    opacity:0; transition:opacity .08s;
+  }
+  .banner.show{ opacity:1; }
+  .banner.warn{ color:var(--danger); }
+  .banner.good{ color:var(--good); }
+  .banner .sub{ display:block; font-size:14px; font-weight:600; letter-spacing:1px; margin-top:6px; color:var(--text-dim); }
+
+  .crash-flash{
+    position:absolute; inset:0; background:rgba(255,59,59,0.35); opacity:0; pointer-events:none;
+    z-index:8; transition:opacity .35s ease;
+  }
+  .crash-flash.show{ opacity:1; transition:opacity .04s ease; }
+
+  .preview-overlay{
+    position:absolute; inset:0; background:rgba(6,6,10,0.96); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; z-index:20; text-align:center; padding:16px;
+  }
+  .preview-overlay.hidden{ display:none; }
+  .preview-stage-label{ color:var(--text-dim); font-size:12px; letter-spacing:2px; text-transform:uppercase; margin-bottom:6px; }
+  .preview-route{ display:flex; align-items:center; flex-wrap:wrap; justify-content:center; gap:2px; margin:14px 0; max-width:92%; }
+  .preview-arrow{ font-size:30px; color:var(--amber); font-weight:900; text-shadow:0 0 10px rgba(255,201,77,0.4); }
+  .preview-timer-track{ width:220px; height:6px; border-radius:3px; background:rgba(255,255,255,0.1); overflow:hidden; margin-top:10px; }
+  .preview-timer-fill{ height:100%; background:var(--amber); border-radius:3px; transition:width .05s linear; }
+  .preview-hint{ font-size:11.5px; color:var(--text-dim); margin-top:10px; max-width:340px; }
+
+  .hint{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:8px; }
+
+  .controls-row{ display:flex; gap:10px; margin-top:10px; }
+  .dir-btn{
+    flex:1; min-height:56px; border-radius:10px; border:1px solid var(--border);
+    background:var(--panel); color:var(--text); font-size:22px; font-weight:900;
+    cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+    display:flex; align-items:center; justify-content:center; gap:8px; letter-spacing:1px;
+  }
+  .dir-btn:active{ background:var(--amber); color:#1a1206; border-color:var(--amber); }
+  .dir-btn .key{ font-size:10px; color:var(--text-dim); font-weight:600; }
+  .dir-btn:active .key{ color:#1a1206; }
+
+  .overlay{
+    position:absolute; inset:0; background:rgba(4,4,8,0.94); display:flex; align-items:center;
+    justify-content:center; z-index:50; text-align:center; padding:20px;
+  }
+  .overlay.hidden{ display:none; }
+  .overlay-card{ max-width:460px; }
+  .overlay-card h2{ font-size:26px; color:var(--amber); margin-bottom:6px; letter-spacing:2px; }
+  .overlay-card p{ color:var(--text-dim); font-size:13px; line-height:1.6; }
+  .overlay-card .pitch{ color:var(--text); font-style:italic; margin:12px 0; }
+  .overlay-stats{ display:flex; justify-content:center; gap:24px; margin:16px 0; flex-wrap:wrap; }
+  .overlay-stats div{ font-size:12px; color:var(--text-dim); }
+  .overlay-stats div b{ display:block; font-size:22px; color:var(--text); }
+  .rule-list{ text-align:left; font-size:11.5px; margin:14px 0; }
+  .rule-list div{ margin:6px 0; }
+  .rule-list b{ color:var(--text); }
+
+  .rank-badge-lg{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:54px; height:54px; border-radius:50%; font-size:26px; font-weight:900;
+    margin:4px auto 10px; border:2px solid currentColor; text-shadow:0 0 10px currentColor;
+  }
+  .rank-note{ font-size:11px; color:var(--text-dim); margin:-4px 0 10px; }
+
+  .btn{
+    background:transparent; border:1px solid var(--border); color:var(--text);
+    padding:8px 16px; min-height:44px; border-radius:6px; font-size:13px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .btn:hover{ border-color:var(--amber); }
+  .btn.primary{ background:var(--amber); color:#1a1206; border-color:var(--amber); font-weight:700; }
+
+  @media (max-width: 480px){
+    body{ padding:10px; }
+    .title-bar{ flex-direction:column; align-items:flex-start; gap:4px; }
+    .best-run{ text-align:left; font-size:10.5px; }
+    .hud{ gap:8px 12px; padding:8px 10px; }
+    .overlay-card h2{ font-size:21px; }
+    .overlay-card p{ font-size:12.5px; }
+    .rule-list{ font-size:11px; margin:10px 0; }
+    .overlay-stats{ gap:16px; margin:12px 0; }
+    .banner{ font-size:26px; }
+    .preview-arrow{ font-size:24px; }
+    .dir-btn{ font-size:18px; min-height:50px; }
+    .hint{ font-size:10.5px; padding:0 4px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title-bar">
+    <div>
+      <h1>GETAWAY DRIVER</h1>
+      <div class="subtitle">You saw the route. Now drive it blind.</div>
+    </div>
+    <div class="best-run">
+      <div>Best clear: <b id="bestStatsLine">—</b></div>
+    </div>
+  </div>
+
+  <div class="hud">
+    <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span></div>
+    <div class="stat"><span class="label">Crashes</span><span class="val" id="hudCrashes">0</span></div>
+    <div class="spacer"></div>
+    <div class="hud-status"><span class="label">Status</span><span class="val" id="hudStatus">Ready</span></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div id="game-container"></div>
+    <div class="banner" id="banner"></div>
+    <div class="crash-flash" id="crashFlash"></div>
+
+    <div class="preview-overlay hidden" id="previewOverlay">
+      <div class="preview-stage-label" id="previewStageLabel">STAGE 1</div>
+      <div class="preview-route" id="previewRoute"></div>
+      <div class="preview-timer-track"><div class="preview-timer-fill" id="previewTimerFill" style="width:100%"></div></div>
+      <div class="preview-hint">Memorize the sequence. It disappears when the timer runs out.</div>
+    </div>
+
+    <div class="overlay" id="startScreen">
+      <div class="overlay-card">
+        <h2>GETAWAY DRIVER</h2>
+        <p>The car drives itself. You're the navigator.</p>
+        <p class="pitch">"I saw the route. Now I'm driving through it blind. Tell me where to turn."</p>
+        <div class="rule-list">
+          <div><b>Preview</b> — study the full route before it disappears. Left/right arrows, spaced to show rhythm.</div>
+          <div><b>Blind drive</b> — the map is gone. Watch for the approach cue, then call the turn from memory.</div>
+          <div><b>Timing</b> — too early (before the cue window) or too late (past the intersection) both crash, same as calling the wrong direction.</div>
+          <div><b>Escalation</b> — 10 stages, more turns and tighter memory load each time. Crash and you're straight back to a fresh preview — instantly.</div>
+        </div>
+        <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Start Run</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="endScreen">
+      <div class="overlay-card">
+        <h2 id="endTitle">GETAWAY COMPLETE</h2>
+        <p id="endMsg"></p>
+        <div class="rank-badge-lg" id="rankBadge">-</div>
+        <div class="rank-note" id="rankNote"></div>
+        <div class="overlay-stats">
+          <div>Crashes<b id="endCrashes">0</b></div>
+          <div>Time<b id="endTime">0:00</b></div>
+        </div>
+        <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Run It Again</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls-row">
+    <button class="dir-btn" id="leftBtn">&larr; LEFT <span class="key">A</span></button>
+    <button class="dir-btn" id="rightBtn">RIGHT &rarr; <span class="key">D</span></button>
+  </div>
+
+  <div class="hint">A / Left Arrow = turn left. D / Right Arrow = turn right. Call it in the window — not before, not after.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function(){
+'use strict';
+
+function sfx(name, ...args){
+  try{
+    if (typeof SFX !== 'undefined' && SFX && typeof SFX[name] === 'function'){
+      SFX[name](...args);
+    }
+  }catch(e){ /* audio must never break the game loop */ }
+}
+
+const W = 960, H = 540;
+const CAR_X = W/2, CAR_Y = H*0.76;
+const PX_PER_UNIT = 2.1;   // px on screen per 1 world unit of remaining distance
+const SPEED = 42;          // world units/sec — constant; difficulty comes from route design, not speed
+const STAGE_COUNT = 10;
+
+// Cue thresholds, as a fraction of the CURRENT gap's total length remaining.
+// Fractions (not fixed distances) so compressed-spacing stages still cue proportionally.
+const FAR_FRAC = 0.62;      // subtle distant cue
+const NEAR_FRAC = 0.36;     // second, closer cue
+const WINDOW_FRAC = 0.15;   // final pulse — the call window opens here and stays open to the intersection
+
+// ---------- per-stage route generation ----------
+// Turn count table straight from the design doc's escalation curve.
+const STAGE_TURN_COUNT = [3,4,5,5,6,6,7,7,9,10];
+function spacingModeForStage(stage){
+  if (stage === 1) return 'obvious';
+  if (stage === 4) return 'uneven';
+  if (stage >= 9) return 'compressed';
+  return 'normal';
+}
+function repeatBiasForStage(stage){
+  if (stage <= 3) return 0.28;   // early stages stay mostly alternating — learnable
+  if (stage === 6) return 0.6;   // "repeated directions" is this stage's whole point
+  return 0.42;
+}
+
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const BASE_GAP = 130; // world units for a "normal" gap between turns
+
+function generateRoute(stage){
+  const rng = mulberry32((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0);
+  const count = STAGE_TURN_COUNT[Math.min(stage, STAGE_TURN_COUNT.length) - 1];
+  const mode = spacingModeForStage(stage);
+  const repeatBias = repeatBiasForStage(stage);
+
+  const turns = [];
+  let lastDir = null;
+  for (let i=0; i<count; i++){
+    let dir;
+    if (lastDir && rng() < repeatBias){
+      dir = lastDir; // repeat the previous direction
+    } else {
+      dir = rng() < 0.5 ? 'L' : 'R';
+    }
+    lastDir = dir;
+
+    let gap;
+    if (mode === 'obvious') gap = BASE_GAP * (1.15 + rng()*0.15);
+    else if (mode === 'uneven') gap = BASE_GAP * (0.6 + rng()*1.0);
+    else if (mode === 'compressed') gap = BASE_GAP * (0.5 + rng()*0.35);
+    else gap = BASE_GAP * (0.82 + rng()*0.36);
+
+    turns.push({ dir, gap, farCued:false, nearCued:false, windowCued:false, called:false });
+  }
+  return turns;
+}
+
+// ---------- state ----------
+const state = {
+  phase: 'idle', // idle | preview | driving | crashed | stage-clear | run-complete
+  stage: 1,
+  route: [],
+  turnIndex: 0,
+  distRemaining: 0,
+  laneOffset: 0,      // cosmetic lateral sway, lerps back to 0 after a turn
+  targetLaneOffset: 0,
+  previewUntil: 0,
+  crashesThisRun: 0,
+  runStartTime: 0,
+  elapsed: 0,
+  bestCrashes: null,
+  bestTimeMs: null
+};
+
+function loadBest(){
+  try{
+    const raw = localStorage.getItem('getawaydriver_best');
+    if (raw){
+      const v = JSON.parse(raw);
+      state.bestCrashes = v.bestCrashes != null ? v.bestCrashes : null;
+      state.bestTimeMs = v.bestTimeMs != null ? v.bestTimeMs : null;
+    }
+  }catch(e){}
+  renderBest();
+}
+function saveBest(){
+  try{
+    localStorage.setItem('getawaydriver_best', JSON.stringify({
+      bestCrashes: state.bestCrashes, bestTimeMs: state.bestTimeMs
+    }));
+  }catch(e){}
+}
+function renderBest(){
+  const el = document.getElementById('bestStatsLine');
+  if (state.bestCrashes == null){ el.textContent = '—'; return; }
+  el.textContent = state.bestCrashes + (state.bestCrashes===1?' crash':' crashes') + ', ' + formatTime(state.bestTimeMs);
+}
+function formatTime(ms){
+  const s = Math.floor(ms/1000);
+  const m = Math.floor(s/60);
+  const rem = s % 60;
+  return m + ':' + (rem < 10 ? '0' : '') + rem;
+}
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+// ---------- Phaser scene ----------
+let scene = null;
+let roadGfx, forkGfx, carGfx, cueGfx;
+
+class DriveScene extends Phaser.Scene {
+  constructor(){ super('drive'); }
+  create(){
+    scene = this;
+    roadGfx = this.add.graphics();
+    forkGfx = this.add.graphics();
+    cueGfx = this.add.graphics();
+    carGfx = this.add.graphics();
+  }
+  update(time, delta){
+    drawRoad(time);
+    drawFork(time);
+    drawCar(time);
+  }
+}
+
+function drawRoad(time){
+  roadGfx.clear();
+  roadGfx.fillStyle(0x121218, 1);
+  roadGfx.fillRect(0, 0, W, H);
+  // scrolling dashed center line, straight road, lateral sway purely cosmetic
+  const cx = W/2 + state.laneOffset;
+  roadGfx.fillStyle(0x2a2a38, 1);
+  roadGfx.fillRect(cx-120, 0, 240, H);
+  roadGfx.lineStyle(4, 0xffc94d, 0.5);
+  const off = ((time||0)*0.09) % 44;
+  for (let y=-44+off; y<H; y+=44){
+    roadGfx.beginPath();
+    roadGfx.moveTo(cx, y);
+    roadGfx.lineTo(cx, y+22);
+    roadGfx.strokePath();
+  }
+}
+
+function drawFork(time){
+  forkGfx.clear();
+  cueGfx.clear();
+  if (state.phase !== 'driving') return;
+  const turn = state.route[state.turnIndex];
+  if (!turn) return;
+  const distPx = state.distRemaining * PX_PER_UNIT;
+  const forkY = CAR_Y - distPx;
+  if (forkY < -60 || forkY > H+60) return;
+
+  const cx = W/2 + state.laneOffset;
+  const gapPx = turn.gap * PX_PER_UNIT;
+  const spreadMax = 130;
+  // how far branches have diverged by the time they reach the car's row —
+  // purely visual, grows as the fork gets closer
+  const closeness = clamp(1 - (forkY / (CAR_Y+40)), 0, 1);
+  const spread = spreadMax * closeness * 0.0 + spreadMax; // branches fan out fully once drawn; kept simple/legible
+
+  forkGfx.lineStyle(3, 0x555568, 1);
+  forkGfx.beginPath();
+  forkGfx.moveTo(cx, Math.min(forkY, H+60));
+  forkGfx.lineTo(cx - spread, forkY - 90);
+  forkGfx.strokePath();
+  forkGfx.beginPath();
+  forkGfx.moveTo(cx, Math.min(forkY, H+60));
+  forkGfx.lineTo(cx + spread, forkY - 90);
+  forkGfx.strokePath();
+
+  // approach cue rings — neutral color, never reveals direction
+  const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
+  let cueAlpha = 0, cueScale = 1;
+  if (frac <= WINDOW_FRAC){ cueAlpha = 0.85; cueScale = 1.25; }
+  else if (frac <= NEAR_FRAC){ cueAlpha = 0.5; cueScale = 1.1; }
+  else if (frac <= FAR_FRAC){ cueAlpha = 0.22; cueScale = 1.0; }
+  if (cueAlpha > 0){
+    cueGfx.lineStyle(2.5, 0xffffff, cueAlpha);
+    cueGfx.strokeCircle(cx, forkY, 22*cueScale);
+  }
+}
+
+function drawCar(time){
+  carGfx.clear();
+  const bob = Math.sin((time||0)*0.006) * 1.5;
+  carGfx.fillStyle(0xffc94d, 1);
+  carGfx.fillRoundedRect(CAR_X-16, CAR_Y-24+bob, 32, 48, 6);
+  carGfx.fillStyle(0x1a1206, 0.6);
+  carGfx.fillRect(CAR_X-10, CAR_Y-14+bob, 20, 14);
+}
+
+// ---------- driving loop ----------
+let lastTick = null;
+function gameTick(now){
+  if (state.phase === 'driving'){
+    const dt = lastTick != null ? Math.min(0.1, (now-lastTick)/1000) : 0;
+    lastTick = now;
+    state.elapsed += dt;
+
+    state.laneOffset += (state.targetLaneOffset - state.laneOffset) * Math.min(1, dt*6);
+
+    const turn = state.route[state.turnIndex];
+    if (turn){
+      const prevDist = state.distRemaining;
+      state.distRemaining -= SPEED*dt;
+      const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
+
+      if (!turn.farCued && frac <= FAR_FRAC){ turn.farCued = true; sfx('tone', 520, 0.05, 'sine', 0.05); }
+      if (!turn.nearCued && frac <= NEAR_FRAC){ turn.nearCued = true; sfx('tone', 620, 0.06, 'sine', 0.08); }
+      if (!turn.windowCued && frac <= WINDOW_FRAC){ turn.windowCued = true; sfx('tone', 760, 0.09, 'triangle', 0.12); }
+
+      if (state.distRemaining <= 0){
+        if (!turn.called){
+          // too late — never made a call before reaching the intersection
+          crashRun('TOO LATE', 'You never made the call.');
+          return;
+        }
+      }
+    }
+    updateHud();
+  } else {
+    lastTick = now;
+  }
+  requestAnimationFrame(gameTick);
+}
+
+// ---------- input ----------
+function callDirection(dir){
+  if (state.phase !== 'driving') return;
+  const turn = state.route[state.turnIndex];
+  if (!turn || turn.called) return;
+
+  const frac = turn.gap > 0 ? state.distRemaining / turn.gap : 0;
+  if (frac > WINDOW_FRAC){
+    crashRun('TOO EARLY', 'Called it before the window opened.');
+    return;
+  }
+  turn.called = true;
+  if (dir !== turn.dir){
+    crashRun('WRONG TURN', 'That wasn’t the way.');
+    return;
+  }
+
+  // correct call — take the branch, continue
+  sfx('tone', 880, 0.08, 'sine', 0.14);
+  state.targetLaneOffset = dir === 'L' ? -30 : 30;
+  setTimeout(()=>{ state.targetLaneOffset = 0; }, 220);
+
+  state.turnIndex++;
+  if (state.turnIndex >= state.route.length){
+    clearStage();
+  } else {
+    state.distRemaining = state.route[state.turnIndex].gap;
+  }
+}
+
+function crashRun(title, sub){
+  state.phase = 'crashed';
+  state.crashesThisRun++;
+  sfx('tone', 140, 0.28, 'sawtooth', 0.22, 40);
+  sfx('tone', 90, 0.2, 'square', 0.15);
+  flashBanner(title, sub, 'warn', 0);
+  document.getElementById('crashFlash').classList.add('show');
+  updateHud();
+  setTimeout(()=>{
+    document.getElementById('crashFlash').classList.remove('show');
+    clearBanner();
+    startPreview(state.stage); // instant, fresh route — no memory carries over
+  }, 550);
+}
+
+function clearStage(){
+  state.phase = 'stage-clear';
+  sfx('chime', [700, 950, 1200], 'triangle', 0.16);
+  flashBanner('STAGE ' + state.stage + ' CLEAR', '', 'good', 700);
+  setTimeout(()=>{
+    if (state.stage >= STAGE_COUNT){
+      completeRun();
+    } else {
+      state.stage++;
+      clearBanner();
+      startPreview(state.stage);
+    }
+  }, 750);
+}
+
+function completeRun(){
+  state.phase = 'run-complete';
+  const totalMs = state.elapsed*1000;
+  const isNewBest = state.bestCrashes == null ||
+    state.crashesThisRun < state.bestCrashes ||
+    (state.crashesThisRun === state.bestCrashes && totalMs < state.bestTimeMs);
+  if (isNewBest){
+    state.bestCrashes = state.crashesThisRun;
+    state.bestTimeMs = totalMs;
+    saveBest();
+    renderBest();
+  }
+  sfx('chime', [700, 950, 1300, 1600], 'sine', 0.2);
+  showRank();
+  document.getElementById('endTitle').textContent = 'GETAWAY COMPLETE';
+  document.getElementById('endMsg').textContent = 'All ten stages, clean getaway.';
+  document.getElementById('endCrashes').textContent = state.crashesThisRun;
+  document.getElementById('endTime').textContent = formatTime(totalMs);
+  document.getElementById('endScreen').classList.remove('hidden');
+}
+
+// ---------- rank ----------
+const RANK_TIERS = [
+  { grade:'S', min:400, color:'#ffc94d' },
+  { grade:'A', min:320, color:'#7fd8e8' },
+  { grade:'B', min:230, color:'#5be37b' },
+  { grade:'C', min:130, color:'#ff9f6b' },
+  { grade:'D', min:0,   color:'#8e8ba0' }
+];
+function showRank(){
+  let score = 500;
+  score -= state.crashesThisRun * 22;
+  score -= Math.max(0, state.elapsed - 90) * 0.6; // par ~90s for a clean, unhurried clear
+  score = Math.max(0, Math.round(score));
+  let tier = RANK_TIERS[RANK_TIERS.length-1];
+  for (const t of RANK_TIERS){ if (score >= t.min){ tier = t; break; } }
+  const badge = document.getElementById('rankBadge');
+  badge.textContent = tier.grade;
+  badge.style.color = tier.color;
+  document.getElementById('rankNote').textContent = state.crashesThisRun + (state.crashesThisRun===1?' crash':' crashes') + ' across the run';
+}
+
+// ---------- preview ----------
+let previewTimerHandle = null;
+function previewDuration(stage){
+  if (stage <= 3) return 3500;
+  if (stage <= 6) return 4500;
+  return 5500;
+}
+function startPreview(stage){
+  state.route = generateRoute(stage);
+  state.turnIndex = 0;
+  state.distRemaining = state.route[0] ? state.route[0].gap : 0;
+  state.laneOffset = 0;
+  state.targetLaneOffset = 0;
+  state.phase = 'preview';
+  updateHud();
+
+  document.getElementById('previewStageLabel').textContent = 'STAGE ' + stage;
+  const routeEl = document.getElementById('previewRoute');
+  routeEl.innerHTML = '';
+  state.route.forEach((t, i)=>{
+    const span = document.createElement('span');
+    span.className = 'preview-arrow';
+    span.textContent = t.dir === 'L' ? '←' : '→';
+    const gapPx = clamp(t.gap/10, 4, 30);
+    span.style.marginLeft = (i===0 ? 0 : gapPx) + 'px';
+    routeEl.appendChild(span);
+  });
+  document.getElementById('previewOverlay').classList.remove('hidden');
+  sfx('tone', 440, 0.04, 'sine', 0.04);
+
+  const duration = previewDuration(stage);
+  const fill = document.getElementById('previewTimerFill');
+  fill.style.transition = 'none';
+  fill.style.width = '100%';
+  requestAnimationFrame(()=>{
+    fill.style.transition = 'width ' + duration + 'ms linear';
+    fill.style.width = '0%';
+  });
+
+  clearTimeout(previewTimerHandle);
+  previewTimerHandle = setTimeout(()=>{
+    document.getElementById('previewOverlay').classList.add('hidden');
+    state.phase = 'driving';
+    sfx('tone', 340, 0.06, 'sine', 0.06);
+    updateHud();
+  }, duration);
+}
+
+function flashBanner(text, sub, cls, duration){
+  const el = document.getElementById('banner');
+  el.className = 'banner show ' + (cls||'');
+  el.innerHTML = text + (sub ? '<span class="sub">'+sub+'</span>' : '');
+  if (duration){ setTimeout(()=>{ el.className = 'banner'; }, duration); }
+}
+function clearBanner(){ document.getElementById('banner').className = 'banner'; }
+
+function updateHud(){
+  document.getElementById('hudStage').textContent = state.stage + ' / ' + STAGE_COUNT;
+  document.getElementById('hudCrashes').textContent = state.crashesThisRun;
+  const status = document.getElementById('hudStatus');
+  if (state.phase === 'preview') status.textContent = 'Memorize';
+  else if (state.phase === 'driving') status.textContent = 'Driving';
+  else if (state.phase === 'crashed') status.textContent = 'Crashed';
+  else if (state.phase === 'stage-clear') status.textContent = 'Clear!';
+  else if (state.phase === 'run-complete') status.textContent = 'Done';
+  else status.textContent = 'Ready';
+}
+
+// ---------- boot ----------
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W, height: H,
+  parent: 'game-container',
+  backgroundColor: '#0a0a10',
+  scene: [DriveScene]
+});
+
+loadBest();
+requestAnimationFrame(gameTick);
+
+try{
+  if (typeof SFX !== 'undefined' && SFX && typeof SFX.mountUI === 'function'){
+    SFX.mountUI({ corner: 'top-right' });
+  }
+}catch(e){}
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  sfx('tone', 440, 0.05, 'sine', 0.001); // unlock audio on the real user gesture
+  document.getElementById('startScreen').classList.add('hidden');
+  state.stage = 1;
+  state.crashesThisRun = 0;
+  state.elapsed = 0;
+  lastTick = null;
+  startPreview(1);
+});
+document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
+
+document.getElementById('leftBtn').addEventListener('click', ()=> callDirection('L'));
+document.getElementById('rightBtn').addEventListener('click', ()=> callDirection('R'));
+window.addEventListener('keydown', (e)=>{
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft') callDirection('L');
+  else if (e.code === 'KeyD' || e.code === 'ArrowRight') callDirection('R');
+});
+
+})();
+</script>
+</body>
+</html>
