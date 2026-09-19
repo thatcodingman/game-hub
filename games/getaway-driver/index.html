@@ -42,6 +42,7 @@
     border-radius:10px; overflow:hidden; border:1px solid var(--border);
     user-select:none; touch-action:manipulation;
     -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+    transition: box-shadow .3s ease;
   }
   .stage canvas{ display:block; width:100% !important; height:100% !important; touch-action:manipulation; }
 
@@ -156,6 +157,7 @@
       <div class="subtitle">You saw the route. Now drive it blind.</div>
     </div>
     <div class="best-run">
+      <div>High score: <b id="bestScoreLine">—</b></div>
       <div>Best clear: <b id="bestStatsLine">—</b></div>
     </div>
   </div>
@@ -207,6 +209,7 @@
         <div class="rank-note" id="rankNote"></div>
         <div class="overlay-stats">
           <div>Score<b id="endScore">0</b></div>
+          <div>Best Streak<b id="endStreak">0</b></div>
           <div>Crashes<b id="endCrashes">0</b></div>
           <div>Time<b id="endTime">0:00</b></div>
         </div>
@@ -319,10 +322,15 @@ const state = {
   elapsed: 0,
   bestCrashes: null,
   bestTimeMs: null,
+  bestScore: null,
   score: 0,
   streak: 0,
+  bestStreakThisRun: 0,
+  crossedNewBest: false,
   windowPulseAccum: 0
 };
+
+function multiplierForStreak(streak){ return 1 + Math.min(2, Math.floor(streak/4) * 0.5); } // ramps to x3
 
 function loadBest(){
   try{
@@ -331,6 +339,7 @@ function loadBest(){
       const v = JSON.parse(raw);
       state.bestCrashes = v.bestCrashes != null ? v.bestCrashes : null;
       state.bestTimeMs = v.bestTimeMs != null ? v.bestTimeMs : null;
+      state.bestScore = v.bestScore != null ? v.bestScore : null;
     }
   }catch(e){}
   renderBest();
@@ -338,7 +347,7 @@ function loadBest(){
 function saveBest(){
   try{
     localStorage.setItem('getawaydriver_best', JSON.stringify({
-      bestCrashes: state.bestCrashes, bestTimeMs: state.bestTimeMs
+      bestCrashes: state.bestCrashes, bestTimeMs: state.bestTimeMs, bestScore: state.bestScore
     }));
   }catch(e){}
 }
@@ -346,6 +355,8 @@ function renderBest(){
   const el = document.getElementById('bestStatsLine');
   if (state.bestCrashes == null){ el.textContent = '—'; return; }
   el.textContent = state.bestCrashes + (state.bestCrashes===1?' crash':' crashes') + ', ' + formatTime(state.bestTimeMs);
+  const scoreEl = document.getElementById('bestScoreLine');
+  if (scoreEl) scoreEl.textContent = state.bestScore == null ? '—' : state.bestScore;
 }
 function formatTime(ms){
   const s = Math.floor(ms/1000);
@@ -599,13 +610,28 @@ function callDirection(dir){
   // correct call — take the branch, continue
   const isPerfect = frac <= WINDOW_FRAC * 0.3; // called right on the edge of the window — riskier, pays more
   state.streak++;
-  const gained = 100 + state.streak*8 + (isPerfect ? 60 : 0);
+  state.bestStreakThisRun = Math.max(state.bestStreakThisRun, state.streak);
+  const mult = multiplierForStreak(state.streak);
+  const gained = Math.round((100 + (isPerfect ? 60 : 0)) * mult);
   state.score += gained;
-  popScore(isPerfect ? 'PERFECT +' + gained : '+' + gained, isPerfect ? 'perfect' : '');
+  const multTag = mult > 1 ? ' x' + mult.toFixed(1).replace('.0','') : '';
+  popScore((isPerfect ? 'PERFECT +' : '+') + gained + multTag, isPerfect ? 'perfect' : '');
   sfx('tone', isPerfect ? 980 : 880, 0.08, 'sine', 0.14);
   if (scene) scene.cameras.main.flash(80, 255, 201, 77, false);
   state.targetLaneOffset = dir === 'L' ? -30 : 30;
   setTimeout(()=>{ state.targetLaneOffset = 0; }, 220);
+
+  if (state.bestScore == null || state.score > state.bestScore){
+    const firstCross = !state.crossedNewBest;
+    state.bestScore = state.score;
+    saveBest();
+    renderBest();
+    if (firstCross){
+      state.crossedNewBest = true;
+      flashBanner('NEW HIGH SCORE!', '', 'good', 900);
+      sfx('chime', [800, 1000, 1300], 'triangle', 0.15);
+    }
+  }
   updateHud();
 
   state.turnIndex++;
@@ -669,6 +695,7 @@ function completeRun(){
   document.getElementById('endTitle').textContent = 'GETAWAY COMPLETE';
   document.getElementById('endMsg').textContent = endMsg;
   document.getElementById('endScore').textContent = state.score;
+  document.getElementById('endStreak').textContent = state.bestStreakThisRun;
   document.getElementById('endCrashes').textContent = state.crashesThisRun;
   document.getElementById('endTime').textContent = formatTime(totalMs);
   document.getElementById('endScreen').classList.remove('hidden');
@@ -764,11 +791,27 @@ function flashBanner(text, sub, cls, duration){
 }
 function clearBanner(){ document.getElementById('banner').className = 'banner'; }
 
+const STREAK_GLOWS = [
+  'none',
+  '0 0 14px 2px rgba(255,201,77,0.25)',
+  '0 0 20px 4px rgba(255,201,77,0.4)',
+  '0 0 26px 6px rgba(255,201,77,0.55)',
+  '0 0 34px 9px rgba(255,120,80,0.65)'
+];
+function updateStreakGlow(){
+  const el = document.getElementById('stage');
+  if (!el) return;
+  const tier = Math.min(STREAK_GLOWS.length - 1, Math.floor(state.streak / 4));
+  el.style.boxShadow = STREAK_GLOWS[tier];
+}
+
 function updateHud(){
   document.getElementById('hudStage').textContent = state.stage + ' / ' + STAGE_COUNT;
   document.getElementById('hudScore').textContent = state.score;
-  document.getElementById('hudStreak').textContent = state.streak;
+  const mult = multiplierForStreak(state.streak);
+  document.getElementById('hudStreak').textContent = state.streak + (mult > 1 ? ' (x' + mult.toFixed(1).replace('.0','') + ')' : '');
   document.getElementById('hudCrashes').textContent = state.crashesThisRun;
+  updateStreakGlow();
   const status = document.getElementById('hudStatus');
   if (state.phase === 'preview') status.textContent = 'Memorize';
   else if (state.phase === 'driving') status.textContent = 'Driving';
@@ -804,6 +847,8 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.elapsed = 0;
   state.score = 0;
   state.streak = 0;
+  state.bestStreakThisRun = 0;
+  state.crossedNewBest = false;
   lastTick = null;
   startPreview(1);
 });
