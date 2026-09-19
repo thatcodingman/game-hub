@@ -118,6 +118,16 @@
   .legend{ display:flex; gap:14px; justify-content:center; flex-wrap:wrap; margin:14px 0; font-size:11px; color:var(--text-dim); }
   .legend span{ display:inline-flex; align-items:center; gap:5px; }
   .legend i{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .condition-picker{ display:flex; gap:8px; margin:8px 0 4px; }
+  .condition-card{
+    flex:1; text-align:left; padding:8px 10px; border-radius:8px; cursor:pointer;
+    border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.03);
+    transition:border-color .12s, background .12s;
+  }
+  .condition-card:hover{ border-color:rgba(255,255,255,0.3); }
+  .condition-card.selected{ border-color:var(--accent); background:rgba(255,204,51,0.08); }
+  .condition-card .cname{ font-size:12px; font-weight:700; color:var(--text); display:block; }
+  .condition-card .cdesc{ font-size:10.5px; color:var(--text-dim); display:block; margin-top:3px; line-height:1.3; }
 </style>
 </head>
 <body>
@@ -127,7 +137,10 @@
       <h1>OVERPRESSURE</h1>
       <div class="subtitle">Don't pop too soon. Don't wait too long.</div>
     </div>
-    <div class="best-run" id="bestRunLine">Best run: —</div>
+    <div style="text-align:right;">
+      <div class="best-run" id="bestRunLine">Best run: —</div>
+      <div class="best-run" id="conditionLine" style="opacity:.75;"></div>
+    </div>
   </div>
 
   <div class="hud">
@@ -170,6 +183,8 @@
           <b style="color:var(--text);">Safe</b> — fires on whichever unit is closest to the exit first, to stop escapes.<br>
           <b style="color:var(--text);">Greedy</b> — fires on the highest-value unit first, to farm max cash (riskiest).<br>
           <b style="color:var(--text);">Efficient</b> — fires on the weakest unit first, for fast, cheap kills.</p>
+        <p style="font-size:11.5px; text-align:left; margin-top:12px;"><b>Today's Factory Condition</b> — pick one, applies for this whole run:</p>
+        <div class="condition-picker" id="conditionPicker"></div>
         <button class="btn primary" id="startBtn" style="margin-top:10px; padding:10px 26px; font-size:14px;">Start Run</button>
       </div>
     </div>
@@ -216,7 +231,7 @@ const START_INTEGRITY = 100;
 // stacked, which is why balloons were never reaching threatening distance
 // even by Wave 13. This forces real placement/type decisions instead of
 // just building more.
-const MAX_TOWERS = 24;
+let MAX_TOWERS = 24; // can be adjusted by a Run Condition (see RUN_CONDITIONS)
 
 const PATH_POINTS = [
   {x:-30, y:90},
@@ -336,6 +351,48 @@ const BALLOON_DEFS = {
   LEAK:     {name:'Leak',             hp:14, speed:80,  baseValue:4,  pressureRate:2.5, maxValue:30,  radius:9,  color:0xc084fc, escapeDivisor:2},
   TANK:     {name:'Overpressure Tank',hp:900,speed:30,  baseValue:120,pressureRate:2.2, maxValue:260, radius:30, color:0xff4d6d, escapeDivisor:2}
 };
+
+// ---------- Run Conditions ----------
+// Chosen once per run (start screen) for replay variety without touching the
+// deterministic 13-wave/path/tower-roster identity. Mutates TOWER_DEFS /
+// BALLOON_DEFS in place, applied exactly once on Start Run — safe because
+// a fresh run always means a full page reload (see retryBtn), so nothing
+// carries a stale mutation into the next run.
+const RUN_CONDITIONS = [
+  { id:'hot_pressure', name:'Hot Pressure', desc:'Balloon value grows 20% faster.',
+    apply(){ for (const k in BALLOON_DEFS) BALLOON_DEFS[k].pressureRate *= 1.2; } },
+  { id:'cheap_hardware', name:'Cheap Hardware', desc:'All tower costs -10%.',
+    apply(){ for (const k in TOWER_DEFS) TOWER_DEFS[k].cost = Math.round(TOWER_DEFS[k].cost*0.9); } },
+  { id:'overclocked', name:'Overclocked', desc:'Towers fire 10% faster. Balloons move 10% faster.',
+    apply(){
+      for (const k in TOWER_DEFS){
+        const d = TOWER_DEFS[k];
+        if (d.fireRate) d.fireRate = d.fireRate.map(v=>v*1.1);
+        if (d.pulseRate) d.pulseRate = d.pulseRate.map(v=>v*1.1);
+      }
+      for (const k in BALLOON_DEFS) BALLOON_DEFS[k].speed *= 1.1;
+    } },
+  { id:'thin_margins', name:'Thin Margins', desc:'Start with 25% less Integrity — greed is riskier.',
+    apply(){ state.integrity = Math.round(START_INTEGRITY*0.75); } },
+  { id:'high_demand', name:'High Demand', desc:'Collector cash bonus +15 percentage points.',
+    apply(){ TOWER_DEFS.COLLECTOR.bonusPct = TOWER_DEFS.COLLECTOR.bonusPct.map(v=>v+0.15); } },
+  { id:'frugal_factory', name:'Frugal Factory', desc:'Tower costs -10%, but the tower cap drops from 24 to 20.',
+    apply(){
+      for (const k in TOWER_DEFS) TOWER_DEFS[k].cost = Math.round(TOWER_DEFS[k].cost*0.9);
+      MAX_TOWERS = 20;
+    } }
+];
+
+function pickOfferedConditions(){
+  const pool = RUN_CONDITIONS.slice();
+  for (let i=pool.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [pool[i],pool[j]] = [pool[j],pool[i]];
+  }
+  return pool.slice(0,3);
+}
+const offeredConditions = pickOfferedConditions();
+let selectedConditionId = offeredConditions[0].id;
 
 const WAVES = [
   [{t:'NORMAL',c:14,i:0.7}],
@@ -753,7 +810,10 @@ function processSpawning(dt){
     const hpMult = WAVE_HP_MULT[state.wave-1] || 1;
     const b = new Balloon(next.t, hpMult, false);
     state.balloons.push(b);
-    spawnTimer = next.gap || 0.5;
+    // ±10% spawn jitter: same balloon count/types/order every run, but exact
+    // arrival timing varies so a solved wave doesn't play back identically.
+    const jitter = 0.9 + Math.random()*0.2;
+    spawnTimer = (next.gap || 0.5) * jitter;
     if (!spawnQueue.length) state.spawning = false;
   }
 }
@@ -1083,7 +1143,29 @@ document.getElementById('targetModeSeg').addEventListener('click', (e)=>{
 });
 document.getElementById('speedBtn').addEventListener('click', cycleSpeed);
 document.getElementById('waveBtn').addEventListener('click', startWave);
+function renderConditionPicker(){
+  const el = document.getElementById('conditionPicker');
+  el.innerHTML = '';
+  offeredConditions.forEach(cond=>{
+    const card = document.createElement('div');
+    card.className = 'condition-card' + (cond.id === selectedConditionId ? ' selected' : '');
+    card.innerHTML = '<span class="cname">' + cond.name + '</span><span class="cdesc">' + cond.desc + '</span>';
+    card.addEventListener('click', ()=>{
+      selectedConditionId = cond.id;
+      renderConditionPicker();
+    });
+    el.appendChild(card);
+  });
+}
+renderConditionPicker();
+
 document.getElementById('startBtn').addEventListener('click', ()=>{
+  const cond = offeredConditions.find(c=>c.id === selectedConditionId) || offeredConditions[0];
+  cond.apply();
+  state.activeConditionName = cond.name;
+  document.getElementById('conditionLine').textContent = 'Condition: ' + cond.name;
+  buildTowerBar(); // refresh in case the condition changed tower costs
+  updateHud();
   document.getElementById('startScreen').classList.add('hidden');
   state.running = true;
 });
