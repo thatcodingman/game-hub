@@ -89,6 +89,14 @@
   .session-log-row.latest span:first-child{ color:var(--accent); }
   .session-log-empty{ font-size:11.5px; color:var(--text-dim); }
 
+  .diff-selector{ display:flex; justify-content:center; gap:8px; margin:14px 0 4px; }
+  .diff-btn{
+    background:transparent; border:1px solid var(--border); color:var(--text-dim);
+    padding:6px 18px; border-radius:6px; font-size:12.5px; cursor:pointer; letter-spacing:.03em;
+  }
+  .diff-btn:hover{ border-color:var(--accent); color:var(--text); }
+  .diff-btn.active{ background:var(--accent); color:#2a1d00; border-color:var(--accent); font-weight:700; }
+
   .opponent-preview{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:6px; margin:14px 0; font-size:11px; }
   .opponent-preview .opp-chip{ display:flex; flex-direction:column; align-items:center; gap:2px; padding:5px 9px; border:1px solid var(--border); border-radius:6px; background:rgba(0,0,0,0.25); }
   .opponent-preview .opp-chip b{ font-size:11.5px; color:var(--text); }
@@ -142,6 +150,7 @@
           <div><b>Too slow</b> — miss the window after the real draw and your opponent gets the drop on you.</div>
           <div>Every round you survive, the feints get faster, closer together, and start looking a lot more like the real thing — a half-draw, a duller flash, a distant shot. Watch for the exact flash and tone, not just any movement or bang.</div>
         </div>
+        <div class="diff-selector" id="difficultySelector"></div>
         <div class="opponent-preview" id="opponentPreview"></div>
         <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Step Up To The Line</button>
         <div class="session-log" id="sessionLogStart"></div>
@@ -235,9 +244,52 @@ const OPPONENT_PROFILES = {
   }
 };
 
+// ---------- difficulty (Easy/Normal/Hard) ----------
+// A global multiplier layer on top of everything else:
+//   base streak curve × difficulty multiplier × opponent behavior profile = round
+const DIFFICULTY_LEVELS = {
+  easy:   { label: 'Easy',   reactionMult: 1.30, gapMult: 1.25, feintCountDelta: -1, streakMult: 1.5 },
+  normal: { label: 'Normal', reactionMult: 1.00, gapMult: 1.00, feintCountDelta: 0,  streakMult: 1.0 },
+  hard:   { label: 'Hard',   reactionMult: 0.80, gapMult: 0.82, feintCountDelta: 1,  streakMult: 0.65 }
+};
+const DIFFICULTY_KEY = 'quickdraw_difficulty';
+function loadDifficulty(){
+  try{
+    const v = localStorage.getItem(DIFFICULTY_KEY);
+    if (v && DIFFICULTY_LEVELS[v]) return v;
+  }catch(e){}
+  return 'normal';
+}
+function saveDifficulty(key){
+  try{ localStorage.setItem(DIFFICULTY_KEY, key); }catch(e){}
+}
+function currentDifficulty(){
+  return DIFFICULTY_LEVELS[state.difficultyKey] || DIFFICULTY_LEVELS.normal;
+}
+function renderDifficultySelector(){
+  const el = document.getElementById('difficultySelector');
+  if (!el) return;
+  el.innerHTML = Object.keys(DIFFICULTY_LEVELS).map(key=>
+    '<button type="button" class="diff-btn'+(key===state.difficultyKey?' active':'')+'" data-diff="'+key+'">'+DIFFICULTY_LEVELS[key].label+'</button>'
+  ).join('');
+  el.querySelectorAll('.diff-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.difficultyKey = btn.getAttribute('data-diff');
+      saveDifficulty(state.difficultyKey);
+      renderDifficultySelector();
+      renderOpponentPreview();
+    });
+  });
+}
+
+// Named-opponent thresholds scale with difficulty too — Hard meets Sundown
+// Jake and friends sooner, Easy gets more time with Dusty Pete.
+function effectiveMinStreak(o){
+  return Math.max(0, Math.round(o.minStreak * currentDifficulty().streakMult));
+}
 function opponentForStreak(streak){
   let chosen = OPPONENTS[0];
-  for (const o of OPPONENTS){ if (streak >= o.minStreak) chosen = o; }
+  for (const o of OPPONENTS){ if (streak >= effectiveMinStreak(o)) chosen = o; }
   return chosen;
 }
 function renderOpponentPreview(){
@@ -245,7 +297,7 @@ function renderOpponentPreview(){
   if (!el) return;
   el.innerHTML = OPPONENTS.map((o, i)=>
     (i>0 ? '<span class="opp-arrow">→</span>' : '') +
-    '<div class="opp-chip"><b>'+o.name+'</b><span>'+(i===0?'Start':'Streak '+o.minStreak)+'</span><span>'+o.identity+'</span></div>'
+    '<div class="opp-chip"><b>'+o.name+'</b><span>'+(i===0?'Start':'Streak '+effectiveMinStreak(o))+'</span><span>'+o.identity+'</span></div>'
   ).join('');
 }
 
@@ -257,6 +309,7 @@ const state = {
   closeCalls: 0,       // this run: dangerous bluffs (partial draw / flare) survived without flinching
   bestCloseCalls: 0,
   currentOpponentName: null,
+  difficultyKey: 'normal',
   roundHadDangerousFeint: false, // set by doFeint(), read/reset per round
   phase: 'idle', // idle | standoff | armed | resolved
   running: false,
@@ -343,7 +396,7 @@ function schedule(fn, delay){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx;
+let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx, tumbleweedGfx;
 
 class DuelScene extends Phaser.Scene {
   constructor(){ super('duel'); }
@@ -361,16 +414,19 @@ class DuelScene extends Phaser.Scene {
     // sun
     this.add.circle(W*0.5, 90, 46, 0xffd97a, 0.85);
 
+    // tumbleweeds — created before the duelists so they always render behind them
+    tumbleweedGfx = this.add.graphics();
+
     // opponent silhouette (left)
     oppFig = this.add.graphics();
-    drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true);
+    drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, 0, OPPONENTS[0].accent, OPPONENTS[0].key);
     oppHand = this.add.graphics();
     drawHandTwitch(oppHand, 220, GROUND_Y, 0);
     oppActionGfx = this.add.graphics(); // opponent's hand-on-holster draw animation
 
     // player silhouette (right)
     playerFig = this.add.graphics();
-    drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false);
+    drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, 0, null, 'player');
     playerActionGfx = this.add.graphics(); // player's hand-on-holster draw animation
 
     dustGfx = this.add.graphics();
@@ -381,12 +437,21 @@ class DuelScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
   }
   update(time){
+    // Tumbleweeds — two, staggered, low-opacity and behind the duelists.
+    if (tumbleweedGfx){
+      tumbleweedGfx.clear();
+      const tw1 = (time % 6000) / 6000;
+      drawTumbleweed(tumbleweedGfx, -50 + tw1*(W+100), GROUND_Y+20, 15, tw1*Math.PI*14, tw1);
+      const tw2 = ((time + 3200) % 7000) / 7000;
+      drawTumbleweed(tumbleweedGfx, -50 + tw2*(W+100), GROUND_Y+36, 10, tw2*Math.PI*16, tw2);
+    }
+
     // Small idle breathing bob so the standoff doesn't look frozen/dead
     // while the player is watching for the real signal.
     const bob = Math.sin(time*0.0028) * 2;
     const opp = opponentForStreak(state.streak);
-    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob, opp.accent);
-    if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob);
+    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob, opp.accent, opp.key);
+    if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob, null, 'player');
 
     // Opponent's hand snaps to the holster and pulls the gun the instant
     // the real draw is live, and stays drawn if they beat you to it.
@@ -409,7 +474,7 @@ class DuelScene extends Phaser.Scene {
   }
 }
 
-function drawFigure(g, x, groundY, color, facingRight, bob, accentColor){
+function drawFigure(g, x, groundY, color, facingRight, bob, accentColor, outfitKey){
   bob = bob || 0;
   const gy = groundY + bob;
   g.clear();
@@ -424,11 +489,14 @@ function drawFigure(g, x, groundY, color, facingRight, bob, accentColor){
   // hat
   g.fillRect(x-26, gy-190, 52, 8);
   g.fillRoundedRect(x-14, gy-206, 28, 20, 6);
-  // hatband — the per-opponent tell: color changes with who you're facing
+  // hatband — color changes with who you're facing
   if (accentColor != null){
     g.fillStyle(accentColor, 0.85);
     g.fillRect(x-26, gy-185, 52, 3);
   }
+  // outfit — an actual silhouette difference per opponent (vest, bandana,
+  // cloak/hood, duster coat + mask), not just a color swap
+  if (outfitKey) drawOutfit(g, x, gy, outfitKey, facingRight, accentColor);
   // arm (toward center)
   const dir = facingRight ? -1 : 1;
   g.fillRect(x + dir*14, gy-140, 26*Math.sign(dir)*-1 || 26, 10);
@@ -437,6 +505,110 @@ function drawFigure(g, x, groundY, color, facingRight, bob, accentColor){
   g.fillRect(x-6, gy-84, 12, 20);
   g.fillStyle(0x1a1109, 1);
   g.fillRect(x-4, gy-90, 8, 10);
+}
+
+// Real silhouette differences per opponent, not just a hatband color —
+// each reads distinctly even as a flat silhouette.
+function drawOutfit(g, x, gy, key, facingRight, accent){
+  if (key === 'player'){
+    // gold neckerchief — the only figure wearing the accent color directly
+    g.fillStyle(0xffcc33, 0.9);
+    g.fillRect(x-7, gy-150, 14, 5);
+    return;
+  }
+  if (key === 'dustyPete'){
+    // plain rolled shirt — deliberately the baseline, undressed look
+    g.fillStyle(accent != null ? accent : 0xc9a877, 0.6);
+    g.fillRect(x-6, gy-150, 12, 4);
+    return;
+  }
+  if (key === 'sundownJake'){
+    // leather vest over the shirt + a bandana at the neck
+    g.fillStyle(0x2b1a10, 1);
+    g.fillRoundedRect(x-18, gy-149, 36, 58, 6);
+    g.fillStyle(0x1a1109, 1);
+    g.fillRect(x-18, gy-149, 4, 58);
+    g.fillRect(x+14, gy-149, 4, 58);
+    if (accent != null){
+      g.fillStyle(accent, 0.9);
+      g.fillRect(x-8, gy-166, 16, 7);
+    }
+    return;
+  }
+  if (key === 'widow'){
+    // wide shawl/cloak across the shoulders and a hood shadow over the hat
+    g.fillStyle(0x1a1420, 1);
+    g.fillRoundedRect(x-25, gy-153, 50, 34, 10);
+    g.fillCircle(x-25, gy-146, 10);
+    g.fillCircle(x+25, gy-146, 10);
+    if (accent != null){
+      g.fillStyle(accent, 0.55);
+      g.fillRect(x-20, gy-181, 40, 2.5);
+    }
+    return;
+  }
+  if (key === 'reaperCole'){
+    // long duster coat flaps past the legs + a mask over the lower face
+    g.fillStyle(0x14100c, 1);
+    g.fillRect(x-23, gy-96, 13, 48);
+    g.fillRect(x+10, gy-96, 13, 48);
+    g.fillStyle(0x1a1109, 1);
+    g.fillRoundedRect(x-19, gy-150, 38, 60, 6);
+    g.fillStyle(0x2a2a2a, 1);
+    g.fillRect(x-11, gy-172, 22, 10);
+    if (accent != null){
+      g.fillStyle(accent, 0.5);
+      g.fillRect(x-11, gy-172, 22, 2);
+    }
+    return;
+  }
+}
+
+// Fixed set of branch angles/radii, generated once — drawing the SAME
+// tangled points every frame (just rotated) is what makes it read as one
+// consistent object rolling, instead of noise re-randomized each frame.
+const TUMBLEWEED_POINTS = (()=>{
+  const n = 11;
+  const pts = [];
+  for (let i=0;i<n;i++){
+    const a = (i/n)*Math.PI*2 + (Math.random()-0.5)*0.35;
+    const r = 0.6 + Math.random()*0.4;
+    pts.push({ a, r });
+  }
+  return pts;
+})();
+
+// A real tangled-branch silhouette (not a circle): a lattice of crossing
+// lines between points on a fuzzy sphere, plus a ground shadow that
+// shrinks/fades as it bounces — reads as a physical object hitting uneven
+// ground, not a flat sprite sliding across.
+function drawTumbleweed(g, x, y, size, rot, progress){
+  const bounce = Math.abs(Math.sin(progress * Math.PI * 10)); // repeated ground contacts
+  const cy = y - bounce * size * 0.55;
+  const squash = 1 - bounce * 0.15;
+
+  const shadowScale = 1 - bounce * 0.45;
+  g.fillStyle(0x000000, 0.22 * shadowScale);
+  g.fillEllipse(x, y + size*0.3, size*1.7*shadowScale, size*0.5*shadowScale);
+
+  const n = TUMBLEWEED_POINTS.length;
+  const pts = TUMBLEWEED_POINTS.map(p=>{
+    const ang = p.a + rot;
+    return {
+      x: x + Math.cos(ang) * p.r * size,
+      y: cy + Math.sin(ang) * p.r * size * squash
+    };
+  });
+  g.fillStyle(0x8a6a3f, 0.14);
+  g.fillEllipse(x, cy, size*1.6, size*1.4*squash);
+  g.lineStyle(1.3, 0x5c4423, 0.5);
+  for (let i=0;i<n;i++){
+    const a = pts[i];
+    const b = pts[(i+2)%n];
+    const c = pts[(i+5)%n];
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.strokePath();
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(c.x, c.y); g.strokePath();
+  }
 }
 
 function drawHandTwitch(g, x, groundY, offset){
@@ -482,15 +654,16 @@ function clearBanner(){
 // draw-reaction timeout. This is the whole hook — the danger isn't reaction
 // speed dropping, it's discipline getting harder to hold onto.
 function difficultyForStreak(streak){
+  const d = currentDifficulty();
   // Always at least 1 feint, even on the very first round of a run — a
   // silent hold-then-flash isn't a bluff mechanic, it's a fixed-length
   // reaction timer, and that's what was making the draw feel same-timed.
-  const feintCount = Math.min(6, 1 + Math.floor(streak/2));
-  const feintGapMin = Math.max(220, 650 - streak*22);
-  const feintGapMax = Math.max(400, 1000 - streak*24);
-  const preDrawDelayMin = Math.max(280, 700 - streak*18);
-  const preDrawDelayMax = Math.max(550, 1400 - streak*26);
-  const reactionTimeout = Math.max(650, 1500 - streak*30);
+  const feintCount = Math.max(1, Math.min(7, 1 + Math.floor(streak/2) + d.feintCountDelta));
+  const feintGapMin = Math.max(180, (650 - streak*22) * d.gapMult);
+  const feintGapMax = Math.max(320, (1000 - streak*24) * d.gapMult);
+  const preDrawDelayMin = Math.max(220, (700 - streak*18) * d.gapMult);
+  const preDrawDelayMax = Math.max(420, (1400 - streak*26) * d.gapMult);
+  const reactionTimeout = Math.max(450, (1500 - streak*30) * d.reactionMult);
   return { feintCount, feintGapMin, feintGapMax, preDrawDelayMin, preDrawDelayMax, reactionTimeout };
 }
 
@@ -499,10 +672,11 @@ function rand(min, max){ return min + Math.random()*(max-min); }
 // Streak still owns which feint kinds are UNLOCKED at all — the opponent
 // profile only controls the mix among whatever's unlocked.
 function availableFeintPool(streak){
+  const mult = currentDifficulty().streakMult;
   const pool = ['handTwitch', 'dustPuff', 'murmur'];
-  if (streak >= 3) pool.push('partialDraw');
-  if (streak >= 4) pool.push('echo');
-  if (streak >= 6) pool.push('flare');
+  if (streak >= Math.round(3*mult)) pool.push('partialDraw');
+  if (streak >= Math.round(4*mult)) pool.push('echo');
+  if (streak >= Math.round(6*mult)) pool.push('flare');
   return pool;
 }
 function weightedPick(weights){
@@ -776,6 +950,8 @@ new Phaser.Game({
 
 loadBest();
 renderSessionLog();
+state.difficultyKey = loadDifficulty();
+renderDifficultySelector();
 renderOpponentPreview();
 
 // Mount the shared mute/volume widget — this game was missing it entirely,
