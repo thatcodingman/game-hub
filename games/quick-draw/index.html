@@ -89,6 +89,12 @@
   .session-log-row.latest span:first-child{ color:var(--accent); }
   .session-log-empty{ font-size:11.5px; color:var(--text-dim); }
 
+  .opponent-preview{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:6px; margin:14px 0; font-size:11px; }
+  .opponent-preview .opp-chip{ display:flex; flex-direction:column; align-items:center; gap:2px; padding:5px 9px; border:1px solid var(--border); border-radius:6px; background:rgba(0,0,0,0.25); }
+  .opponent-preview .opp-chip b{ font-size:11.5px; color:var(--text); }
+  .opponent-preview .opp-chip span{ font-size:9.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; }
+  .opponent-preview .opp-arrow{ color:var(--text-dim); font-size:12px; }
+
   .btn{
     background:transparent; border:1px solid var(--border); color:var(--text);
     padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer;
@@ -113,6 +119,7 @@
 
   <div class="hud">
     <div class="hud-stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
+    <div class="hud-stat"><span class="label">Opponent</span><span class="val" id="hudOpponent">—</span></div>
     <div class="hud-stat"><span class="label">Round Reaction</span><span class="val" id="hudLastReaction">—</span></div>
     <div class="hud-stat"><span class="label">Close Calls</span><span class="val" id="hudCloseCalls">0</span></div>
     <div class="spacer"></div>
@@ -134,6 +141,7 @@
           <div><b>Too slow</b> — miss the window after the real draw and your opponent gets the drop on you.</div>
           <div>Every round you survive, the feints get faster, closer together, and start looking a lot more like the real thing — a half-draw, a duller flash, a distant shot. Watch for the exact flash and tone, not just any movement or bang.</div>
         </div>
+        <div class="opponent-preview" id="opponentPreview"></div>
         <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Step Up To The Line</button>
         <div class="session-log" id="sessionLogStart"></div>
       </div>
@@ -175,6 +183,29 @@ function sfx(name, ...args){
 const W = 960, H = 460;
 const GROUND_Y = 360;
 
+// Named opponents, unlocked at streak thresholds — doubles as a difficulty
+// preview (the tag says what's changing) and a light progression hook so
+// climbing isn't just "same guy, faster."
+const OPPONENTS = [
+  { minStreak: 0,  name: 'Dusty Pete',    tag: 'Twitchy, but he telegraphs everything.', accent: 0xc9a877 },
+  { minStreak: 3,  name: 'Sundown Jake',  tag: 'Starts faking the draw itself.',          accent: 0xff7b39 },
+  { minStreak: 6,  name: 'The Widow',     tag: 'Bluffs look almost like the real thing.', accent: 0x8be9ff },
+  { minStreak: 10, name: 'Reaper Cole',   tag: 'No wasted movement. Every tell counts.',  accent: 0xff4d4d }
+];
+function opponentForStreak(streak){
+  let chosen = OPPONENTS[0];
+  for (const o of OPPONENTS){ if (streak >= o.minStreak) chosen = o; }
+  return chosen;
+}
+function renderOpponentPreview(){
+  const el = document.getElementById('opponentPreview');
+  if (!el) return;
+  el.innerHTML = OPPONENTS.map((o, i)=>
+    (i>0 ? '<span class="opp-arrow">→</span>' : '') +
+    '<div class="opp-chip"><b>'+o.name+'</b><span>'+(i===0?'Start':'Streak '+o.minStreak)+'</span></div>'
+  ).join('');
+}
+
 // ---------- state ----------
 const state = {
   streak: 0,
@@ -182,6 +213,7 @@ const state = {
   bestReactionMs: null,
   closeCalls: 0,       // this run: dangerous bluffs (partial draw / flare) survived without flinching
   bestCloseCalls: 0,
+  currentOpponentName: null,
   roundHadDangerousFeint: false, // set by doFeint(), read/reset per round
   phase: 'idle', // idle | standoff | armed | resolved
   running: false,
@@ -268,7 +300,7 @@ function schedule(fn, delay){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx, bgAnimGfx;
+let playerFig, oppFig, oppHand, dustGfx, flashGfx, oppActionGfx, playerActionGfx;
 
 class DuelScene extends Phaser.Scene {
   constructor(){ super('duel'); }
@@ -285,10 +317,6 @@ class DuelScene extends Phaser.Scene {
 
     // sun
     this.add.circle(W*0.5, 90, 46, 0xffd97a, 0.85);
-
-    // background loop layer — tumbleweeds + a distant horse, created before
-    // the duelists so it always renders behind them
-    bgAnimGfx = this.add.graphics();
 
     // opponent silhouette (left)
     oppFig = this.add.graphics();
@@ -310,23 +338,11 @@ class DuelScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
   }
   update(time){
-    // Background loop — tumbleweeds and a distant horse, always running
-    // regardless of game phase, so the standoff never looks like a static
-    // painting. Kept low-opacity and behind the duelists on purpose.
-    if (bgAnimGfx){
-      bgAnimGfx.clear();
-      const tw1 = (time % 5000) / 5000;
-      drawTumbleweed(bgAnimGfx, -40 + tw1*(W+80), GROUND_Y+22 + Math.sin(tw1*Math.PI*8)*3, 11, tw1*Math.PI*12);
-      const tw2 = ((time+2500) % 5000) / 5000;
-      drawTumbleweed(bgAnimGfx, -40 + tw2*(W+80), GROUND_Y+34 + Math.sin(tw2*Math.PI*8+1)*3, 7, tw2*Math.PI*12);
-      const horseT = (time % 9000) / 9000;
-      drawHorseSilhouette(bgAnimGfx, W+60 - horseT*(W+120), GROUND_Y-28, 0.6, -1, time);
-    }
-
     // Small idle breathing bob so the standoff doesn't look frozen/dead
     // while the player is watching for the real signal.
     const bob = Math.sin(time*0.0028) * 2;
-    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob);
+    const opp = opponentForStreak(state.streak);
+    if (oppFig) drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true, bob, opp.accent);
     if (playerFig) drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false, -bob);
 
     // Opponent's hand snaps to the holster and pulls the gun the instant
@@ -350,7 +366,7 @@ class DuelScene extends Phaser.Scene {
   }
 }
 
-function drawFigure(g, x, groundY, color, facingRight, bob){
+function drawFigure(g, x, groundY, color, facingRight, bob, accentColor){
   bob = bob || 0;
   const gy = groundY + bob;
   g.clear();
@@ -365,6 +381,11 @@ function drawFigure(g, x, groundY, color, facingRight, bob){
   // hat
   g.fillRect(x-26, gy-190, 52, 8);
   g.fillRoundedRect(x-14, gy-206, 28, 20, 6);
+  // hatband — the per-opponent tell: color changes with who you're facing
+  if (accentColor != null){
+    g.fillStyle(accentColor, 0.85);
+    g.fillRect(x-26, gy-185, 52, 3);
+  }
   // arm (toward center)
   const dir = facingRight ? -1 : 1;
   g.fillRect(x + dir*14, gy-140, 26*Math.sign(dir)*-1 || 26, 10);
@@ -373,36 +394,6 @@ function drawFigure(g, x, groundY, color, facingRight, bob){
   g.fillRect(x-6, gy-84, 12, 20);
   g.fillStyle(0x1a1109, 1);
   g.fillRect(x-4, gy-90, 8, 10);
-}
-
-// Rolling tumbleweed — a fuzzy ball with a few crossing spokes that spin
-// as it travels, so it visibly "rolls" rather than just sliding.
-function drawTumbleweed(g, x, y, r, rot){
-  g.fillStyle(0x8a6a3f, 0.5);
-  g.fillCircle(x, y, r);
-  g.lineStyle(1.5, 0x5c4423, 0.45);
-  for (let i=0;i<4;i++){
-    const a = rot + i*(Math.PI/4);
-    g.beginPath();
-    g.moveTo(x - Math.cos(a)*r, y - Math.sin(a)*r);
-    g.lineTo(x + Math.cos(a)*r, y + Math.sin(a)*r);
-    g.strokePath();
-  }
-}
-
-// Minimal horse+rider silhouette crossing the far background, legs
-// alternating with a sine gait so it reads as trotting rather than gliding.
-function drawHorseSilhouette(g, x, y, scale, dir, t){
-  const legSwing = Math.sin(t*0.012) * 4 * scale;
-  g.fillStyle(0x1a1109, 0.4);
-  g.fillRoundedRect(x-16*scale, y-10*scale, 32*scale, 12*scale, 4*scale);
-  g.fillRoundedRect(x + dir*12*scale, y-18*scale, 8*scale, 12*scale, 3*scale);
-  g.fillRect(x-12*scale, y+2*scale, 3*scale, 10*scale+legSwing);
-  g.fillRect(x-4*scale, y+2*scale, 3*scale, 10*scale-legSwing);
-  g.fillRect(x+6*scale, y+2*scale, 3*scale, 10*scale+legSwing);
-  g.fillRect(x+12*scale, y+2*scale, 3*scale, 10*scale-legSwing);
-  g.fillCircle(x, y-16*scale, 4*scale);
-  g.fillRoundedRect(x-3*scale, y-14*scale, 6*scale, 8*scale, 2*scale);
 }
 
 function drawHandTwitch(g, x, groundY, offset){
@@ -625,7 +616,20 @@ function resolveRound(won, payload){
     flashBanner(ratingFor(ms), Math.round(ms)+'ms', ratingFor(ms).toLowerCase(), 500);
     sfx('tone', 900, 0.1, 'triangle', 0.18);
     document.getElementById('hudStatus').textContent = 'Holstered';
-    schedule(()=> startRound(), 900);
+
+    const nextOpponent = opponentForStreak(state.streak);
+    const opponentChanged = nextOpponent.name !== state.currentOpponentName;
+    if (opponentChanged){
+      state.currentOpponentName = nextOpponent.name;
+      document.getElementById('hudOpponent').textContent = nextOpponent.name;
+      schedule(()=>{
+        flashBanner('NEW CHALLENGER', nextOpponent.name.toUpperCase()+' — '+nextOpponent.tag, 'real', 1300);
+        sfx('tone', 700, 0.14, 'triangle', 0.18);
+      }, 650);
+      schedule(()=> startRound(), 2150);
+    } else {
+      schedule(()=> startRound(), 900);
+    }
   } else {
     const reason = payload === 'flinch' ? 'flinch' : 'slow';
     endRun(reason);
@@ -668,6 +672,7 @@ new Phaser.Game({
 
 loadBest();
 renderSessionLog();
+renderOpponentPreview();
 
 // Mount the shared mute/volume widget — this game was missing it entirely,
 // which meant a mute toggled from any other game on the site (the setting
@@ -692,8 +697,10 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.ended = false;
   state.streak = 0;
   state.closeCalls = 0;
+  state.currentOpponentName = OPPONENTS[0].name;
   document.getElementById('hudStreak').textContent = '0';
   document.getElementById('hudCloseCalls').textContent = '0';
+  document.getElementById('hudOpponent').textContent = OPPONENTS[0].name;
   startRound();
 });
 document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
