@@ -154,6 +154,7 @@
     <div class="hud-stat"><span class="label">Wave</span><span class="val" id="hudWave">0 / 13</span></div>
     <div class="hud-stat"><span class="label">Wave Time</span><span class="val" id="hudWaveTime">0.0s</span></div>
     <div class="hud-stat"><span class="label">Towers</span><span class="val" id="hudTowers">0 / 24</span></div>
+    <div class="hud-stat" title="Click any live balloon to instantly cash it out at current value, bypassing towers. Recharges over time."><span class="label">Discharge</span><span class="val" id="hudCharges">3 / 3</span></div>
     <div class="spacer"></div>
     <div class="segmented" id="targetModeSeg">
       <button data-mode="safe" class="active" title="Target balloons closest to the exit first">Safe</button>
@@ -179,6 +180,7 @@
           <span><i style="background:#c084fc"></i>Splitter</span>
         </div>
         <p style="font-size:11.5px;">Build towers along the conveyor. Pop units for cash based on their <b>current</b> value — the longer a unit survives, the more it's worth, but escaped units drain your Integrity by the same amount. Survive 13 waves, including the final Overpressure Tank.</p>
+        <p style="font-size:11.5px; text-align:left;"><b>Manual Discharge</b> — click any live unit yourself to instantly cash it out at its current value, no tower needed. Limited charges (shown top right) that slowly recharge — use it to grab a high-value unit right before it would escape, or to bail out a lane your towers can't cover in time.</p>
         <p style="font-size:11.5px; text-align:left;"><b>Targeting mode</b> (top right) controls every tower's auto-target priority at once:<br>
           <b style="color:var(--text);">Safe</b> — fires on whichever unit is closest to the exit first, to stop escapes.<br>
           <b style="color:var(--text);">Greedy</b> — fires on the highest-value unit first, to farm max cash (riskiest).<br>
@@ -428,8 +430,13 @@ const state = {
   balloons: [],
   running: false,
   ended: false,
-  waveElapsed: 0
+  waveElapsed: 0,
+  // Manual Discharge — a direct, limited-use player action (see below).
+  charges: 3,
+  maxCharges: 3,
+  rechargeTimer: 0
 };
+const CHARGE_RECHARGE_TIME = 12; // seconds per charge regained
 
 let scene = null;
 let ghostGraphic = null;
@@ -508,7 +515,7 @@ class Balloon {
       this.pop();
     }
   }
-  pop(){
+  pop(manual){
     this.alive = false;
     let bonus = 0;
     for (const t of state.towers){
@@ -520,8 +527,15 @@ class Balloon {
     const award = Math.round(this.value * (1+bonus) * 0.35);
     state.cash += award;
     updateHud();
-    spawnPopFx(this.x, this.y, this.color, award);
-    sfx('tone', 780 + this.pct()*400, 0.08, 'triangle', 0.18);
+    if (manual){
+      // Distinct feedback so a manual cash-out reads as a deliberate player
+      // action, not just another tower kill.
+      spawnPopFx(this.x, this.y, 0xffffff, award);
+      sfx('tone', 1100, 0.12, 'square', 0.22);
+    } else {
+      spawnPopFx(this.x, this.y, this.color, award);
+      sfx('tone', 780 + this.pct()*400, 0.08, 'triangle', 0.18);
+    }
     if (this.def.splits && !this.hasSplit){
       const half = this.value/2;
       for (let k=0;k<2;k++){
@@ -534,6 +548,7 @@ class Balloon {
     this.destroy();
     checkWaveClear();
   }
+  manualPop(){ this.pop(true); }
   escape(){
     this.alive = false;
     const dmg = Math.max(1, Math.ceil(this.value / this.def.escapeDivisor));
@@ -868,6 +883,9 @@ function updateHud(){
     const cost = parseInt(btn.dataset.cost,10);
     btn.disabled = state.cash < cost || state.ended || atCap;
   });
+  const chargesEl = document.getElementById('hudCharges');
+  chargesEl.textContent = state.charges + ' / ' + state.maxCharges;
+  chargesEl.classList.toggle('maxed', state.charges === 0);
 }
 
 function endRun(won){
@@ -936,6 +954,40 @@ function selectExistingTower(x,y){
     }
   }
   return null;
+}
+
+function selectLiveBalloon(x,y){
+  for (const b of state.balloons){
+    if (!b.alive) continue;
+    if (Phaser.Math.Distance.Between(x,y,b.x,b.y) <= b.radius + 6) return b;
+  }
+  return null;
+}
+
+// ---------- Manual Discharge ----------
+// A direct player action so a wave isn't pure watch-and-wait: click a live
+// balloon to instantly cash it out at its current value, bypassing tower
+// damage entirely. Limited charges that slowly regenerate — this is the
+// "how greedy can you be" decision made personal and active instead of only
+// something towers do passively.
+function tryManualDischarge(x,y){
+  if (state.charges <= 0) return false;
+  const b = selectLiveBalloon(x,y);
+  if (!b) return false;
+  state.charges -= 1;
+  b.manualPop();
+  updateHud();
+  return true;
+}
+
+function updateChargeRecharge(dt){
+  if (state.charges >= state.maxCharges) return;
+  state.rechargeTimer += dt * state.speedMult;
+  if (state.rechargeTimer >= CHARGE_RECHARGE_TIME){
+    state.rechargeTimer -= CHARGE_RECHARGE_TIME;
+    state.charges = Math.min(state.maxCharges, state.charges + 1);
+    updateHud();
+  }
 }
 
 function showTowerPanel(t){
@@ -1040,8 +1092,10 @@ class MainScene extends Phaser.Scene {
         return;
       }
       const t = selectExistingTower(p.x, p.y);
-      if (t) showTowerPanel(t);
-      else hideTowerPanel();
+      if (t){ showTowerPanel(t); return; }
+      hideTowerPanel();
+      // No tower under the click — try a Manual Discharge on a live balloon.
+      tryManualDischarge(p.x, p.y);
     });
 
     this.input.keyboard.on('keydown-ESC', ()=>{ deselectTowerType(); hideTowerPanel(); });
@@ -1061,6 +1115,7 @@ class MainScene extends Phaser.Scene {
       document.getElementById('hudWaveTime').textContent = state.waveElapsed.toFixed(1)+'s';
     }
     processSpawning(dt);
+    updateChargeRecharge(dt);
     for (const b of [...state.balloons]) b.update(dt);
     enforcePathSpacing();
     for (const b of [...state.balloons]) b.render(dt);
