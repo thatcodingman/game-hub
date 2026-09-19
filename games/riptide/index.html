@@ -207,7 +207,18 @@ function sfx(name, ...args){
 const W = 960, H = 540;
 const PLAYER_SCREEN_X = W/2, PLAYER_SCREEN_Y = H*0.7;
 const LANE_PX = 220;       // how far left/right the ±1 lane range spans on screen
-const PX_PER_PCT = 34;     // vertical px scrolled per 1% of progress
+const PX_PER_PCT = 34;     // vertical px scrolled per 1 raw progress unit
+
+// The crossing is DISTANCE_SCALE times longer than the displayed 0-100%
+// bar suggests — each stroke still moves the same raw distance (and scrolls
+// the screen the same amount) as before, there's just more distance total.
+// This is the actual lever for run length: more waves alone can't do it,
+// since they only subdivide a fixed distance. At the sustainable stroke
+// rate the stamina economy settles into (~1.79 strokes/sec, ~2.4 progress
+// each), a run should take roughly FINISH_PROGRESS / 4.2 seconds under
+// steady play, before hazard drag slows it further.
+const DISTANCE_SCALE = 12;
+const FINISH_PROGRESS = 100 * DISTANCE_SCALE;
 
 // ---------- tuning ----------
 const STROKE_PROGRESS = 2.6;
@@ -369,7 +380,7 @@ function generateWaveSystem(){
   // All spatial tuning (footprints, gaps, entry buffer) was authored for a
   // 10%-wide band. Scale it to whatever band width the current wave count
   // actually gives each wave, so more/fewer waves stay spatially valid.
-  const waveSpan = 100 / WAVE_DEFS.length;
+  const waveSpan = FINISH_PROGRESS / WAVE_DEFS.length;
   const spanRatio = waveSpan / 10;
 
   for (let w=0; w<WAVE_DEFS.length; w++){
@@ -483,8 +494,8 @@ function drawWater(time){
 
 function drawShore(){
   shoreGfx.clear();
-  // shore sits at progress=100; screenY of that line relative to player
-  const shoreScreenY = PLAYER_SCREEN_Y - (100 - state.progress) * PX_PER_PCT;
+  // shore sits at progress=FINISH_PROGRESS; screenY of that line relative to player
+  const shoreScreenY = PLAYER_SCREEN_Y - (FINISH_PROGRESS - state.progress) * PX_PER_PCT;
   if (shoreScreenY > -40 && shoreScreenY < H+40){
     shoreGfx.fillStyle(0xd9c99b, 0.9);
     shoreGfx.fillRect(0, shoreScreenY, W, H - shoreScreenY + 40);
@@ -611,7 +622,7 @@ function tryStroke(){
   const forward = clamp(-dy, 0, 1); // aiming up = forward progress
   const lateral = clamp(dx, -1, 1);
 
-  state.progress = clamp(state.progress + STROKE_PROGRESS * (0.4 + 0.6*forward), 0, 100);
+  state.progress = clamp(state.progress + STROKE_PROGRESS * (0.4 + 0.6*forward), 0, FINISH_PROGRESS);
   state.lane = clamp(state.lane + lateral * 0.16, -1, 1);
   state.stamina = clamp(state.stamina - STROKE_STAMINA_COST, 0, 100);
   state.strokeCD = STROKE_COOLDOWN_MS;
@@ -627,7 +638,7 @@ function applyHazards(dt){
       if (state.progress >= hz.startP && state.progress <= hz.endP){
         const dir = hz.lane >= 0 ? 1 : -1;
         state.lane = clamp(state.lane + dir * hz.strength * 0.18 * dt, -1, 1);
-        state.progress = clamp(state.progress - hz.strength * 1.2 * dt, 0, 100); // undertow drags you back
+        state.progress = clamp(state.progress - hz.strength * 1.2 * dt, 0, FINISH_PROGRESS); // undertow drags you back
       }
     } else if (hz.type === 'wake'){
       if (state.progress >= hz.startP && state.progress <= hz.endP){
@@ -639,7 +650,7 @@ function applyHazards(dt){
         const pull = (1 - Math.abs(dp)/hz.radius) * hz.strength;
         const dirToCenter = hz.lane - state.lane;
         state.lane = clamp(state.lane + Math.sign(dirToCenter||1) * pull * 0.22 * dt, -1, 1);
-        state.progress = clamp(state.progress - pull * 0.9 * dt, 0, 100);
+        state.progress = clamp(state.progress - pull * 0.9 * dt, 0, FINISH_PROGRESS);
       }
     } else if (hz.type === 'jellyfish'){
       if (!hz.triggered && Math.abs(state.progress - hz.atP) < 1.4 && Math.abs(state.lane - hz.lane) < hz.radius*6){
@@ -666,8 +677,9 @@ function clearBanner(){
 
 // ---------- HUD ----------
 function updateHud(){
-  document.getElementById('progressPct').textContent = Math.floor(state.progress)+'%';
-  document.getElementById('progressFill').style.width = state.progress+'%';
+  const progressPct = (state.progress / FINISH_PROGRESS) * 100;
+  document.getElementById('progressPct').textContent = Math.floor(progressPct)+'%';
+  document.getElementById('progressFill').style.width = progressPct+'%';
   document.getElementById('staminaPct').textContent = Math.round(state.stamina)+'%';
   document.getElementById('staminaFill').style.width = state.stamina+'%';
   document.getElementById('panicPct').textContent = Math.round(state.panic)+'%';
@@ -715,10 +727,10 @@ function gameTick(now){
 
     // Check the win condition BEFORE applying hazard drag — otherwise a
     // current or whirlpool sitting right at the finish line can undertow
-    // progress back below 100 every single frame, so it's never seen at
-    // or past 100 at the moment this gets checked. Touching 100% wins,
-    // full stop, before anything gets a chance to pull you back off shore.
-    if (state.progress >= 100){
+    // progress back below the finish every single frame, so it's never seen
+    // at or past it at the moment this gets checked. Touching the finish
+    // wins, full stop, before anything gets a chance to pull you back off shore.
+    if (state.progress >= FINISH_PROGRESS){
       winRun();
     } else {
       applyHazards(dt);
@@ -745,7 +757,7 @@ function winRun(){
   state.phase = 'ended';
   state.ended = true;
   state.running = false;
-  if (state.progress > state.bestProgress) state.bestProgress = state.progress;
+  if (100 > state.bestProgress) state.bestProgress = 100;
   if (state.bestTimeMs == null || state.elapsed*1000 < state.bestTimeMs) state.bestTimeMs = state.elapsed*1000;
   saveBest();
   renderBest();
@@ -763,14 +775,15 @@ function loseRun(){
   state.phase = 'ended';
   state.ended = true;
   state.running = false;
-  if (state.progress > state.bestProgress) state.bestProgress = state.progress;
+  const finalPct = (state.progress / FINISH_PROGRESS) * 100;
+  if (finalPct > state.bestProgress) state.bestProgress = finalPct;
   saveBest();
   renderBest();
   sfx('tone', 180, 0.4, 'sawtooth', 0.26, 50);
   flashBanner('PANIC', 'The water took you', 'warn', 0);
   document.getElementById('endTitle').textContent = 'PANIC';
   document.getElementById('endMsg').textContent = 'You couldn’t hold it together. The current won.';
-  document.getElementById('endDist').textContent = Math.round(state.progress)+'%';
+  document.getElementById('endDist').textContent = Math.round(finalPct)+'%';
   document.getElementById('endTime').textContent = formatTime(state.elapsed*1000);
   document.getElementById('endSeed').textContent = state.seed;
   setTimeout(()=> document.getElementById('endScreen').classList.remove('hidden'), 700);
