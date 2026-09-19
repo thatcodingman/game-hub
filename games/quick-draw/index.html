@@ -93,6 +93,7 @@
   .opponent-preview .opp-chip{ display:flex; flex-direction:column; align-items:center; gap:2px; padding:5px 9px; border:1px solid var(--border); border-radius:6px; background:rgba(0,0,0,0.25); }
   .opponent-preview .opp-chip b{ font-size:11.5px; color:var(--text); }
   .opponent-preview .opp-chip span{ font-size:9.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; }
+  .opponent-preview .opp-chip span:last-child{ text-transform:none; font-style:italic; color:var(--dusk); }
   .opponent-preview .opp-arrow{ color:var(--text-dim); font-size:12px; }
 
   .btn{
@@ -187,11 +188,53 @@ const GROUND_Y = 360;
 // preview (the tag says what's changing) and a light progression hook so
 // climbing isn't just "same guy, faster."
 const OPPONENTS = [
-  { minStreak: 0,  name: 'Dusty Pete',    tag: 'Twitchy, but he telegraphs everything.', accent: 0xc9a877 },
-  { minStreak: 3,  name: 'Sundown Jake',  tag: 'Starts faking the draw itself.',          accent: 0xff7b39 },
-  { minStreak: 6,  name: 'The Widow',     tag: 'Bluffs look almost like the real thing.', accent: 0x8be9ff },
-  { minStreak: 10, name: 'Reaper Cole',   tag: 'No wasted movement. Every tell counts.',  accent: 0xff4d4d }
+  { minStreak: 0,  key: 'dustyPete',    name: 'Dusty Pete',    identity: 'The Teacher',          tag: 'Twitchy, but he telegraphs everything.', accent: 0xc9a877 },
+  { minStreak: 3,  key: 'sundownJake',  name: 'Sundown Jake',  identity: 'The Flinch Test',       tag: 'Starts faking the draw itself.',          accent: 0xff7b39 },
+  { minStreak: 6,  key: 'widow',        name: 'The Widow',     identity: 'The Information War',  tag: 'Bluffs look almost like the real thing.', accent: 0x8be9ff },
+  { minStreak: 10, key: 'reaperCole',   name: 'Reaper Cole',   identity: 'The Unreadable One',    tag: 'No wasted movement. Every tell counts.',  accent: 0xff4d4d }
 ];
+
+// Each opponent is a behavior PROFILE layered on top of the streak's global
+// difficulty curve, not a separate difficulty level:
+//   global streak difficulty + opponent behavior profile = this round
+// difficultyForStreak() still owns feint count, overall timing compression,
+// reaction timeout, and which feint types are unlocked. These profiles only
+// control HOW those feints are chosen and paced, so each opponent tests a
+// different read rather than just being a faster version of the last one.
+const OPPONENT_PROFILES = {
+  // Dusty Pete — steady, dominated by harmless feints, barely any partial
+  // draw. Job is to teach the timing language, not punish.
+  dustyPete: {
+    gapVariance: 0.10, preDrawVariance: 0.12, reactionModifier: 1.00,
+    rhythm: 'steady', feintCountVariance: 0,
+    feintWeights: { handTwitch: 35, dustPuff: 30, murmur: 25, partialDraw: 10, echo: 0, flare: 0 }
+  },
+  // Sundown Jake — the partial draw is his whole game: convincing, and the
+  // real draw follows it at one of two fixed-feeling intervals (never a
+  // smooth range), so it can never be read as a reliable countdown.
+  sundownJake: {
+    gapVariance: 0.18, preDrawVariance: 0.25, reactionModifier: 1.00,
+    rhythm: 'deceptive', feintCountVariance: 0,
+    feintWeights: { handTwitch: 15, dustPuff: 15, murmur: 15, partialDraw: 40, echo: 10, flare: 5 }
+  },
+  // The Widow — leans on audio deception; her echoes vary in apparent
+  // distance/intensity round to round so sound alone is never trustworthy.
+  // Only a slight reaction tightening — her difficulty is uncertainty, not speed.
+  widow: {
+    gapVariance: 0.22, preDrawVariance: 0.30, reactionModifier: 0.95,
+    rhythm: 'ambiguous', feintCountVariance: 0,
+    feintWeights: { handTwitch: 10, dustPuff: 10, murmur: 20, partialDraw: 15, echo: 30, flare: 15 }
+  },
+  // Reaper Cole — rhythm disruption. Each round picks a pacing mode (slow
+  // burn / machine gun / lopsided) on top of already-wide timing variance,
+  // and his feint count itself can drift by one, so no rhythm ever settles.
+  reaperCole: {
+    gapVariance: 0.35, preDrawVariance: 0.40, reactionModifier: 0.90,
+    rhythm: 'erratic', feintCountVariance: 1,
+    feintWeights: { handTwitch: 8, dustPuff: 8, murmur: 12, partialDraw: 24, echo: 24, flare: 24 }
+  }
+};
+
 function opponentForStreak(streak){
   let chosen = OPPONENTS[0];
   for (const o of OPPONENTS){ if (streak >= o.minStreak) chosen = o; }
@@ -202,7 +245,7 @@ function renderOpponentPreview(){
   if (!el) return;
   el.innerHTML = OPPONENTS.map((o, i)=>
     (i>0 ? '<span class="opp-arrow">→</span>' : '') +
-    '<div class="opp-chip"><b>'+o.name+'</b><span>'+(i===0?'Start':'Streak '+o.minStreak)+'</span></div>'
+    '<div class="opp-chip"><b>'+o.name+'</b><span>'+(i===0?'Start':'Streak '+o.minStreak)+'</span><span>'+o.identity+'</span></div>'
   ).join('');
 }
 
@@ -453,9 +496,8 @@ function difficultyForStreak(streak){
 
 function rand(min, max){ return min + Math.random()*(max-min); }
 
-// Draws `count` feint kinds from the streak's available pool without
-// repeats until the pool is exhausted, so dust puffs and crowd murmurs
-// actually show up regularly instead of getting starved by chance.
+// Streak still owns which feint kinds are UNLOCKED at all — the opponent
+// profile only controls the mix among whatever's unlocked.
 function availableFeintPool(streak){
   const pool = ['handTwitch', 'dustPuff', 'murmur'];
   if (streak >= 3) pool.push('partialDraw');
@@ -463,15 +505,22 @@ function availableFeintPool(streak){
   if (streak >= 6) pool.push('flare');
   return pool;
 }
-function pickFeintSequence(count, streak){
-  const pool = availableFeintPool(streak);
+function weightedPick(weights){
+  const entries = Object.entries(weights).filter(([,w])=> w > 0);
+  const total = entries.reduce((s,[,w])=> s+w, 0);
+  if (total <= 0) return entries.length ? entries[0][0] : 'handTwitch';
+  let r = Math.random() * total;
+  for (const [k,w] of entries){ if (r < w) return k; r -= w; }
+  return entries[entries.length-1][0];
+}
+// Weighted, independent-per-slot pick from the opponent's feintWeights,
+// restricted to whatever the streak has unlocked so far.
+function pickFeintSequence(count, streak, profile){
+  const allowed = new Set(availableFeintPool(streak));
+  const filtered = {};
+  for (const k in profile.feintWeights){ if (allowed.has(k)) filtered[k] = profile.feintWeights[k]; }
   const seq = [];
-  let bag = [];
-  for (let i=0;i<count;i++){
-    if (bag.length === 0) bag = pool.slice();
-    const idx = Math.floor(Math.random()*bag.length);
-    seq.push(bag.splice(idx,1)[0]);
-  }
+  for (let i=0;i<count;i++) seq.push(weightedPick(filtered));
   return seq;
 }
 
@@ -485,18 +534,56 @@ function startRound(){
   document.getElementById('hudLastReaction').textContent = '—';
   drawHandTwitch(oppHand, 220, GROUND_Y, 0);
 
+  const opponent = opponentForStreak(state.streak);
+  const profile = OPPONENT_PROFILES[opponent.key];
   const diff = difficultyForStreak(state.streak);
-  let t = rand(300, 1200); // initial hold before any feints — wide range so the pacing never settles into a fixed rhythm
 
-  const feintKinds = pickFeintSequence(diff.feintCount, state.streak);
+  // Opponent widens (or barely widens) the streak's base gap/pre-draw
+  // ranges proportionally — Pete stays close to the base, Reaper swings wildly.
+  const gapMin = diff.feintGapMin * (1 - profile.gapVariance);
+  const gapMax = diff.feintGapMax * (1 + profile.gapVariance);
+  const preDrawMin = diff.preDrawDelayMin * (1 - profile.preDrawVariance);
+  const preDrawMax = diff.preDrawDelayMax * (1 + profile.preDrawVariance);
+  const reactionTimeout = Math.max(400, diff.reactionTimeout * profile.reactionModifier);
+
+  // Reaper Cole only: pick a pacing mode for this whole round so gaps
+  // trend long, short, or alternate — on top of his already-wide variance.
+  let pacingMode = null;
+  if (profile.rhythm === 'erratic'){
+    pacingMode = ['slowBurn', 'machineGun', 'lopsided'][Math.floor(Math.random()*3)];
+  }
+
+  let feintCount = diff.feintCount;
+  if (profile.feintCountVariance){
+    const v = profile.feintCountVariance;
+    feintCount = Math.max(1, Math.min(8, feintCount + (Math.floor(Math.random()*(v*2+1)) - v)));
+  }
+
+  let t = rand(300, 1200); // initial hold before any feints
+
+  const feintKinds = pickFeintSequence(feintCount, state.streak, profile);
   for (let i=0;i<feintKinds.length;i++){
     const kind = feintKinds[i];
     schedule(()=> doFeint(kind), t);
-    t += rand(diff.feintGapMin, diff.feintGapMax);
+    let gMin = gapMin, gMax = gapMax;
+    if (pacingMode === 'slowBurn'){ gMin *= 1.6; gMax *= 1.6; }
+    else if (pacingMode === 'machineGun'){ gMin *= 0.55; gMax *= 0.55; }
+    else if (pacingMode === 'lopsided'){ const m = (i % 2 === 0) ? 1.6 : 0.55; gMin *= m; gMax *= m; }
+    t += rand(gMin, gMax);
   }
 
-  const preDraw = rand(diff.preDrawDelayMin, diff.preDrawDelayMax) * rand(0.85, 1.2);
-  schedule(()=> armDraw(diff.reactionTimeout), t + preDraw);
+  // Sundown Jake's signature: after a partial draw, the real draw follows
+  // at one of two rough intervals (short or long) instead of a smooth
+  // range — a partial draw can never be read as a reliable countdown.
+  const lastKind = feintKinds[feintKinds.length-1];
+  let preDraw;
+  if (profile.rhythm === 'deceptive' && lastKind === 'partialDraw'){
+    preDraw = (Math.random() < 0.5 ? 280 : 950) * rand(0.85, 1.15);
+  } else {
+    preDraw = rand(preDrawMin, preDrawMax) * rand(0.85, 1.2);
+  }
+
+  schedule(()=> armDraw(reactionTimeout), t + preDraw);
 }
 
 // Feint pool widens with streak — early on it's harmless noise (twitch, dust,
@@ -529,22 +616,35 @@ function doFeint(kind){
       sfx('tone', 140, 0.06, 'sine', 0.06);
     }
   } else if (kind === 'murmur'){
-    // crowd murmur, audio-only tell
-    sfx('tone', 180, 0.09, 'sawtooth', 0.07);
+    // crowd murmur, audio-only tell — two close, detuned voices instead of
+    // one clean tone, so it reads as a crowd rather than a signal
+    sfx('tone', 170, 0.1, 'sawtooth', 0.05);
+    sfx('tone', 196, 0.1, 'sawtooth', 0.05);
   } else if (kind === 'partialDraw'){
     // opponent's hand drops toward the holster and pulls back — the most
-    // convincing bluff, since it's the same motion as the real draw
+    // convincing bluff, since it's the same motion as the real draw.
+    // Sound matches that intent: a miniature, muffled version of the real
+    // draw's crack (same downward sweep shape, much quieter/shorter) —
+    // close enough to cause doubt, not close enough to be safe to trust.
     state.roundHadDangerousFeint = true;
     drawHandTwitch(oppHand, 220, GROUND_Y, 56);
     schedule(()=>{ if (oppHand) drawHandTwitch(oppHand, 220, GROUND_Y, 0); }, 160);
-    sfx('tone', 260, 0.06, 'square', 0.09);
+    sfx('tone', 1000, 0.04, 'square', 0.12, 350);
   } else if (kind === 'echo'){
-    // a distant gunshot report, audio-only — baits anyone who reacts to
-    // "a bang" instead of waiting for the real cue's exact tone/flash
-    sfx('tone', 140, 0.12, 'sawtooth', 0.1);
+    // a distant gunshot report, audio-only. Presentation varies each time
+    // (near / distant / very faint) — The Widow's signature — so sound
+    // alone can never be used as a reliable countdown or filtered out.
+    const echoTiers = [
+      { freq: 500, dur: 0.14, vol: 0.10, sweep: 60 },  // near
+      { freq: 340, dur: 0.16, vol: 0.06, sweep: 40 },  // distant
+      { freq: 250, dur: 0.10, vol: 0.03, sweep: 25 }   // very faint
+    ];
+    const t = echoTiers[Math.floor(Math.random()*echoTiers.length)];
+    sfx('tone', t.freq, t.dur, 'sawtooth', t.vol, t.sweep);
   } else if (kind === 'flare'){
     // a dim, brief orange flash — shaped like the real draw but wrong
-    // color, wrong duration, and a duller tone
+    // color, wrong duration. Sound is a dissonant near-chime (two close,
+    // clashing tones) instead of the real draw's clean bell.
     state.roundHadDangerousFeint = true;
     if (flashGfx){
       flashGfx.clear();
@@ -552,7 +652,7 @@ function doFeint(kind){
       flashGfx.fillRect(0, 0, W, H);
       schedule(()=>{ if (flashGfx) flashGfx.clear(); }, 60);
     }
-    sfx('tone', 500, 0.08, 'triangle', 0.12);
+    sfx('chime', [480, 620], 'triangle', 0.13);
   }
 }
 
@@ -566,7 +666,11 @@ function armDraw(reactionTimeout){
   flashGfx.fillRect(0, 0, W, H);
   schedule(()=>{ if (flashGfx) flashGfx.clear(); }, 90);
   flashBanner('DRAW!', '', 'real', 0);
-  sfx('tone', 1400, 0.16, 'square', 0.25);
+  // The one sound that must never be confused with a feint: a sharp
+  // high-to-low crack (real gunshot shape) immediately followed by a
+  // clean bright chime — nothing else in the game combines both.
+  sfx('tone', 1800, 0.05, 'square', 0.3, 300);
+  sfx('chime', [1200, 1600], 'sine', 0.22);
 
   schedule(()=>{
     if (state.phase === 'armed') resolveRound(false, null); // too slow
@@ -624,7 +728,7 @@ function resolveRound(won, payload){
       document.getElementById('hudOpponent').textContent = nextOpponent.name;
       schedule(()=>{
         flashBanner('NEW CHALLENGER', nextOpponent.name.toUpperCase()+' — '+nextOpponent.tag, 'real', 1300);
-        sfx('tone', 700, 0.14, 'triangle', 0.18);
+        sfx('chime', [700, 950, 1200], 'triangle', 0.16); // three-note rising fanfare, distinct from the two-note flare chime
       }, 650);
       schedule(()=> startRound(), 2150);
     } else {
@@ -642,12 +746,12 @@ function endRun(reason){
   clearTimers();
   recordRun(reason);
   if (reason === 'flinch'){
-    sfx('tone', 220, 0.18, 'square', 0.2); // sharp "gasp/whip" — you jumped the gun
+    sfx('tone', 500, 0.16, 'square', 0.24, 150); // sharp upward-then-cut yelp — you jumped, caught yourself too late
     flashBanner('YOU FLINCHED', 'Drew before the signal', 'bad', 0);
     document.getElementById('endTitle').textContent = 'YOU FLINCHED';
     document.getElementById('endMsg').textContent = 'You drew before the real signal. Discipline broke — game over.';
   } else {
-    sfx('tone', 90, 0.35, 'sawtooth', 0.28); // low, blunt "gunshot" — opponent won
+    sfx('tone', 220, 0.4, 'sawtooth', 0.3, 40); // heavy downward boom — opponent's shot lands
     flashBanner('TOO SLOW', 'Opponent got the drop on you', 'bad', 0);
     document.getElementById('endTitle').textContent = 'TOO SLOW';
     document.getElementById('endMsg').textContent = 'The signal came and went. Your opponent was faster.';
