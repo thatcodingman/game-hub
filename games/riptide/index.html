@@ -15,6 +15,7 @@
     margin:0; padding:16px; min-height:100vh;
     background: radial-gradient(circle at 50% 0%, #123049 0%, #08141f 65%);
     color:var(--text); font-family:system-ui,-apple-system,sans-serif;
+    overscroll-behavior-y:none; -webkit-overflow-scrolling:touch;
   }
   .wrap{ max-width:1000px; margin:0 auto; }
   .title-bar{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:6px; }
@@ -109,15 +110,35 @@
   .btn:hover{ border-color:var(--cyan); }
   .btn.primary{ background:var(--cyan); color:#062028; border-color:var(--cyan); font-weight:700; }
 
+  .rank-badge-lg{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:54px; height:54px; border-radius:50%; font-size:26px; font-weight:900;
+    margin:4px auto 10px; border:2px solid currentColor;
+    text-shadow:0 0 10px currentColor;
+  }
+  .rank-note{ font-size:11px; color:var(--text-dim); margin:-4px 0 10px; }
+
   @media (max-width: 480px){
     body{ padding:10px; }
     .title-bar{ flex-direction:column; align-items:flex-start; gap:4px; }
-    .best-run{ text-align:left; }
-    .hud{ gap:10px 14px; padding:8px 10px; }
-    .meter{ min-width:90px; }
+    .best-run{ text-align:left; font-size:10.5px; }
+    .hud{ gap:8px 12px; padding:8px 10px; }
+    .meter{ min-width:78px; }
+    .meter .label{ font-size:9px; }
+    .hud-status .val{ font-size:13px; }
     .overlay-card h2{ font-size:21px; }
     .overlay-card p{ font-size:12.5px; }
-    .banner{ font-size:28px; }
+    .rule-list{ font-size:11px; margin:10px 0; }
+    .overlay-stats{ gap:16px; margin:12px 0; }
+    .banner{ font-size:26px; }
+    .wave-tag{ font-size:10px; letter-spacing:3px; }
+    .hint{ font-size:10.5px; padding:0 4px; }
+  }
+
+  @media (max-width: 360px){
+    .meter{ min-width:0; flex:1 1 30%; }
+    .spacer{ flex-basis:100%; height:0; }
+    .hud-status{ text-align:left; flex-direction:row; gap:6px; align-items:baseline; }
   }
 </style>
 </head>
@@ -177,6 +198,8 @@
       <div class="overlay-card">
         <h2 id="endTitle">DOWN</h2>
         <p id="endMsg"></p>
+        <div class="rank-badge-lg" id="rankBadge">-</div>
+        <div class="rank-note" id="rankNote"></div>
         <div class="overlay-stats">
           <div>Distance<b id="endDist">0%</b></div>
           <div>Time<b id="endTime">0:00</b></div>
@@ -249,6 +272,10 @@ const state = {
   ended: false,
   hazards: [],
   lastHeartbeat: 0,
+  lowStaminaWarned: false,
+  nearShoreCued: false,
+  stingCount: 0,
+  peakPanic: 0,
   waveBoundaries: [],
   currentWaveIndex: 0,
   seed: 0,
@@ -414,11 +441,11 @@ function generateWaveSystem(){
       const strength = baseStrength * (0.9 + rng()*0.2); // ±10% strength variance
 
       if (h.type === 'current'){
-        hazards.push({ type:'current', startP, endP: startP+footprint, lane, strength });
+        hazards.push({ type:'current', startP, endP: startP+footprint, lane, strength, active:false });
       } else if (h.type === 'wake'){
-        hazards.push({ type:'wake', startP, endP: startP+footprint, strength });
+        hazards.push({ type:'wake', startP, endP: startP+footprint, strength, active:false });
       } else if (h.type === 'whirlpool'){
-        hazards.push({ type:'whirlpool', centerP: startP+footprint/2, lane, radius: footprint/2, strength });
+        hazards.push({ type:'whirlpool', centerP: startP+footprint/2, lane, radius: footprint/2, strength, active:false, lastPing:0 });
       } else if (h.type === 'jellyfish'){
         hazards.push({ type:'jellyfish', atP: startP+footprint/2, lane, radius:0.16, triggered:false });
       }
@@ -511,9 +538,9 @@ function screenXForLane(lane){
   return PLAYER_SCREEN_X + lane * LANE_PX;
 }
 
-function drawFlowArrow(x, y, dir){
-  const len = 13;
-  hazardGfx.lineStyle(2, 0x7fd8e8, 0.55);
+function drawFlowArrow(x, y, dir, active){
+  const len = active ? 15 : 13;
+  // lineStyle is set by the caller (so active/strength coloring applies to the whole batch)
   hazardGfx.beginPath();
   hazardGfx.moveTo(x - len*dir, y);
   hazardGfx.lineTo(x + len*dir, y);
@@ -534,16 +561,32 @@ function drawHazards(time){
       const yTop = screenYForP(hz.endP), yBot = screenYForP(hz.startP);
       const cx = screenXForLane(hz.lane);
       const dir = hz.lane >= 0 ? 1 : -1; // visual flow direction
-      hazardGfx.fillStyle(0x2f6b86, 0.16);
-      hazardGfx.fillRect(cx-170, yTop, 340, yBot-yTop);
+      const active = !!hz.active;
+      const strengthGlow = Math.min(1, hz.strength / 1.2);
+
+      // wavy ribbon edges instead of a flat rectangle — reads as moving
+      // water instead of a static UI box, and brightens when it's actually
+      // pulling on you right now
+      const fillAlpha = active ? 0.30 : 0.12 + strengthGlow*0.08;
+      hazardGfx.fillStyle(active ? 0x3d8aab : 0x2f6b86, fillAlpha);
+      const pts = [];
+      for (let yy=yTop; yy<=yBot; yy+=18){
+        pts.push({ x: cx - 170 + Math.sin(yy*0.045 + time*0.0016)*9, y: yy });
+      }
+      for (let yy=yBot; yy>=yTop; yy-=18){
+        pts.push({ x: cx + 170 + Math.sin(yy*0.045 + time*0.0016 + 0.7)*9, y: yy });
+      }
+      hazardGfx.fillPoints(pts, true);
+
       // scattered arrow streaks drifting in the flow direction — shows
       // WHICH WAY the water moves, not just "there are lines here"
+      hazardGfx.lineStyle(2, 0x7fd8e8, active ? 0.85 : 0.4 + strengthGlow*0.15);
       const flowOff = (((time||0) * 0.045 * dir) % 40 + 40) % 40;
       let row = 0;
       for (let yy=yTop+16; yy<yBot; yy+=30){
         const rowShift = (row % 2) * 20;
         for (let xx = -150 + flowOff + rowShift; xx < 150; xx += 42){
-          drawFlowArrow(cx+xx, yy, dir);
+          drawFlowArrow(cx+xx, yy, dir, active);
         }
         row++;
       }
@@ -551,12 +594,37 @@ function drawHazards(time){
       const cy = screenYForP(hz.centerP), cx = screenXForLane(hz.lane);
       if (cy < -80 || cy > H+80) continue;
       const rPx = hz.radius * PX_PER_PCT;
-      hazardGfx.lineStyle(2, 0x7fd8e8, 0.4);
-      for (let ring=0; ring<3; ring++){
-        hazardGfx.strokeCircle(cx, cy, rPx*0.4 + ring*rPx*0.3);
+      const active = !!hz.active;
+      const spinSpeed = 0.0009 + hz.strength * 0.0007;
+      const rotation = (time||0) * spinSpeed;
+      const breathe = 1 + Math.sin((time||0)*0.003) * 0.04;
+
+      // rotating spiral arms — stronger whirlpools spin visibly faster
+      hazardGfx.lineStyle(2, active ? 0xa8ecf7 : 0x7fd8e8, active ? 0.75 : 0.4);
+      const arms = 3;
+      for (let a=0; a<arms; a++){
+        const armOffset = (Math.PI*2/arms)*a + rotation;
+        hazardGfx.beginPath();
+        for (let t=0.15; t<=1; t+=0.09){
+          const ang = armOffset + t*2.6;
+          const r = t*rPx*breathe;
+          const px = cx + Math.cos(ang)*r, py = cy + Math.sin(ang)*r;
+          if (t===0.15) hazardGfx.moveTo(px, py); else hazardGfx.lineTo(px, py);
+        }
+        hazardGfx.strokePath();
       }
-      hazardGfx.fillStyle(0x08141f, 0.6);
-      hazardGfx.fillCircle(cx, cy, rPx*0.22);
+      // faint outer ring marking the true danger radius
+      hazardGfx.lineStyle(1.5, active ? 0xff8a6b : 0x7fd8e8, active ? 0.35 : 0.18);
+      hazardGfx.strokeCircle(cx, cy, rPx*breathe);
+      // layered dark center to fake a soft gradient vortex
+      hazardGfx.fillStyle(0x08141f, 0.5);
+      hazardGfx.fillCircle(cx, cy, rPx*0.34);
+      hazardGfx.fillStyle(0x08141f, 0.75);
+      hazardGfx.fillCircle(cx, cy, rPx*0.2);
+      if (active){
+        hazardGfx.fillStyle(0xff6b4d, 0.18);
+        hazardGfx.fillCircle(cx, cy, rPx*0.42*breathe);
+      }
     } else if (hz.type === 'jellyfish'){
       if (hz.triggered) continue;
       const cy = screenYForP(hz.atP), cx = screenXForLane(hz.lane);
@@ -635,26 +703,56 @@ function tryStroke(){
 function applyHazards(dt){
   for (const hz of state.hazards){
     if (hz.type === 'current'){
-      if (state.progress >= hz.startP && state.progress <= hz.endP){
+      const inRange = state.progress >= hz.startP && state.progress <= hz.endP;
+      if (inRange && !hz.active){
+        hz.active = true;
+        // low descending sweep — "the water just grabbed you sideways"
+        sfx('tone', 340, 0.24, 'sine', 0.11, 210);
+      } else if (!inRange && hz.active){
+        hz.active = false;
+        sfx('tone', 250, 0.09, 'sine', 0.06, 320); // soft release blip on exit
+      }
+      if (inRange){
         const dir = hz.lane >= 0 ? 1 : -1;
         state.lane = clamp(state.lane + dir * hz.strength * 0.18 * dt, -1, 1);
         state.progress = clamp(state.progress - hz.strength * 1.2 * dt, 0, FINISH_PROGRESS); // undertow drags you back
       }
     } else if (hz.type === 'wake'){
-      if (state.progress >= hz.startP && state.progress <= hz.endP){
+      const inRange = state.progress >= hz.startP && state.progress <= hz.endP;
+      if (inRange && !hz.active){
+        hz.active = true;
+        sfx('tone', 300, 0.16, 'triangle', 0.09, 380); // gentle upward sway — "the environment shifted"
+      } else if (!inRange && hz.active){
+        hz.active = false;
+      }
+      if (inRange){
         state.lane = clamp(state.lane + Math.sin(state.elapsed*1.3) * hz.strength * 0.35 * dt, -1, 1);
       }
     } else if (hz.type === 'whirlpool'){
       const dp = state.progress - hz.centerP;
-      if (Math.abs(dp) <= hz.radius){
+      const inRange = Math.abs(dp) <= hz.radius;
+      if (inRange && !hz.active){
+        hz.active = true;
+        hz.lastPing = state.elapsed;
+        sfx('tone', 220, 0.2, 'triangle', 0.12, 130); // entering the pull
+      } else if (!inRange && hz.active){
+        hz.active = false;
+      }
+      if (inRange){
         const pull = (1 - Math.abs(dp)/hz.radius) * hz.strength;
         const dirToCenter = hz.lane - state.lane;
         state.lane = clamp(state.lane + Math.sign(dirToCenter||1) * pull * 0.22 * dt, -1, 1);
         state.progress = clamp(state.progress - pull * 0.9 * dt, 0, FINISH_PROGRESS);
+        // periodic low pulse while caught in it — pitch/urgency track how hard it's pulling
+        if (state.elapsed - (hz.lastPing||0) > 0.45){
+          hz.lastPing = state.elapsed;
+          sfx('tone', 170 - pull*35, 0.12, 'triangle', 0.08 + pull*0.09);
+        }
       }
     } else if (hz.type === 'jellyfish'){
       if (!hz.triggered && Math.abs(state.progress - hz.atP) < 1.4 && Math.abs(state.lane - hz.lane) < hz.radius*6){
         hz.triggered = true;
+        state.stingCount++;
         state.panic = clamp(state.panic + 15, 0, 100);
         sfx('tone', 260, 0.16, 'square', 0.16, 120);
         flashBanner('STUNG', '', 'warn', 500);
@@ -715,6 +813,7 @@ function gameTick(now){
     }
 
     state.panic = clamp(state.panic + panicRatePerSecond(state.stamina)*dt, 0, 100);
+    if (state.panic > state.peakPanic) state.peakPanic = state.panic;
 
     // heartbeat cue — kicks in once panic is real, speeds up as it climbs
     if (state.panic >= 60){
@@ -723,6 +822,22 @@ function gameTick(now){
         state.lastHeartbeat = now;
         sfx('tone', 85, 0.09, 'sine', state.panic >= 80 ? 0.22 : 0.14);
       }
+    }
+
+    // "getting winded" — a one-shot warning the first time stamina drops
+    // low but before you're fully exhausted, distinct from the harsher
+    // sawtooth "can't stroke" cue that fires on an exhausted attempt
+    if (state.stamina < 20 && !state.lowStaminaWarned){
+      state.lowStaminaWarned = true;
+      sfx('tone', 210, 0.2, 'sine', 0.09, 150);
+    } else if (state.stamina > 45){
+      state.lowStaminaWarned = false; // re-arm once you've actually recovered
+    }
+
+    // a hopeful cue the first time you're within reach of shore
+    if (!state.nearShoreCued && state.progress >= FINISH_PROGRESS*0.9){
+      state.nearShoreCued = true;
+      sfx('chime', [600, 800], 'sine', 0.14);
     }
 
     // Check the win condition BEFORE applying hazard drag — otherwise a
@@ -753,6 +868,39 @@ function gameTick(now){
   requestAnimationFrame(gameTick);
 }
 
+// ---------- rank/tier system ----------
+// Rewards actually crossing the finish, speed once you're there, and a
+// clean swim (few stings, never letting panic run near the edge) — not
+// just distance covered, since distance alone was already the whole run.
+const RANK_TIERS = [
+  { grade:'S', min:400, color:'#ffcc33' },
+  { grade:'A', min:320, color:'#7fd8e8' },
+  { grade:'B', min:230, color:'#5be37b' },
+  { grade:'C', min:130, color:'#ff9f6b' },
+  { grade:'D', min:0,   color:'#8fb0bd' }
+];
+function scoreForRun(finalPct, won, elapsedSec, stings, peakPanic){
+  let score = finalPct * 3;                                            // up to 300 for a full crossing
+  if (won) score += 80;                                                // completion bonus
+  score -= stings * 30;                                                // a clean swim matters
+  score -= Math.max(0, peakPanic - 60) * 1.2;                          // penalize ever running it close, even if you recovered
+  if (won) score += clamp((480 - elapsedSec) / 480, -0.3, 1) * 100;    // speed: fast finishes score well, ~8min is neutral, slower dips slightly negative
+  return Math.max(0, Math.round(score));
+}
+function rankForScore(score){
+  for (const t of RANK_TIERS){ if (score >= t.min) return t; }
+  return RANK_TIERS[RANK_TIERS.length-1];
+}
+function showRank(finalPct, won){
+  const score = scoreForRun(finalPct, won, state.elapsed, state.stingCount, state.peakPanic);
+  const tier = rankForScore(score);
+  const badge = document.getElementById('rankBadge');
+  badge.textContent = tier.grade;
+  badge.style.color = tier.color;
+  const note = document.getElementById('rankNote');
+  note.textContent = state.stingCount + (state.stingCount === 1 ? ' sting' : ' stings') + ' · peak panic ' + Math.round(state.peakPanic) + '%';
+}
+
 function winRun(){
   state.phase = 'ended';
   state.ended = true;
@@ -761,6 +909,7 @@ function winRun(){
   if (state.bestTimeMs == null || state.elapsed*1000 < state.bestTimeMs) state.bestTimeMs = state.elapsed*1000;
   saveBest();
   renderBest();
+  showRank(100, true);
   sfx('tone', 900, 0.14, 'triangle', 0.2);
   sfx('chime', [700, 950, 1300], 'sine', 0.2);
   flashBanner('SHORE', 'You made it', 'good', 0);
@@ -779,6 +928,7 @@ function loseRun(){
   if (finalPct > state.bestProgress) state.bestProgress = finalPct;
   saveBest();
   renderBest();
+  showRank(finalPct, false);
   sfx('tone', 180, 0.4, 'sawtooth', 0.26, 50);
   flashBanner('PANIC', 'The water took you', 'warn', 0);
   document.getElementById('endTitle').textContent = 'PANIC';
@@ -820,6 +970,10 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.strokeCD = 0;
   state.elapsed = 0;
   state.lastHeartbeat = 0;
+  state.lowStaminaWarned = false;
+  state.nearShoreCued = false;
+  state.stingCount = 0;
+  state.peakPanic = 0;
   state.hazards = generateWaveSystem();
   clearBanner();
   updateHud();
