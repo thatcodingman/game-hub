@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Draw — The Arcade</title>
+<style>
+  :root{
+    --sand:#e8c99b; --sand-dim:#c9a877; --dusk:#ff7b39; --dusk-dim:#c4571f;
+    --ink:#241a12; --panel:#2c2013; --border:#4a3620; --text:#f6ead3; --text-dim:#b89f7c;
+    --accent:#ffcc33; --danger:#ff4d4d; --real:#eafcff;
+  }
+  * { box-sizing:border-box; }
+  body{
+    margin:0; padding:16px; min-height:100vh;
+    background:
+      radial-gradient(circle at 50% 0%, #6b3a1a 0%, #241a12 65%);
+    color:var(--text); font-family:system-ui,-apple-system,sans-serif;
+  }
+  .wrap{ max-width:1000px; margin:0 auto; }
+  .title-bar{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:8px; flex-wrap:wrap; gap:6px;
+  }
+  .title-bar h1{
+    margin:0; font-size:26px; letter-spacing:3px; color:var(--accent);
+    text-shadow:0 0 12px rgba(255,204,51,0.35);
+  }
+  .title-bar .subtitle{ color:var(--text-dim); font-size:12.5px; }
+  .best-run{ font-size:11.5px; color:var(--text-dim); text-align:right; }
+  .best-run b{ color:var(--dusk); }
+
+  .hud{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:8px 12px; margin-bottom:10px; font-size:12.5px;
+  }
+  .hud-stat{ display:flex; flex-direction:column; gap:1px; }
+  .hud-stat .label{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); }
+  .hud-stat .val{ font-weight:700; font-size:15px; }
+  .hud-stat .val.hot{ color:var(--accent); }
+  .spacer{ flex:1; }
+
+  .stage{
+    position:relative; width:100%; aspect-ratio:960/460; background:#000;
+    border-radius:10px; overflow:hidden; border:1px solid var(--border);
+    cursor:crosshair; user-select:none;
+  }
+  .stage canvas{ display:block; width:100% !important; height:100% !important; }
+
+  .banner{
+    position:absolute; left:0; right:0; top:38%; text-align:center; pointer-events:none;
+    font-size:42px; font-weight:900; letter-spacing:4px; text-shadow:0 0 18px rgba(0,0,0,0.6);
+    opacity:0; transition:opacity .08s;
+  }
+  .banner.show{ opacity:1; }
+  .banner.real{ color:var(--real); }
+  .banner.bad{ color:var(--danger); }
+  .banner.good{ color:var(--accent); }
+  .banner .sub{ display:block; font-size:15px; font-weight:600; letter-spacing:1px; margin-top:6px; color:var(--text); }
+
+  .hint{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:8px; }
+
+  .overlay{
+    position:absolute; inset:0; background:rgba(10,7,4,0.92); display:flex; align-items:center;
+    justify-content:center; z-index:50; text-align:center; padding:20px;
+  }
+  .overlay.hidden{ display:none; }
+  .overlay-card{ max-width:440px; }
+  .overlay-card h2{ font-size:26px; color:var(--accent); margin-bottom:6px; letter-spacing:2px; }
+  .overlay-card p{ color:var(--text-dim); font-size:13px; line-height:1.6; }
+  .overlay-card .pitch{ color:var(--dusk); font-style:italic; margin:12px 0; }
+  .overlay-stats{ display:flex; justify-content:center; gap:24px; margin:16px 0; }
+  .overlay-stats div{ font-size:12px; color:var(--text-dim); }
+  .overlay-stats div b{ display:block; font-size:22px; color:var(--text); }
+  .rule-list{ text-align:left; font-size:11.5px; margin:14px 0; }
+  .rule-list div{ margin:6px 0; }
+  .rule-list b{ color:var(--text); }
+
+  .btn{
+    background:transparent; border:1px solid var(--border); color:var(--text);
+    padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer;
+  }
+  .btn:hover{ border-color:var(--accent); }
+  .btn.primary{ background:var(--accent); color:#2a1d00; border-color:var(--accent); font-weight:700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title-bar">
+    <div>
+      <h1>QUICK DRAW</h1>
+      <div class="subtitle">Don't flinch. Don't blink. Draw.</div>
+    </div>
+    <div class="best-run">
+      <div>Best reaction: <b id="bestReactionLine">—</b></div>
+      <div>Best streak: <b id="bestStreakLine">—</b></div>
+    </div>
+  </div>
+
+  <div class="hud">
+    <div class="hud-stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
+    <div class="hud-stat"><span class="label">Round Reaction</span><span class="val" id="hudLastReaction">—</span></div>
+    <div class="spacer"></div>
+    <div class="hud-stat"><span class="label">Status</span><span class="val hot" id="hudStatus">Get Ready</span></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div id="game-container"></div>
+    <div class="banner" id="banner"></div>
+
+    <div class="overlay" id="startScreen">
+      <div class="overlay-card">
+        <h2>QUICK DRAW</h2>
+        <p>You're in a stand-off. Your opponent will twitch, flinch, and bluff, trying to bait you into drawing early. Only one signal is real.</p>
+        <p class="pitch">"Watch for the flash. Ignore everything else."</p>
+        <div class="rule-list">
+          <div><b>Feints</b> — hand twitches, dust puffs, crowd gasps. These are NOT the signal. Click during one and you flinch — game over.</div>
+          <div><b>The Draw</b> — a bright white flash across the screen with a bell tone. That's the only real cue. React as fast as you can.</div>
+          <div><b>Too slow</b> — miss the window after the real draw and your opponent gets the drop on you.</div>
+          <div>Every round you survive, the feints get faster and closer together. See how far your nerve holds.</div>
+        </div>
+        <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Step Up To The Line</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="endScreen">
+      <div class="overlay-card">
+        <h2 id="endTitle">DOWN</h2>
+        <p id="endMsg"></p>
+        <div class="overlay-stats">
+          <div>Streak<b id="endStreak">0</b></div>
+          <div>Best Reaction<b id="endReaction">—</b></div>
+        </div>
+        <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Draw Again</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">Click / tap the stage, or press <b>Space</b>, the instant you see the flash. Anything else and you're dead.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ---------- defensive sfx wrapper (never call SFX unguarded) ----------
+function sfx(name, ...args){
+  try{
+    if (typeof SFX !== 'undefined' && SFX && typeof SFX[name] === 'function'){
+      SFX[name](...args);
+    }
+  }catch(e){ /* audio must never break the game loop */ }
+}
+
+const W = 960, H = 460;
+const GROUND_Y = 360;
+
+// ---------- state ----------
+const state = {
+  streak: 0,
+  bestStreak: 0,
+  bestReactionMs: null,
+  phase: 'idle', // idle | standoff | armed | resolved
+  running: false,
+  ended: false,
+  drawCueTime: 0,
+  timers: [] // pending setTimeout ids for the current standoff, cleared on resolve
+};
+
+function loadBest(){
+  try{
+    const raw = localStorage.getItem('quickdraw_best');
+    if (raw){
+      const v = JSON.parse(raw);
+      state.bestStreak = v.bestStreak || 0;
+      state.bestReactionMs = v.bestReactionMs || null;
+    }
+  }catch(e){}
+  renderBest();
+}
+function saveBest(){
+  try{
+    localStorage.setItem('quickdraw_best', JSON.stringify({
+      bestStreak: state.bestStreak, bestReactionMs: state.bestReactionMs
+    }));
+  }catch(e){}
+}
+function renderBest(){
+  document.getElementById('bestReactionLine').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
+  document.getElementById('bestStreakLine').textContent = state.bestStreak || '—';
+}
+
+function clearTimers(){
+  for (const id of state.timers) clearTimeout(id);
+  state.timers = [];
+}
+function schedule(fn, delay){
+  const id = setTimeout(fn, delay);
+  state.timers.push(id);
+  return id;
+}
+
+// ---------- Phaser scene ----------
+let scene = null;
+let playerFig, oppFig, oppHand, dustGfx, flashGfx;
+
+class DuelScene extends Phaser.Scene {
+  constructor(){ super('duel'); }
+  create(){
+    scene = this;
+    this.cameras.main.setBackgroundColor('#3a2413');
+
+    // sky/ground gradient via rectangles (keeps it dependency-free)
+    const sky = this.add.graphics();
+    sky.fillGradientStyle(0xff8a4d, 0xff8a4d, 0x3a2413, 0x3a2413, 1);
+    sky.fillRect(0, 0, W, GROUND_Y);
+    sky.fillStyle(0x1c130a, 1);
+    sky.fillRect(0, GROUND_Y, W, H-GROUND_Y);
+
+    // sun
+    this.add.circle(W*0.5, 90, 46, 0xffd97a, 0.85);
+
+    // opponent silhouette (left)
+    oppFig = this.add.graphics();
+    drawFigure(oppFig, 220, GROUND_Y, 0x1a1109, true);
+    oppHand = this.add.graphics();
+    drawHandTwitch(oppHand, 220, GROUND_Y, 0);
+
+    // player silhouette (right)
+    playerFig = this.add.graphics();
+    drawFigure(playerFig, W-220, GROUND_Y, 0x1a1109, false);
+
+    dustGfx = this.add.graphics();
+    flashGfx = this.add.graphics();
+    flashGfx.setDepth(20);
+
+    this.input.on('pointerdown', ()=> handleInput());
+    this.input.keyboard.on('keydown-SPACE', ()=> handleInput());
+  }
+}
+
+function drawFigure(g, x, groundY, color, facingRight){
+  g.clear();
+  g.fillStyle(color, 1);
+  // legs
+  g.fillRect(x-14, groundY-70, 10, 70);
+  g.fillRect(x+4, groundY-70, 10, 70);
+  // body
+  g.fillRoundedRect(x-20, groundY-150, 40, 84, 8);
+  // head
+  g.fillCircle(x, groundY-168, 16);
+  // hat
+  g.fillRect(x-26, groundY-190, 52, 8);
+  g.fillRoundedRect(x-14, groundY-206, 28, 20, 6);
+  // arm (toward center)
+  const dir = facingRight ? -1 : 1;
+  g.fillRect(x + dir*14, groundY-140, 26*Math.sign(dir)*-1 || 26, 10);
+}
+
+function drawHandTwitch(g, x, groundY, offset){
+  g.clear();
+  g.fillStyle(0x1a1109, 1);
+  g.fillRect(x + 14, groundY-140+offset, 8, 8);
+}
+
+function flashBanner(text, sub, cls, duration){
+  const el = document.getElementById('banner');
+  el.className = 'banner show ' + cls;
+  el.innerHTML = text + (sub ? '<span class="sub">'+sub+'</span>' : '');
+  if (duration){
+    schedule(()=>{ el.className = 'banner'; }, duration);
+  }
+}
+function clearBanner(){
+  document.getElementById('banner').className = 'banner';
+}
+
+// ---------- round flow ----------
+// Difficulty ramps with streak: more feints, tighter spacing, shorter
+// draw-reaction timeout. This is the whole hook — the danger isn't reaction
+// speed dropping, it's discipline getting harder to hold onto.
+function difficultyForStreak(streak){
+  const feintCount = Math.min(5, Math.floor(streak/2));
+  const feintGapMin = Math.max(220, 650 - streak*22);
+  const feintGapMax = Math.max(400, 1000 - streak*24);
+  const preDrawDelayMin = Math.max(280, 700 - streak*18);
+  const preDrawDelayMax = Math.max(550, 1400 - streak*26);
+  const reactionTimeout = Math.max(650, 1500 - streak*30);
+  return { feintCount, feintGapMin, feintGapMax, preDrawDelayMin, preDrawDelayMax, reactionTimeout };
+}
+
+function rand(min, max){ return min + Math.random()*(max-min); }
+
+function startRound(){
+  clearTimers();
+  clearBanner();
+  state.phase = 'standoff';
+  document.getElementById('hudStatus').textContent = 'Hold...';
+  document.getElementById('hudLastReaction').textContent = '—';
+  drawHandTwitch(oppHand, 220, GROUND_Y, 0);
+
+  const diff = difficultyForStreak(state.streak);
+  let t = rand(400, 900); // initial hold before any feints
+
+  for (let i=0;i<diff.feintCount;i++){
+    schedule(()=> doFeint(), t);
+    t += rand(diff.feintGapMin, diff.feintGapMax);
+  }
+
+  schedule(()=> armDraw(diff.reactionTimeout), t + rand(diff.preDrawDelayMin, diff.preDrawDelayMax));
+}
+
+function doFeint(){
+  if (state.phase !== 'standoff') return;
+  const kind = Math.floor(Math.random()*3);
+  if (kind === 0){
+    // hand twitch
+    drawHandTwitch(oppHand, 220, GROUND_Y, -10);
+    schedule(()=>{ if (oppHand) drawHandTwitch(oppHand, 220, GROUND_Y, 0); }, 110);
+    sfx('tone', 320, 0.05, 'square', 0.08);
+  } else if (kind === 1){
+    // dust puff
+    if (dustGfx){
+      dustGfx.clear();
+      dustGfx.fillStyle(0xd9b382, 0.35);
+      dustGfx.fillCircle(220, GROUND_Y-4, 14);
+      schedule(()=>{ if (dustGfx) dustGfx.clear(); }, 180);
+    }
+  } else {
+    // crowd murmur, audio-only tell
+    sfx('tone', 180, 0.09, 'sawtooth', 0.07);
+  }
+}
+
+function armDraw(reactionTimeout){
+  if (state.phase !== 'standoff') return;
+  state.phase = 'armed';
+  state.drawCueTime = performance.now();
+  document.getElementById('hudStatus').textContent = 'DRAW!';
+  flashGfx.clear();
+  flashGfx.fillStyle(0xffffff, 0.9);
+  flashGfx.fillRect(0, 0, W, H);
+  schedule(()=>{ if (flashGfx) flashGfx.clear(); }, 90);
+  flashBanner('DRAW!', '', 'real', 0);
+  sfx('tone', 1400, 0.16, 'square', 0.25);
+
+  schedule(()=>{
+    if (state.phase === 'armed') resolveRound(false, null); // too slow
+  }, reactionTimeout);
+}
+
+function handleInput(){
+  if (!state.running || state.ended) return;
+  if (state.phase === 'standoff'){
+    resolveRound(false, 'flinch');
+    return;
+  }
+  if (state.phase === 'armed'){
+    const ms = performance.now() - state.drawCueTime;
+    resolveRound(true, ms);
+  }
+}
+
+function ratingFor(ms){
+  if (ms < 180) return 'LIGHTNING';
+  if (ms < 280) return 'SHARP';
+  if (ms < 420) return 'STEADY';
+  return 'ALIVE';
+}
+
+function resolveRound(won, payload){
+  clearTimers();
+  state.phase = 'resolved';
+
+  if (won){
+    const ms = payload;
+    document.getElementById('hudLastReaction').textContent = Math.round(ms)+'ms';
+    if (state.bestReactionMs == null || ms < state.bestReactionMs){
+      state.bestReactionMs = ms;
+    }
+    state.streak += 1;
+    if (state.streak > state.bestStreak) state.bestStreak = state.streak;
+    saveBest();
+    renderBest();
+    document.getElementById('hudStreak').textContent = state.streak;
+    flashBanner(ratingFor(ms), Math.round(ms)+'ms', 'good', 500);
+    sfx('tone', 900, 0.1, 'triangle', 0.18);
+    document.getElementById('hudStatus').textContent = 'Holstered';
+    schedule(()=> startRound(), 900);
+  } else {
+    const reason = payload === 'flinch' ? 'flinch' : 'slow';
+    endRun(reason);
+  }
+}
+
+function endRun(reason){
+  state.running = false;
+  state.ended = true;
+  clearTimers();
+  sfx('tone', 110, 0.3, 'sawtooth', 0.22);
+  if (reason === 'flinch'){
+    flashBanner('YOU FLINCHED', 'Drew before the signal', 'bad', 0);
+    document.getElementById('endTitle').textContent = 'YOU FLINCHED';
+    document.getElementById('endMsg').textContent = 'You drew before the real signal. Discipline broke — game over.';
+  } else {
+    flashBanner('TOO SLOW', 'Opponent got the drop on you', 'bad', 0);
+    document.getElementById('endTitle').textContent = 'TOO SLOW';
+    document.getElementById('endMsg').textContent = 'The signal came and went. Your opponent was faster.';
+  }
+  document.getElementById('hudStatus').textContent = 'Down';
+  document.getElementById('endStreak').textContent = state.streak;
+  document.getElementById('endReaction').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
+  schedule(()=>{
+    document.getElementById('endScreen').classList.remove('hidden');
+  }, 700);
+}
+
+// ---------- boot ----------
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W, height: H,
+  parent: 'game-container',
+  backgroundColor: '#1c130a',
+  scene: [DuelScene]
+});
+
+loadBest();
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  document.getElementById('startScreen').classList.add('hidden');
+  state.running = true;
+  state.ended = false;
+  state.streak = 0;
+  document.getElementById('hudStreak').textContent = '0';
+  startRound();
+});
+document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
+
+})();
+</script>
+</body>
+</html>
