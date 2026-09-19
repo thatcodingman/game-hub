@@ -81,6 +81,14 @@
   .rule-list div{ margin:6px 0; }
   .rule-list b{ color:var(--text); }
 
+  .session-log{ text-align:left; margin:16px 0 4px; max-height:150px; overflow-y:auto; border-top:1px solid var(--border); padding-top:8px; }
+  .session-log-title{ font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px; }
+  .session-log-row{ display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-dim); padding:3px 0; }
+  .session-log-row span{ white-space:nowrap; }
+  .session-log-row.latest{ color:var(--text); font-weight:700; }
+  .session-log-row.latest span:first-child{ color:var(--accent); }
+  .session-log-empty{ font-size:11.5px; color:var(--text-dim); }
+
   .btn{
     background:transparent; border:1px solid var(--border); color:var(--text);
     padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer;
@@ -127,6 +135,7 @@
           <div>Every round you survive, the feints get faster, closer together, and start looking a lot more like the real thing — a half-draw, a duller flash, a distant shot. Watch for the exact flash and tone, not just any movement or bang.</div>
         </div>
         <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Step Up To The Line</button>
+        <div class="session-log" id="sessionLogStart"></div>
       </div>
     </div>
 
@@ -140,6 +149,7 @@
           <div>Close Calls<b id="endCloseCalls">0</b></div>
         </div>
         <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Draw Again</button>
+        <div class="session-log" id="sessionLogEnd"></div>
       </div>
     </div>
   </div>
@@ -204,6 +214,46 @@ function renderBest(){
   document.getElementById('bestReactionLine').textContent = state.bestReactionMs != null ? Math.round(state.bestReactionMs)+'ms' : '—';
   document.getElementById('bestStreakLine').textContent = state.bestStreak || '—';
   document.getElementById('bestCloseCallsLine').textContent = state.bestCloseCalls || '—';
+}
+
+// ---------- session log (last 10 runs, persisted) ----------
+const SESSION_LOG_KEY = 'quickdraw_sessionlog';
+const SESSION_LOG_MAX = 10;
+function loadSessionLog(){
+  try{
+    const raw = localStorage.getItem(SESSION_LOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function recordRun(reason){
+  try{
+    const log = loadSessionLog();
+    log.unshift({
+      streak: state.streak,
+      closeCalls: state.closeCalls,
+      reactionMs: state.bestReactionMs,
+      reason: reason
+    });
+    while (log.length > SESSION_LOG_MAX) log.pop();
+    localStorage.setItem(SESSION_LOG_KEY, JSON.stringify(log));
+    renderSessionLog();
+  }catch(e){}
+}
+function renderSessionLog(){
+  const log = loadSessionLog();
+  const html = !log.length
+    ? '<div class="session-log-empty">No runs yet — step up to the line.</div>'
+    : '<div class="session-log-title">Recent Runs</div>' + log.map((r, i)=>
+        '<div class="session-log-row'+(i===0?' latest':'')+'">' +
+          '<span>'+(i===0?'Latest — ':'')+'Streak '+r.streak+'</span>' +
+          '<span>'+r.closeCalls+' close call'+(r.closeCalls===1?'':'s')+'</span>' +
+          '<span>'+(r.reactionMs != null ? Math.round(r.reactionMs)+'ms' : '—')+'</span>' +
+        '</div>'
+      ).join('');
+  const elStart = document.getElementById('sessionLogStart');
+  const elEnd = document.getElementById('sessionLogEnd');
+  if (elStart) elStart.innerHTML = html;
+  if (elEnd) elEnd.innerHTML = html;
 }
 
 function clearTimers(){
@@ -586,6 +636,7 @@ function endRun(reason){
   state.running = false;
   state.ended = true;
   clearTimers();
+  recordRun(reason);
   if (reason === 'flinch'){
     sfx('tone', 220, 0.18, 'square', 0.2); // sharp "gasp/whip" — you jumped the gun
     flashBanner('YOU FLINCHED', 'Drew before the signal', 'bad', 0);
@@ -616,6 +667,7 @@ new Phaser.Game({
 });
 
 loadBest();
+renderSessionLog();
 
 // Mount the shared mute/volume widget — this game was missing it entirely,
 // which meant a mute toggled from any other game on the site (the setting
