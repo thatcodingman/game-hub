@@ -60,6 +60,18 @@
 
   .hint{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:8px; }
 
+  .panic-vignette{
+    position:absolute; inset:0; pointer-events:none; z-index:6;
+    box-shadow: inset 0 0 0 0 rgba(255,77,77,0); transition: box-shadow .4s ease;
+  }
+  .panic-vignette.mid{ box-shadow: inset 0 0 70px 14px rgba(255,107,77,0.18); }
+  .panic-vignette.high{ animation: panicPulse 1.15s ease-in-out infinite; }
+  .panic-vignette.extreme{ animation: panicPulse 0.65s ease-in-out infinite; }
+  @keyframes panicPulse{
+    0%,100%{ box-shadow: inset 0 0 90px 22px rgba(255,77,77,0.28); }
+    50%{ box-shadow: inset 0 0 150px 46px rgba(255,77,77,0.5); }
+  }
+
   .overlay{
     position:absolute; inset:0; background:rgba(4,10,16,0.93); display:flex; align-items:center;
     justify-content:center; z-index:50; text-align:center; padding:20px;
@@ -129,6 +141,7 @@
   <div class="stage" id="stage">
     <div id="game-container"></div>
     <div class="banner" id="banner"></div>
+    <div class="panic-vignette" id="panicVignette"></div>
 
     <div class="overlay" id="startScreen">
       <div class="overlay-card">
@@ -138,7 +151,7 @@
         <div class="rule-list">
           <div><b>Aim + Stroke</b> — move your pointer/finger toward where you want to go, then click/tap (or press Space) to stroke. Each stroke costs stamina.</div>
           <div><b>Stamina</b> — regenerates only while you're not stroking. Run it to zero and you can't fight the water at all.</div>
-          <div><b>Panic</b> — climbs when your stamina hits zero, falls whenever you have any stamina left. Panic reaching 100% ends the swim.</div>
+          <div><b>Panic</b> — falls while you're rested, creeps up as stamina gets low, and spikes once you're exhausted. Panic reaching 100% ends the swim.</div>
           <div><b>The water</b> — currents, a whirlpool, jellyfish, and boat wakes all push you around whether you're moving or not. Sometimes drifting is safer than fighting.</div>
         </div>
         <button class="btn primary" id="startBtn" style="margin-top:6px; padding:10px 26px; font-size:14px;">Enter The Water</button>
@@ -185,9 +198,17 @@ const STROKE_PROGRESS = 2.6;
 const STROKE_STAMINA_COST = 9;
 const STROKE_COOLDOWN_MS = 260;
 const STAMINA_REGEN = 15;      // per second, while not on cooldown
-const PANIC_RISE = 26;         // per second, while stamina <= 0
-const PANIC_FALL = 20;         // per second, while stamina > 0
 const MIN_STROKE_STAMINA = 4;  // can't stroke below this
+
+// Panic responds to how exhausted you are, not a binary "stamina>0" flag —
+// a spectrum instead of "fine until the exact moment you hit zero".
+function panicRatePerSecond(stamina){
+  if (stamina >= 75) return -9;   // slowly falls
+  if (stamina >= 50) return -4;   // stable / very slow fall
+  if (stamina >= 25) return 7;    // slowly rises
+  if (stamina >= 1)  return 19;   // rises quickly
+  return 32;                      // rises very quickly
+}
 
 const state = {
   phase: 'idle', // idle | playing | ended
@@ -200,6 +221,7 @@ const state = {
   running: false,
   ended: false,
   hazards: [],
+  lastHeartbeat: 0,
   bestProgress: 0,
   bestTimeMs: null
 };
@@ -302,7 +324,7 @@ class SwimScene extends Phaser.Scene {
   }
   update(time, delta){
     drawWater(time);
-    drawHazards();
+    drawHazards(time);
     drawShore();
     drawPlayer(time);
   }
@@ -346,22 +368,41 @@ function screenXForLane(lane){
   return PLAYER_SCREEN_X + lane * LANE_PX;
 }
 
-function drawHazards(){
+function drawFlowArrow(x, y, dir){
+  const len = 13;
+  hazardGfx.lineStyle(2, 0x7fd8e8, 0.55);
+  hazardGfx.beginPath();
+  hazardGfx.moveTo(x - len*dir, y);
+  hazardGfx.lineTo(x + len*dir, y);
+  hazardGfx.strokePath();
+  hazardGfx.beginPath();
+  hazardGfx.moveTo(x + len*dir, y);
+  hazardGfx.lineTo(x + (len-6)*dir, y-4);
+  hazardGfx.moveTo(x + len*dir, y);
+  hazardGfx.lineTo(x + (len-6)*dir, y+4);
+  hazardGfx.strokePath();
+}
+
+function drawHazards(time){
   hazardGfx.clear();
   for (const hz of state.hazards){
     if (hz.type === 'current'){
       if (hz.endP < state.progress - 10 || hz.startP > state.progress + 16) continue;
       const yTop = screenYForP(hz.endP), yBot = screenYForP(hz.startP);
       const cx = screenXForLane(hz.lane);
-      hazardGfx.fillStyle(0x2f6b86, 0.18);
+      const dir = hz.lane >= 0 ? 1 : -1; // visual flow direction
+      hazardGfx.fillStyle(0x2f6b86, 0.16);
       hazardGfx.fillRect(cx-170, yTop, 340, yBot-yTop);
-      hazardGfx.lineStyle(2, 0x7fd8e8, 0.35);
-      const dir = hz.lane >= 0 ? 1 : -1; // purely visual flow direction
-      for (let yy=yTop+10; yy<yBot; yy+=26){
-        hazardGfx.beginPath();
-        hazardGfx.moveTo(cx-40, yy);
-        hazardGfx.lineTo(cx+40*dir*0.4, yy+8);
-        hazardGfx.strokePath();
+      // scattered arrow streaks drifting in the flow direction — shows
+      // WHICH WAY the water moves, not just "there are lines here"
+      const flowOff = (((time||0) * 0.045 * dir) % 40 + 40) % 40;
+      let row = 0;
+      for (let yy=yTop+16; yy<yBot; yy+=30){
+        const rowShift = (row % 2) * 20;
+        for (let xx = -150 + flowOff + rowShift; xx < 150; xx += 42){
+          drawFlowArrow(cx+xx, yy, dir);
+        }
+        row++;
       }
     } else if (hz.type === 'whirlpool'){
       const cy = screenYForP(hz.centerP), cx = screenXForLane(hz.lane);
@@ -402,7 +443,10 @@ function drawHazards(){
 
 function drawPlayer(time){
   playerGfx.clear();
-  const x = screenXForLane(state.lane), y = PLAYER_SCREEN_Y;
+  const shakeAmp = state.panic >= 80 ? 4.5 : state.panic >= 60 ? 2.6 : state.panic >= 30 ? 1.1 : 0;
+  const shakeX = shakeAmp ? (Math.random()-0.5) * shakeAmp * 2 : 0;
+  const shakeY = shakeAmp ? (Math.random()-0.5) * shakeAmp * 2 : 0;
+  const x = screenXForLane(state.lane) + shakeX, y = PLAYER_SCREEN_Y + shakeY;
   const bob = Math.sin(time*0.004) * 3;
   playerGfx.fillStyle(0xeaf6f8, 0.95);
   playerGfx.fillEllipse(x, y+bob, 22, 12);
@@ -498,9 +542,17 @@ function updateHud(){
   document.getElementById('panicFill').style.width = state.panic+'%';
   const status = document.getElementById('hudStatus');
   if (state.panic > 60) status.textContent = 'Panicking';
-  else if (state.stamina < 15) status.textContent = 'Exhausted';
-  else if (state.strokeCD > 0) status.textContent = 'Swimming';
-  else status.textContent = 'Holding';
+  else if (state.stamina <= 0) status.textContent = 'Exhausted';
+  else if (state.strokeCD > 0) status.textContent = 'Stroking';
+  else status.textContent = 'Resting';
+}
+
+function updatePanicFeedback(){
+  const el = document.getElementById('panicVignette');
+  if (state.panic >= 80) el.className = 'panic-vignette extreme';
+  else if (state.panic >= 60) el.className = 'panic-vignette high';
+  else if (state.panic >= 30) el.className = 'panic-vignette mid';
+  else el.className = 'panic-vignette';
 }
 
 // ---------- main loop timer (separate from Phaser's render loop, so game
@@ -518,14 +570,20 @@ function gameTick(now){
       state.stamina = clamp(state.stamina + STAMINA_REGEN*dt, 0, 100);
     }
 
-    if (state.stamina <= 0){
-      state.panic = clamp(state.panic + PANIC_RISE*dt, 0, 100);
-    } else {
-      state.panic = clamp(state.panic - PANIC_FALL*dt, 0, 100);
+    state.panic = clamp(state.panic + panicRatePerSecond(state.stamina)*dt, 0, 100);
+
+    // heartbeat cue — kicks in once panic is real, speeds up as it climbs
+    if (state.panic >= 60){
+      const interval = state.panic >= 80 ? 480 : 780;
+      if (now - state.lastHeartbeat >= interval){
+        state.lastHeartbeat = now;
+        sfx('tone', 85, 0.09, 'sine', state.panic >= 80 ? 0.22 : 0.14);
+      }
     }
 
     applyHazards(dt);
     updateHud();
+    updatePanicFeedback();
 
     if (state.progress >= 100){
       winRun();
