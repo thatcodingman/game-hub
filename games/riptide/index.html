@@ -72,6 +72,19 @@
     50%{ box-shadow: inset 0 0 150px 46px rgba(255,77,77,0.5); }
   }
 
+  .wave-flash{
+    position:absolute; inset:0; background:rgba(234,246,248,0.09);
+    opacity:0; pointer-events:none; z-index:4; transition:opacity .5s ease;
+  }
+  .wave-flash.show{ opacity:1; transition:opacity .06s ease; }
+  .wave-tag{
+    position:absolute; top:10px; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:4px; color:var(--text-dim); opacity:0;
+    transition:opacity .4s ease; pointer-events:none; z-index:7;
+    text-shadow:0 0 8px rgba(0,0,0,0.7); font-weight:600;
+  }
+  .wave-tag.show{ opacity:1; }
+
   .overlay{
     position:absolute; inset:0; background:rgba(4,10,16,0.93); display:flex; align-items:center;
     justify-content:center; z-index:50; text-align:center; padding:20px;
@@ -142,6 +155,8 @@
     <div id="game-container"></div>
     <div class="banner" id="banner"></div>
     <div class="panic-vignette" id="panicVignette"></div>
+    <div class="wave-flash" id="waveFlash"></div>
+    <div class="wave-tag" id="waveTag"></div>
 
     <div class="overlay" id="startScreen">
       <div class="overlay-card">
@@ -166,6 +181,7 @@
           <div>Distance<b id="endDist">0%</b></div>
           <div>Time<b id="endTime">0:00</b></div>
         </div>
+        <div style="font-size:10px; color:var(--text-dim); opacity:.6; margin:-8px 0 10px;">Seed <span id="endSeed">—</span></div>
         <button class="btn primary" id="retryBtn" style="padding:10px 26px; font-size:14px;">Back In The Water</button>
       </div>
     </div>
@@ -222,6 +238,9 @@ const state = {
   ended: false,
   hazards: [],
   lastHeartbeat: 0,
+  waveBoundaries: [],
+  currentWaveIndex: 0,
+  seed: 0,
   bestProgress: 0,
   bestTimeMs: null
 };
@@ -255,49 +274,142 @@ function formatTime(ms){
   return m + ':' + (rem < 10 ? '0' : '') + rem;
 }
 
-// ---------- hazards ----------
-// Four kinds only, generated once per run across the 0-100% progress track.
-// Density/strength increases in later phases, per the design doc's timeline.
-function generateHazards(){
+// ---------- hazards: seeded 10-wave hybrid generator ----------
+// Each of the 10 waves (10% of progress each) has a curated identity —
+// hazard vocabulary, threat budget, major/minor slot caps — while the
+// exact composition, position, spacing, strength and direction are
+// randomized per run inside those bounds. Four hazard types only.
+const HAZARD_COST = { jellyfish:1, wake:2, current:3, whirlpool:4 };
+const HAZARD_FOOTPRINT = { jellyfish:1.2, wake:6, current:7, whirlpool:9 };
+
+const WAVE_DEFS = [
+  { name:'Open Water',      budget:3,  min:2,  max:4,  majorSlots:0, minorSlots:3, allowedMajor:[],                     allowedMinor:['jellyfish','wake'] },
+  { name:'First Current',   budget:4,  min:3,  max:5,  majorSlots:1, minorSlots:2, allowedMajor:['current'],            allowedMinor:['jellyfish','wake'] },
+  { name:'Crossflow',       budget:5,  min:4,  max:6,  majorSlots:1, minorSlots:2, allowedMajor:['current'],            allowedMinor:['wake','jellyfish'] },
+  { name:'The Pull',        budget:6,  min:5,  max:7,  majorSlots:1, minorSlots:2, allowedMajor:['whirlpool'],          allowedMinor:['jellyfish'] },
+  { name:'Combination',     budget:7,  min:6,  max:8,  majorSlots:2, minorSlots:2, allowedMajor:['current','whirlpool'],allowedMinor:['jellyfish','wake'] },
+  { name:'Recovery Test',   budget:9,  min:7,  max:10, majorSlots:2, minorSlots:2, allowedMajor:['current','whirlpool'],allowedMinor:['jellyfish','wake'], recoveryTest:true },
+  { name:'Crosscurrents',   budget:10, min:8,  max:11, majorSlots:2, minorSlots:3, allowedMajor:['current'],            allowedMinor:['wake','jellyfish'] },
+  { name:'Whirlpool Chain', budget:12, min:10, max:13, majorSlots:2, minorSlots:2, allowedMajor:['whirlpool','current'],allowedMinor:['jellyfish','wake'] },
+  { name:'Gauntlet',        budget:14, min:12, max:16, majorSlots:3, minorSlots:3, allowedMajor:['current','whirlpool'],allowedMinor:['jellyfish','wake'] },
+  { name:'Final Stretch',   budget:16, min:13, max:17, majorSlots:3, minorSlots:2, allowedMajor:['current','whirlpool'],allowedMinor:['jellyfish','wake'] }
+];
+
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function rngPick(arr, rng){ return arr[Math.floor(rng()*arr.length)]; }
+
+// Fills a wave's threat budget from its allowed hazard vocabulary —
+// tries a few compositions and keeps whichever lands closest inside
+// [min,max], so different hazards can fill the same intended difficulty.
+function composeWaveHazards(def, rng){
+  let best = null, bestDelta = Infinity;
+  for (let attempt=0; attempt<24; attempt++){
+    const list = [];
+    let budget = 0, majorCount = 0, minorCount = 0;
+    if (def.allowedMajor.length && def.majorSlots > 0){
+      const majorTarget = 1 + Math.floor(rng()*def.majorSlots);
+      for (let i=0; i<majorTarget && majorCount<def.majorSlots; i++){
+        const type = rngPick(def.allowedMajor, rng);
+        if (budget + HAZARD_COST[type] > def.max) break;
+        list.push({ type, role:'major' });
+        budget += HAZARD_COST[type]; majorCount++;
+      }
+    }
+    let guard = 0;
+    while (budget < def.budget && minorCount < def.minorSlots && guard < 12){
+      guard++;
+      const type = rngPick(def.allowedMinor, rng);
+      if (budget + HAZARD_COST[type] > def.max) continue;
+      list.push({ type, role:'minor' });
+      budget += HAZARD_COST[type]; minorCount++;
+    }
+    if (budget >= def.min && budget <= def.max) return list; // valid — done
+    const delta = Math.abs(budget - def.budget);
+    if (delta < bestDelta){ best = list; bestDelta = delta; }
+  }
+  return best || [];
+}
+
+// Bounded left/center/right lateral regions rather than arbitrary coords.
+function laneForRandomBin(rng){
+  const bin = Math.floor(rng()*3);
+  if (bin === 0) return -0.55 + rng()*0.25; // left
+  if (bin === 1) return -0.15 + rng()*0.30; // center
+  return 0.30 + rng()*0.25;                 // right
+}
+
+function generateWaveSystem(){
+  const seed = (Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0;
+  const rng = mulberry32(seed);
+  state.seed = seed;
+
   const hazards = [];
-  // Phase bands (by progress %): 0-15 calm, 15-35 currents, 35-60 combos, 60-90 gauntlet, 90-100 final stretch
-  function addCurrent(centerP, width, lane, strength){
-    hazards.push({ type:'current', startP: centerP-width/2, endP: centerP+width/2, lane, strength });
+  const boundaries = [];
+
+  for (let w=0; w<WAVE_DEFS.length; w++){
+    const def = WAVE_DEFS[w];
+    const waveStartP = w*10, waveEndP = (w+1)*10;
+    if (w > 0) boundaries.push(waveStartP);
+
+    const composed = composeWaveHazards(def, rng);
+    // shuffle placement order for natural pacing
+    for (let i=composed.length-1; i>0; i--){
+      const j = Math.floor(rng()*(i+1));
+      [composed[i], composed[j]] = [composed[j], composed[i]];
+    }
+
+    const entryBuffer = 0.7;
+    let cursor = waveStartP + entryBuffer;
+    const baseStrength = 0.5 + w*0.075; // wave 1 gentlest, wave 10 strongest
+    let placedFirstMajor = false;
+
+    for (const h of composed){
+      const footprint = HAZARD_FOOTPRINT[h.type] * (0.9 + rng()*0.2); // ±10% size variance
+      let gap = h.role === 'major' ? 4 : 2.5; // minimum recovery gap
+      if (def.recoveryTest && h.role === 'major' && placedFirstMajor) gap += 3; // danger -> safer water -> danger
+
+      let startP = cursor;
+      const maxStart = waveEndP - entryBuffer - footprint;
+      if (startP > maxStart) startP = Math.max(waveStartP + entryBuffer, maxStart);
+
+      const lane = laneForRandomBin(rng);
+      const strength = baseStrength * (0.9 + rng()*0.2); // ±10% strength variance
+
+      if (h.type === 'current'){
+        hazards.push({ type:'current', startP, endP: startP+footprint, lane, strength });
+      } else if (h.type === 'wake'){
+        hazards.push({ type:'wake', startP, endP: startP+footprint, strength });
+      } else if (h.type === 'whirlpool'){
+        hazards.push({ type:'whirlpool', centerP: startP+footprint/2, lane, radius: footprint/2, strength });
+      } else if (h.type === 'jellyfish'){
+        hazards.push({ type:'jellyfish', atP: startP+footprint/2, lane, radius:0.16, triggered:false });
+      }
+      if (h.role === 'major') placedFirstMajor = true;
+      cursor = startP + footprint + gap;
+    }
   }
-  function addWhirlpool(centerP, lane, radius, strength){
-    hazards.push({ type:'whirlpool', centerP, lane, radius, strength });
-  }
-  function addJellyfish(atP, lane){
-    hazards.push({ type:'jellyfish', atP, lane, radius: 0.16, triggered:false });
-  }
-  function addWake(centerP, width, strength){
-    hazards.push({ type:'wake', startP: centerP-width/2, endP: centerP+width/2, strength });
-  }
 
-  // 15-35%: first currents, gentle
-  addCurrent(20, 7, -0.5 + Math.random()*1, 0.55);
-  addCurrent(30, 6, -0.5 + Math.random()*1, 0.6);
-
-  // 35-60%: combos — current + jellyfish, first whirlpool
-  addCurrent(42, 8, -0.6 + Math.random()*1.2, 0.75);
-  addJellyfish(44, -0.6 + Math.random()*1.2);
-  addJellyfish(48, -0.6 + Math.random()*1.2);
-  addWhirlpool(55, -0.3 + Math.random()*0.6, 9, 0.85);
-  addWake(50, 6, 0.7);
-
-  // 60-90%: the riptide gauntlet — dense, strong
-  addCurrent(66, 8, -0.7 + Math.random()*1.4, 1.0);
-  addJellyfish(68, -0.7 + Math.random()*1.4);
-  addWhirlpool(75, -0.4 + Math.random()*0.8, 10, 1.1);
-  addJellyfish(78, -0.7 + Math.random()*1.4);
-  addWake(82, 7, 1.0);
-  addCurrent(87, 7, -0.7 + Math.random()*1.4, 1.15);
-
-  // 90-100%: final stretch, one last gut-check
-  addJellyfish(93, -0.5 + Math.random()*1);
-  addCurrent(96, 5, -0.5 + Math.random()*1, 0.9);
-
+  state.waveBoundaries = boundaries;
+  state.currentWaveIndex = 0;
   return hazards;
+}
+
+function triggerWaveTransition(waveNumber){
+  sfx('chime', [520, 640], 'sine', 0.12);
+  const tag = document.getElementById('waveTag');
+  tag.textContent = 'WAVE ' + waveNumber;
+  tag.classList.add('show');
+  setTimeout(()=> tag.classList.remove('show'), 900);
+  const flash = document.getElementById('waveFlash');
+  flash.classList.add('show');
+  setTimeout(()=> flash.classList.remove('show'), 220);
 }
 
 function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
@@ -585,6 +697,12 @@ function gameTick(now){
     updateHud();
     updatePanicFeedback();
 
+    if (state.currentWaveIndex < state.waveBoundaries.length &&
+        state.progress >= state.waveBoundaries[state.currentWaveIndex]){
+      state.currentWaveIndex++;
+      triggerWaveTransition(state.currentWaveIndex + 1); // boundary 0 = entering wave 2
+    }
+
     if (state.progress >= 100){
       winRun();
     } else if (state.panic >= 100){
@@ -611,6 +729,7 @@ function winRun(){
   document.getElementById('endMsg').textContent = 'You made it in. The water lets you go.';
   document.getElementById('endDist').textContent = '100%';
   document.getElementById('endTime').textContent = formatTime(state.elapsed*1000);
+  document.getElementById('endSeed').textContent = state.seed;
   setTimeout(()=> document.getElementById('endScreen').classList.remove('hidden'), 700);
 }
 function loseRun(){
@@ -626,6 +745,7 @@ function loseRun(){
   document.getElementById('endMsg').textContent = 'You couldn’t hold it together. The current won.';
   document.getElementById('endDist').textContent = Math.round(state.progress)+'%';
   document.getElementById('endTime').textContent = formatTime(state.elapsed*1000);
+  document.getElementById('endSeed').textContent = state.seed;
   setTimeout(()=> document.getElementById('endScreen').classList.remove('hidden'), 700);
 }
 
@@ -659,7 +779,8 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   state.panic = 0;
   state.strokeCD = 0;
   state.elapsed = 0;
-  state.hazards = generateHazards();
+  state.lastHeartbeat = 0;
+  state.hazards = generateWaveSystem();
   clearBanner();
   updateHud();
 });
