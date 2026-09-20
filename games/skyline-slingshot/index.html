@@ -225,18 +225,18 @@ const PLAYER_RADIUS = 12;
 // wind: px/s^2 lateral acceleration applied throughout the flight phase
 // obstacle: true adds a spire between the buildings that must be cleared
 const LEVELS = [
-  { gap:260, anchorH:150, anchorFrac:0.45, elev:0,   roofW:260, outerFrac:0.55, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:340, anchorH:160, anchorFrac:0.45, elev:0,   roofW:240, outerFrac:0.50, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:300, anchorH:175, anchorFrac:0.45, elev:-70, roofW:220, outerFrac:0.48, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:300, anchorH:150, anchorFrac:0.45, elev:90,  roofW:220, outerFrac:0.46, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:320, anchorH:165, anchorFrac:0.28, elev:0,   roofW:210, outerFrac:0.42, innerFrac:0.38, wind:0,    obstacle:false },
-  { gap:320, anchorH:165, anchorFrac:0.45, elev:20,  roofW:210, outerFrac:0.40, innerFrac:0.38, wind:45,   obstacle:false },
-  { gap:380, anchorH:205, anchorFrac:0.60, elev:-40, roofW:200, outerFrac:0.38, innerFrac:0.36, wind:-55,  obstacle:false },
-  { gap:340, anchorH:175, anchorFrac:0.45, elev:30,  roofW:170, outerFrac:0.32, innerFrac:0.36, wind:60,   obstacle:false },
-  { gap:340, anchorH:175, anchorFrac:0.45, elev:0,   roofW:190, outerFrac:0.34, innerFrac:0.36, wind:-65,  obstacle:true  },
-  { gap:440, anchorH:195, anchorFrac:0.40, elev:40,  roofW:190, outerFrac:0.30, innerFrac:0.36, wind:70,   obstacle:false },
-  { gap:380, anchorH:185, anchorFrac:0.50, elev:-50, roofW:170, outerFrac:0.28, innerFrac:0.36, wind:-85,  obstacle:true  },
-  { gap:420, anchorH:195, anchorFrac:0.45, elev:20,  roofW:150, outerFrac:0.24, innerFrac:0.36, wind:95,   obstacle:true  }
+  { gap:260, anchorH:270, anchorFrac:0.825, elev:0,   roofW:260, outerFrac:0.55, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:340, anchorH:260, anchorFrac:0.725, elev:0,   roofW:240, outerFrac:0.50, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:300, anchorH:145, anchorFrac:0.725, elev:-70, roofW:220, outerFrac:0.48, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:300, anchorH:275, anchorFrac:0.700, elev:90,  roofW:220, outerFrac:0.46, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:320, anchorH:215, anchorFrac:0.700, elev:0,   roofW:210, outerFrac:0.42, innerFrac:0.38, wind:0,    obstacle:false },
+  { gap:320, anchorH:220, anchorFrac:0.700, elev:20,  roofW:210, outerFrac:0.40, innerFrac:0.38, wind:45,   obstacle:false },
+  { gap:380, anchorH:150, anchorFrac:0.650, elev:-40, roofW:200, outerFrac:0.38, innerFrac:0.36, wind:-55,  obstacle:false },
+  { gap:340, anchorH:130, anchorFrac:0.625, elev:30,  roofW:170, outerFrac:0.32, innerFrac:0.36, wind:60,   obstacle:false },
+  { gap:340, anchorH:275, anchorFrac:0.675, elev:0,   roofW:190, outerFrac:0.34, innerFrac:0.36, wind:-65,  obstacle:true  },
+  { gap:440, anchorH:200, anchorFrac:0.625, elev:40,  roofW:190, outerFrac:0.30, innerFrac:0.36, wind:70,   obstacle:false },
+  { gap:380, anchorH:110, anchorFrac:0.625, elev:-50, roofW:170, outerFrac:0.28, innerFrac:0.36, wind:-85,  obstacle:true  },
+  { gap:420, anchorH:185, anchorFrac:0.600, elev:20,  roofW:150, outerFrac:0.24, innerFrac:0.36, wind:95,   obstacle:true  }
 ];
 const LEVEL_COUNT = LEVELS.length;
 
@@ -307,8 +307,14 @@ const state = {
   rope: { anchorX:0, anchorY:0, len:0 },
   landing: { active:false, speed:0, t:0, duration:520, tier:'clean' },
   crashSpin: { active:false, t:0, duration:650, dir:1 },
-  trail: []
+  trail: [],
+  releaseBurst: { active:false, t:0, duration:340, big:false }
 };
+
+// ---------- momentum readout (used to drive trail/rope/burst juice) ----------
+const SPEED_REF = 320; // roughly the fastest speed a well-timed swing reaches
+function playerSpeed(){ return Math.hypot(state.player.vx, state.player.vy); }
+function speedFactor(){ return clamp(playerSpeed() / SPEED_REF, 0, 1); }
 
 function resetPlayerToStart(){
   const lv = state.level;
@@ -369,8 +375,8 @@ class SlingScene extends Phaser.Scene {
     if (state.phase !== 'idle') stepPhysics(dt, time);
     drawRoofs();
     drawZone(time);
-    drawTrail();
-    drawRope();
+    drawTrail(time);
+    drawRope(time);
     drawPlayer(time);
   }
 }
@@ -434,6 +440,11 @@ function stepPhysics(dt, time){
     p.y += p.vy * dt;
   } else if (state.phase === 'landed'){
     state.landing.t += dt*1000;
+  }
+
+  if (state.releaseBurst.active){
+    state.releaseBurst.t += dt*1000;
+    if (state.releaseBurst.t >= state.releaseBurst.duration) state.releaseBurst.active = false;
   }
 
   // camera follows the player horizontally, clamped to level bounds
@@ -561,11 +572,16 @@ function onHoldStart(){
 function onHoldEnd(){
   if (state.phase !== 'swing') return;
   const p = state.player;
+  const sf = speedFactor(); // read momentum right before the boost is applied
   p.vx *= RELEASE_BOOST;
   p.vy *= RELEASE_BOOST;
   state.phase = 'flight';
+  state.releaseBurst.active = true;
+  state.releaseBurst.t = 0;
+  state.releaseBurst.big = sf > 0.75;
   sfx('tone', 640, 0.12, 'sawtooth', 0.12, 420);
   sfx('tone', 900, 0.08, 'sine', 0.08);
+  if (state.releaseBurst.big) sfx('tone', 1200, 0.06, 'sine', 0.06);
   updateHud();
 }
 
@@ -633,32 +649,76 @@ function drawZone(time){
   zoneGfx.lineStyle(3, 0x5be3a8, 0.8*pulse);
   zoneGfx.strokeEllipse(cx, y, lv.innerX2 - lv.innerX1, 8);
 }
-function drawTrail(){
+function drawTrail(time){
   trailGfx.clear();
-  if (state.trail.length < 2) return;
   const camX = state.camX;
-  for (let i = 1; i < state.trail.length; i++){
-    const a = state.trail[i-1], b = state.trail[i];
-    const alpha = (i / state.trail.length) * 0.5;
-    trailGfx.lineStyle(3, 0xff9f4d, alpha);
-    trailGfx.beginPath();
-    trailGfx.moveTo(a.x - camX, a.y);
-    trailGfx.lineTo(b.x - camX, b.y);
-    trailGfx.strokePath();
+  const moving = state.phase === 'swing' || state.phase === 'flight';
+  if (moving && state.trail.length >= 2){
+    const sf = speedFactor();
+    // low speed = short, faint trail. high speed = long, bright trail with a glow.
+    const visibleCount = Math.max(2, Math.round(3 + sf*15));
+    const pts = state.trail.slice(-visibleCount);
+    const baseWidth = 1.5 + sf*3.5;
+    for (let i = 1; i < pts.length; i++){
+      const a = pts[i-1], b = pts[i];
+      const alpha = (i / pts.length) * (0.12 + sf*0.55);
+      trailGfx.lineStyle(baseWidth, 0xff9f4d, alpha);
+      trailGfx.beginPath();
+      trailGfx.moveTo(a.x - camX, a.y);
+      trailGfx.lineTo(b.x - camX, b.y);
+      trailGfx.strokePath();
+    }
+    // subtle glow once carrying near-maximum useful speed — the visual cue to release
+    if (sf > 0.82){
+      const p = state.player;
+      const glowPulse = 0.5 + 0.5*Math.sin((time||0)*0.02);
+      trailGfx.fillStyle(0xffe1b0, (0.10 + 0.10*glowPulse) * ((sf-0.82)/0.18));
+      trailGfx.fillCircle(p.x - camX, p.y, PLAYER_RADIUS*2.4);
+    }
+  }
+  // release burst — a quick expanding ring at the moment of launch
+  if (state.releaseBurst.active){
+    const b = state.releaseBurst;
+    const t = clamp(b.t / b.duration, 0, 1);
+    const p = state.player;
+    const r = PLAYER_RADIUS + t * (b.big ? 46 : 26);
+    const alpha = (1-t) * (b.big ? 0.55 : 0.3);
+    trailGfx.lineStyle(b.big ? 3 : 2, b.big ? 0xffe1b0 : 0xff9f4d, alpha);
+    trailGfx.strokeCircle(p.x - camX, p.y, r);
   }
 }
-function drawRope(){
+function drawRope(time){
   ropeGfx.clear();
   if (state.phase !== 'swing') return;
   const camX = state.camX;
   const p = state.player;
+  const ax = state.rope.anchorX - camX, ay = state.rope.anchorY;
+  const px = p.x - camX, py = p.y;
+  const sf = speedFactor();
   ropeGfx.lineStyle(2.5, 0xd8cfe0, 0.85);
-  ropeGfx.beginPath();
-  ropeGfx.moveTo(state.rope.anchorX - camX, state.rope.anchorY);
-  ropeGfx.lineTo(p.x - camX, p.y);
-  ropeGfx.strokePath();
+  if (sf < 0.3){
+    ropeGfx.beginPath();
+    ropeGfx.moveTo(ax, ay);
+    ropeGfx.lineTo(px, py);
+    ropeGfx.strokePath();
+  } else {
+    // at higher swing speed the rope gets a faint tension vibration instead of a dead-straight line
+    const segs = 9;
+    const dx = px - ax, dy = py - ay;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    const nx = -dy/len, ny = dx/len;
+    const amp = ((sf-0.3)/0.7) * 2.4;
+    ropeGfx.beginPath();
+    ropeGfx.moveTo(ax, ay);
+    for (let i = 1; i <= segs; i++){
+      const t = i/segs;
+      const jitter = Math.sin(t*Math.PI*6 + (time||0)*0.03) * amp * Math.sin(t*Math.PI);
+      ropeGfx.lineTo(ax + dx*t + nx*jitter, ay + dy*t + ny*jitter);
+    }
+    ropeGfx.strokePath();
+  }
   ropeGfx.fillStyle(0xffc94d, 1);
-  ropeGfx.fillCircle(state.rope.anchorX - camX, state.rope.anchorY, 5);
+  ropeGfx.fillCircle(ax, ay, 5);
 }
 function drawPlayer(time){
   playerGfx.clear();
