@@ -183,7 +183,7 @@
   </div>
 
   <div class="hud">
-    <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span><span class="practice-tag" id="practiceTag">PRACTICE</span><span class="practice-tag" id="hardTag" style="color:var(--danger);">HARD</span></div>
+    <div class="stat"><span class="label">Stage</span><span class="val" id="hudStage">1 / 10</span><span class="practice-tag" id="practiceTag">PRACTICE</span><span class="practice-tag" id="hardTag" style="color:var(--danger);">HARD</span><span class="practice-tag" id="dailyTag" style="color:var(--good);">DAILY</span></div>
     <div class="stat"><span class="label">Score</span><span class="val" id="hudScore">0</span></div>
     <div class="stat"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
     <div class="stat"><span class="label">Crashes</span><span class="val" id="hudCrashes">0</span></div>
@@ -218,6 +218,9 @@
           <div><b>Escalation</b> — 10 stages, more turns and tighter memory load each time. Crash and you're straight back to a fresh preview — instantly.</div>
           <div><b>Decoys</b> — later stages throw in a fake "straight ahead" branch at some forks. It's never a real option — controls stay left/right only. Trust what you memorized, not the intersection.</div>
         </div>
+        <div class="garage-label">Daily Challenge — same route stream for every attempt today</div>
+        <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:6px;" id="dailyBestLine">—</div>
+        <button class="btn" id="dailyBtn" style="padding:8px 20px; font-size:12.5px; margin-bottom:4px;">Play Daily Challenge</button>
         <div class="garage-label">Garage — pick your car</div>
         <div class="skin-row" id="skinRow"></div>
         <div class="garage-label">Practice — jump to a cleared stage</div>
@@ -321,8 +324,12 @@ function mulberry32(seed){
 
 const BASE_GAP = 130; // world units for a "normal" gap between turns
 
-function generateRoute(stage){
-  const rng = mulberry32((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0);
+function generateRoute(stage, rngOverride){
+  // normal mode: fresh random seed every call (every attempt gets a new route, by design).
+  // daily mode: rngOverride is a single seeded stream shared across the whole run, so
+  // it advances deterministically — same starting seed for everyone playing today, but
+  // still a fresh route on each retry (consuming the next chunk of the stream), same as normal play.
+  const rng = rngOverride || mulberry32((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0);
   const count = STAGE_TURN_COUNT[Math.min(stage, STAGE_TURN_COUNT.length) - 1];
   const mode = spacingModeForStage(stage);
   const repeatBias = repeatBiasForStage(stage);
@@ -375,6 +382,7 @@ const state = {
   milestonesHit: {},
   isPractice: false,
   hardMode: false,
+  isDaily: false,
   crashSpin: { active:false, start:0, duration:560, kickX:0, dir:1 },
   humAccum: 0,
   sirenAccum: 0,
@@ -462,6 +470,40 @@ function renderStageSelect(){
     }
     row.appendChild(btn);
   }
+}
+
+// ---------- daily challenge (same seeded route stream for everyone, all day) ----------
+function dailySeedString(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function hashSeed(str){
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+let dailyRng = null;
+function loadDailyBest(){
+  try{
+    const raw = localStorage.getItem('getawaydriver_daily');
+    if (raw){
+      const v = JSON.parse(raw);
+      if (v.date === dailySeedString()) return v;
+    }
+  }catch(e){}
+  return null;
+}
+function saveDailyBest(rec){
+  try{ localStorage.setItem('getawaydriver_daily', JSON.stringify(rec)); }catch(e){}
+}
+function renderDailyInfo(){
+  const el = document.getElementById('dailyBestLine');
+  if (!el) return;
+  const rec = loadDailyBest();
+  el.textContent = dailySeedString() + (rec ? (' — today\'s best: ' + rec.bestScore + ' (' + rec.bestCrashes + (rec.bestCrashes===1?' crash':' crashes') + ')') : ' — no run yet today');
 }
 
 // ---------- hard mode (unlocks after a first full, non-practice clear) ----------
@@ -1085,11 +1127,19 @@ function completeRun(){
       renderBest();
     }
   }
+  if (state.isDaily){
+    const existing = loadDailyBest();
+    if (!existing || state.score > existing.bestScore){
+      saveDailyBest({ date: dailySeedString(), bestScore: state.score, bestCrashes: state.crashesThisRun, bestTimeMs: totalMs });
+    }
+    renderDailyInfo();
+  }
   sfx('chime', [700, 950, 1300, 1600], 'sine', 0.2);
   document.getElementById('flawlessTag').style.display = (state.crashesThisRun === 0 && !state.isPractice) ? 'block' : 'none';
   showRank();
   let endMsg;
-  if (state.isPractice) endMsg = "Practice run — nice work, but this one doesn't count toward your high score.";
+  if (state.isDaily) endMsg = "Today's daily challenge, done. Same route stream for anyone who plays today — come back and beat it.";
+  else if (state.isPractice) endMsg = "Practice run — nice work, but this one doesn't count toward your high score.";
   else if (state.crashesThisRun === 0) endMsg = "Not one wrong turn. The city never even knew you were there.";
   else if (state.crashesThisRun <= 3) endMsg = "A few close calls back there, but you're through the gate and gone.";
   else endMsg = "Messy, loud, and lucky — but the safehouse door just closed behind you.";
@@ -1134,7 +1184,7 @@ function previewDuration(stage){
   return state.hardMode ? Math.round(ms * 0.8) : ms;
 }
 function startPreview(stage){
-  state.route = generateRoute(stage);
+  state.route = generateRoute(stage, state.isDaily ? dailyRng : null);
   state.turnIndex = 0;
   state.distRemaining = state.route[0] ? state.route[0].gap : 0;
   state.laneOffset = 0;
@@ -1225,6 +1275,7 @@ function updateHud(){
   else status.textContent = 'Ready';
   document.getElementById('practiceTag').style.display = state.isPractice ? 'inline' : 'none';
   document.getElementById('hardTag').style.display = state.hardMode ? 'inline' : 'none';
+  document.getElementById('dailyTag').style.display = state.isDaily ? 'inline' : 'none';
 }
 
 // ---------- boot ----------
@@ -1242,6 +1293,7 @@ loadProgress();
 loadHardMode();
 renderSkinPicker();
 renderStageSelect();
+renderDailyInfo();
 requestAnimationFrame(gameTick);
 
 try{
@@ -1250,12 +1302,15 @@ try{
   }
 }catch(e){}
 
-function beginRun(stage){
+function beginRun(stage, opts){
+  opts = opts || {};
   sfx('tone', 440, 0.05, 'sine', 0.001); // unlock audio on the real user gesture
   document.getElementById('startScreen').classList.add('hidden');
   state.stage = stage;
   state.isPractice = stage !== 1;
   state.hardMode = hardModeUnlocked && hardModeSelected;
+  state.isDaily = !!opts.daily;
+  if (state.isDaily) dailyRng = mulberry32(hashSeed(dailySeedString()));
   state.crashesThisRun = 0;
   state.elapsed = 0;
   state.score = 0;
@@ -1271,6 +1326,7 @@ function beginRun(stage){
   startPreview(stage);
 }
 document.getElementById('startBtn').addEventListener('click', ()=> beginRun(1));
+document.getElementById('dailyBtn').addEventListener('click', ()=> beginRun(1, { daily: true }));
 document.getElementById('retryBtn').addEventListener('click', ()=> location.reload());
 
 document.getElementById('leftBtn').addEventListener('click', ()=> callDirection('L'));
