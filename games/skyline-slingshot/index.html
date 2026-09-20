@@ -225,18 +225,18 @@ const PLAYER_RADIUS = 12;
 // wind: px/s^2 lateral acceleration applied throughout the flight phase
 // obstacle: true adds a spire between the buildings that must be cleared
 const LEVELS = [
-  { gap:260, anchorH:270, anchorFrac:0.825, elev:0,   roofW:260, outerFrac:0.55, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:340, anchorH:260, anchorFrac:0.725, elev:0,   roofW:240, outerFrac:0.50, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:300, anchorH:145, anchorFrac:0.725, elev:-70, roofW:220, outerFrac:0.48, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:300, anchorH:275, anchorFrac:0.700, elev:90,  roofW:220, outerFrac:0.46, innerFrac:0.40, wind:0,    obstacle:false },
-  { gap:320, anchorH:215, anchorFrac:0.700, elev:0,   roofW:210, outerFrac:0.42, innerFrac:0.38, wind:0,    obstacle:false },
-  { gap:320, anchorH:220, anchorFrac:0.700, elev:20,  roofW:210, outerFrac:0.40, innerFrac:0.38, wind:45,   obstacle:false },
-  { gap:380, anchorH:150, anchorFrac:0.650, elev:-40, roofW:200, outerFrac:0.38, innerFrac:0.36, wind:-55,  obstacle:false },
-  { gap:340, anchorH:130, anchorFrac:0.625, elev:30,  roofW:170, outerFrac:0.32, innerFrac:0.36, wind:60,   obstacle:false },
-  { gap:340, anchorH:275, anchorFrac:0.675, elev:0,   roofW:190, outerFrac:0.34, innerFrac:0.36, wind:-65,  obstacle:true  },
-  { gap:440, anchorH:200, anchorFrac:0.625, elev:40,  roofW:190, outerFrac:0.30, innerFrac:0.36, wind:70,   obstacle:false },
-  { gap:380, anchorH:110, anchorFrac:0.625, elev:-50, roofW:170, outerFrac:0.28, innerFrac:0.36, wind:-85,  obstacle:true  },
-  { gap:420, anchorH:185, anchorFrac:0.600, elev:20,  roofW:150, outerFrac:0.24, innerFrac:0.36, wind:95,   obstacle:true  }
+  { gap:260, anchorH:315, anchorFrac:0.775, elev:30, roofW:260, outerFrac:0.55, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:340, anchorH:320, anchorFrac:0.700, elev:30, roofW:240, outerFrac:0.50, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:300, anchorH:320, anchorFrac:0.700, elev:40, roofW:220, outerFrac:0.48, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:300, anchorH:60,  anchorFrac:0.725, elev:90, roofW:220, outerFrac:0.46, innerFrac:0.40, wind:0,    obstacle:false },
+  { gap:320, anchorH:320, anchorFrac:0.700, elev:30, roofW:210, outerFrac:0.42, innerFrac:0.38, wind:0,    obstacle:false },
+  { gap:320, anchorH:320, anchorFrac:0.675, elev:20, roofW:210, outerFrac:0.40, innerFrac:0.38, wind:45,   obstacle:false },
+  { gap:380, anchorH:320, anchorFrac:0.650, elev:50, roofW:200, outerFrac:0.38, innerFrac:0.36, wind:-55,  obstacle:false },
+  { gap:340, anchorH:285, anchorFrac:0.650, elev:30, roofW:170, outerFrac:0.32, innerFrac:0.36, wind:60,   obstacle:false },
+  { gap:340, anchorH:195, anchorFrac:0.650, elev:35, roofW:190, outerFrac:0.34, innerFrac:0.36, wind:-65,  obstacle:true  },
+  { gap:440, anchorH:255, anchorFrac:0.625, elev:40, roofW:190, outerFrac:0.30, innerFrac:0.36, wind:70,   obstacle:false },
+  { gap:380, anchorH:245, anchorFrac:0.600, elev:60, roofW:170, outerFrac:0.28, innerFrac:0.36, wind:-85,  obstacle:true  },
+  { gap:420, anchorH:150, anchorFrac:0.600, elev:45, roofW:150, outerFrac:0.24, innerFrac:0.36, wind:95,   obstacle:true  }
 ];
 const LEVEL_COUNT = LEVELS.length;
 
@@ -403,6 +403,7 @@ function stepPhysics(dt, time){
     p.vy -= radialSpeed * ny;
     pushTrail(p.x, p.y);
   } else if (state.phase === 'flight'){
+    const prevY = p.y;
     p.vy += GRAVITY * dt;
     p.vx += lv.wind * dt;
     p.vx *= AIR_DRAG;
@@ -421,10 +422,17 @@ function stepPhysics(dt, time){
       }
     }
 
-    // landing check — falling onto the target rooftop's x-range
-    if (p.vy > 0 && p.y + PLAYER_RADIUS >= lv.targetRoofY &&
-        p.x > lv.targetX1 && p.x < lv.targetX2){
+    // landing check — must actually fall onto the roof from above this frame, not already be
+    // buried in the building when its x-range is first reached (that read as a teleport before)
+    const overRoofX = p.x > lv.targetX1 && p.x < lv.targetX2;
+    const crossedRoofTop = (prevY + PLAYER_RADIUS < lv.targetRoofY) && (p.y + PLAYER_RADIUS >= lv.targetRoofY);
+    if (p.vy > 0 && overRoofX && crossedRoofTop){
       resolveLanding();
+      return;
+    }
+    // flew into the side/body of the target building instead of clearing the roofline — a clean fail
+    if (overRoofX && (p.y - PLAYER_RADIUS) > lv.targetRoofY){
+      crashRun('HIT THE BUILDING', 'Came in too low. Release with more height under you.');
       return;
     }
     // fell past the world floor without landing anywhere — into the gap
