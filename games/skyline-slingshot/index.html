@@ -349,7 +349,7 @@ function updateWindBadge(){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let skyGfx, parallaxGfx, roofGfx, zoneGfx, ropeGfx, trailGfx, playerGfx;
+let skyGfx, parallaxGfx, roofGfx, zoneGfx, ropeGfx, trailGfx, speedLinesGfx, playerGfx;
 
 class SlingScene extends Phaser.Scene {
   constructor(){ super('sling'); }
@@ -361,6 +361,7 @@ class SlingScene extends Phaser.Scene {
     zoneGfx = this.add.graphics();
     trailGfx = this.add.graphics();
     ropeGfx = this.add.graphics();
+    speedLinesGfx = this.add.graphics();
     playerGfx = this.add.graphics();
   }
   update(time, delta){
@@ -369,15 +370,18 @@ class SlingScene extends Phaser.Scene {
     drawParallax(time);
     if (!state.level){
       // no level loaded yet (still on the start screen) — nothing further to draw or simulate
-      roofGfx.clear(); zoneGfx.clear(); trailGfx.clear(); ropeGfx.clear(); playerGfx.clear();
+      roofGfx.clear(); zoneGfx.clear(); trailGfx.clear(); ropeGfx.clear(); speedLinesGfx.clear(); playerGfx.clear();
+      resetCameraStretch();
       return;
     }
     if (state.phase !== 'idle') stepPhysics(dt, time);
     drawRoofs();
     drawZone(time);
+    drawSpeedLines(time);
     drawTrail(time);
     drawRope(time);
     drawPlayer(time);
+    updateCameraStretch();
   }
 }
 
@@ -403,7 +407,6 @@ function stepPhysics(dt, time){
     p.vy -= radialSpeed * ny;
     pushTrail(p.x, p.y);
   } else if (state.phase === 'flight'){
-    const prevY = p.y;
     p.vy += GRAVITY * dt;
     p.vx += lv.wind * dt;
     p.vx *= AIR_DRAG;
@@ -422,17 +425,20 @@ function stepPhysics(dt, time){
       }
     }
 
-    // landing check — must actually fall onto the roof from above this frame, not already be
-    // buried in the building when its x-range is first reached (that read as a teleport before)
+    // landing vs. building-hit — judged purely by how far past the roofline the ball is the
+    // moment it's over the roof and falling. Within LANDING_GRACE of the surface (whether it
+    // crossed that plane this exact frame or a few frames ago while still over the gap) is a
+    // clean landing, snapped flush to the roof. Any deeper than that is a real miss.
+    const LANDING_GRACE = 30;
     const overRoofX = p.x > lv.targetX1 && p.x < lv.targetX2;
-    const crossedRoofTop = (prevY + PLAYER_RADIUS < lv.targetRoofY) && (p.y + PLAYER_RADIUS >= lv.targetRoofY);
-    if (p.vy > 0 && overRoofX && crossedRoofTop){
-      resolveLanding();
-      return;
-    }
-    // flew into the side/body of the target building instead of clearing the roofline — a clean fail
-    if (overRoofX && (p.y - PLAYER_RADIUS) > lv.targetRoofY){
-      crashRun('HIT THE BUILDING', 'Came in too low. Release with more height under you.');
+    const bottom = p.y + PLAYER_RADIUS;
+    if (p.vy > 0 && overRoofX && bottom >= lv.targetRoofY){
+      if (bottom <= lv.targetRoofY + LANDING_GRACE){
+        p.y = lv.targetRoofY - PLAYER_RADIUS; // snap cleanly onto the surface
+        resolveLanding();
+      } else {
+        crashRun('HIT THE BUILDING', 'Came in too low. Release with more height under you.');
+      }
       return;
     }
     // fell past the world floor without landing anywhere — into the gap
@@ -694,6 +700,42 @@ function drawTrail(time){
     trailGfx.lineStyle(b.big ? 3 : 2, b.big ? 0xffe1b0 : 0xff9f4d, alpha);
     trailGfx.strokeCircle(p.x - camX, p.y, r);
   }
+}
+function drawSpeedLines(time){
+  speedLinesGfx.clear();
+  if (state.phase !== 'flight') return;
+  const sf = speedFactor();
+  if (sf < 0.3) return;
+  const p = state.player;
+  const travelAngle = Math.atan2(p.vy, p.vx);
+  const dx = Math.cos(travelAngle), dy = Math.sin(travelAngle);
+  const count = Math.round(4 + sf * 11);
+  const len = 46 + sf * 130;
+  const alphaBase = 0.08 + sf * 0.26;
+  for (let i = 0; i < count; i++){
+    // deterministic scatter that streams opposite the travel direction, tiled across the screen
+    const seed = i * 137.51;
+    const scroll = (time || 0) * (0.18 + sf * 0.35);
+    const tx = ((seed * 3.1 - scroll) % (W + 240) + (W + 240)) % (W + 240) - 120;
+    const ty = ((seed * 7.7) % (H + 140) + (H + 140)) % (H + 140) - 70;
+    const flicker = 0.65 + 0.35 * Math.sin(seed + (time || 0) * 0.01);
+    speedLinesGfx.lineStyle(1.2 + sf * 1.6, 0xffffff, alphaBase * flicker);
+    speedLinesGfx.beginPath();
+    speedLinesGfx.moveTo(tx - dx * len * 0.5, ty - dy * len * 0.5);
+    speedLinesGfx.lineTo(tx + dx * len * 0.5, ty + dy * len * 0.5);
+    speedLinesGfx.strokePath();
+  }
+}
+function updateCameraStretch(){
+  if (!scene) return;
+  const sf = (state.phase === 'flight' || state.phase === 'swing') ? speedFactor() : 0;
+  const targetZoom = 1 + sf * 0.05;
+  const cam = scene.cameras.main;
+  cam.zoom += (targetZoom - cam.zoom) * 0.12;
+}
+function resetCameraStretch(){
+  if (!scene) return;
+  scene.cameras.main.zoom = 1;
 }
 function drawRope(time){
   ropeGfx.clear();
