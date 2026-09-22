@@ -209,6 +209,7 @@ class MainScene extends Phaser.Scene {
 
     // ---- Round / modifier state ----
     this.round = 1;
+    this.shoveStreak = 0;
     this.grabRadius = BASE_GRAB_RADIUS;
     this.shootVx = BASE_SHOOT_VX;
     this.shootVy = BASE_SHOOT_VY;
@@ -716,7 +717,50 @@ class MainScene extends Phaser.Scene {
   // opponent's intro lines one at a time — a little pre-match dialogue
   // rather than a single flavor sentence.
   showCareerIntro(rung, onDone) {
-    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.68).setDepth(40);
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0).setDepth(39);
+    this.tweens.add({ targets: dim, alpha: 0.68, duration: 300 });
+
+    const oppArch = ARCHETYPES[rung.opponent];
+    const oppHex = '#' + oppArch.color.toString(16).padStart(6, '0');
+
+    // Two lightweight "pseudo-actors" reusing the real drawActor() rig —
+    // same silhouette, same arm-swing/shadow code as in-match — so the
+    // walk-in reads as part of the same game, not a bolted-on clip.
+    const standY = GROUND_Y - 25;
+    const p1 = {
+      body: { position: { x: -50, y: standY } }, gfx: this.add.graphics().setDepth(40),
+      color: this.player.color, facing: 1, scale: 1, armSwing: 0, stumbleTimer: 0, tackleDownTimer: 0
+    };
+    const p2 = {
+      body: { position: { x: W + 50, y: standY } }, gfx: this.add.graphics().setDepth(40),
+      color: oppArch.color, facing: -1, scale: 1, armSwing: 0, stumbleTimer: 0, tackleDownTimer: 0
+    };
+    this.drawActor(p1);
+    this.drawActor(p2);
+
+    const p1X = W / 2 - 110, p2X = W / 2 + 110;
+    this.tweens.add({
+      targets: p1.body.position, x: p1X, duration: 620, ease: 'Cubic.Out',
+      onUpdate: () => this.drawActor(p1)
+    });
+    this.tweens.add({
+      targets: p2.body.position, x: p2X, duration: 620, delay: 60, ease: 'Cubic.Out',
+      onUpdate: () => this.drawActor(p2)
+    });
+    // a little arm-pump while they close the distance, reusing the same
+    // swing property the in-match reach/swat animation already drives
+    this.tweens.add({ targets: p1, armSwing: 1, duration: 150, yoyo: true, repeat: 2, ease: 'Sine.InOut', onUpdate: () => this.drawActor(p1) });
+    this.tweens.add({ targets: p2, armSwing: 1, duration: 150, delay: 60, yoyo: true, repeat: 2, ease: 'Sine.InOut', onUpdate: () => this.drawActor(p2) });
+
+    // face-off impact beat once they've closed in, using the same juice
+    // helpers a real collision uses (flash/shake/dust/sfx)
+    this.time.delayedCall(700, () => {
+      this.spawnFlash((p1X + p2X) / 2, standY - 20, COLOR.gold);
+      this.shakeCamera(3);
+      this.playSfx('collision');
+      this.spawnDust((p1X + p2X) / 2, GROUND_Y - 2);
+      this.tweens.add({ targets: [p1, p2], armSwing: 0.6, duration: 90, yoyo: true, onUpdate: () => { this.drawActor(p1); this.drawActor(p2); } });
+    });
 
     const tag = this.add.text(W / 2, H / 2 - 30, `RUNG ${this.careerRung + 1} / ${CAREER_LADDER.length}`, {
       fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#fbbf24', fontStyle: 'bold'
@@ -726,20 +770,20 @@ class MainScene extends Phaser.Scene {
       fontFamily: 'system-ui, sans-serif', fontSize: '34px', color: '#F2F4F7', fontStyle: 'bold'
     }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.85);
 
-    const oppArch = ARCHETYPES[rung.opponent];
-    const oppHex = '#' + oppArch.color.toString(16).padStart(6, '0');
     const vs = this.add.text(W / 2, H / 2 + 50, `VS ${oppArch.name}`, {
       fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: oppHex, fontStyle: 'bold'
     }).setOrigin(0.5).setDepth(41).setAlpha(0);
 
     const titleItems = [tag, name, vs];
-    this.tweens.add({ targets: [tag, vs], alpha: 0.9, duration: 300, delay: 100 });
-    this.tweens.add({ targets: name, alpha: 1, scale: 1, duration: 420, ease: 'Back.Out' });
+    this.time.delayedCall(850, () => {
+      this.tweens.add({ targets: [tag, vs], alpha: 0.9, duration: 300 });
+      this.tweens.add({ targets: name, alpha: 1, scale: 1, duration: 420, ease: 'Back.Out' });
+    });
 
     const lines = rung.intro && rung.intro.length ? rung.intro : [`${oppArch.name}: "Let's play."`];
 
     const showLine = (idx) => {
-      const text = this.add.text(W / 2, H / 2 + 10, lines[idx], {
+      const text = this.add.text(W / 2, H / 2 - 78, lines[idx], {
         fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: oppHex, fontStyle: 'bold', align: 'center',
         wordWrap: { width: 560 }
       }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.94);
@@ -758,12 +802,12 @@ class MainScene extends Phaser.Scene {
 
     const finish = () => {
       this.tweens.add({
-        targets: dim, alpha: 0, duration: 260,
-        onComplete: () => { dim.destroy(); onDone(); }
+        targets: [dim, p1.gfx, p2.gfx], alpha: 0, duration: 300,
+        onComplete: () => { dim.destroy(); p1.gfx.destroy(); p2.gfx.destroy(); onDone(); }
       });
     };
 
-    this.time.delayedCall(1100, () => {
+    this.time.delayedCall(1950, () => {
       this.tweens.add({
         targets: titleItems, alpha: 0, duration: 220,
         onComplete: () => { titleItems.forEach(o => o.destroy()); showLine(0); }
@@ -1365,6 +1409,7 @@ class MainScene extends Phaser.Scene {
     this.matter.body.setPosition(this.ball, { x: W / 2, y: GROUND_Y - 60 });
     this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
     this.ballCarrier = null;
+    this.shoveStreak = 0;
     this.ai.state = 'SEEK';
     [this.player, this.ai].forEach(a => {
       a.tackleCooldown = 0; a.shoveCooldown = 0; a.stumbleTimer = 0; a.tackleDownTimer = 0; a.defendActionTimer = 0;
@@ -1401,6 +1446,7 @@ class MainScene extends Phaser.Scene {
       const d = Phaser.Math.Distance.Between(actor.body.position.x, actor.body.position.y, b.position.x, b.position.y);
       if (d < catchRadius) {
         this.ballCarrier = actor.body.label;
+        this.shoveStreak = 0; // fresh possession — shove streak resets
         this.playSfx('grab');
         this.spawnFlash(b.position.x, b.position.y, actor.color);
         return;
@@ -1444,7 +1490,10 @@ class MainScene extends Phaser.Scene {
   }
 
   // Shove: reliable and always connects in range, but it's just a knockback —
-  // no guaranteed knockdown, and only a modest chance to jar the ball loose.
+  // no guaranteed knockdown. The strip chance escalates the more times in a
+  // row you land a shove on the SAME carrier (25% / 55% / 85%+, capped at
+  // 90%), so shoving repeatedly is always eventually worth it instead of
+  // being a flat coinflip that could in theory never land.
   tryShove(actor, opponent) {
     if (this.matchOver || this.selecting) return;
     if (actor.shoveCooldown > 0 || actor.stumbleTimer > 0) return;
@@ -1459,8 +1508,13 @@ class MainScene extends Phaser.Scene {
     this.matter.body.setVelocity(opponent.body, { x: dir * 6, y: -1.5 });
     this.spawnDust(opponent.body.position.x, GROUND_Y - 2);
     this.playSfx('bounce');
-    if (this.ballCarrier === opponent.body.label && Math.random() < 0.2) {
-      this.dropBall(true);
+    if (this.ballCarrier === opponent.body.label) {
+      this.shoveStreak = (this.shoveStreak || 0) + 1;
+      const dropChance = Math.min(0.9, 0.25 + (this.shoveStreak - 1) * 0.3);
+      if (Math.random() < dropChance) {
+        this.shoveStreak = 0;
+        this.dropBall(true);
+      }
     }
   }
 
@@ -1473,12 +1527,14 @@ class MainScene extends Phaser.Scene {
     const vy = this.shootVy * shotMult + (Math.random() - 0.5) * 1.2;
     this.matter.body.setVelocity(this.ball, { x: vx, y: vy });
     this.ballCarrier = null;
+    this.shoveStreak = 0;
     this.ballScoredCooldown = false;
     this.ballTrail.length = 0;
   }
 
   dropBall(pop) {
     this.ballCarrier = null;
+    this.shoveStreak = 0;
     this.matter.body.setVelocity(this.ball, { x: (Math.random() - 0.5) * (pop ? 5 : 3), y: pop ? -3 : -2 });
   }
 
