@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Football Arcade</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0f14; overflow: hidden; }
+  #game-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+  canvas { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<div id="game-root"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // PHASE 1 ONLY — field, camera, one player, ball. Confirm the scrolling
+  // camera + field feel is right before Phase 2 (QB movement/throw).
+  // Locked decisions: TD=6, no XP/FG/punts, 960x540 canvas, scrollable
+  // world ~1300px per 100 yards, camera follows the ball carrier.
+  // ---------------------------------------------------------------------
+
+  const W = 960, H = 540;
+  const HUD_H = 64;                 // top HUD strip
+  const FIELD_TOP = HUD_H;
+  const FIELD_H = H - HUD_H;        // sideline-to-sideline vertical space
+
+  const PX_PER_YARD = 13;           // ~1300px per 100 yards, per spec
+  const ENDZONE_YARDS = 10;
+  const FIELD_YARDS = 100;
+  const TOTAL_YARDS = FIELD_YARDS + ENDZONE_YARDS * 2;
+  const WORLD_W = TOTAL_YARDS * PX_PER_YARD; // 1560
+  const WORLD_H = H;
+
+  const LEFT_EZ_X = 0;
+  const LEFT_GOAL_X = ENDZONE_YARDS * PX_PER_YARD;
+  const RIGHT_GOAL_X = LEFT_GOAL_X + FIELD_YARDS * PX_PER_YARD;
+  const RIGHT_EZ_X = WORLD_W;
+
+  const COLOR = {
+    field: 0x1e5f3a, fieldAlt: 0x1a5534, ezHome: 0x1d3a8f, ezAway: 0x8f1d2c,
+    line: 0xf2f4f7, sideline: 0xf2f4f7, hud: 0x0b0f14, ball: 0x7c3f14,
+    player: 0x24b7ff
+  };
+
+  const PLAYER_SPEED = 3.4;
+
+  class FieldScene extends Phaser.Scene {
+    constructor() { super('field'); }
+
+    create() {
+      this.cameras.main.setBackgroundColor(0x0b0f14);
+      this.matter = null; // not using a physics engine yet — Phase 1 is plain position/velocity
+
+      this.drawField();
+      this.buildHUD();
+
+      // ---- Player (stand-in ball carrier for camera-follow testing) ----
+      this.player = {
+        x: LEFT_GOAL_X + 25 * PX_PER_YARD, // spot at the 25
+        y: FIELD_TOP + FIELD_H / 2,
+        facing: 1,
+        gfx: this.add.graphics().setDepth(10)
+      };
+
+      // ---- Ball — resting at the line of scrimmage, not yet carried ----
+      this.ball = {
+        x: this.player.x + 26,
+        y: this.player.y + 4,
+        gfx: this.add.graphics().setDepth(9)
+      };
+
+      this.keys = this.input.keyboard.addKeys({
+        up: 'W', down: 'S', left: 'A', right: 'D',
+        upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT'
+      });
+
+      // ---- Camera follows the player, bounded to the scrollable world ----
+      this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
+      this.cameras.main.startFollow(this.playerFollowTarget = new Phaser.Math.Vector2(this.player.x, this.player.y), true, 0.12, 0.12);
+      // Phaser's startFollow wants a GameObject with x/y (or a Vector2-like); we
+      // sync this vector to the player each frame below.
+
+      this.drawPlayer();
+      this.drawBall();
+    }
+
+    drawField() {
+      const g = this.add.graphics().setDepth(0);
+
+      // base turf, alternating 5-yard stripes for that scrolling "yards"
+      // feel — plain color bands, no texture assets
+      for (let y = 0; y < TOTAL_YARDS; y += 5) {
+        const x = y * PX_PER_YARD;
+        const w = 5 * PX_PER_YARD;
+        const isEnd = x < LEFT_GOAL_X || x >= RIGHT_GOAL_X;
+        if (isEnd) continue; // endzones drawn separately below
+        const stripe = (Math.floor(y / 5) % 2 === 0) ? COLOR.field : COLOR.fieldAlt;
+        g.fillStyle(stripe, 1);
+        g.fillRect(x, FIELD_TOP, w, FIELD_H);
+      }
+
+      // end zones
+      g.fillStyle(COLOR.ezHome, 1);
+      g.fillRect(LEFT_EZ_X, FIELD_TOP, LEFT_GOAL_X - LEFT_EZ_X, FIELD_H);
+      g.fillStyle(COLOR.ezAway, 1);
+      g.fillRect(RIGHT_GOAL_X, FIELD_TOP, RIGHT_EZ_X - RIGHT_GOAL_X, FIELD_H);
+
+      // sidelines
+      g.fillStyle(COLOR.sideline, 1);
+      g.fillRect(0, FIELD_TOP, WORLD_W, 4);
+      g.fillRect(0, FIELD_TOP + FIELD_H - 4, WORLD_W, 4);
+
+      // yard lines every 5 yards (thin), every 10 yards (thick) inside the
+      // playing field only
+      for (let y = 0; y <= FIELD_YARDS; y += 5) {
+        const x = LEFT_GOAL_X + y * PX_PER_YARD;
+        const thick = (y % 10 === 0);
+        g.fillStyle(COLOR.line, thick ? 0.95 : 0.5);
+        g.fillRect(x - (thick ? 1.5 : 1), FIELD_TOP, thick ? 3 : 2, FIELD_H);
+      }
+
+      // hash marks (two rows, inner third of the field)
+      const hashTop = FIELD_TOP + FIELD_H * 0.38;
+      const hashBot = FIELD_TOP + FIELD_H * 0.62;
+      g.fillStyle(COLOR.line, 0.7);
+      for (let y = 1; y < FIELD_YARDS; y++) {
+        const x = LEFT_GOAL_X + y * PX_PER_YARD;
+        g.fillRect(x - 1, hashTop - 6, 2, 12);
+        g.fillRect(x - 1, hashBot - 6, 2, 12);
+      }
+
+      // yard number labels every 10 yards, counting up to midfield then
+      // back down (standard football numbering), plus goal-line markers
+      for (let y = 10; y <= FIELD_YARDS - 10; y += 10) {
+        const num = y <= 50 ? y : 100 - y;
+        const x = LEFT_GOAL_X + y * PX_PER_YARD;
+        this.add.text(x, FIELD_TOP + 22, String(num), {
+          fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(1).setAlpha(0.85);
+        this.add.text(x, FIELD_TOP + FIELD_H - 22, String(num), {
+          fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(1).setAlpha(0.85).setFlipY(true);
+      }
+
+      // end zone labels
+      this.add.text(LEFT_GOAL_X / 2, FIELD_TOP + FIELD_H / 2, 'HOME\nEND ZONE', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(1).setAlpha(0.8).setAngle(-90);
+      this.add.text(RIGHT_GOAL_X + (RIGHT_EZ_X - RIGHT_GOAL_X) / 2, FIELD_TOP + FIELD_H / 2, 'AWAY\nEND ZONE', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(1).setAlpha(0.8).setAngle(90);
+
+      // goal lines (bold, at the endzone boundary)
+      g.fillStyle(0xF2F4F7, 1);
+      g.fillRect(LEFT_GOAL_X - 2, FIELD_TOP, 4, FIELD_H);
+      g.fillRect(RIGHT_GOAL_X - 2, FIELD_TOP, 4, FIELD_H);
+    }
+
+    buildHUD() {
+      this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50);
+      this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51);
+      this.title = this.add.text(16, 10, 'PHASE 1 — FIELD & CAMERA TEST', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
+      }).setScrollFactor(0).setDepth(51);
+      this.yardLabel = this.add.text(16, 30, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setScrollFactor(0).setDepth(51);
+      this.hint = this.add.text(W - 16, 24, 'WASD / Arrows to move', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+      }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
+    }
+
+    yardLineLabel(worldX) {
+      const yardsFromLeftGoal = (worldX - LEFT_GOAL_X) / PX_PER_YARD;
+      if (yardsFromLeftGoal < 0) return 'HOME END ZONE';
+      if (yardsFromLeftGoal > FIELD_YARDS) return 'AWAY END ZONE';
+      if (Math.abs(yardsFromLeftGoal - 50) < 0.5) return "50";
+      if (yardsFromLeftGoal < 50) return 'OWN ' + Math.round(yardsFromLeftGoal);
+      return 'OPP ' + Math.round(100 - yardsFromLeftGoal);
+    }
+
+    drawPlayer() {
+      const g = this.player.gfx;
+      g.clear();
+      const x = this.player.x, y = this.player.y, c = COLOR.player;
+      const dark = Phaser.Display.Color.ValueToColor(c).darken(30).color;
+      g.fillStyle(0x000000, 0.3);
+      g.fillEllipse(x, y + 20, 26, 8);
+      g.fillStyle(dark, 1);
+      g.fillRoundedRect(x - 9, y - 2, 7, 16, 3);
+      g.fillRoundedRect(x + 2, y - 2, 7, 16, 3);
+      g.fillStyle(c, 1);
+      g.fillRoundedRect(x - 12, y - 22, 24, 24, 7);
+      g.fillCircle(x, y - 30, 10);
+      const eyeX = x + this.player.facing * 3;
+      g.fillStyle(0xF2F4F7, 1);
+      g.fillCircle(eyeX + this.player.facing * 3, y - 31, 2.6);
+    }
+
+    drawBall() {
+      const g = this.ball.gfx;
+      g.clear();
+      g.fillStyle(COLOR.ball, 1);
+      g.fillEllipse(this.ball.x, this.ball.y, 16, 10);
+      g.lineStyle(1.5, 0xF2F4F7, 0.9);
+      g.lineBetween(this.ball.x - 5, this.ball.y, this.ball.x + 5, this.ball.y);
+    }
+
+    update() {
+      let vx = 0, vy = 0;
+      if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.player.facing = -1; }
+      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.player.facing = 1; }
+      if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+      else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+
+      if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; } // normalize diagonal speed
+
+      this.player.x = Phaser.Math.Clamp(this.player.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
+      this.player.y = Phaser.Math.Clamp(this.player.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+      // ball just rests near the player for now (not carried/thrown yet —
+      // that's Phase 2+); keep it a step behind so it visually "sits" there
+      this.ball.x += (this.player.x + this.player.facing * 24 - this.ball.x) * 0.15;
+      this.ball.y += (this.player.y + 4 - this.ball.y) * 0.15;
+
+      this.playerFollowTarget.set(this.player.x, this.player.y);
+
+      this.yardLabel.setText(this.yardLineLabel(this.player.x));
+
+      this.drawPlayer();
+      this.drawBall();
+    }
+  }
+
+  const config = {
+    type: Phaser.AUTO,
+    width: W,
+    height: H,
+    parent: 'game-root',
+    backgroundColor: '#0b0f14',
+    scene: [FieldScene]
+  };
+
+  new Phaser.Game(config);
+})();
+</script>
+</body>
+</html>
