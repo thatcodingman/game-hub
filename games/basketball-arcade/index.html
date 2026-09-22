@@ -1361,7 +1361,7 @@ class MainScene extends Phaser.Scene {
     this.shootVx = BASE_SHOOT_VX;
     this.shootVy = BASE_SHOOT_VY;
     this.pointsThisRound = 2;
-    this.rimScale = 1;
+    this.rimScale = 1.25; // bigger rim baseline — more forgiving, shots go in more often
     this.matter.world.engine.world.gravity.y = 1;
     this.matter.body.setMass(this.ball, 0.35);
     this.matter.body.scale(this.ball, 1 / (this.ballScaleFactor || 1), 1 / (this.ballScaleFactor || 1));
@@ -1577,12 +1577,28 @@ class MainScene extends Phaser.Scene {
     let targetX = ai.body.position.x;
     let wantsJump = false;
 
+    // A slow random walk added to the AI's movement targets so it doesn't
+    // track in a perfectly straight, laser-precise line — a little organic
+    // drift instead of feeling like a program locked onto a coordinate.
+    ai.wanderNoise = Phaser.Math.Clamp((ai.wanderNoise || 0) + (Math.random() - 0.5) * 3.2, -26, 26);
+
+    // DEFEND specifically only "sees" the player's position on a refreshed
+    // snapshot (a human-ish reaction delay) instead of your live x every
+    // single frame — that instant frame-perfect tracking is what reads as
+    // "following me after half a second like a program."
+    ai.trackRefresh = (ai.trackRefresh || 0) - dt;
+    if (ai.trackRefresh <= 0) {
+      ai.trackRefresh = 260 + Math.random() * 220;
+      ai.perceivedPlayerX = this.player.body.position.x;
+    }
+    if (ai.perceivedPlayerX === undefined) ai.perceivedPlayerX = this.player.body.position.x;
+
     if (ai.state === 'SEEK') {
       // Was chasing the ball's CURRENT x every frame — always a step behind
       // a fast/bouncing ball, so it would rarely actually close the last
       // few pixels needed to trigger a catch. Now it leads the ball using
       // its horizontal velocity, like aiming where a moving target will be.
-      targetX = ball.position.x + (ball.velocity.x || 0) * 7;
+      targetX = ball.position.x + (ball.velocity.x || 0) * 7 + ai.wanderNoise * 0.4;
       // Only jump once it's actually lined up under the ball — jumping the
       // instant the ball is merely "above" it (regardless of x-distance)
       // meant it was almost always airborne at the wrong moment, missing
@@ -1603,10 +1619,13 @@ class MainScene extends Phaser.Scene {
       const dPlayer = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, this.player.body.position.x, this.player.body.position.y);
       const stealRange = TACKLE_RANGE + 20;
       if (dPlayer > stealRange - 8) {
-        targetX = Phaser.Math.Clamp(this.player.body.position.x, 140, HOOP_R_X - 40);
+        targetX = Phaser.Math.Clamp(ai.perceivedPlayerX + ai.wanderNoise, 140, HOOP_R_X - 40);
       } else {
         targetX = ai.body.position.x; // already in range — hold and look for a window
       }
+      // steal ATTEMPTS still use your real live position/distance below —
+      // only the chase-target tracking above uses the delayed, noisy read,
+      // so this stays fair rather than just making steals miss more.
       if (dPlayer < stealRange) {
         ai.defendActionTimer += dt;
         if (ai.defendActionTimer > (ai.decisionMs || 260)) {
@@ -1643,6 +1662,7 @@ class MainScene extends Phaser.Scene {
     if (wantsJump) this.tryJump(ai);
 
     const dx = targetX - ai.body.position.x;
+    let desiredVx = 0;
     if (Math.abs(dx) > 4) {
       ai.facing = dx > 0 ? 1 : -1;
       // SEEK (racing for a loose ball) now runs at full speed — the old
@@ -1652,20 +1672,24 @@ class MainScene extends Phaser.Scene {
       // keep a slight discount so it doesn't feel robotic.
       const aiSpeed = ai.speed || PLAYER_SPEED;
       const speedMult = ai.state === 'SEEK' ? 1 : 0.85;
-      this.matter.body.setVelocity(ai.body, { x: ai.facing * aiSpeed * speedMult, y: ai.body.velocity.y });
-    } else {
-      this.matter.body.setVelocity(ai.body, { x: 0, y: ai.body.velocity.y });
+      desiredVx = ai.facing * aiSpeed * speedMult;
     }
+    // Was snapping straight to full desired velocity every frame — instant,
+    // perfectly-clean acceleration reads as mechanical. Easing toward it
+    // instead gives it a bit of analog wind-up/wind-down, like a person
+    // reacting, rather than a value being set by code.
+    const easedVx = ai.body.velocity.x + (desiredVx - ai.body.velocity.x) * 0.3;
+    this.matter.body.setVelocity(ai.body, { x: easedVx, y: ai.body.velocity.y });
   }
 
   checkScore() {
     if (this.ballCarrier || this.ballScoredCooldown || this.matchOver) return;
     const b = this.ball;
-    const hoopHalf = 15 * this.rimScale;
+    const hoopHalf = 21 * this.rimScale; // widened scoring window so shots are more forgiving
     for (const h of this.hoops) {
       const dx = Math.abs(b.position.x - (h.x - h.mirror * 6));
       const dy = Math.abs(b.position.y - (HOOP_Y + 18));
-      if (dx < hoopHalf && dy < 9 && b.velocity.y > 0) {
+      if (dx < hoopHalf && dy < 13 && b.velocity.y > 0) {
         this.ballScoredCooldown = true;
         const scorer = (this.lastToTouch === 'ai') ? 'ai' : 'player';
         const points = this.pointsThisRound;
@@ -1753,6 +1777,25 @@ class MainScene extends Phaser.Scene {
       } else {
         this.updateAI(dt);
       }
+
+      // Keep the two characters from visually standing on top of each other.
+      // Both actors' velocity gets fully re-commanded by keys/AI every single
+      // frame, which overrides Matter's own separation impulse the instant
+      // it tries to push them apart — so simple physics collision alone
+      // wasn't enough and they'd just interpenetrate. Nudge them apart
+      // directly whenever they get closer than a minimum gap (skip this
+      // while either is down from a tackle — that pose is meant to overlap).
+      if (this.player.tackleDownTimer <= 0 && this.ai.tackleDownTimer <= 0) {
+        const sep = this.ai.body.position.x - this.player.body.position.x;
+        const MIN_SEP = 32;
+        if (Math.abs(sep) < MIN_SEP && Math.abs(sep) > 0.001) {
+          const push = (MIN_SEP - Math.abs(sep)) / 2;
+          const dir = sep >= 0 ? 1 : -1;
+          this.matter.body.setPosition(this.ai.body, { x: this.ai.body.position.x + dir * push, y: this.ai.body.position.y });
+          this.matter.body.setPosition(this.player.body, { x: this.player.body.position.x - dir * push, y: this.player.body.position.y });
+        }
+      }
+
       this.updateAutoCatch();
 
       if (this.ballCarrier) this.lastToTouch = this.ballCarrier;
