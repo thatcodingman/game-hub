@@ -264,6 +264,18 @@ class MainScene extends Phaser.Scene {
     this.twoPlayerMode = false;
     this.careerActive = false;
     this.careerRung = 0;
+
+    // Persistent back-to-menu button — always on screen (select screens,
+    // mid-match, cutscenes) and just restarts the scene, which drops back
+    // to mode select the same way the champion/lose screens' buttons do.
+    this.menuBtn = this.add.text(16, 16, '☰ MENU', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold',
+      backgroundColor: '#11161f', padding: { x: 10, y: 6 }
+    }).setDepth(100).setInteractive({ useHandCursor: true });
+    this.menuBtn.on('pointerover', () => this.menuBtn.setColor('#F2F4F7'));
+    this.menuBtn.on('pointerout', () => this.menuBtn.setColor('#94a3b8'));
+    this.menuBtn.on('pointerdown', () => this.scene.restart());
+
     this.buildModeSelect();
   }
 
@@ -1410,6 +1422,9 @@ class MainScene extends Phaser.Scene {
     this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
     this.ballCarrier = null;
     this.shoveStreak = 0;
+    this.ballScoredCooldown = false; // was only ever cleared inside shootBall() — after the
+    // FIRST score of a match this stayed true forever, permanently disabling auto-catch
+    // (for BOTH players) for the rest of the match. Every fresh kickoff must clear it.
     this.ai.state = 'SEEK';
     [this.player, this.ai].forEach(a => {
       a.tackleCooldown = 0; a.shoveCooldown = 0; a.stumbleTimer = 0; a.tackleDownTimer = 0; a.defendActionTimer = 0;
@@ -1555,9 +1570,17 @@ class MainScene extends Phaser.Scene {
     let wantsJump = false;
 
     if (ai.state === 'SEEK') {
-      // ball possession is automatic on contact now — AI just needs to get there
-      targetX = ball.position.x;
-      if (ball.position.y < ai.body.position.y - 30) wantsJump = true;
+      // Was chasing the ball's CURRENT x every frame — always a step behind
+      // a fast/bouncing ball, so it would rarely actually close the last
+      // few pixels needed to trigger a catch. Now it leads the ball using
+      // its horizontal velocity, like aiming where a moving target will be.
+      targetX = ball.position.x + (ball.velocity.x || 0) * 7;
+      // Only jump once it's actually lined up under the ball — jumping the
+      // instant the ball is merely "above" it (regardless of x-distance)
+      // meant it was almost always airborne at the wrong moment, missing
+      // the catch window entirely.
+      const alignedX = Math.abs(ball.position.x - ai.body.position.x) < 55;
+      if (alignedX && ball.position.y < ai.body.position.y - 20) wantsJump = true;
     } else if (ai.state === 'DEFEND') {
       // Was shadowing the player from 90px away — outside the steal-attempt
       // range (TACKLE_RANGE+20 = 66px) — so it could never actually close in
@@ -1582,9 +1605,15 @@ class MainScene extends Phaser.Scene {
       }
     } else if (ai.state === 'ATTACK') {
       const distToHoop = ai.body.position.x - HOOP_L_X;
-      if (distToHoop < 260 && distToHoop > 60) {
+      // Was a hard reset to 0 every single frame it drifted outside the
+      // 60–260 band, so any small jitter (a bump, a defender nudging it)
+      // wiped all progress and the windup could never complete — the AI
+      // would dribble in place near the hoop forever and never actually
+      // release a shot. A wider hysteresis band + decay-instead-of-reset
+      // makes the windup far more robust to that jitter.
+      if (distToHoop < 280 && distToHoop > 45) {
         ai.shootWindupTimer += dt;
-        targetX = ai.body.position.x;
+        targetX = HOOP_L_X + 150; // keep drifting toward good shooting range instead of freezing
         if (ai.shootWindupTimer > (ai.shotWindupMs || 420)) {
           ai.armSwing = 1;
           this.tweens.add({ targets: ai, armSwing: 0, duration: 260 });
@@ -1593,7 +1622,7 @@ class MainScene extends Phaser.Scene {
         }
       } else {
         targetX = HOOP_L_X + 150;
-        ai.shootWindupTimer = 0;
+        ai.shootWindupTimer = Math.max(0, ai.shootWindupTimer - dt); // decay, don't wipe
       }
     }
 
@@ -1602,8 +1631,14 @@ class MainScene extends Phaser.Scene {
     const dx = targetX - ai.body.position.x;
     if (Math.abs(dx) > 4) {
       ai.facing = dx > 0 ? 1 : -1;
+      // SEEK (racing for a loose ball) now runs at full speed — the old
+      // flat 0.85 handicap on every state was stacking with the AI's
+      // built-in decision-delay disadvantage against a human's reflexes,
+      // so it was consistently beaten to every 50/50 ball. DEFEND/ATTACK
+      // keep a slight discount so it doesn't feel robotic.
       const aiSpeed = ai.speed || PLAYER_SPEED;
-      this.matter.body.setVelocity(ai.body, { x: ai.facing * aiSpeed * 0.85, y: ai.body.velocity.y });
+      const speedMult = ai.state === 'SEEK' ? 1 : 0.85;
+      this.matter.body.setVelocity(ai.body, { x: ai.facing * aiSpeed * speedMult, y: ai.body.velocity.y });
     } else {
       this.matter.body.setVelocity(ai.body, { x: 0, y: ai.body.velocity.y });
     }
