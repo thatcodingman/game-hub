@@ -95,7 +95,7 @@ class MainScene extends Phaser.Scene {
     this.matter.add.rectangle(W / 2, GROUND_Y + 30, W, 60, { isStatic: true, friction: 0.8, label: 'ground' });
 
     this.drawHoop();
-    this.matter.add.rectangle(HOOP_X + 34, HOOP_Y - 46, 8, 96, { isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard' });
+    this.matter.add.rectangle(HOOP_X + 34, HOOP_Y - 32, 10, 92, { isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard' });
 
     this.rimScale = 1;
     this.rimBody = this.matter.add.circle(HOOP_X, HOOP_Y, 7, {
@@ -178,64 +178,121 @@ class MainScene extends Phaser.Scene {
   }
 
   // ------------------------------------------------------------
-  // Drawing: court, hoop (kept intentionally restrained per feedback —
-  // no crowds/textures, just enough markings to read as a court)
+  // Drawing: court, hoop, stadium atmosphere
   // ------------------------------------------------------------
   drawCourt() {
     const g = this.add.graphics().setDepth(-10);
-    g.fillStyle(COLOR.bg, 1);
-    g.fillRect(0, 0, W, H);
+    const skylineTop = 0, courtTop = 118;
+
+    // sky/arena backdrop instead of dead black space
+    g.fillGradientStyle(0x151a24, 0x151a24, 0x090A10, 0x090A10, 1, 1, 1, 1);
+    g.fillRect(0, skylineTop, W, courtTop);
+
+    // simple stadium lights glow
+    for (const lx of [140, W / 2, W - 140]) {
+      g.fillStyle(0xfff4d6, 0.06);
+      g.fillCircle(lx, 20, 70);
+      g.fillStyle(0xfff4d6, 0.5);
+      g.fillCircle(lx, 20, 6);
+    }
+
+    // crowd silhouette band (simple repeating blobs, cheap + reads as an audience)
+    g.fillStyle(0x0d1117, 1);
+    g.fillRect(0, courtTop - 34, W, 34);
+    for (let i = 0; i < 46; i++) {
+      const bx = (i * 23 + 9) % W;
+      const by = courtTop - 22 + Math.sin(i * 1.7) * 6;
+      const shade = 0x1a2230 + (i % 3) * 0x030303;
+      g.fillStyle(shade, 1);
+      g.fillCircle(bx, by, 7);
+    }
+
+    // court body
     g.fillStyle(COLOR.court, 1);
-    g.fillRect(0, 40, W, GROUND_Y - 40 + 30);
-    g.fillGradientStyle(0x000000, 0x000000, COLOR.bg, COLOR.bg, 0.35, 0.35, 0, 0);
-    g.fillRect(0, 40, W, 90);
+    g.fillRect(0, courtTop, W, GROUND_Y - courtTop);
+    g.fillGradientStyle(0x000000, 0x000000, COLOR.court, COLOR.court, 0.25, 0.25, 0, 0);
+    g.fillRect(0, courtTop, W, 60);
+
+    // floor / baseline zone
     g.fillStyle(COLOR.courtDark, 1);
     g.fillRect(0, GROUND_Y, W, H - GROUND_Y);
-    g.lineStyle(3, COLOR.lines, 0.8);
+    g.lineStyle(3, COLOR.lines, 0.85);
     g.lineBetween(0, GROUND_Y, W, GROUND_Y);
+
+    // court border
     g.lineStyle(3, COLOR.lines, 0.7);
-    g.strokeRect(24, 44, W - 48, GROUND_Y - 44);
+    g.strokeRect(20, courtTop + 4, W - 40, GROUND_Y - courtTop - 4);
+
+    // center line + center circle
     g.lineStyle(2, COLOR.lines, 0.6);
-    g.lineBetween(W / 2, 44, W / 2, GROUND_Y);
-    g.strokeCircle(W / 2, (GROUND_Y + 44) / 2, 48);
+    g.lineBetween(W / 2, courtTop + 4, W / 2, GROUND_Y);
+    g.strokeCircle(W / 2, (GROUND_Y + courtTop) / 2, 44);
+
+    // key / lane + free-throw circle, hugging the hoop
     const laneW = 130, laneH = 150;
-    g.strokeRect(HOOP_X + 44 - laneW, HOOP_Y + 20, laneW, laneH);
-    g.strokeCircle(HOOP_X + 44 - laneW, HOOP_Y + 20 + laneH, 40);
+    const laneX = HOOP_X + 40 - laneW;
+    g.lineStyle(2.5, COLOR.lines, 0.75);
+    g.strokeRect(laneX, HOOP_Y + 20, laneW, laneH);
+    g.strokeCircle(laneX, HOOP_Y + 20 + laneH, 40);
+
+    // 3-point arc — hugs the hoop, doesn't fly off-court
+    g.lineStyle(2.5, COLOR.lines, 0.7);
     g.beginPath();
-    g.arc(HOOP_X - 6, HOOP_Y + 18, 210, Phaser.Math.DegToRad(110), Phaser.Math.DegToRad(250), true);
+    g.arc(HOOP_X - 4, HOOP_Y + 24, 190, Phaser.Math.DegToRad(95), Phaser.Math.DegToRad(265), false);
     g.strokePath();
+
     this.courtGfx = g;
   }
 
   drawHoop() {
     const g = this.add.graphics().setDepth(1);
-    g.lineStyle(6, 0x1c1917, 1);
-    g.lineBetween(HOOP_X + 40, HOOP_Y - 46 + 48, HOOP_X + 40, GROUND_Y);
+    const backTop = HOOP_Y - 78, backH = 92, backX = HOOP_X + 34;
+
+    // support pole (behind backboard)
+    g.lineStyle(7, 0x1c1917, 1);
+    g.lineBetween(backX + 4, backTop + backH * 0.55, backX + 4, GROUND_Y);
+    g.lineStyle(5, 0x2a2523, 1);
+    g.lineBetween(backX + 4, backTop + backH * 0.55, HOOP_X + 6, HOOP_Y - 4);
+
+    // backboard — real rectangle, not a stray line
+    g.fillStyle(0x0d1117, 0.4);
+    g.fillRect(backX - 4, backTop + 4, 10, backH); // drop shadow
     g.fillStyle(COLOR.white, 1);
-    g.fillRect(HOOP_X + 30, HOOP_Y - 46 - 40, 8, 88);
+    g.fillRoundedRect(backX - 6, backTop, 10, backH, 2);
     g.lineStyle(2, COLOR.ball, 0.9);
-    g.strokeRect(HOOP_X + 30, HOOP_Y - 46 - 40, 8, 88);
+    g.strokeRoundedRect(backX - 6, backTop, 10, backH, 2);
+    // shooter's square on the board
+    g.lineStyle(1.5, COLOR.ball, 0.7);
+    g.strokeRect(backX - 6, HOOP_Y - 22, 10, 24);
+
     this.hoopGfx = g;
     this.rimBounce = 0;
-    // net is drawn dynamically in update() so it can stretch on scores
+    // rim + net are drawn dynamically in update() so they can react to hits/scores
   }
 
   drawNet() {
     const g = this.hoopGfx;
-    // rim (scaled by modifier)
-    g.lineStyle(4, COLOR.ball, 1);
-    g.strokeEllipse(HOOP_X, HOOP_Y, 34 * this.rimScale, 10 * this.rimScale);
+    const rimW = 34 * this.rimScale, rimH = 11 * this.rimScale;
 
+    // rim shadow/give on hit
+    const give = this.rimBounce || 0;
+    g.lineStyle(5, COLOR.ball, 1);
+    g.strokeEllipse(HOOP_X, HOOP_Y + give * 2, rimW, rimH);
+    g.lineStyle(2, 0xc2410c, 1);
+    g.strokeEllipse(HOOP_X, HOOP_Y + give * 2, rimW * 0.94, rimH * 0.8);
+
+    // net — denser strand set, stretches on a make
     const stretch = this.netStretch;
-    g.lineStyle(1.5, COLOR.white, 0.6);
-    const netTop = HOOP_Y + 2, netBottom = HOOP_Y + 30 + stretch * 18;
-    for (let i = -3; i <= 3; i++) {
-      const xTop = HOOP_X + i * 5 * this.rimScale;
-      const xBot = HOOP_X + i * (2.5 - stretch);
+    const netTop = HOOP_Y + 3, netBottom = HOOP_Y + 32 + stretch * 20;
+    g.lineStyle(1.5, COLOR.white, 0.75);
+    for (let i = -4; i <= 4; i++) {
+      const xTop = HOOP_X + i * (rimW / 9);
+      const xBot = HOOP_X + i * (2.2 - stretch * 0.6);
       g.lineBetween(xTop, netTop, xBot, netBottom);
     }
-    g.lineBetween(HOOP_X - 15, netTop + 10, HOOP_X + 15, netTop + 10);
-    g.lineBetween(HOOP_X - 8 + stretch, netTop + 20 + stretch * 6, HOOP_X + 8 - stretch, netTop + 20 + stretch * 6);
+    g.lineStyle(1, COLOR.white, 0.5);
+    g.strokeEllipse(HOOP_X, netTop + 10, rimW * 0.75, 5);
+    g.strokeEllipse(HOOP_X, netTop + 20 + stretch * 8, rimW * 0.5, 4);
   }
 
   // ------------------------------------------------------------
@@ -257,6 +314,12 @@ class MainScene extends Phaser.Scene {
     const c = actor.color;
     const dark = Phaser.Display.Color.ValueToColor(c).darken(30).color;
 
+    // contact shadow — grounds the character regardless of jump height
+    const airHeight = Math.max(0, (GROUND_Y - 25) - y);
+    const shadowScale = Phaser.Math.Clamp(1 - airHeight / 140, 0.35, 1);
+    g.fillStyle(0x000000, 0.35 * shadowScale);
+    g.fillEllipse(x, GROUND_Y - 1, 30 * scale * shadowScale, 8 * scale * shadowScale);
+
     g.fillStyle(dark, 1);
     g.fillRoundedRect(x - 10 * scale, y + 6 * scale, 8 * scale, 16 * scale, 3);
     g.fillRoundedRect(x + 2 * scale, y + 6 * scale, 8 * scale, 16 * scale, 3);
@@ -277,19 +340,22 @@ class MainScene extends Phaser.Scene {
     const armAngle = -0.3 + swing * -1.1; // sweeps up/forward
     const ax = x + actor.facing * (12 * scale + Math.cos(armAngle) * armLen * 0.5);
     const ay = y - 10 * scale + Math.sin(armAngle) * armLen * 0.5;
-    g.fillStyle(dark, 1);
-    g.save && g.save();
     g.lineStyle(6 * scale, dark, 1);
     g.beginPath();
     g.moveTo(x + actor.facing * 12 * scale, y - 10 * scale);
     g.lineTo(ax, ay);
     g.strokePath();
+    g.fillStyle(dark, 1);
     g.fillCircle(ax, ay, 4 * scale); // hand
 
+    // head + face — eyes give the silhouette a front, not just a facing dot
     g.fillStyle(c, 1);
     g.fillCircle(x, y - 30 * scale, 11 * scale);
-    g.fillStyle(COLOR.white, 0.9);
-    g.fillCircle(x + actor.facing * 6 * scale, y - 30 * scale, 2.5 * scale);
+    const eyeX = x + actor.facing * 3.5 * scale;
+    g.fillStyle(COLOR.white, 1);
+    g.fillCircle(eyeX + actor.facing * 3 * scale, y - 31 * scale, 3 * scale);
+    g.fillStyle(0x0f172a, 1);
+    g.fillCircle(eyeX + actor.facing * 4 * scale, y - 31 * scale, 1.4 * scale);
   }
 
   // ------------------------------------------------------------
@@ -300,6 +366,13 @@ class MainScene extends Phaser.Scene {
     const g = this.ballGfx;
     g.clear();
     const r = this.ballRadius;
+
+    // contact shadow
+    const airHeight = Math.max(0, (GROUND_Y - 15) - b.position.y);
+    const shadowScale = Phaser.Math.Clamp(1 - airHeight / 200, 0.25, 1);
+    g.fillStyle(0x000000, 0.3 * shadowScale);
+    g.fillEllipse(b.position.x, GROUND_Y - 1, r * 1.8 * shadowScale, r * 0.5 * shadowScale);
+
     const speed = Math.min(Math.hypot(b.velocity.x, b.velocity.y), 14);
     const stretch = 1 + speed * 0.012;
     const squashTarget = this.ballCarrier ? 0.92 : 1;
