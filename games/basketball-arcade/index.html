@@ -251,8 +251,19 @@ class MainScene extends Phaser.Scene {
           this.shakeCamera(3);
           this.spawnFlash((this.player.body.position.x + this.ai.body.position.x) / 2,
                            (this.player.body.position.y + this.ai.body.position.y) / 2, COLOR.white);
-          // physical, unpredictable: a jarring contact can jolt the ball loose
-          if (this.ballCarrier) this.dropBall(true);
+          // BUG: this used to strip the ball on literally EVERY single body
+          // contact, no chance roll, no cooldown — bypassing the tackle/shove
+          // systems entirely. Since the AI now actually reaches ATTACK state
+          // and dribbles toward the hoop, any incidental bump from a defender
+          // just chasing it (not even tackling/shoving) instantly killed the
+          // shot windup before it could ever complete — every single time.
+          // That's almost certainly why it looked like the AI "never shoots."
+          // Now it's a rare, cooldown-gated jolt instead of a guaranteed strip.
+          const now = this.time.now;
+          if (this.ballCarrier && (this.lastCollisionDrop || 0) < now - 900 && Math.random() < 0.12) {
+            this.lastCollisionDrop = now;
+            this.dropBall(true);
+          }
         }
         if (labels === 'ball|ground') this.playSfx('bounce');
       }
@@ -1778,21 +1789,25 @@ class MainScene extends Phaser.Scene {
         this.updateAI(dt);
       }
 
-      // Keep the two characters from visually standing on top of each other.
-      // Both actors' velocity gets fully re-commanded by keys/AI every single
-      // frame, which overrides Matter's own separation impulse the instant
-      // it tries to push them apart — so simple physics collision alone
-      // wasn't enough and they'd just interpenetrate. Nudge them apart
-      // directly whenever they get closer than a minimum gap (skip this
-      // while either is down from a tackle — that pose is meant to overlap).
+      // Keep the two characters from standing on top of each other for good —
+      // but allow a brief moment of overlap (a real contest/collision) rather
+      // than an instant, rigid, every-frame shove-apart. Only start actually
+      // separating them once they've stayed overlapped for a beat.
       if (this.player.tackleDownTimer <= 0 && this.ai.tackleDownTimer <= 0) {
         const sep = this.ai.body.position.x - this.player.body.position.x;
-        const MIN_SEP = 32;
-        if (Math.abs(sep) < MIN_SEP && Math.abs(sep) > 0.001) {
-          const push = (MIN_SEP - Math.abs(sep)) / 2;
-          const dir = sep >= 0 ? 1 : -1;
-          this.matter.body.setPosition(this.ai.body, { x: this.ai.body.position.x + dir * push, y: this.ai.body.position.y });
-          this.matter.body.setPosition(this.player.body, { x: this.player.body.position.x - dir * push, y: this.player.body.position.y });
+        const MIN_SEP = 26;
+        if (Math.abs(sep) < MIN_SEP) {
+          this.overlapTimer = (this.overlapTimer || 0) + dt;
+          if (this.overlapTimer > 300) {
+            // gentle partial push, not an instant full correction — avoids
+            // fighting the ball-carry/catch position logic in the same frame
+            const push = ((MIN_SEP - Math.abs(sep)) / 2) * 0.25;
+            const dir = sep >= 0 ? 1 : -1;
+            this.matter.body.setPosition(this.ai.body, { x: this.ai.body.position.x + dir * push, y: this.ai.body.position.y });
+            this.matter.body.setPosition(this.player.body, { x: this.player.body.position.x - dir * push, y: this.player.body.position.y });
+          }
+        } else {
+          this.overlapTimer = 0;
         }
       }
 
