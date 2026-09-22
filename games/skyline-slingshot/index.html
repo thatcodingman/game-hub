@@ -104,6 +104,18 @@
   .star-line{ font-size:20px; letter-spacing:3px; color:var(--border); margin:6px 0; }
   .star-line .lit{ color:var(--amber); text-shadow:0 0 8px rgba(255,159,77,0.5); }
 
+  .skin-row{ display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .skin-swatch{
+    width:52px; border:1px solid var(--border); border-radius:8px; background:transparent;
+    color:var(--text-dim); font-size:9px; cursor:pointer; padding:6px 4px;
+    display:flex; flex-direction:column; align-items:center; gap:4px;
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }
+  .skin-swatch .dot{ width:20px; height:20px; border-radius:50%; }
+  .skin-swatch.selected{ border-color:var(--amber); color:var(--amber); }
+  .skin-swatch.locked{ opacity:0.4; cursor:not-allowed; }
+  .skin-swatch:not(.locked):hover{ border-color:var(--amber); }
+
   .btn{
     background:transparent; border:1px solid var(--border); color:var(--text);
     padding:8px 16px; min-height:44px; border-radius:6px; font-size:13px; cursor:pointer;
@@ -141,6 +153,7 @@
   <div class="hud">
     <div class="stat"><span class="label">Level</span><span class="val" id="hudLevel">1 / 12</span></div>
     <div class="stat"><span class="label">Attempts</span><span class="val" id="hudAttempts">0</span></div>
+    <div class="stat" id="hudStreakStat" style="display:none;"><span class="label">Streak</span><span class="val" id="hudStreak">0</span></div>
     <div class="spacer"></div>
     <div class="hud-status"><span class="label">Status</span><span class="val" id="hudStatus">Ready</span></div>
   </div>
@@ -167,8 +180,15 @@
           <div><b>Wind &amp; obstacles</b> — later rooftops fight back. Read the wind arrow before you release.</div>
         </div>
         <div class="star-line" id="startStarLine">Total: 0 / 36 ★</div>
+        <div class="subtitle" id="startBestStreak" style="margin-bottom:6px;">Best streak: 0 perfect landings</div>
         <div class="level-row" id="levelRow"></div>
+        <button class="btn" id="styleBtn" style="margin-top:6px; padding:6px 16px; font-size:12px;">Style</button>
+        <div id="skinPicker" style="display:none; margin-top:10px;"></div>
         <button class="btn primary" id="startBtn" style="margin-top:10px; padding:10px 26px; font-size:14px;">Start Level 1</button>
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
+          <div class="subtitle" id="dailyInfo" style="margin-bottom:6px;">No run yet today — 6 rooftops, seeded fresh each day.</div>
+          <button class="btn" id="dailyBtn" style="padding:8px 20px; font-size:13px;">Play Daily Challenge</button>
+        </div>
       </div>
     </div>
 
@@ -239,6 +259,64 @@ const LEVELS = [
   { gap:420, anchorH:150, anchorFrac:0.600, elev:45, roofW:150, outerFrac:0.24, innerFrac:0.36, wind:95,   obstacle:true  }
 ];
 const LEVEL_COUNT = LEVELS.length;
+const DAILY_LEVEL_COUNT = 6;
+
+// ---------- daily challenge (seeded rooftop order, same for everyone on a given calendar day) ----------
+function mulberry32(seed){
+  let t = seed >>> 0;
+  return function(){
+    t |= 0; t = (t + 0x6D2B79F5) | 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function dailySeedString(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+function hashSeed(str){
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function dailyLevelOrder(){
+  const rng = mulberry32(hashSeed('skyline-' + dailySeedString()));
+  const idxs = [];
+  for (let i = 0; i < LEVEL_COUNT; i++) idxs.push(i);
+  for (let i = idxs.length - 1; i > 0; i--){
+    const j = Math.floor(rng() * (i+1));
+    const tmp = idxs[i]; idxs[i] = idxs[j]; idxs[j] = tmp;
+  }
+  return idxs.slice(0, DAILY_LEVEL_COUNT);
+}
+
+let dailyBest = null; // { date, stars, attempts, timeMs }
+function loadDailyBest(){
+  try{
+    const raw = localStorage.getItem('skylineslingshot_daily');
+    if (raw) dailyBest = JSON.parse(raw);
+  }catch(e){ dailyBest = null; }
+}
+function saveDailyBest(){
+  try{ localStorage.setItem('skylineslingshot_daily', JSON.stringify(dailyBest)); }catch(e){}
+}
+function renderDailyInfo(){
+  const el = document.getElementById('dailyInfo');
+  if (!el) return;
+  const today = dailySeedString();
+  if (dailyBest && dailyBest.date === today){
+    el.textContent = "Today's best: " + dailyBest.stars + ' / ' + (DAILY_LEVEL_COUNT*3) + ' ★ in ' + dailyBest.attempts + ' attempts';
+  } else {
+    el.textContent = 'No run yet today — ' + DAILY_LEVEL_COUNT + ' rooftops, seeded fresh each day.';
+  }
+}
 
 // ---------- geometry for a level ----------
 function buildLevel(idx){
@@ -294,6 +372,56 @@ function saveProgress(){
 function totalStars(){ return stars.reduce((a,b)=>a+b, 0); }
 function levelUnlocked(i){ return i === 0 || stars[i-1] > 0; }
 
+// ---------- perfect-streak persistence ----------
+let bestStreak = 0;
+function loadBestStreak(){
+  try{ const v = localStorage.getItem('skylineslingshot_beststreak'); if (v) bestStreak = parseInt(v, 10) || 0; }catch(e){}
+}
+function saveBestStreak(){
+  try{ localStorage.setItem('skylineslingshot_beststreak', String(bestStreak)); }catch(e){}
+}
+
+// ---------- ghost (best-attempt replay) persistence ----------
+let ghosts = {}; // levelIdx -> { stars, points: [[t,x,y], ...] }
+function loadGhosts(){
+  try{
+    const raw = localStorage.getItem('skylineslingshot_ghosts');
+    if (raw) ghosts = JSON.parse(raw) || {};
+  }catch(e){ ghosts = {}; }
+}
+function saveGhosts(){
+  try{ localStorage.setItem('skylineslingshot_ghosts', JSON.stringify(ghosts)); }catch(e){}
+}
+
+// ---------- cosmetic skins (procedural — no art assets, just Graphics primitives) ----------
+// unlock: total stars required (out of LEVEL_COUNT*3). unlockStreak: best perfect-streak required instead.
+const SKINS = [
+  { id:'default',   name:'Default',  unlock:0,  style:'default', bodyColor:0xff9f4d, highlight:0x1a1024, trailColor:0xff9f4d },
+  { id:'midnight',  name:'Midnight', unlock:6,  style:'default', bodyColor:0x1b2550, highlight:0x9ecbff, trailColor:0x6f8fff },
+  { id:'sunset',    name:'Sunset',   unlock:15, style:'layered', bodyColor:0xff5a2e, innerColor:0xffe45c, trailColor:0xff6a3d },
+  { id:'neon',      name:'Neon',     unlock:24, style:'glow',    bodyColor:0x22d3ee, glowColor:0xff3df0, trailColor:0x33e6ff },
+  { id:'comet',     name:'Comet',    unlock:30, style:'particle', bodyColor:0xeaf6ff, particleColor:0x9ad9ff, trailColor:0xdfefff },
+  { id:'void',      name:'Void',     unlock:36, style:'outline', bodyColor:0x120818, outlineColor:0x8a4dff, highlight:0xffffff, trailColor:0x8a4dff },
+  { id:'starburst', name:'Star',     unlockStreak:5, style:'star', bodyColor:0xffe14d, trailColor:0xffe14d }
+];
+function skinUnlocked(skin){
+  return skin.unlockStreak != null ? bestStreak >= skin.unlockStreak : totalStars() >= skin.unlock;
+}
+function skinUnlockLabel(skin){
+  return skin.unlockStreak != null ? (skin.unlockStreak + 'x streak') : (skin.unlock + ' ★');
+}
+let selectedSkinId = 'default';
+function loadSkinPref(){
+  try{ const v = localStorage.getItem('skylineslingshot_skin'); if (v) selectedSkinId = v; }catch(e){}
+}
+function saveSkinPref(){
+  try{ localStorage.setItem('skylineslingshot_skin', selectedSkinId); }catch(e){}
+}
+function currentSkin(){
+  const s = SKINS.find(s => s.id === selectedSkinId);
+  return (s && skinUnlocked(s)) ? s : SKINS[0];
+}
+
 // ---------- state ----------
 const state = {
   phase: 'idle', // idle | ready | swing | flight | landed | crashed | level-clear | run-complete
@@ -302,13 +430,22 @@ const state = {
   attemptsThisLevel: 0,
   attemptsThisRun: 0,
   perfectsThisRun: 0,
+  perfectStreak: 0,
   camX: 0,
+  runElapsed: 0, // ms since the current swing began — shared clock for recording + ghost playback
   player: { x:0, y:0, vx:0, vy:0 },
   rope: { anchorX:0, anchorY:0, len:0 },
   landing: { active:false, speed:0, t:0, duration:520, tier:'clean' },
   crashSpin: { active:false, t:0, duration:650, dir:1 },
   trail: [],
-  releaseBurst: { active:false, t:0, duration:340, big:false }
+  releaseBurst: { active:false, t:0, duration:340, big:false },
+  recording: { points: [], lastSampleT: -9999 },
+  ghost: { points: null, active: false },
+  isDaily: false,
+  dailyLevels: [],
+  dailyStep: 0,
+  dailyStartTime: 0,
+  dailyStars: 0
 };
 
 // ---------- momentum readout (used to drive trail/rope/burst juice) ----------
@@ -332,8 +469,30 @@ function loadLevel(idx, keepAttempts){
   resetPlayerToStart();
   state.phase = 'ready';
   state.camX = 0;
+  state.runElapsed = 0;
+  state.recording.points = [];
+  state.recording.lastSampleT = -9999;
+  state.ghost.active = false;
+  state.ghost.points = null;
+  initWindParticles(state.level);
   updateWindBadge();
   updateHud();
+}
+
+function ghostPositionAt(t){
+  const pts = state.ghost.points;
+  if (!pts || !pts.length) return null;
+  if (t <= pts[0][0]) return { x: pts[0][1], y: pts[0][2] };
+  if (t >= pts[pts.length-1][0]) return null; // ghost run has already finished
+  for (let i = 1; i < pts.length; i++){
+    if (t <= pts[i][0]){
+      const a = pts[i-1], b = pts[i];
+      const span = (b[0] - a[0]) || 1;
+      const f = (t - a[0]) / span;
+      return { x: a[1] + (b[1]-a[1])*f, y: a[2] + (b[2]-a[2])*f };
+    }
+  }
+  return null;
 }
 
 function updateWindBadge(){
@@ -349,7 +508,55 @@ function updateWindBadge(){
 
 // ---------- Phaser scene ----------
 let scene = null;
-let skyGfx, parallaxGfx, roofGfx, zoneGfx, ropeGfx, trailGfx, speedLinesGfx, playerGfx;
+let skyGfx, parallaxGfx, windGfx, roofGfx, zoneGfx, ropeGfx, trailGfx, speedLinesGfx, ghostGfx, playerGfx;
+
+// ---------- ambient wind gust particles ----------
+let windParticles = [];
+function initWindParticles(lv){
+  windParticles = [];
+  const mag = Math.abs(lv.wind);
+  if (mag < 5) return;
+  const count = Math.round(6 + (mag/95) * 14);
+  for (let i = 0; i < count; i++){
+    windParticles.push({
+      x: Math.random() * W,
+      y: Math.random() * H * 0.75,
+      len: 14 + Math.random() * 26,
+      speedMul: 0.6 + Math.random() * 0.8,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+}
+function updateWindParticles(dt){
+  if (!state.level) return;
+  const w = state.level.wind;
+  if (Math.abs(w) < 5) return;
+  const dir = w > 0 ? 1 : -1;
+  const baseSpeed = 50 + Math.abs(w) * 1.6;
+  for (let i = 0; i < windParticles.length; i++){
+    const p = windParticles[i];
+    p.x += dir * baseSpeed * p.speedMul * dt;
+    if (dir > 0 && p.x - p.len > W + 20){ p.x = -20; p.y = Math.random() * H * 0.75; }
+    if (dir < 0 && p.x + p.len < -20){ p.x = W + 20; p.y = Math.random() * H * 0.75; }
+  }
+}
+function drawWindParticles(time){
+  windGfx.clear();
+  if (!state.level) return;
+  const w = state.level.wind;
+  if (Math.abs(w) < 5) return;
+  const dir = w > 0 ? 1 : -1;
+  for (let i = 0; i < windParticles.length; i++){
+    const p = windParticles[i];
+    const bob = Math.sin((time||0)*0.002 + p.phase) * 3;
+    const flicker = 0.55 + 0.45 * Math.sin(p.phase*3 + (time||0)*0.0012);
+    windGfx.lineStyle(1.3, 0xffffff, 0.16 * flicker);
+    windGfx.beginPath();
+    windGfx.moveTo(p.x, p.y + bob);
+    windGfx.lineTo(p.x - dir*p.len, p.y + bob);
+    windGfx.strokePath();
+  }
+}
 
 class SlingScene extends Phaser.Scene {
   constructor(){ super('sling'); }
@@ -357,11 +564,13 @@ class SlingScene extends Phaser.Scene {
     scene = this;
     skyGfx = this.add.graphics();
     parallaxGfx = this.add.graphics();
+    windGfx = this.add.graphics();
     roofGfx = this.add.graphics();
     zoneGfx = this.add.graphics();
     trailGfx = this.add.graphics();
     ropeGfx = this.add.graphics();
     speedLinesGfx = this.add.graphics();
+    ghostGfx = this.add.graphics();
     playerGfx = this.add.graphics();
   }
   update(time, delta){
@@ -370,14 +579,17 @@ class SlingScene extends Phaser.Scene {
     drawParallax(time);
     if (!state.level){
       // no level loaded yet (still on the start screen) — nothing further to draw or simulate
-      roofGfx.clear(); zoneGfx.clear(); trailGfx.clear(); ropeGfx.clear(); speedLinesGfx.clear(); playerGfx.clear();
+      windGfx.clear(); roofGfx.clear(); zoneGfx.clear(); trailGfx.clear(); ropeGfx.clear(); speedLinesGfx.clear(); ghostGfx.clear(); playerGfx.clear();
       resetCameraStretch();
       return;
     }
     if (state.phase !== 'idle') stepPhysics(dt, time);
+    updateWindParticles(dt);
+    drawWindParticles(time);
     drawRoofs();
     drawZone(time);
     drawSpeedLines(time);
+    drawGhost();
     drawTrail(time);
     drawRope(time);
     drawPlayer(time);
@@ -406,6 +618,8 @@ function stepPhysics(dt, time){
     p.vx -= radialSpeed * nx;
     p.vy -= radialSpeed * ny;
     pushTrail(p.x, p.y);
+    state.runElapsed += dt*1000;
+    recordPoint(p.x, p.y);
   } else if (state.phase === 'flight'){
     p.vy += GRAVITY * dt;
     p.vx += lv.wind * dt;
@@ -414,6 +628,8 @@ function stepPhysics(dt, time){
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     pushTrail(p.x, p.y);
+    state.runElapsed += dt*1000;
+    recordPoint(p.x, p.y);
 
     // obstacle collision — a hard fail, no partial credit
     if (lv.obstacle){
@@ -473,6 +689,15 @@ function pushTrail(x, y){
   if (state.trail.length > 18) state.trail.shift();
 }
 
+function recordPoint(x, y){
+  const r = state.recording;
+  if (state.runElapsed - r.lastSampleT < 35 && r.points.length){
+    return; // throttle sampling so a saved ghost stays small
+  }
+  r.lastSampleT = state.runElapsed;
+  r.points.push([Math.round(state.runElapsed), Math.round(x*10)/10, Math.round(y*10)/10]);
+}
+
 // ---------- outcomes ----------
 function resolveLanding(){
   const p = state.player;
@@ -491,10 +716,32 @@ function resolveLanding(){
   const earnedStars = inInner ? (goodSpeed ? 3 : 2) : 1;
   const isPerfect = earnedStars === 3;
   if (isPerfect) state.perfectsThisRun++;
+  if (state.isDaily) state.dailyStars += earnedStars;
 
-  if (earnedStars > stars[state.levelIdx]){
+  if (!state.isDaily && earnedStars > stars[state.levelIdx]){
     stars[state.levelIdx] = earnedStars;
     saveProgress();
+  }
+
+  // perfect-landing streak — any landing that isn't a clean 3-star breaks it
+  const priorStreak = state.perfectStreak;
+  if (isPerfect){
+    state.perfectStreak++;
+    if (state.perfectStreak > bestStreak){ bestStreak = state.perfectStreak; saveBestStreak(); }
+  } else {
+    state.perfectStreak = 0;
+  }
+
+  // ghost — save this attempt's recorded path if it's the new best for this level
+  const existingGhost = ghosts[state.levelIdx];
+  const rec = state.recording.points;
+  const betterStars = !existingGhost || earnedStars > existingGhost.stars;
+  const tiedButFaster = existingGhost && earnedStars === existingGhost.stars && rec.length &&
+    existingGhost.points.length && state.runElapsed < existingGhost.points[existingGhost.points.length-1][0];
+  if ((betterStars || tiedButFaster) && rec.length){
+    rec.push([Math.round(state.runElapsed), Math.round(p.x*10)/10, Math.round(p.y*10)/10]);
+    ghosts[state.levelIdx] = { stars: earnedStars, points: rec.slice() };
+    saveGhosts();
   }
 
   state.phase = 'landed';
@@ -508,18 +755,28 @@ function resolveLanding(){
   haptic(isPerfect ? [15, 30, 15] : 15);
   if (isPerfect){
     sfx('chime', [700, 950, 1300], 'triangle', 0.18);
+    if (state.perfectStreak >= 2) sfx('tone', 1500, 0.08, 'sine', 0.1, 880);
     if (scene) scene.cameras.main.flash(100, 255, 210, 140, false);
     flashGood();
-    flashBanner('PERFECT LANDING', starsText(3), 'perfect', 900);
+    const streakSub = state.perfectStreak >= 2 ? (starsText(3) + '  •  ' + state.perfectStreak + 'x STREAK') : starsText(3);
+    flashBanner('PERFECT LANDING', streakSub, 'perfect', 900);
   } else {
     sfx('tone', 320, 0.18, 'sine', 0.14, 140);
-    flashBanner('LANDED', starsText(earnedStars), 'good', 900);
+    const brokeStreak = priorStreak >= 3;
+    flashBanner('LANDED', brokeStreak ? (starsText(earnedStars) + '  •  streak ended at ' + priorStreak) : starsText(earnedStars), 'good', 900);
   }
   updateHud();
 
   setTimeout(()=>{
     clearBanner();
-    if (state.levelIdx >= LEVEL_COUNT - 1){
+    if (state.isDaily){
+      state.dailyStep++;
+      if (state.dailyStep >= state.dailyLevels.length){
+        completeDailyRun();
+      } else {
+        loadLevel(state.dailyLevels[state.dailyStep], false);
+      }
+    } else if (state.levelIdx >= LEVEL_COUNT - 1){
       completeRun();
     } else {
       loadLevel(state.levelIdx + 1, false);
@@ -532,6 +789,7 @@ function starsText(n){ return '★'.repeat(n) + '☆'.repeat(3-n); }
 function crashRun(title, sub){
   state.attemptsThisLevel++;
   state.attemptsThisRun++;
+  state.perfectStreak = 0;
   state.phase = 'crashed';
   state.crashSpin.active = true;
   state.crashSpin.t = 0;
@@ -566,6 +824,34 @@ function completeRun(){
   document.getElementById('endScreen').classList.remove('hidden');
   sfx('chime', [700, 950, 1300, 1650], 'sine', 0.2);
   renderBestStars();
+  renderSkinPicker();
+}
+
+function completeDailyRun(){
+  state.phase = 'run-complete';
+  const timeMs = Math.round((performance.now ? performance.now() : Date.now()) - state.dailyStartTime);
+  const today = dailySeedString();
+  let isNewBest = false;
+  if (!dailyBest || dailyBest.date !== today){
+    dailyBest = { date: today, stars: state.dailyStars, attempts: state.attemptsThisRun, timeMs };
+    isNewBest = true;
+  } else if (state.dailyStars > dailyBest.stars ||
+             (state.dailyStars === dailyBest.stars && state.attemptsThisRun < dailyBest.attempts)){
+    dailyBest = { date: today, stars: state.dailyStars, attempts: state.attemptsThisRun, timeMs };
+    isNewBest = true;
+  }
+  saveDailyBest();
+  const maxStars = state.dailyLevels.length * 3;
+  document.getElementById('endTitle').textContent = state.dailyStars === maxStars ? 'DAILY: PERFECT RUN' : 'DAILY CHALLENGE COMPLETE';
+  document.getElementById('endMsg').textContent = isNewBest ?
+    "New best for today's skyline." : "Today's best still stands — come back tomorrow for a new route.";
+  document.getElementById('endStarLine').textContent = state.dailyStars + ' / ' + maxStars + ' ★';
+  document.getElementById('endAttempts').textContent = state.attemptsThisRun;
+  document.getElementById('endPerfects').textContent = state.perfectsThisRun;
+  document.getElementById('endScreen').classList.remove('hidden');
+  sfx('chime', [700, 950, 1300, 1650], 'sine', 0.2);
+  renderDailyInfo();
+  renderSkinPicker();
 }
 
 // ---------- input ----------
@@ -579,6 +865,19 @@ function onHoldStart(){
   state.rope.len = Math.sqrt(dx*dx + dy*dy) || 1;
   state.phase = 'swing';
   state.trail.length = 0;
+
+  // start recording this attempt, and line up the ghost of the best attempt on this level (if any)
+  state.runElapsed = 0;
+  state.recording.points = [[0, Math.round(p.x*10)/10, Math.round(p.y*10)/10]];
+  state.recording.lastSampleT = 0;
+  const g = ghosts[state.levelIdx];
+  if (g && g.points && g.points.length > 1){
+    state.ghost.points = g.points;
+    state.ghost.active = true;
+  } else {
+    state.ghost.active = false;
+  }
+
   sfx('tone', 500, 0.06, 'triangle', 0.1, 220);
   document.getElementById('holdHint').style.display = 'none';
   updateHud();
@@ -667,6 +966,7 @@ function drawTrail(time){
   trailGfx.clear();
   const camX = state.camX;
   const moving = state.phase === 'swing' || state.phase === 'flight';
+  const skin = currentSkin();
   if (moving && state.trail.length >= 2){
     const sf = speedFactor();
     // low speed = short, faint trail. high speed = long, bright trail with a glow.
@@ -676,7 +976,7 @@ function drawTrail(time){
     for (let i = 1; i < pts.length; i++){
       const a = pts[i-1], b = pts[i];
       const alpha = (i / pts.length) * (0.12 + sf*0.55);
-      trailGfx.lineStyle(baseWidth, 0xff9f4d, alpha);
+      trailGfx.lineStyle(baseWidth, skin.trailColor, alpha);
       trailGfx.beginPath();
       trailGfx.moveTo(a.x - camX, a.y);
       trailGfx.lineTo(b.x - camX, b.y);
@@ -689,6 +989,15 @@ function drawTrail(time){
       trailGfx.fillStyle(0xffe1b0, (0.10 + 0.10*glowPulse) * ((sf-0.82)/0.18));
       trailGfx.fillCircle(p.x - camX, p.y, PLAYER_RADIUS*2.4);
     }
+    // comet skin — a scatter of tiny fading particles trailing behind, on top of the line trail
+    if (skin.style === 'particle'){
+      for (let i = 0; i < pts.length; i += 2){
+        const pt = pts[i];
+        const alpha = (i / pts.length) * 0.5;
+        trailGfx.fillStyle(skin.particleColor, alpha);
+        trailGfx.fillCircle(pt.x - camX, pt.y + (Math.sin(i*1.7)*3), 1.6);
+      }
+    }
   }
   // release burst — a quick expanding ring at the moment of launch
   if (state.releaseBurst.active){
@@ -697,7 +1006,7 @@ function drawTrail(time){
     const p = state.player;
     const r = PLAYER_RADIUS + t * (b.big ? 46 : 26);
     const alpha = (1-t) * (b.big ? 0.55 : 0.3);
-    trailGfx.lineStyle(b.big ? 3 : 2, b.big ? 0xffe1b0 : 0xff9f4d, alpha);
+    trailGfx.lineStyle(b.big ? 3 : 2, b.big ? 0xffe1b0 : skin.trailColor, alpha);
     trailGfx.strokeCircle(p.x - camX, p.y, r);
   }
 }
@@ -725,6 +1034,31 @@ function drawSpeedLines(time){
     speedLinesGfx.lineTo(tx + dx * len * 0.5, ty + dy * len * 0.5);
     speedLinesGfx.strokePath();
   }
+}
+function drawGhost(){
+  ghostGfx.clear();
+  if (!state.ghost.active || (state.phase !== 'swing' && state.phase !== 'flight')) return;
+  const pos = ghostPositionAt(state.runElapsed);
+  if (!pos){ state.ghost.active = false; return; } // ghost run has finished — fade out for good
+  const camX = state.camX;
+  // a short fading trail behind the ghost, sampled straight from its recorded points
+  const pts = state.ghost.points;
+  const trailPts = [];
+  for (let i = 0; i < pts.length; i++){
+    if (pts[i][0] >= state.runElapsed - 260 && pts[i][0] <= state.runElapsed) trailPts.push(pts[i]);
+  }
+  for (let i = 1; i < trailPts.length; i++){
+    const a = trailPts[i-1], b = trailPts[i];
+    ghostGfx.lineStyle(2, 0x9ad9ff, 0.18 * (i/trailPts.length));
+    ghostGfx.beginPath();
+    ghostGfx.moveTo(a[1]-camX, a[2]);
+    ghostGfx.lineTo(b[1]-camX, b[2]);
+    ghostGfx.strokePath();
+  }
+  ghostGfx.lineStyle(1.6, 0x9ad9ff, 0.6);
+  ghostGfx.strokeCircle(pos.x - camX, pos.y, PLAYER_RADIUS);
+  ghostGfx.fillStyle(0x9ad9ff, 0.12);
+  ghostGfx.fillCircle(pos.x - camX, pos.y, PLAYER_RADIUS);
 }
 function updateCameraStretch(){
   if (!scene) return;
@@ -798,14 +1132,56 @@ function drawPlayer(time){
     angle = Math.atan2(p.vy, p.vx) * 0.35;
   }
 
+  const skin = currentSkin();
+
   playerGfx.save();
   playerGfx.translateCanvas(p.x - camX, p.y);
   playerGfx.rotateCanvas(angle);
   playerGfx.scaleCanvas(scaleX, scaleY);
-  playerGfx.fillStyle(0xff9f4d, 1);
-  playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
-  playerGfx.fillStyle(0x1a1024, 0.7);
-  playerGfx.fillCircle(3, -3, 4);
+
+  if (skin.style === 'glow'){
+    playerGfx.fillStyle(skin.glowColor, 0.28);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS * 1.8);
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.fillStyle(0xffffff, 0.5);
+    playerGfx.fillCircle(3, -3, 4);
+  } else if (skin.style === 'layered'){
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.fillStyle(skin.innerColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS * 0.55);
+  } else if (skin.style === 'outline'){
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.lineStyle(2, skin.outlineColor, 0.9);
+    playerGfx.strokeCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.fillStyle(skin.highlight, 0.8);
+    playerGfx.fillCircle(3, -3, 3);
+  } else if (skin.style === 'particle'){
+    playerGfx.fillStyle(skin.particleColor, 0.25);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS * 1.4);
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.fillStyle(skin.particleColor, 0.7);
+    playerGfx.fillCircle(3, -3, 4);
+  } else if (skin.style === 'star'){
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    const spikes = 5, outerR = PLAYER_RADIUS * 1.15, innerR = PLAYER_RADIUS * 0.5;
+    const pts = [];
+    for (let i = 0; i < spikes * 2; i++){
+      const r = (i % 2 === 0) ? outerR : innerR;
+      const a = (Math.PI / spikes) * i - Math.PI/2;
+      pts.push(new Phaser.Geom.Point(Math.cos(a)*r, Math.sin(a)*r));
+    }
+    playerGfx.fillPoints(pts, true);
+  } else {
+    playerGfx.fillStyle(skin.bodyColor, 1);
+    playerGfx.fillCircle(0, 0, PLAYER_RADIUS);
+    playerGfx.fillStyle(skin.highlight, 0.7);
+    playerGfx.fillCircle(3, -3, 4);
+  }
+
   playerGfx.restore();
 }
 
@@ -832,8 +1208,17 @@ function clearFlashes(){
   document.getElementById('flashGood').classList.remove('show');
 }
 function updateHud(){
-  document.getElementById('hudLevel').textContent = (state.levelIdx+1) + ' / ' + LEVEL_COUNT;
+  document.getElementById('hudLevel').textContent = state.isDaily ?
+    ('Daily ' + (state.dailyStep+1) + ' / ' + state.dailyLevels.length) :
+    ((state.levelIdx+1) + ' / ' + LEVEL_COUNT);
   document.getElementById('hudAttempts').textContent = state.attemptsThisLevel;
+  const streakStat = document.getElementById('hudStreakStat');
+  if (state.perfectStreak >= 2){
+    streakStat.style.display = 'flex';
+    document.getElementById('hudStreak').textContent = state.perfectStreak + 'x';
+  } else {
+    streakStat.style.display = 'none';
+  }
   const status = document.getElementById('hudStatus');
   if (state.phase === 'ready') status.textContent = 'Ready';
   else if (state.phase === 'swing') status.textContent = 'Swinging';
@@ -848,6 +1233,32 @@ function renderBestStars(){
   const line = total + ' / ' + (LEVEL_COUNT*3);
   document.getElementById('bestStarsLine').textContent = line;
   document.getElementById('startStarLine').textContent = 'Total: ' + line + ' ★';
+  document.getElementById('startBestStreak').textContent = 'Best streak: ' + bestStreak + ' perfect landing' + (bestStreak===1?'':'s');
+}
+function renderSkinPicker(){
+  const wrap = document.getElementById('skinPicker');
+  wrap.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'skin-row';
+  SKINS.forEach(skin => {
+    const unlocked = skinUnlocked(skin);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'skin-swatch' + (unlocked ? '' : ' locked') + (skin.id === selectedSkinId && unlocked ? ' selected' : '');
+    const dotColor = '#' + (skin.bodyColor).toString(16).padStart(6,'0');
+    btn.innerHTML = '<span class="dot" style="background:' + dotColor + ';"></span>' +
+      '<span>' + skin.name + '</span>' + (unlocked ? '' : '<span>' + skinUnlockLabel(skin) + '</span>');
+    btn.disabled = !unlocked;
+    if (unlocked){
+      btn.addEventListener('click', function(){
+        selectedSkinId = skin.id;
+        saveSkinPref();
+        renderSkinPicker();
+      });
+    }
+    row.appendChild(btn);
+  });
+  wrap.appendChild(row);
 }
 function renderLevelRow(){
   const row = document.getElementById('levelRow');
@@ -868,14 +1279,26 @@ function renderLevelRow(){
 }
 
 // ---------- boot / run control ----------
-function beginRun(startIdx){
+function beginRun(startIdx, opts){
+  opts = opts || {};
   sfx('tone', 440, 0.05, 'sine', 0.001); // unlock audio on the real user gesture
   document.getElementById('startScreen').classList.add('hidden');
   document.getElementById('endScreen').classList.add('hidden');
   document.getElementById('holdHint').style.display = 'block';
   state.attemptsThisRun = 0;
   state.perfectsThisRun = 0;
-  loadLevel(startIdx, false);
+  state.perfectStreak = 0;
+  if (opts.daily){
+    state.isDaily = true;
+    state.dailyLevels = dailyLevelOrder();
+    state.dailyStep = 0;
+    state.dailyStars = 0;
+    state.dailyStartTime = performance.now ? performance.now() : Date.now();
+    loadLevel(state.dailyLevels[0], false);
+  } else {
+    state.isDaily = false;
+    loadLevel(startIdx, false);
+  }
 }
 
 new Phaser.Game({
@@ -887,8 +1310,14 @@ new Phaser.Game({
 });
 
 loadProgress();
+loadBestStreak();
+loadGhosts();
+loadDailyBest();
+loadSkinPref();
 renderBestStars();
 renderLevelRow();
+renderDailyInfo();
+renderSkinPicker();
 
 try{
   if (typeof SFX !== 'undefined' && SFX && typeof SFX.mountUI === 'function'){
@@ -897,10 +1326,19 @@ try{
 }catch(e){}
 
 document.getElementById('startBtn').addEventListener('click', ()=> beginRun(0));
+document.getElementById('dailyBtn').addEventListener('click', ()=> beginRun(0, { daily: true }));
+document.getElementById('styleBtn').addEventListener('click', ()=>{
+  const wrap = document.getElementById('skinPicker');
+  const showing = wrap.style.display !== 'none';
+  wrap.style.display = showing ? 'none' : 'block';
+  if (!showing) renderSkinPicker();
+});
 document.getElementById('retryBtn').addEventListener('click', ()=>{
   document.getElementById('endScreen').classList.add('hidden');
   document.getElementById('startScreen').classList.remove('hidden');
   renderLevelRow();
+  renderDailyInfo();
+  renderSkinPicker();
 });
 
 const stageEl = document.getElementById('stage');
