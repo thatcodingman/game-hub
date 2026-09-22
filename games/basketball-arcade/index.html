@@ -62,7 +62,7 @@ const HOOP_R_X = 860;   // right hoop — player's target
 const HOOP_L_X = 100;   // left hoop — AI's target
 const WIN_SCORE = 5;
 const PLAYER_SPEED = 4.2;
-const JUMP_VY = -11;
+const JUMP_VY = -9;
 const BASE_GRAB_RADIUS = 42;
 const BASE_SHOOT_VX = 8;
 const BASE_SHOOT_VY = -13;
@@ -1609,7 +1609,13 @@ class MainScene extends Phaser.Scene {
       // a fast/bouncing ball, so it would rarely actually close the last
       // few pixels needed to trigger a catch. Now it leads the ball using
       // its horizontal velocity, like aiming where a moving target will be.
-      targetX = ball.position.x + (ball.velocity.x || 0) * 7 + ai.wanderNoise * 0.4;
+      // NOTE: deliberately NOT adding wanderNoise here — catching needs the
+      // AI to actually close in on a tight ~25-40px radius, and even a small
+      // amount of jitter on this target was enough to keep it circling just
+      // outside catch range instead of locking on (that's why it could take
+      // several seconds to grab a ball sitting right next to it). Wander is
+      // for DEFEND, where being a little loose is the point, not for this.
+      targetX = ball.position.x + (ball.velocity.x || 0) * 7;
       // Only jump once it's actually lined up under the ball — jumping the
       // instant the ball is merely "above" it (regardless of x-distance)
       // meant it was almost always airborne at the wrong moment, missing
@@ -1688,8 +1694,11 @@ class MainScene extends Phaser.Scene {
     // Was snapping straight to full desired velocity every frame — instant,
     // perfectly-clean acceleration reads as mechanical. Easing toward it
     // instead gives it a bit of analog wind-up/wind-down, like a person
-    // reacting, rather than a value being set by code.
-    const easedVx = ai.body.velocity.x + (desiredVx - ai.body.velocity.x) * 0.3;
+    // reacting. SEEK stays snappier (0.6) since that easing was also part
+    // of why closing the last few pixels onto the ball took so long;
+    // DEFEND/ATTACK keep the softer 0.3 for the more natural feel.
+    const easeRate = ai.state === 'SEEK' ? 0.6 : 0.3;
+    const easedVx = ai.body.velocity.x + (desiredVx - ai.body.velocity.x) * easeRate;
     this.matter.body.setVelocity(ai.body, { x: easedVx, y: ai.body.velocity.y });
   }
 
@@ -1790,21 +1799,24 @@ class MainScene extends Phaser.Scene {
       }
 
       // Keep the two characters from standing on top of each other for good —
-      // but allow a brief moment of overlap (a real contest/collision) rather
-      // than an instant, rigid, every-frame shove-apart. Only start actually
-      // separating them once they've stayed overlapped for a beat.
+      // but allow a real window of overlap (a contest/collision) rather than
+      // an instant, rigid, every-frame shove-apart. Once that window expires,
+      // force it — a weak partial nudge just lost a tug-of-war against
+      // DEFEND/movement continuously re-closing the gap every frame, so it
+      // never actually finished separating (looked "infinite" again).
       if (this.player.tackleDownTimer <= 0 && this.ai.tackleDownTimer <= 0) {
         const sep = this.ai.body.position.x - this.player.body.position.x;
         const MIN_SEP = 26;
         if (Math.abs(sep) < MIN_SEP) {
           this.overlapTimer = (this.overlapTimer || 0) + dt;
-          if (this.overlapTimer > 300) {
-            // gentle partial push, not an instant full correction — avoids
-            // fighting the ball-carry/catch position logic in the same frame
-            const push = ((MIN_SEP - Math.abs(sep)) / 2) * 0.25;
+          if (this.overlapTimer > 1500) {
+            // fully resolve it now — a hard snap to exactly MIN_SEP apart,
+            // not a partial nudge that can be out-paced by movement
             const dir = sep >= 0 ? 1 : -1;
-            this.matter.body.setPosition(this.ai.body, { x: this.ai.body.position.x + dir * push, y: this.ai.body.position.y });
-            this.matter.body.setPosition(this.player.body, { x: this.player.body.position.x - dir * push, y: this.player.body.position.y });
+            const mid = (this.ai.body.position.x + this.player.body.position.x) / 2;
+            this.matter.body.setPosition(this.ai.body, { x: mid + dir * (MIN_SEP / 2), y: this.ai.body.position.y });
+            this.matter.body.setPosition(this.player.body, { x: mid - dir * (MIN_SEP / 2), y: this.player.body.position.y });
+            this.overlapTimer = 0;
           }
         } else {
           this.overlapTimer = 0;
