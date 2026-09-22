@@ -81,6 +81,12 @@
       });
 
       // ---- Camera follows the player, bounded to the scrollable world ----
+      // Zoomed in so the player/ball actually read as important on screen —
+      // the raw shape sizes were already close to reasonable, the real issue
+      // was how much field a zoom-1 camera showed at once, shrinking everyone
+      // in it. A second, unzoomed camera renders just the HUD on top so it
+      // doesn't get blown up/misplaced by the world camera's zoom.
+      this.cameras.main.setZoom(1.3);
       this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
       this.cameras.main.startFollow(this.playerFollowTarget = new Phaser.Math.Vector2(this.player.x, this.player.y), true, 0.12, 0.12);
       // Phaser's startFollow wants a GameObject with x/y (or a Vector2-like); we
@@ -88,6 +94,10 @@
 
       this.drawPlayer();
       this.drawBall();
+
+      this.cameras.main.ignore(this.hudObjects);
+      this.uiCamera = this.cameras.add(0, 0, W, H);
+      this.uiCamera.ignore(this.children.list.filter(o => this.hudObjects.indexOf(o) === -1));
     }
 
     drawField() {
@@ -143,9 +153,11 @@
         this.add.text(x, FIELD_TOP + 22, String(num), {
           fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
         }).setOrigin(0.5).setDepth(1).setAlpha(0.85);
+        // was .setFlipY(true) here — mirrored the text upside down instead
+        // of just placing a second, right-side-up copy near the bottom line
         this.add.text(x, FIELD_TOP + FIELD_H - 22, String(num), {
           fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
-        }).setOrigin(0.5).setDepth(1).setAlpha(0.85).setFlipY(true);
+        }).setOrigin(0.5).setDepth(1).setAlpha(0.85);
       }
 
       // end zone labels
@@ -163,17 +175,24 @@
     }
 
     buildHUD() {
-      this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50);
-      this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51);
+      // Collected into this.hudObjects so we can put them on their own
+      // unzoomed UI camera (see create()) — otherwise zooming the main
+      // camera to make the player bigger would also blow up/misplace the HUD.
+      this.hudObjects = [];
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
       this.title = this.add.text(16, 10, 'PHASE 1 — FIELD & CAMERA TEST', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
+      this.hudObjects.push(this.title);
       this.yardLabel = this.add.text(16, 30, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
+      this.hudObjects.push(this.yardLabel);
       this.hint = this.add.text(W - 16, 24, 'WASD / Arrows to move', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
       }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
+      this.hudObjects.push(this.hint);
     }
 
     yardLineLabel(worldX) {
