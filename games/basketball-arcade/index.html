@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Basketball Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #0a0a0f;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #game-container { line-height: 0; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function () {
+
+// ---------------------------------------------------------------------
+// Career storage (same shape as Sumo Push's STATS_KEY pattern)
+// ---------------------------------------------------------------------
+const CAREER_KEY = 'basketballArcade_career_v1';
+
+function loadCareer() {
+  try {
+    const raw = localStorage.getItem(CAREER_KEY);
+    if (!raw) return defaultCareer();
+    const parsed = JSON.parse(raw);
+    return Object.assign(defaultCareer(), parsed);
+  } catch (e) {
+    return defaultCareer();
+  }
+}
+
+function saveCareer(career) {
+  try {
+    localStorage.setItem(CAREER_KEY, JSON.stringify(career));
+  } catch (e) {
+    // ignore — storage unavailable/full, game still works this session
+  }
+}
+
+function defaultCareer() {
+  return {
+    milestonesComplete: 0,
+    stars: 0,
+    unlockedCharacters: ['jett', 'brick', 'arc', 'tank'],
+    unlockedCourts: ['street']
+  };
+}
+
+const career = loadCareer(); // not used by Phase 1 gameplay yet — wired for later phases
+
+// ---------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------
+const W = 960, H = 540;
+const GROUND_Y = H - 60;
+const HOOP_X = 860, HOOP_Y = 190;
+const WIN_SCORE = 5;
+
+const PLAYER_SPEED = 4.2;
+const GRAB_RADIUS = 42;
+const SHOOT_VX = 8;
+const SHOOT_VY = -13;
+
+class MainScene extends Phaser.Scene {
+  constructor() { super('main'); }
+
+  preload() {}
+
+  create() {
+    this.matter.world.setBounds(0, 0, W, H, 32, true, true, false, true);
+    this.matter.world.engine.world.gravity.y = 1;
+
+    // ---- Court ----
+    this.add.rectangle(W / 2, H / 2, W, H, 0x14532d).setDepth(-10);
+    this.add.rectangle(W / 2, GROUND_Y + 30, W, 60, 0x0a2e1a).setDepth(-9);
+    this.matter.add.rectangle(W / 2, GROUND_Y + 30, W, 60, {
+      isStatic: true,
+      friction: 0.8,
+      label: 'ground'
+    });
+    // center line (decorative)
+    this.add.rectangle(W / 2, H / 2, 2, GROUND_Y, 0xffffff, 0.15).setDepth(-8);
+
+    // ---- Hoop (backboard, rim, sensor) ----
+    this.add.rectangle(HOOP_X + 30, HOOP_Y - 40, 8, 90, 0xf8fafc).setDepth(-1); // backboard
+    this.matter.add.rectangle(HOOP_X + 30, HOOP_Y - 40, 8, 90, {
+      isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard'
+    });
+
+    this.rimGfx = this.add.circle(HOOP_X, HOOP_Y, 6, 0xf97316).setDepth(2);
+    this.matter.add.circle(HOOP_X, HOOP_Y, 6, {
+      isStatic: true, restitution: 0.35, friction: 0.1, label: 'rim',
+      onCollideCallback: () => this.playSfx('rim')
+    });
+
+    this.hoopSensor = this.matter.add.rectangle(HOOP_X - 4, HOOP_Y + 14, 26, 10, {
+      isStatic: true, isSensor: true, label: 'hoopSensor'
+    });
+    this.add.rectangle(HOOP_X - 4, HOOP_Y + 14, 26, 4, 0xfbbf24, 0.5).setDepth(2);
+
+    // ---- Ball ----
+    this.ballCarrier = null; // 'player' | 'ai' | null
+    this.ballScoredCooldown = false;
+
+    const ballBody = this.matter.add.circle(0, 0, 14, {
+      friction: 0.01,
+      frictionAir: 0.002,
+      restitution: 0.75,
+      label: 'ball'
+    });
+    this.matter.body.setMass(ballBody, 0.35);
+    this.ballGfx = this.add.circle(0, 0, 14, 0xf97316).setDepth(5);
+    this.ballGfx.setStrokeStyle(2, 0x7c2d12);
+    this.ball = ballBody;
+
+    // ---- Player ----
+    this.player = this.makeActor(200, GROUND_Y - 25, 0x38bdf8, 'player');
+    // ---- AI ----
+    this.ai = this.makeActor(650, GROUND_Y - 25, 0xf87171, 'ai');
+    this.ai.state = 'SEEK';
+    this.ai.reactionTimer = 0;
+    this.ai.shootWindupTimer = 0;
+
+    this.resetPositions(true);
+
+    // ---- Score ----
+    this.score = { player: 0, ai: 0 };
+    this.matchOver = false;
+
+    // HUD — kept clear of the sfx.js volume pill (top-right, ~90x40px)
+    this.scoreText = this.add.text(20, 16, 'YOU 0', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#38bdf8', fontStyle: 'bold'
+    }).setDepth(20);
+    this.aiScoreText = this.add.text(20, 44, 'AI  0', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#f87171', fontStyle: 'bold'
+    }).setDepth(20);
+    this.msgText = this.add.text(W / 2, H / 2 - 60, '', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#fbbf24', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(30);
+    this.hintText = this.add.text(W / 2, H - 20,
+      'A/D move   F grab   G shoot', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8'
+    }).setOrigin(0.5, 1).setDepth(20);
+
+    // ---- Input ----
+    this.keys = this.input.keyboard.addKeys({
+      left: 'A', right: 'D', grab: 'F', shoot: 'G'
+    });
+    this.keys.grab.on('down', () => this.tryGrab());
+    this.keys.shoot.on('down', () => this.tryShoot());
+
+    // ---- Collisions: player vs ai breaks possession if the carrier gets hit hard ----
+    this.matter.world.on('collisionstart', (event) => {
+      for (const pair of event.pairs) {
+        const labels = [pair.bodyA.label, pair.bodyB.label].sort().join('|');
+        if (labels === 'ai|player') {
+          this.playSfx('collision');
+          // whoever is carrying gets knocked loose on any direct contact
+          if (this.ballCarrier) this.dropBall();
+        }
+        if (labels === 'ball|ground') {
+          this.playSfx('bounce');
+        }
+      }
+    });
+  }
+
+  makeActor(x, y, color, label) {
+    const body = this.matter.add.rectangle(x, y, 30, 54, {
+      friction: 0.05,
+      frictionAir: 0.015,
+      restitution: 0.1,
+      label,
+      inertia: Infinity // no tipping over
+    });
+    const gfx = this.add.graphics().setDepth(4);
+    return { body, gfx, color, facing: label === 'player' ? 1 : -1 };
+  }
+
+  drawActor(actor) {
+    const { x, y } = actor.body.position;
+    actor.gfx.clear();
+    actor.gfx.fillStyle(actor.color, 1);
+    actor.gfx.fillRoundedRect(x - 15, y - 27, 30, 54, 8);
+    actor.gfx.fillStyle(actor.color, 1);
+    actor.gfx.fillCircle(x, y - 34, 10);
+    // facing indicator
+    actor.gfx.fillStyle(0xffffff, 0.9);
+    actor.gfx.fillCircle(x + actor.facing * 6, y - 34, 2.5);
+  }
+
+  resetPositions(hard) {
+    this.matter.body.setPosition(this.player.body, { x: 200, y: GROUND_Y - 25 });
+    this.matter.body.setVelocity(this.player.body, { x: 0, y: 0 });
+    this.matter.body.setPosition(this.ai.body, { x: 650, y: GROUND_Y - 25 });
+    this.matter.body.setVelocity(this.ai.body, { x: 0, y: 0 });
+    this.matter.body.setPosition(this.ball, { x: W / 2, y: GROUND_Y - 60 });
+    this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
+    this.ballCarrier = null;
+    this.ai.state = 'SEEK';
+  }
+
+  playSfx(name) {
+    // defensive guard — a game must never crash if sfx.js failed to deploy alongside it
+    if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+      try {
+        const map = { bounce: [180, 0.05], rim: [420, 0.08], score: [660, 0.15], collision: [90, 0.06] };
+        const [freq, dur] = map[name] || [300, 0.05];
+        SFX.tone(freq, dur);
+      } catch (e) {}
+    }
+  }
+
+  tryGrab() {
+    if (this.matchOver || this.ballCarrier) return;
+    const d = Phaser.Math.Distance.Between(
+      this.player.body.position.x, this.player.body.position.y,
+      this.ball.position.x, this.ball.position.y
+    );
+    if (d < GRAB_RADIUS) {
+      this.ballCarrier = 'player';
+    }
+  }
+
+  tryShoot() {
+    if (this.matchOver || this.ballCarrier !== 'player') return;
+    this.shootBall(this.player);
+  }
+
+  shootBall(actor) {
+    const vx = actor.facing * SHOOT_VX + actor.body.velocity.x * 0.3;
+    this.matter.body.setVelocity(this.ball, { x: vx, y: SHOOT_VY });
+    this.ballCarrier = null;
+    this.ballScoredCooldown = false;
+  }
+
+  dropBall() {
+    this.ballCarrier = null;
+    // small pop so a jarred-loose ball reads as a scramble, not a teleport
+    this.matter.body.setVelocity(this.ball, {
+      x: (Math.random() - 0.5) * 3,
+      y: -2
+    });
+  }
+
+  updateAI(dt) {
+    const ai = this.ai;
+    const ball = this.ball;
+
+    if (this.ballCarrier === 'ai') {
+      ai.state = 'ATTACK';
+    } else if (this.ballCarrier === 'player') {
+      ai.state = 'DEFEND';
+    } else {
+      ai.state = 'SEEK';
+    }
+
+    let targetX = ai.body.position.x;
+
+    if (ai.state === 'SEEK') {
+      targetX = ball.position.x;
+      const d = Phaser.Math.Distance.Between(
+        ai.body.position.x, ai.body.position.y, ball.position.x, ball.position.y
+      );
+      if (d < GRAB_RADIUS) {
+        ai.reactionTimer += dt;
+        if (ai.reactionTimer > 180) { // small reaction delay so it's not an instant snap
+          this.ballCarrier = 'ai';
+          ai.reactionTimer = 0;
+        }
+      } else {
+        ai.reactionTimer = 0;
+      }
+    } else if (ai.state === 'DEFEND') {
+      // sit between the ball/player and the hoop
+      targetX = Phaser.Math.Clamp(this.player.body.position.x + 90, 400, HOOP_X - 60);
+    } else if (ai.state === 'ATTACK') {
+      const distToHoop = HOOP_X - ai.body.position.x;
+      if (distToHoop < 260 && distToHoop > 60) {
+        ai.shootWindupTimer += dt;
+        targetX = ai.body.position.x; // plant and wind up
+        if (ai.shootWindupTimer > 420) {
+          this.shootBall(ai);
+          ai.shootWindupTimer = 0;
+        }
+      } else {
+        targetX = HOOP_X - 150;
+        ai.shootWindupTimer = 0;
+      }
+    }
+
+    const dx = targetX - ai.body.position.x;
+    if (Math.abs(dx) > 4) {
+      ai.facing = dx > 0 ? 1 : -1;
+      this.matter.body.setVelocity(ai.body, { x: ai.facing * PLAYER_SPEED * 0.85, y: ai.body.velocity.y });
+    } else {
+      this.matter.body.setVelocity(ai.body, { x: 0, y: ai.body.velocity.y });
+    }
+  }
+
+  checkScore() {
+    if (this.ballCarrier || this.ballScoredCooldown || this.matchOver) return;
+    const b = this.ball;
+    const dx = Math.abs(b.position.x - (HOOP_X - 4));
+    const dy = Math.abs(b.position.y - (HOOP_Y + 14));
+    if (dx < 13 && dy < 8 && b.velocity.y > 0) {
+      this.ballScoredCooldown = true;
+      const scorer = (this.lastToTouch === 'ai') ? 'ai' : 'player';
+      this.score[scorer] += 2;
+      this.scoreText.setText('YOU ' + this.score.player);
+      this.aiScoreText.setText('AI  ' + this.score.ai);
+      this.playSfx('score');
+      this.onScore(scorer);
+    }
+  }
+
+  onScore(scorer) {
+    this.matchOver = true;
+    if (this.score[scorer] >= WIN_SCORE) {
+      this.msgText.setText(scorer === 'player' ? 'YOU WIN' : 'AI WINS');
+    } else {
+      this.msgText.setText(scorer === 'player' ? 'YOU SCORE' : 'AI SCORES');
+    }
+    this.time.delayedCall(1000, () => {
+      if (this.score.player >= WIN_SCORE || this.score.ai >= WIN_SCORE) {
+        this.time.delayedCall(1200, () => {
+          this.score = { player: 0, ai: 0 };
+          this.scoreText.setText('YOU 0');
+          this.aiScoreText.setText('AI  0');
+          this.msgText.setText('');
+          this.resetPositions();
+          this.matchOver = false;
+        });
+      } else {
+        this.msgText.setText('');
+        this.resetPositions();
+        this.matchOver = false;
+      }
+    });
+  }
+
+  update(time, dt) {
+    if (!this.matchOver) {
+      // Player movement
+      let vx = 0;
+      if (this.keys.left.isDown) { vx = -PLAYER_SPEED; this.player.facing = -1; }
+      else if (this.keys.right.isDown) { vx = PLAYER_SPEED; this.player.facing = 1; }
+      this.matter.body.setVelocity(this.player.body, { x: vx, y: this.player.body.velocity.y });
+
+      this.updateAI(dt);
+
+      // Track who last carried the ball (for scoring attribution once it's airborne/free)
+      if (this.ballCarrier) this.lastToTouch = this.ballCarrier;
+
+      // Carried ball follows its carrier
+      if (this.ballCarrier === 'player') {
+        const p = this.player.body.position;
+        this.matter.body.setPosition(this.ball, { x: p.x + this.player.facing * 20, y: p.y - 5 });
+        this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
+      } else if (this.ballCarrier === 'ai') {
+        const a = this.ai.body.position;
+        this.matter.body.setPosition(this.ball, { x: a.x + this.ai.facing * 20, y: a.y - 5 });
+        this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
+      }
+
+      this.checkScore();
+
+      // ball went fully out of bounds vertically (shouldn't happen with world bounds, safety net)
+      if (this.ball.position.y > H + 100) {
+        this.matter.body.setPosition(this.ball, { x: W / 2, y: GROUND_Y - 60 });
+        this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
+        this.ballCarrier = null;
+      }
+    }
+
+    this.drawActor(this.player);
+    this.drawActor(this.ai);
+    this.ballGfx.setPosition(this.ball.position.x, this.ball.position.y);
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  parent: 'game-container',
+  backgroundColor: '#0a0a0f',
+  physics: {
+    default: 'matter',
+    matter: { gravity: { y: 1 }, debug: false }
+  },
+  scene: [MainScene]
+};
+
+new Phaser.Game(config);
+
+})();
+</script>
+</body>
+</html>
