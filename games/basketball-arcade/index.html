@@ -163,15 +163,23 @@ class MainScene extends Phaser.Scene {
     this.buildHUD();
     this.showRoundBanner(true);
 
-    this.controlsHint = this.add.text(W / 2, H - 16, 'A / D  move     W  jump     F  action', {
+    this.controlsHint = this.add.text(W / 2, H - 16, '← / →  move     ↑ / W  jump     F / Space  action', {
       fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
     }).setOrigin(0.5, 1).setDepth(20).setAlpha(0.85);
     this.tweens.add({ targets: this.controlsHint, alpha: 0, delay: 3200, duration: 900 });
 
-    // ---- Input — single contextual action button ----
-    this.keys = this.input.keyboard.addKeys({ left: 'A', right: 'D', jump: 'W', action: 'F' });
-    this.keys.action.on('down', () => this.tryAction());
-    this.keys.jump.on('down', () => this.tryJump(this.player));
+    // Arrow keys are the default; WASD/Space work too, both bound at once
+    // so either scheme just works with no menu to configure.
+    this.keys = this.input.keyboard.addKeys({
+      left: 'A', right: 'D', jump: 'W', action: 'F',
+      leftArrow: 'LEFT', rightArrow: 'RIGHT', upArrow: 'UP', space: 'SPACE'
+    });
+    const doAction = () => this.tryAction();
+    const doJump = () => this.tryJump(this.player);
+    this.keys.action.on('down', doAction);
+    this.keys.space.on('down', doAction);
+    this.keys.jump.on('down', doJump);
+    this.keys.upArrow.on('down', doJump);
 
     this.matter.world.on('collisionstart', (event) => {
       for (const pair of event.pairs) {
@@ -208,31 +216,70 @@ class MainScene extends Phaser.Scene {
       g.fillCircle(lx, 20, 6);
     }
 
-    // crowd — 3 staggered bleacher rows of actual head+shoulder silhouettes,
-    // not just dots, with a railing between the stands and the court
+    // crowd — 3 staggered bleacher rows of actual little people (head,
+    // torso, arms — some raised in a cheer), not dots or blobs
     const rowCount = 3;
-    const rowH = 30;
+    const rowH = 32;
     const bandTop = courtTop - rowCount * rowH;
     g.fillStyle(0x0a0e14, 1);
     g.fillRect(0, bandTop, W, rowCount * rowH);
 
+    let seed = 7;
+    const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+
     for (let row = 0; row < rowCount; row++) {
-      const rowY = bandTop + row * rowH + rowH * 0.62;
-      const spacing = 15;
+      const rowY = bandTop + row * rowH + rowH * 0.68;
+      const spacing = 17;
       const offset = (row % 2) * (spacing / 2);
-      // back rows sit slightly darker/duller (depth), front row brightest
-      const baseShade = [0x232b3a, 0x2c3547, 0x36405a][row];
+      // back rows sit slightly darker/smaller (depth), front row brightest
+      const depthScale = [0.75, 0.88, 1][row];
+      const baseShades = [
+        [0x2a3242, 0x323b4e, 0x3d4760],
+        [0x3a2828, 0x452e2e, 0x522f2f],
+        [0x243a2e, 0x2c4636, 0x335039],
+        [0x3a2f1e, 0x483a26, 0x554429]
+      ];
       for (let bx = -offset; bx < W + spacing; bx += spacing) {
-        const jitter = Math.sin(bx * 0.7 + row * 3.1) * 2;
-        const shirtTone = (bx * 7 + row * 13) % 5;
-        const shirtColors = [baseShade, baseShade + 0x040404, baseShade - 0x030303, 0x3a2323 + row * 0x040000, 0x233a2c + row * 0x000400];
-        const shirt = shirtColors[shirtTone];
-        // shoulders/torso
+        const jitter = Math.sin(bx * 0.7 + row * 3.1) * 1.5;
+        const cy = rowY + jitter * 0.3;
+        const palette = baseShades[Math.floor(rand() * baseShades.length)];
+        const shirt = palette[row];
+        const cheering = rand() < 0.18;
+        const s = depthScale;
+
+        // legs (implied — just enough to sit them on the bench)
+        g.fillStyle(0x141a24, 1);
+        g.fillRect(bx - 3 * s, cy + 8 * s, 3 * s, 5 * s);
+        g.fillRect(bx + 0.5 * s, cy + 8 * s, 3 * s, 5 * s);
+
+        // torso — trapezoid (wider shoulders than waist)
         g.fillStyle(shirt, 1);
-        g.fillEllipse(bx, rowY + 6 + jitter * 0.3, 12, 9);
-        // head
-        g.fillStyle(0x1c2230, 1);
-        g.fillCircle(bx, rowY - 2 + jitter * 0.3, 5);
+        g.fillTriangle(
+          bx - 6 * s, cy + 2 * s,
+          bx + 6 * s, cy + 2 * s,
+          bx + 4 * s, cy + 10 * s
+        );
+        g.fillTriangle(
+          bx - 6 * s, cy + 2 * s,
+          bx + 4 * s, cy + 10 * s,
+          bx - 4 * s, cy + 10 * s
+        );
+
+        // arms — down normally, one or both raised for a "cheering" figure
+        g.lineStyle(2 * s, shirt, 1);
+        if (cheering) {
+          g.lineBetween(bx - 5 * s, cy + 3 * s, bx - 8 * s, cy - 5 * s);
+          g.lineBetween(bx + 5 * s, cy + 3 * s, bx + 8 * s, cy - 5 * s);
+        } else {
+          g.lineBetween(bx - 5 * s, cy + 3 * s, bx - 7 * s, cy + 8 * s);
+          g.lineBetween(bx + 5 * s, cy + 3 * s, bx + 7 * s, cy + 8 * s);
+        }
+
+        // neck + head
+        g.fillStyle(0x1a2028, 1);
+        g.fillRect(bx - 1.5 * s, cy - 1 * s, 3 * s, 3 * s);
+        g.fillStyle(0x232a36, 1);
+        g.fillCircle(bx, cy - 4 * s, 4.2 * s);
       }
     }
     // railing separating stands from the court
@@ -743,8 +790,8 @@ class MainScene extends Phaser.Scene {
   update(time, dt) {
     if (!this.matchOver) {
       let vx = 0;
-      if (this.keys.left.isDown) { vx = -PLAYER_SPEED; this.player.facing = -1; }
-      else if (this.keys.right.isDown) { vx = PLAYER_SPEED; this.player.facing = 1; }
+      if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -PLAYER_SPEED; this.player.facing = -1; }
+      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = PLAYER_SPEED; this.player.facing = 1; }
       this.matter.body.setVelocity(this.player.body, { x: vx, y: this.player.body.velocity.y });
 
       this.updateAI(dt);
