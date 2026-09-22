@@ -33,44 +33,23 @@ function loadCareer() {
   try {
     const raw = localStorage.getItem(CAREER_KEY);
     if (!raw) return defaultCareer();
-    const parsed = JSON.parse(raw);
-    return Object.assign(defaultCareer(), parsed);
-  } catch (e) {
-    return defaultCareer();
-  }
+    return Object.assign(defaultCareer(), JSON.parse(raw));
+  } catch (e) { return defaultCareer(); }
 }
-
-function saveCareer(career) {
-  try {
-    localStorage.setItem(CAREER_KEY, JSON.stringify(career));
-  } catch (e) {
-    // ignore — storage unavailable/full, game still works this session
-  }
+function saveCareer(c) {
+  try { localStorage.setItem(CAREER_KEY, JSON.stringify(c)); } catch (e) {}
 }
-
 function defaultCareer() {
-  return {
-    milestonesComplete: 0,
-    stars: 0,
-    unlockedCharacters: ['jett', 'brick', 'arc', 'tank'],
-    unlockedCourts: ['street']
-  };
+  return { milestonesComplete: 0, stars: 0, unlockedCharacters: ['jett', 'brick', 'arc', 'tank'], unlockedCourts: ['street'] };
 }
-
-const career = loadCareer(); // not used by Phase 1 gameplay yet — wired for later phases
+const career = loadCareer(); // wired for later phases
 
 // ---------------------------------------------------------------------
 // Palette
 // ---------------------------------------------------------------------
 const COLOR = {
-  bg: 0x090A10,
-  court: 0x12603A,
-  courtDark: 0x0d4a2c,
-  lines: 0x3D8B61,
-  p1: 0x24B7FF,
-  p2: 0xFF6B6B,
-  ball: 0xFF7A18,
-  white: 0xF2F4F7
+  bg: 0x090A10, court: 0x12603A, courtDark: 0x0d4a2c, lines: 0x3D8B61,
+  p1: 0x24B7FF, p2: 0xFF6B6B, ball: 0xFF7A18, white: 0xF2F4F7, gold: 0xfbbf24
 };
 
 // ---------------------------------------------------------------------
@@ -80,60 +59,60 @@ const W = 960, H = 540;
 const GROUND_Y = H - 90;
 const HOOP_X = 860, HOOP_Y = 190;
 const WIN_SCORE = 5;
-
 const PLAYER_SPEED = 4.2;
-const GRAB_RADIUS = 42;
-const SHOOT_VX = 8;
-const SHOOT_VY = -13;
+const JUMP_VY = -11;
+const BASE_GRAB_RADIUS = 42;
+const BASE_SHOOT_VX = 8;
+const BASE_SHOOT_VY = -13;
+
+// ---------------------------------------------------------------------
+// Round modifiers — Basket-Random-style chaos between rounds.
+// Each returns a delta applied against BASE values; only one active
+// at a time, reset to baseline before the next is rolled.
+// ---------------------------------------------------------------------
+const MODIFIERS = [
+  { id: 'none',      name: 'STREETBALL',   desc: 'No modifier.' },
+  { id: 'tinyBall',  name: 'TINY BALL',    desc: 'The ball shrinks.' },
+  { id: 'heavyBall', name: 'HEAVY BALL',   desc: 'The ball gets heavy.' },
+  { id: 'moonGrav',  name: 'MOON COURT',   desc: 'Low gravity.' },
+  { id: 'bouncy',    name: 'SUPER BOUNCE', desc: 'Everything bounces.' },
+  { id: 'longArms',  name: 'LONG ARMS',    desc: 'Reach extended.' },
+  { id: 'giants',    name: 'GIANTS',       desc: 'Players grow.' },
+  { id: 'tinyHoop',  name: 'TINY HOOP',    desc: 'The rim shrinks.' },
+  { id: 'doublePts', name: 'DOUBLE POINTS',desc: 'Next basket counts double.' }
+];
 
 class MainScene extends Phaser.Scene {
   constructor() { super('main'); }
-
   preload() {}
 
   create() {
     this.matter.world.setBounds(0, 0, W, H, 32, true, true, false, true);
     this.matter.world.engine.world.gravity.y = 1;
-
     this.cameras.main.setBackgroundColor(COLOR.bg);
 
-    // ------------------------------------------------------------
-    // Court — court body, framing, markings, floor
-    // ------------------------------------------------------------
     this.drawCourt();
+    this.matter.add.rectangle(W / 2, GROUND_Y + 30, W, 60, { isStatic: true, friction: 0.8, label: 'ground' });
 
-    this.matter.add.rectangle(W / 2, GROUND_Y + 30, W, 60, {
-      isStatic: true, friction: 0.8, label: 'ground'
-    });
-
-    // ------------------------------------------------------------
-    // Hoop — bigger backboard/rim, drawn net, support pole
-    // ------------------------------------------------------------
     this.drawHoop();
+    this.matter.add.rectangle(HOOP_X + 34, HOOP_Y - 46, 8, 96, { isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard' });
 
-    this.matter.add.rectangle(HOOP_X + 34, HOOP_Y - 46, 8, 96, {
-      isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard'
-    });
-
-    this.rimBounce = 0; // animated rim "give" on hit
-    this.matter.add.circle(HOOP_X, HOOP_Y, 7, {
+    this.rimScale = 1;
+    this.rimBody = this.matter.add.circle(HOOP_X, HOOP_Y, 7, {
       isStatic: true, restitution: 0.35, friction: 0.1, label: 'rim',
       onCollideCallback: () => { this.playSfx('rim'); this.rimBounce = 1; }
     });
+    this.hoopSensor = this.matter.add.rectangle(HOOP_X - 6, HOOP_Y + 18, 30, 10, { isStatic: true, isSensor: true, label: 'hoopSensor' });
+    this.netStretch = 0;
 
-    this.hoopSensor = this.matter.add.rectangle(HOOP_X - 6, HOOP_Y + 18, 30, 10, {
-      isStatic: true, isSensor: true, label: 'hoopSensor'
-    });
-
-    // ------------------------------------------------------------
-    // Ball
-    // ------------------------------------------------------------
+    // ---- Ball ----
     this.ballCarrier = null;
     this.ballScoredCooldown = false;
     this.ballSquash = 1;
     this.ballTrail = [];
+    this.ballRadius = 15;
 
-    const ballBody = this.matter.add.circle(0, 0, 15, {
+    const ballBody = this.matter.add.circle(0, 0, this.ballRadius, {
       friction: 0.01, frictionAir: 0.002, restitution: 0.75, label: 'ball'
     });
     this.matter.body.setMass(ballBody, 0.35);
@@ -141,44 +120,46 @@ class MainScene extends Phaser.Scene {
     this.ballGfx = this.add.graphics().setDepth(6);
     this.trailGfx = this.add.graphics().setDepth(5);
 
-    // ------------------------------------------------------------
-    // Actors
-    // ------------------------------------------------------------
+    // ---- FX layers ----
     this.dustGfx = this.add.graphics().setDepth(3);
     this.dustParticles = [];
     this.flashGfx = this.add.graphics().setDepth(7);
     this.flashes = [];
 
+    // ---- Actors ----
     this.player = this.makeActor(200, GROUND_Y - 25, COLOR.p1, 'player');
     this.ai = this.makeActor(650, GROUND_Y - 25, COLOR.p2, 'ai');
     this.ai.state = 'SEEK';
     this.ai.reactionTimer = 0;
     this.ai.shootWindupTimer = 0;
 
+    // ---- Round / modifier state ----
+    this.round = 1;
+    this.grabRadius = BASE_GRAB_RADIUS;
+    this.shootVx = BASE_SHOOT_VX;
+    this.shootVy = BASE_SHOOT_VY;
+    this.pointsThisRound = 2;
+    this.playerScale = 1;
+    this.gravityScale = 1;
+    this.activeModifier = MODIFIERS[0];
+
     this.resetPositions();
 
-    // ------------------------------------------------------------
-    // HUD
-    // ------------------------------------------------------------
+    // ---- HUD ----
     this.score = { player: 0, ai: 0 };
     this.matchOver = false;
     this.buildHUD();
+    this.showRoundBanner(true);
 
-    // Controls shown briefly on entry, then fade — not permanent debug text
-    this.controlsHint = this.add.text(W / 2, H - 16,
-      'A / D  move     F  grab     G  shoot', {
+    this.controlsHint = this.add.text(W / 2, H - 16, 'A / D  move     W  jump     F  action', {
       fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
     }).setOrigin(0.5, 1).setDepth(20).setAlpha(0.85);
-    this.tweens.add({
-      targets: this.controlsHint, alpha: 0, delay: 3200, duration: 900
-    });
+    this.tweens.add({ targets: this.controlsHint, alpha: 0, delay: 3200, duration: 900 });
 
-    // ------------------------------------------------------------
-    // Input
-    // ------------------------------------------------------------
-    this.keys = this.input.keyboard.addKeys({ left: 'A', right: 'D', grab: 'F', shoot: 'G' });
-    this.keys.grab.on('down', () => this.tryGrab());
-    this.keys.shoot.on('down', () => this.tryShoot());
+    // ---- Input — single contextual action button ----
+    this.keys = this.input.keyboard.addKeys({ left: 'A', right: 'D', jump: 'W', action: 'F' });
+    this.keys.action.on('down', () => this.tryAction());
+    this.keys.jump.on('down', () => this.tryJump(this.player));
 
     this.matter.world.on('collisionstart', (event) => {
       for (const pair of event.pairs) {
@@ -188,7 +169,8 @@ class MainScene extends Phaser.Scene {
           this.shakeCamera(3);
           this.spawnFlash((this.player.body.position.x + this.ai.body.position.x) / 2,
                            (this.player.body.position.y + this.ai.body.position.y) / 2, COLOR.white);
-          if (this.ballCarrier) this.dropBall();
+          // physical, unpredictable: a jarring contact can jolt the ball loose
+          if (this.ballCarrier) this.dropBall(true);
         }
         if (labels === 'ball|ground') this.playSfx('bounce');
       }
@@ -196,156 +178,144 @@ class MainScene extends Phaser.Scene {
   }
 
   // ------------------------------------------------------------
-  // Drawing: court, hoop
+  // Drawing: court, hoop (kept intentionally restrained per feedback —
+  // no crowds/textures, just enough markings to read as a court)
   // ------------------------------------------------------------
   drawCourt() {
     const g = this.add.graphics().setDepth(-10);
-
-    // vignette-ish darker base + court slab
     g.fillStyle(COLOR.bg, 1);
     g.fillRect(0, 0, W, H);
     g.fillStyle(COLOR.court, 1);
     g.fillRect(0, 40, W, GROUND_Y - 40 + 30);
-
-    // subtle top darkening (environmental framing)
     g.fillGradientStyle(0x000000, 0x000000, COLOR.bg, COLOR.bg, 0.35, 0.35, 0, 0);
     g.fillRect(0, 40, W, 90);
-
-    // floor / baseline zone
     g.fillStyle(COLOR.courtDark, 1);
     g.fillRect(0, GROUND_Y, W, H - GROUND_Y);
     g.lineStyle(3, COLOR.lines, 0.8);
-    g.lineBetween(0, GROUND_Y, W, GROUND_Y); // baseline
-
-    // court border / sidelines
+    g.lineBetween(0, GROUND_Y, W, GROUND_Y);
     g.lineStyle(3, COLOR.lines, 0.7);
     g.strokeRect(24, 44, W - 48, GROUND_Y - 44);
-
-    // center line + center circle
     g.lineStyle(2, COLOR.lines, 0.6);
     g.lineBetween(W / 2, 44, W / 2, GROUND_Y);
     g.strokeCircle(W / 2, (GROUND_Y + 44) / 2, 48);
-
-    // key / lane + free-throw circle near our hoop (right side)
     const laneW = 130, laneH = 150;
     g.strokeRect(HOOP_X + 44 - laneW, HOOP_Y + 20, laneW, laneH);
     g.strokeCircle(HOOP_X + 44 - laneW, HOOP_Y + 20 + laneH, 40);
-
-    // 3-point arc (right hoop)
     g.beginPath();
     g.arc(HOOP_X - 6, HOOP_Y + 18, 210, Phaser.Math.DegToRad(110), Phaser.Math.DegToRad(250), true);
     g.strokePath();
-
-    // mirrored faint markings on the left for symmetry/atmosphere
-    g.lineStyle(2, COLOR.lines, 0.35);
-    g.strokeRect(90 - laneW + laneW, HOOP_Y + 20, laneW, laneH); // subtle left key echo (kept faint)
-
     this.courtGfx = g;
   }
 
   drawHoop() {
     const g = this.add.graphics().setDepth(1);
-
-    // support pole (behind backboard)
     g.lineStyle(6, 0x1c1917, 1);
     g.lineBetween(HOOP_X + 40, HOOP_Y - 46 + 48, HOOP_X + 40, GROUND_Y);
-
-    // backboard — 80px wide, white with orange trim
     g.fillStyle(COLOR.white, 1);
     g.fillRect(HOOP_X + 30, HOOP_Y - 46 - 40, 8, 88);
     g.lineStyle(2, COLOR.ball, 0.9);
     g.strokeRect(HOOP_X + 30, HOOP_Y - 46 - 40, 8, 88);
+    this.hoopGfx = g;
+    this.rimBounce = 0;
+    // net is drawn dynamically in update() so it can stretch on scores
+  }
 
-    // rim — bright orange, wider (30-35px)
+  drawNet() {
+    const g = this.hoopGfx;
+    // rim (scaled by modifier)
     g.lineStyle(4, COLOR.ball, 1);
-    g.strokeEllipse(HOOP_X, HOOP_Y, 34, 10);
+    g.strokeEllipse(HOOP_X, HOOP_Y, 34 * this.rimScale, 10 * this.rimScale);
 
-    // net — simple zigzag strands, 30px deep
+    const stretch = this.netStretch;
     g.lineStyle(1.5, COLOR.white, 0.6);
-    const netTop = HOOP_Y + 2, netBottom = HOOP_Y + 30;
+    const netTop = HOOP_Y + 2, netBottom = HOOP_Y + 30 + stretch * 18;
     for (let i = -3; i <= 3; i++) {
-      const xTop = HOOP_X + i * 5;
-      const xBot = HOOP_X + i * 2.5;
+      const xTop = HOOP_X + i * 5 * this.rimScale;
+      const xBot = HOOP_X + i * (2.5 - stretch);
       g.lineBetween(xTop, netTop, xBot, netBottom);
     }
     g.lineBetween(HOOP_X - 15, netTop + 10, HOOP_X + 15, netTop + 10);
-    g.lineBetween(HOOP_X - 8, netTop + 20, HOOP_X + 8, netTop + 20);
-
-    this.hoopGfx = g;
-    this.netFlashAlpha = 0;
+    g.lineBetween(HOOP_X - 8 + stretch, netTop + 20 + stretch * 6, HOOP_X + 8 - stretch, netTop + 20 + stretch * 6);
   }
 
   // ------------------------------------------------------------
-  // Actors
+  // Actors — simple frame with a swinging arm for reach/swat feel
   // ------------------------------------------------------------
   makeActor(x, y, color, label) {
     const body = this.matter.add.rectangle(x, y, 30, 54, {
       friction: 0.05, frictionAir: 0.015, restitution: 0.1, label, inertia: Infinity
     });
     const gfx = this.add.graphics().setDepth(4);
-    return { body, gfx, color, facing: label === 'player' ? 1 : -1, wasGrounded: true };
+    return { body, gfx, color, facing: label === 'player' ? 1 : -1, wasGrounded: true, armSwing: 0, grounded: true };
   }
 
   drawActor(actor) {
     const { x, y } = actor.body.position;
     const g = actor.gfx;
     g.clear();
-
+    const scale = actor.scale || 1;
     const c = actor.color;
     const dark = Phaser.Display.Color.ValueToColor(c).darken(30).color;
 
-    // legs
     g.fillStyle(dark, 1);
-    g.fillRoundedRect(x - 10, y + 6, 8, 16, 3);
-    g.fillRoundedRect(x + 2, y + 6, 8, 16, 3);
-    // shoes
+    g.fillRoundedRect(x - 10 * scale, y + 6 * scale, 8 * scale, 16 * scale, 3);
+    g.fillRoundedRect(x + 2 * scale, y + 6 * scale, 8 * scale, 16 * scale, 3);
     g.fillStyle(COLOR.white, 1);
-    g.fillRoundedRect(x - 12, y + 20, 11, 5, 2);
-    g.fillRoundedRect(x + 1, y + 20, 11, 5, 2);
+    g.fillRoundedRect(x - 12 * scale, y + 20 * scale, 11 * scale, 5 * scale, 2);
+    g.fillRoundedRect(x + 1 * scale, y + 20 * scale, 11 * scale, 5 * scale, 2);
 
-    // torso
     g.fillStyle(c, 1);
-    g.fillRoundedRect(x - 14, y - 22, 28, 30, 8);
+    g.fillRoundedRect(x - 14 * scale, y - 22 * scale, 28 * scale, 30 * scale, 8);
 
-    // arms
+    // back arm — static
     g.fillStyle(dark, 1);
-    g.fillRoundedRect(x - 18, y - 16, 6, 20, 3);
-    g.fillRoundedRect(x + 12, y - 16, 6, 20, 3);
+    g.fillRoundedRect(x - actor.facing * 18 * scale, y - 16 * scale, 6 * scale, 20 * scale, 3);
 
-    // head
+    // front arm — swings out on action press (reach/swat), decays back to rest
+    const swing = actor.armSwing;
+    const armLen = (20 + swing * 16) * scale;
+    const armAngle = -0.3 + swing * -1.1; // sweeps up/forward
+    const ax = x + actor.facing * (12 * scale + Math.cos(armAngle) * armLen * 0.5);
+    const ay = y - 10 * scale + Math.sin(armAngle) * armLen * 0.5;
+    g.fillStyle(dark, 1);
+    g.save && g.save();
+    g.lineStyle(6 * scale, dark, 1);
+    g.beginPath();
+    g.moveTo(x + actor.facing * 12 * scale, y - 10 * scale);
+    g.lineTo(ax, ay);
+    g.strokePath();
+    g.fillCircle(ax, ay, 4 * scale); // hand
+
     g.fillStyle(c, 1);
-    g.fillCircle(x, y - 30, 11);
-    // facing indicator (simple "visor" dot)
+    g.fillCircle(x, y - 30 * scale, 11 * scale);
     g.fillStyle(COLOR.white, 0.9);
-    g.fillCircle(x + actor.facing * 6, y - 30, 2.5);
+    g.fillCircle(x + actor.facing * 6 * scale, y - 30 * scale, 2.5 * scale);
   }
 
   // ------------------------------------------------------------
-  // Ball drawing with squash/stretch + trail
+  // Ball drawing
   // ------------------------------------------------------------
   drawBall() {
     const b = this.ball;
     const g = this.ballGfx;
     g.clear();
-
+    const r = this.ballRadius;
     const speed = Math.min(Math.hypot(b.velocity.x, b.velocity.y), 14);
     const stretch = 1 + speed * 0.012;
     const squashTarget = this.ballCarrier ? 0.92 : 1;
     this.ballSquash += (squashTarget - this.ballSquash) * 0.2;
 
-    const rx = 15 * this.ballSquash * (b.velocity.y < -1 ? 0.95 : 1);
-    const ry = 15 * (2 - this.ballSquash) * 0.5 + 15 * 0.5;
+    const rx = r * this.ballSquash;
+    const ry = r * (2 - this.ballSquash) * 0.5 + r * 0.5;
 
     g.fillStyle(COLOR.ball, 1);
     g.fillEllipse(b.position.x, b.position.y, rx * 2 * (this.ballCarrier ? 1 : stretch * 0.5 + 0.5), ry * 2);
     g.lineStyle(2, 0x7c2d12, 1);
     g.strokeEllipse(b.position.x, b.position.y, rx * 2 * (this.ballCarrier ? 1 : stretch * 0.5 + 0.5), ry * 2);
-    // seam lines for a bit of ball personality
     g.lineStyle(1, 0x7c2d12, 0.7);
-    g.lineBetween(b.position.x - 8, b.position.y, b.position.x + 8, b.position.y);
-    g.lineBetween(b.position.x, b.position.y - 8, b.position.x, b.position.y + 8);
+    g.lineBetween(b.position.x - r * 0.55, b.position.y, b.position.x + r * 0.55, b.position.y);
+    g.lineBetween(b.position.x, b.position.y - r * 0.55, b.position.x, b.position.y + r * 0.55);
 
-    // motion trail while flying free
     this.trailGfx.clear();
     if (!this.ballCarrier && speed > 3) {
       this.ballTrail.push({ x: b.position.x, y: b.position.y });
@@ -354,80 +324,106 @@ class MainScene extends Phaser.Scene {
         const p = this.ballTrail[i];
         const a = (i / this.ballTrail.length) * 0.25;
         this.trailGfx.fillStyle(COLOR.ball, a);
-        this.trailGfx.fillCircle(p.x, p.y, 8 * (i / this.ballTrail.length));
+        this.trailGfx.fillCircle(p.x, p.y, (r * 0.55) * (i / this.ballTrail.length));
       }
-    } else {
-      this.ballTrail.length = 0;
-    }
+    } else this.ballTrail.length = 0;
   }
 
-  // ------------------------------------------------------------
-  // Feedback: dust, flashes, camera shake, net reaction
-  // ------------------------------------------------------------
   spawnDust(x, y) {
     for (let i = 0; i < 5; i++) {
-      this.dustParticles.push({
-        x: x + (Math.random() - 0.5) * 14,
-        y: y,
-        vx: (Math.random() - 0.5) * 1.5,
-        vy: -Math.random() * 1.2,
-        life: 1
-      });
+      this.dustParticles.push({ x: x + (Math.random() - 0.5) * 14, y, vx: (Math.random() - 0.5) * 1.5, vy: -Math.random() * 1.2, life: 1 });
     }
   }
-
-  spawnFlash(x, y, color) {
-    this.flashes.push({ x, y, life: 1, color });
-  }
-
-  shakeCamera(px) {
-    this.cameras.main.shake(120, px * 0.0015);
-  }
+  spawnFlash(x, y, color) { this.flashes.push({ x, y, life: 1, color }); }
+  shakeCamera(px) { this.cameras.main.shake(120, px * 0.0015); }
 
   // ------------------------------------------------------------
   // HUD
   // ------------------------------------------------------------
   buildHUD() {
     const midX = W / 2;
-    this.hudPlayerLabel = this.add.text(midX - 170, 18, 'YOU', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#24B7FF', fontStyle: 'bold'
-    }).setOrigin(0.5, 0).setDepth(20);
-    this.hudPlayerScore = this.add.text(midX - 170, 36, '0', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#24B7FF', fontStyle: 'bold'
-    }).setOrigin(0.5, 0).setDepth(20);
-
-    this.hudDot = this.add.text(midX, 44, '•', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#475569'
-    }).setOrigin(0.5, 0).setDepth(20);
-
-    this.hudAiLabel = this.add.text(midX + 170, 18, 'AI', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#FF6B6B', fontStyle: 'bold'
-    }).setOrigin(0.5, 0).setDepth(20);
-    this.hudAiScore = this.add.text(midX + 170, 36, '0', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#FF6B6B', fontStyle: 'bold'
-    }).setOrigin(0.5, 0).setDepth(20);
-
-    this.msgText = this.add.text(W / 2, H / 2 - 40, '', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#fbbf24', fontStyle: 'bold'
-    }).setOrigin(0.5).setDepth(30);
+    this.hudPlayerLabel = this.add.text(midX - 170, 18, 'YOU', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#24B7FF', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudPlayerScore = this.add.text(midX - 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: '#24B7FF', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudDot = this.add.text(midX, 44, '•', { fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#475569' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudAiLabel = this.add.text(midX + 170, 18, 'AI', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#FF6B6B', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudAiScore = this.add.text(midX + 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: '#FF6B6B', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.msgText = this.add.text(W / 2, H / 2 - 40, '', { fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#fbbf24', fontStyle: 'bold' }).setOrigin(0.5).setDepth(30);
+    this.roundText = this.add.text(W / 2, 90, '', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#fbbf24', fontStyle: 'bold' }).setOrigin(0.5).setDepth(30).setAlpha(0);
   }
 
-  popScore(scorer) {
+  popScore(scorer, points) {
     const x = scorer === 'player' ? W / 2 - 170 : W / 2 + 170;
     const color = scorer === 'player' ? '#24B7FF' : '#FF6B6B';
-    const pop = this.add.text(x + 34, 40, '+2', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color, fontStyle: 'bold'
-    }).setOrigin(0, 0.5).setDepth(21);
-    this.tweens.add({
-      targets: pop, y: pop.y - 20, alpha: 0, duration: 700,
-      onComplete: () => pop.destroy()
-    });
+    const pop = this.add.text(x + 38, 38, '+' + points, { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color, fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(21);
+    this.tweens.add({ targets: pop, y: pop.y - 20, alpha: 0, duration: 700, onComplete: () => pop.destroy() });
     const scoreLabel = scorer === 'player' ? this.hudPlayerScore : this.hudAiScore;
-    this.tweens.add({ targets: scoreLabel, scale: 1.25, duration: 100, yoyo: true });
+    this.tweens.add({ targets: scoreLabel, scale: 1.3, duration: 110, yoyo: true });
+  }
+
+  showRoundBanner(first) {
+    const mod = this.activeModifier;
+    const label = first ? ('ROUND ' + this.round) : ('ROUND ' + this.round + '\n' + mod.name);
+    this.roundText.setText(label).setAlpha(0).setScale(0.8);
+    this.tweens.add({ targets: this.roundText, alpha: 1, scale: 1, duration: 200, yoyo: false,
+      onComplete: () => this.tweens.add({ targets: this.roundText, alpha: 0, delay: 700, duration: 300 }) });
   }
 
   // ------------------------------------------------------------
-  // Game logic (unchanged mechanics from Phase 1)
+  // Round modifiers
+  // ------------------------------------------------------------
+  applyModifier(mod) {
+    // reset to baseline first
+    this.grabRadius = BASE_GRAB_RADIUS;
+    this.shootVx = BASE_SHOOT_VX;
+    this.shootVy = BASE_SHOOT_VY;
+    this.pointsThisRound = 2;
+    this.rimScale = 1;
+    this.matter.world.engine.world.gravity.y = 1;
+    this.matter.body.setMass(this.ball, 0.35);
+    this.matter.body.scale(this.ball, 1 / (this.ballScaleFactor || 1), 1 / (this.ballScaleFactor || 1));
+    this.ballScaleFactor = 1;
+    this.ballRadius = 15;
+    this.ball.restitution = 0.75;
+    [this.player, this.ai].forEach(a => { a.scale = 1; this.matter.body.scale(a.body, 1 / (a.bodyScaleFactor || 1), 1 / (a.bodyScaleFactor || 1)); a.bodyScaleFactor = 1; });
+
+    switch (mod.id) {
+      case 'tinyBall':
+        this.matter.body.scale(this.ball, 0.7, 0.7);
+        this.ballScaleFactor = 0.7; this.ballRadius = 15 * 0.7;
+        break;
+      case 'heavyBall':
+        this.matter.body.setMass(this.ball, 0.35 * 1.6);
+        break;
+      case 'moonGrav':
+        this.matter.world.engine.world.gravity.y = 0.6;
+        break;
+      case 'bouncy':
+        this.ball.restitution = Math.min(1.15, 0.75 + 0.5);
+        break;
+      case 'longArms':
+        this.grabRadius = BASE_GRAB_RADIUS * 1.35;
+        break;
+      case 'giants':
+        [this.player, this.ai].forEach(a => { this.matter.body.scale(a.body, 1.25, 1.25); a.bodyScaleFactor = 1.25; a.scale = 1.25; });
+        break;
+      case 'tinyHoop':
+        this.rimScale = 0.75;
+        break;
+      case 'doublePts':
+        this.pointsThisRound = 4;
+        break;
+      default: break;
+    }
+  }
+
+  rollModifier() {
+    const pool = MODIFIERS.filter(m => m.id !== 'none');
+    this.activeModifier = pool[Math.floor(Math.random() * pool.length)];
+    this.applyModifier(this.activeModifier);
+  }
+
+  // ------------------------------------------------------------
+  // Game logic
   // ------------------------------------------------------------
   resetPositions() {
     this.matter.body.setPosition(this.player.body, { x: 200, y: GROUND_Y - 25 });
@@ -443,41 +439,79 @@ class MainScene extends Phaser.Scene {
   playSfx(name) {
     if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
       try {
-        const map = { bounce: [180, 0.05], rim: [420, 0.08], score: [660, 0.15], collision: [90, 0.06], grab: [520, 0.04] };
+        const map = { bounce: [180, 0.05], rim: [420, 0.08], score: [660, 0.15], collision: [90, 0.06], grab: [520, 0.04], whiff: [140, 0.05] };
         const [freq, dur] = map[name] || [300, 0.05];
         SFX.tone(freq, dur);
       } catch (e) {}
     }
   }
 
-  tryGrab() {
-    if (this.matchOver || this.ballCarrier) return;
-    const d = Phaser.Math.Distance.Between(
-      this.player.body.position.x, this.player.body.position.y, this.ball.position.x, this.ball.position.y
-    );
-    if (d < GRAB_RADIUS) {
-      this.ballCarrier = 'player';
-      this.playSfx('grab');
-      this.spawnFlash(this.ball.position.x, this.ball.position.y, COLOR.p1);
+  tryJump(actor) {
+    if (this.matchOver) return;
+    if (Math.abs(actor.body.velocity.y) < 0.3) { // roughly grounded
+      this.matter.body.setVelocity(actor.body, { x: actor.body.velocity.x, y: JUMP_VY });
+      this.spawnDust(actor.body.position.x, GROUND_Y - 2);
     }
   }
 
-  tryShoot() {
-    if (this.matchOver || this.ballCarrier !== 'player') return;
-    this.shootBall(this.player);
+  // Single contextual action: grab if free ball in range, shoot if carrying,
+  // steal-swat if opponent is carrying and in range. Every press swings the arm.
+  tryAction() {
+    if (this.matchOver) return;
+    const p = this.player;
+    p.armSwing = 1;
+    this.tweens.add({ targets: p, armSwing: 0, duration: 260, ease: 'Cubic.Out' });
+
+    if (this.ballCarrier === 'player') {
+      this.shootBall(p);
+      return;
+    }
+
+    const dBall = Phaser.Math.Distance.Between(p.body.position.x, p.body.position.y, this.ball.position.x, this.ball.position.y);
+    if (!this.ballCarrier && dBall < this.grabRadius) {
+      // not perfectly reliable — a slightly-off swing can whiff, keeps the ball
+      // from being too easy to control per the chaos-first direction
+      const missChance = 0.08;
+      if (Math.random() > missChance) {
+        this.ballCarrier = 'player';
+        this.playSfx('grab');
+        this.spawnFlash(this.ball.position.x, this.ball.position.y, COLOR.p1);
+      } else {
+        this.playSfx('whiff');
+      }
+      return;
+    }
+
+    if (this.ballCarrier === 'ai') {
+      const dOpp = Phaser.Math.Distance.Between(p.body.position.x, p.body.position.y, this.ai.body.position.x, this.ai.body.position.y);
+      if (dOpp < this.grabRadius + 10) {
+        // steal-swat: chance to jar it loose
+        if (Math.random() > 0.5) {
+          this.dropBall(true);
+          this.playSfx('grab');
+          this.spawnFlash(this.ai.body.position.x, this.ai.body.position.y, COLOR.p1);
+        } else {
+          this.playSfx('whiff');
+        }
+      }
+    }
   }
 
   shootBall(actor) {
-    const vx = actor.facing * SHOOT_VX + actor.body.velocity.x * 0.3;
-    this.matter.body.setVelocity(this.ball, { x: vx, y: SHOOT_VY });
+    // shot isn't perfectly controllable — a bit of spread per the "not easy
+    // to line up perfectly" direction
+    const spread = (Math.random() - 0.5) * 1.6;
+    const vx = actor.facing * this.shootVx + actor.body.velocity.x * 0.3 + spread;
+    const vy = this.shootVy + (Math.random() - 0.5) * 1.2;
+    this.matter.body.setVelocity(this.ball, { x: vx, y: vy });
     this.ballCarrier = null;
     this.ballScoredCooldown = false;
     this.ballTrail.length = 0;
   }
 
-  dropBall() {
+  dropBall(pop) {
     this.ballCarrier = null;
-    this.matter.body.setVelocity(this.ball, { x: (Math.random() - 0.5) * 3, y: -2 });
+    this.matter.body.setVelocity(this.ball, { x: (Math.random() - 0.5) * (pop ? 5 : 3), y: pop ? -3 : -2 });
   }
 
   updateAI(dt) {
@@ -489,13 +523,17 @@ class MainScene extends Phaser.Scene {
     else ai.state = 'SEEK';
 
     let targetX = ai.body.position.x;
+    let wantsJump = false;
 
     if (ai.state === 'SEEK') {
       targetX = ball.position.x;
+      if (ball.position.y < ai.body.position.y - 30) wantsJump = true;
       const d = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, ball.position.x, ball.position.y);
-      if (d < GRAB_RADIUS) {
+      if (d < this.grabRadius) {
         ai.reactionTimer += dt;
         if (ai.reactionTimer > 180) {
+          ai.armSwing = 1;
+          this.tweens.add({ targets: ai, armSwing: 0, duration: 260 });
           this.ballCarrier = 'ai';
           this.playSfx('grab');
           this.spawnFlash(ball.position.x, ball.position.y, COLOR.p2);
@@ -510,6 +548,8 @@ class MainScene extends Phaser.Scene {
         ai.shootWindupTimer += dt;
         targetX = ai.body.position.x;
         if (ai.shootWindupTimer > 420) {
+          ai.armSwing = 1;
+          this.tweens.add({ targets: ai, armSwing: 0, duration: 260 });
           this.shootBall(ai);
           ai.shootWindupTimer = 0;
         }
@@ -518,6 +558,8 @@ class MainScene extends Phaser.Scene {
         ai.shootWindupTimer = 0;
       }
     }
+
+    if (wantsJump) this.tryJump(ai);
 
     const dx = targetX - ai.body.position.x;
     if (Math.abs(dx) > 4) {
@@ -533,15 +575,17 @@ class MainScene extends Phaser.Scene {
     const b = this.ball;
     const dx = Math.abs(b.position.x - (HOOP_X - 6));
     const dy = Math.abs(b.position.y - (HOOP_Y + 18));
-    if (dx < 15 && dy < 9 && b.velocity.y > 0) {
+    const hoopHalf = 15 * this.rimScale;
+    if (dx < hoopHalf && dy < 9 && b.velocity.y > 0) {
       this.ballScoredCooldown = true;
       const scorer = (this.lastToTouch === 'ai') ? 'ai' : 'player';
-      this.score[scorer] += 2;
+      const points = this.pointsThisRound;
+      this.score[scorer] += points;
       this.hudPlayerScore.setText(String(this.score.player));
       this.hudAiScore.setText(String(this.score.ai));
-      this.popScore(scorer);
+      this.popScore(scorer, points);
       this.playSfx('score');
-      this.netFlashAlpha = 1;
+      this.netStretch = 1;
       this.shakeCamera(2);
       this.onScore(scorer);
     }
@@ -561,12 +605,18 @@ class MainScene extends Phaser.Scene {
           this.hudPlayerScore.setText('0');
           this.hudAiScore.setText('0');
           this.msgText.setText('');
+          this.round = 1;
+          this.rollModifier();
           this.resetPositions();
+          this.showRoundBanner(false);
           this.matchOver = false;
         });
       } else {
         this.msgText.setText('');
+        this.round += 1;
+        this.rollModifier();
         this.resetPositions();
+        this.showRoundBanner(false);
         this.matchOver = false;
       }
     });
@@ -602,20 +652,17 @@ class MainScene extends Phaser.Scene {
       }
     }
 
-    // --- landing dust (crossed from airborne to grounded) ---
     [this.player, this.ai].forEach((actor) => {
-      const grounded = Math.abs(actor.body.position.y - (GROUND_Y - 25)) < 3;
-      if (grounded && !actor.wasGrounded) {
-        this.spawnDust(actor.body.position.x, GROUND_Y - 2);
-      }
+      const grounded = Math.abs(actor.body.velocity.y) < 0.3;
+      if (grounded && !actor.wasGrounded) this.spawnDust(actor.body.position.x, GROUND_Y - 2);
       actor.wasGrounded = grounded;
     });
 
     this.drawActor(this.player);
     this.drawActor(this.ai);
     this.drawBall();
+    this.drawNet();
 
-    // --- dust particle sim ---
     this.dustGfx.clear();
     this.dustParticles = this.dustParticles.filter(p => p.life > 0);
     this.dustParticles.forEach(p => {
@@ -624,7 +671,6 @@ class MainScene extends Phaser.Scene {
       this.dustGfx.fillCircle(p.x, p.y, 3 * p.life);
     });
 
-    // --- flash particle sim ---
     this.flashGfx.clear();
     this.flashes = this.flashes.filter(f => f.life > 0);
     this.flashes.forEach(f => {
@@ -633,10 +679,8 @@ class MainScene extends Phaser.Scene {
       this.flashGfx.fillCircle(f.x, f.y, 18 * (1 - f.life) + 4);
     });
 
-    // --- rim bounce decay (visual "give" on hit, no gameplay effect) ---
-    if (this.rimBounce > 0) {
-      this.rimBounce = Math.max(0, this.rimBounce - 0.1);
-    }
+    if (this.netStretch > 0) this.netStretch = Math.max(0, this.netStretch - 0.06);
+    if (this.rimBounce > 0) this.rimBounce = Math.max(0, this.rimBounce - 0.1);
   }
 }
 
@@ -646,10 +690,7 @@ const config = {
   height: H,
   parent: 'game-container',
   backgroundColor: '#090A10',
-  physics: {
-    default: 'matter',
-    matter: { gravity: { y: 1 }, debug: false }
-  },
+  physics: { default: 'matter', matter: { gravity: { y: 1 }, debug: false } },
   scene: [MainScene]
 };
 
