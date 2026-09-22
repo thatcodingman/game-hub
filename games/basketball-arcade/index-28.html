@@ -100,8 +100,51 @@ const ARCHETYPES = {
   jett:  { id: 'jett',  name: 'JETT',  color: 0x24B7FF, speed: 1.15, jump: 1.20, steal: 1.05, shot: 0.90, mass: 0.85,
            tag: 'Fast & slippery' },
   brick: { id: 'brick', name: 'BRICK', color: 0xFF6B6B, speed: 0.80, jump: 0.80, steal: 0.90, shot: 1.10, mass: 1.35,
-           tag: 'Heavy & powerful' }
+           tag: 'Heavy & powerful' },
+  arc:   { id: 'arc',   name: 'ARC',   color: 0xa78bfa, speed: 1.00, jump: 1.05, steal: 0.85, shot: 1.25, mass: 0.75,
+           tag: 'Sharpshooter, fragile' },
+  tank:  { id: 'tank',  name: 'TANK',  color: 0xf59e0b, speed: 0.70, jump: 0.75, steal: 1.15, shot: 0.95, mass: 1.50,
+           tag: 'Slow, nearly unmovable' },
+  zip:   { id: 'zip',   name: 'ZIP',   color: 0x4ade80, speed: 1.25, jump: 1.35, steal: 1.00, shot: 0.95, mass: 0.65,
+           tag: 'Hyperactive aerial freak' },
+  bull:  { id: 'bull',  name: 'BULL',  color: 0xec4899, speed: 1.10, jump: 0.70, steal: 1.20, shot: 1.05, mass: 1.20,
+           tag: 'Reckless charger' },
+  flick: { id: 'flick', name: 'FLICK', color: 0x22d3ee, speed: 1.00, jump: 0.95, steal: 0.75, shot: 1.30, mass: 0.70,
+           tag: 'Trick-shot artist' },
+  grit:  { id: 'grit',  name: 'GRIT',  color: 0x78716c, speed: 0.75, jump: 0.85, steal: 1.25, shot: 0.80, mass: 1.25,
+           tag: 'Relentless defensive pest' }
 };
+const ARCHETYPE_KEYS = Object.keys(ARCHETYPES);
+
+// ---------------------------------------------------------------------
+// Career mode: a fixed streak ladder. Beat the current opponent to face
+// a harder one; each rung tightens the AI's decision timers and speed.
+// Progress (rung reached) saves to CAREER_KEY via career.milestonesComplete.
+// ---------------------------------------------------------------------
+// "The Run" — an unofficial streetball circuit. No refs, no contracts,
+// just a chain of courts and whoever survives the ladder gets a shot at
+// The Champion. Bull and Flick sit outside the fixed ladder for now (pool
+// characters — future rematch/branch material) but are playable everywhere else.
+const CAREER_LADDER = [
+  { name: 'Rookie Run',      opponent: 'zip',   speedMult: 0.90, decisionMs: 380, shotWindupMs: 520,
+    intro: ['ZIP: "Wait... you\'re the rookie?"', 'ZIP: "Okay. This might actually be fun."'],
+    winLine: 'ZIP: "RUN IT BACK!"', loseLine: 'ZIP: "Aw, that\'s it? Come back when you\'re ready!"' },
+  { name: 'Corner Hustler',  opponent: 'jett',  speedMult: 1.00, decisionMs: 320, shotWindupMs: 460,
+    intro: ['JETT: "Three wins? Not bad."', 'JETT: "But everybody looks fast before they meet me."'],
+    winLine: 'JETT: "Okay... I officially don\'t like you anymore."', loseLine: 'JETT: "Told you. Nobody outruns me."' },
+  { name: 'Backboard Bully', opponent: 'brick', speedMult: 1.00, decisionMs: 260, shotWindupMs: 420,
+    intro: ['BRICK: "You\'ve been playing basketball."', 'BRICK: "Now you\'re playing me."'],
+    winLine: 'BRICK: "Enjoy it."', loseLine: 'BRICK: "That\'s what I thought."' },
+  { name: 'Dead-Eye',        opponent: 'arc',   speedMult: 1.05, decisionMs: 220, shotWindupMs: 380,
+    intro: ['ARC: "I heard you\'ve been causing problems."', 'ARC: "Good."'],
+    winLine: 'ARC: "Nice shot."', loseLine: 'ARC: "Maybe next time."' },
+  { name: 'Two-Way Threat',  opponent: 'grit',  speedMult: 1.10, decisionMs: 180, shotWindupMs: 340,
+    intro: ['GRIT: "You came this far."', 'GRIT: "Don\'t waste it."'],
+    winLine: 'GRIT: "You earned that."', loseLine: 'GRIT: "You\'ll get there."' },
+  { name: 'The Champion',    opponent: 'tank',  speedMult: 1.15, decisionMs: 140, shotWindupMs: 300,
+    intro: ['TANK: "You\'ve beaten everyone else."', 'TANK: "Show me."'],
+    winLine: 'TANK just nods. Once.', loseLine: 'TANK says nothing. He doesn\'t need to.' }
+];
 
 class MainScene extends Phaser.Scene {
   constructor() { super('main'); }
@@ -218,6 +261,8 @@ class MainScene extends Phaser.Scene {
     this.selecting = true;
     this.matchOver = true; // keep game logic idle until startMatch()
     this.twoPlayerMode = false;
+    this.careerActive = false;
+    this.careerRung = 0;
     this.buildModeSelect();
   }
 
@@ -229,31 +274,37 @@ class MainScene extends Phaser.Scene {
     const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.6).setDepth(40);
     items.push(dim);
 
-    const title = this.add.text(W / 2, H / 2 - 110, 'SELECT MODE', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
+    const title = this.add.text(W / 2, H / 2 - 168, 'SELECT MODE', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#F2F4F7', fontStyle: 'bold'
     }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.9);
     items.push(title);
     this.tweens.add({ targets: title, alpha: 1, scale: 1, duration: 350, ease: 'Back.Out' });
 
+    const rung = Math.min(career.milestonesComplete, CAREER_LADDER.length - 1);
+    const careerSub = career.milestonesComplete >= CAREER_LADDER.length
+      ? `Champion — ladder cleared (${CAREER_LADDER.length}/${CAREER_LADDER.length})`
+      : `Streak ladder — rung ${rung + 1} of ${CAREER_LADDER.length}`;
+
     const modes = [
       { id: 'ai', label: 'VS AI', sub: 'Play against the computer', color: COLOR.p1 },
-      { id: '2p', label: 'VS PLAYER 2', sub: 'Pass the keyboard — local co-op controls', color: COLOR.p2 }
+      { id: '2p', label: 'VS PLAYER 2', sub: 'Pass the keyboard — local co-op controls', color: COLOR.p2 },
+      { id: 'career', label: 'CAREER', sub: careerSub, color: COLOR.gold }
     ];
-    const btnW = 260, btnH = 110;
+    const btnW = 280, btnH = 76;
 
     modes.forEach((m, idx) => {
       const x = W / 2;
-      const baseY = H / 2 - 10 + idx * (btnH + 24);
+      const baseY = H / 2 - 94 + idx * 88;
       const container = this.add.container(x, baseY).setDepth(41).setAlpha(0).setScale(0.9);
       items.push(container);
 
       const glow = this.add.rectangle(0, 0, btnW + 14, btnH + 14, m.color, 0).setStrokeStyle(3, m.color, 0);
       const btn = this.add.rectangle(0, 0, btnW, btnH, 0x11161f, 0.96).setStrokeStyle(3, m.color, 0.9);
-      const label = this.add.text(0, -14, m.label, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
+      const label = this.add.text(0, -12, m.label, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '19px', color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5);
-      const sub = this.add.text(0, 18, m.sub, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#94a3b8'
+      const sub = this.add.text(0, 14, m.sub, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#94a3b8'
       }).setOrigin(0.5);
 
       container.add([glow, btn, label, sub]);
@@ -264,6 +315,10 @@ class MainScene extends Phaser.Scene {
         this.selecting = false;
         items.forEach(o => o.destroy());
         this.twoPlayerMode = (m.id === '2p');
+        this.careerActive = (m.id === 'career');
+        if (this.careerActive) {
+          this.careerRung = Math.min(career.milestonesComplete, CAREER_LADDER.length - 1);
+        }
         this.selecting = true;
         this.buildSelectScreen();
       };
@@ -282,31 +337,78 @@ class MainScene extends Phaser.Scene {
         this.tweens.add({ targets: container, scaleX: 0.95, scaleY: 0.95, duration: 70, yoyo: true, onComplete: pick });
       });
 
-      this.tweens.add({ targets: container, alpha: 1, scaleX: 1, scaleY: 1, duration: 380, delay: 150 + idx * 120, ease: 'Back.Out' });
+      this.tweens.add({ targets: container, alpha: 1, scaleX: 1, scaleY: 1, duration: 380, delay: 150 + idx * 100, ease: 'Back.Out' });
     });
   }
 
   // ------------------------------------------------------------
-  // Archetype select screen — pick Jett or Brick, AI gets the other
+  // Archetype select — Player 1 picks from the full roster; in vs-AI
+  // mode the AI is randomly assigned one of the remaining archetypes,
+  // in 2-player mode Player 2 then gets their own pick screen.
   // ------------------------------------------------------------
   buildSelectScreen() {
+    this.buildArchetypeGrid(
+      this.twoPlayerMode ? 'PLAYER 1 — CHOOSE YOUR PLAYER' : 'CHOOSE YOUR PLAYER',
+      this.twoPlayerMode ? 'Player 1 picks first' : 'Click a card to pick your player',
+      (key) => {
+        this.player.arch = ARCHETYPES[key];
+        this.player.color = ARCHETYPES[key].color;
+        this.refreshActorStats(this.player);
+        if (this.twoPlayerMode) {
+          this.selecting = true;
+          this.buildSelectScreenP2();
+        } else if (this.careerActive) {
+          const rungData = CAREER_LADDER[this.careerRung];
+          this.ai.arch = ARCHETYPES[rungData.opponent];
+          this.ai.color = ARCHETYPES[rungData.opponent].color;
+          this.refreshActorStats(this.ai);
+          this.applyCareerDifficulty();
+          this.showCareerIntro(rungData, () => this.startMatch());
+        } else {
+          const remaining = ARCHETYPE_KEYS.filter(k => k !== key);
+          const aiKey = remaining[Math.floor(Math.random() * remaining.length)];
+          this.ai.arch = ARCHETYPES[aiKey];
+          this.ai.color = ARCHETYPES[aiKey].color;
+          this.refreshActorStats(this.ai);
+          this.startMatch();
+        }
+      }
+    );
+  }
+
+  buildSelectScreenP2() {
+    this.buildArchetypeGrid('PLAYER 2 — CHOOSE YOUR PLAYER', 'Player 2 picks now', (key) => {
+      this.ai.arch = ARCHETYPES[key];
+      this.ai.color = ARCHETYPES[key].color;
+      this.refreshActorStats(this.ai);
+      this.startMatch();
+    });
+  }
+
+  // Shared grid builder — a row of cards, one per ARCHETYPE_KEYS entry,
+  // with entrance/hover/press animation. Calls onPick(key) once and tears
+  // itself down.
+  buildArchetypeGrid(titleText, hintText, onPick) {
     const items = [];
 
-    // dim + soft vignette instead of a flat overlay
     const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.6).setDepth(40);
     items.push(dim);
     const vignette = this.add.graphics().setDepth(40);
-    vignette.fillStyle(0x000000, 0.001);
     vignette.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0, 0, 0.35, 0.35);
-    vignette.fillCircle(W / 2, H / 2, 340);
+    vignette.fillCircle(W / 2, H / 2, 360);
     items.push(vignette);
 
-    const titleGlow = this.add.text(W / 2, H / 2 - 152, 'CHOOSE YOUR PLAYER', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: '#fbbf24', fontStyle: 'bold'
+    const n = ARCHETYPE_KEYS.length;
+    const cols = Math.min(n, 4);
+    const rows = Math.ceil(n / cols);
+    const titleY = rows > 1 ? H / 2 - 200 : H / 2 - 152;
+
+    const titleGlow = this.add.text(W / 2, titleY, titleText, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#fbbf24', fontStyle: 'bold'
     }).setOrigin(0.5).setDepth(40).setAlpha(0.35).setScale(1.08);
     items.push(titleGlow);
-    const title = this.add.text(W / 2, H / 2 - 152, 'CHOOSE YOUR PLAYER', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: '#F2F4F7', fontStyle: 'bold', letterSpacing: 1
+    const title = this.add.text(W / 2, titleY, titleText, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#F2F4F7', fontStyle: 'bold', letterSpacing: 1
     }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.9);
     items.push(title);
     this.tweens.add({ targets: title, alpha: 1, scale: 1, duration: 380, ease: 'Back.Out' });
@@ -315,55 +417,68 @@ class MainScene extends Phaser.Scene {
       duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.InOut'
     });
 
-    // pulsing VS badge between the two cards
-    const vs = this.add.text(W / 2, H / 2 + 10, 'VS', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#475569', fontStyle: 'bold'
-    }).setOrigin(0.5).setDepth(42).setAlpha(0);
-    items.push(vs);
-    this.tweens.add({ targets: vs, alpha: 0.8, duration: 300, delay: 500 });
-    this.tweens.add({ targets: vs, scale: { from: 1, to: 1.2 }, duration: 700, delay: 500, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    const cardW = rows > 1 ? 150 : (n > 2 ? 188 : 250);
+    const cardH = rows > 1 ? 158 : (n > 2 ? 236 : 270);
+    const gapX = 14, gapY = 14;
+    const avatarR = rows > 1 ? 20 : (n > 2 ? 30 : 36);
+    const gridH = rows * cardH + (rows - 1) * gapY;
+    const gridCenterY = rows > 1 ? (H / 2 + 8) : (H / 2 + 18);
+    const rowTopCenterY = gridCenterY - gridH / 2 + cardH / 2;
+    const bottomRowCenterY = rowTopCenterY + (rows - 1) * (cardH + gapY);
 
-    const cardW = 250, cardH = 270;
-    const positions = [{ key: 'jett', x: W / 2 - 155 }, { key: 'brick', x: W / 2 + 155 }];
+    const positions = ARCHETYPE_KEYS.map((key, idx) => {
+      const row = Math.floor(idx / cols), col = idx % cols;
+      return {
+        key,
+        x: W / 2 - ((cols - 1) / 2) * (cardW + gapX) + col * (cardW + gapX),
+        y: rowTopCenterY + row * (cardH + gapY)
+      };
+    });
 
-    positions.forEach(({ key, x }, idx) => {
+    positions.forEach(({ key, x, y }, idx) => {
       const arch = ARCHETYPES[key];
-      const baseY = H / 2 + 14;
+      const baseY = y;
       const container = this.add.container(x, baseY).setDepth(41).setAlpha(0).setScale(0.82);
       items.push(container);
 
-      const glow = this.add.rectangle(0, 0, cardW + 16, cardH + 16, arch.color, 0).setStrokeStyle(3, arch.color, 0);
+      const glow = this.add.rectangle(0, 0, cardW + 14, cardH + 14, arch.color, 0).setStrokeStyle(3, arch.color, 0);
       const card = this.add.rectangle(0, 0, cardW, cardH, 0x11161f, 0.96).setStrokeStyle(3, arch.color, 0.9);
 
-      const avatarG = this.add.graphics();
-      this.drawAvatarFace(avatarG, 0, -78, 36, key);
+      const compact = rows > 1;
+      const wide = n > 2 && !compact;
 
-      const name = this.add.text(0, -22, arch.name, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '25px', color: '#F2F4F7', fontStyle: 'bold'
+      const avatarG = this.add.graphics();
+      const avatarY = compact ? -cardH * 0.29 : -cardH * 0.29;
+      this.drawAvatarFace(avatarG, 0, avatarY, avatarR, key);
+
+      const name = this.add.text(0, avatarY + avatarR + (compact ? 16 : 22), arch.name, {
+        fontFamily: 'system-ui, sans-serif', fontSize: compact ? '14px' : (wide ? '19px' : '25px'), color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5);
 
-      const tag = this.add.text(0, 8, arch.tag, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+      const tag = this.add.text(0, avatarY + avatarR + (compact ? 32 : 44), arch.tag, {
+        fontFamily: 'system-ui, sans-serif', fontSize: compact ? '8.5px' : (wide ? '10.5px' : '13px'), color: '#94a3b8', align: 'center',
+        wordWrap: { width: cardW - (compact ? 14 : 24) }
       }).setOrigin(0.5);
 
       const statBars = this.add.graphics();
-      const statRows = [
-        ['SPEED', arch.speed], ['SHOT', arch.shot], ['JUMP', arch.jump]
-      ];
+      const statRows = [['SPD', arch.speed], ['SHOT', arch.shot], ['JMP', arch.jump]];
+      const barTop = avatarY + avatarR + (compact ? 50 : 64);
+      const trackW = cardW - (compact ? 66 : (wide ? 80 : 130));
+      const labelX = -cardW / 2 + (compact ? 12 : (wide ? 16 : 22));
+      const barX = labelX + (compact ? 24 : (wide ? 30 : 40));
       statRows.forEach(([label, val], i) => {
-        const ry = 34 + i * 22;
-        const t = this.add.text(-92, ry, label, { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#94a3b8' }).setOrigin(0, 0.5);
+        const ry = barTop + i * (compact ? 14 : (wide ? 18 : 22));
+        const t = this.add.text(labelX, ry, label, { fontFamily: 'system-ui, sans-serif', fontSize: compact ? '8px' : (wide ? '10px' : '11px'), color: '#94a3b8' }).setOrigin(0, 0.5);
         container.add(t);
-        const trackW = 100;
         statBars.fillStyle(0x1f2937, 1);
-        statBars.fillRoundedRect(-30, ry - 5, trackW, 10, 5);
-        const pct = Phaser.Math.Clamp(val / 1.4, 0.15, 1);
+        statBars.fillRoundedRect(barX, ry - (compact ? 3.5 : 4.5), trackW, compact ? 7 : 9, 4);
+        const pct = Phaser.Math.Clamp(val / 1.5, 0.15, 1);
         statBars.fillStyle(arch.color, 1);
-        statBars.fillRoundedRect(-30, ry - 5, trackW * pct, 10, 5);
+        statBars.fillRoundedRect(barX, ry - (compact ? 3.5 : 4.5), trackW * pct, compact ? 7 : 9, 4);
       });
 
-      const hint2 = this.add.text(0, cardH / 2 - 20, 'CLICK TO PICK', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
+      const hint2 = this.add.text(0, cardH / 2 - (compact ? 11 : 16), 'CLICK TO PICK', {
+        fontFamily: 'system-ui, sans-serif', fontSize: compact ? '8px' : (wide ? '9.5px' : '11px'), color: '#64748b', fontStyle: 'bold'
       }).setOrigin(0.5).setAlpha(0.7);
 
       container.add([glow, card, avatarG, name, tag, statBars, hint2]);
@@ -373,14 +488,7 @@ class MainScene extends Phaser.Scene {
         if (!this.selecting) return;
         this.selecting = false;
         items.forEach(o => o.destroy());
-        const otherKey = key === 'jett' ? 'brick' : 'jett';
-        this.player.arch = ARCHETYPES[key];
-        this.ai.arch = ARCHETYPES[otherKey];
-        this.player.color = ARCHETYPES[key].color;
-        this.ai.color = ARCHETYPES[otherKey].color;
-        this.refreshActorStats(this.player);
-        this.refreshActorStats(this.ai);
-        this.startMatch();
+        onPick(key);
       };
 
       card.on('pointerover', () => {
@@ -399,17 +507,17 @@ class MainScene extends Phaser.Scene {
 
       this.tweens.add({
         targets: container, alpha: 1, scaleX: 1, scaleY: 1,
-        duration: 420, delay: 150 + idx * 130, ease: 'Back.Out'
+        duration: 420, delay: 150 + idx * 100, ease: 'Back.Out'
       });
     });
 
-    const hintLabel = this.twoPlayerMode ? 'Player 1 picks first — Player 2 gets the other' : 'Click a card to pick your player';
-    const hint = this.add.text(W / 2, H / 2 + 178, hintLabel, {
+    const hintY = rows > 1 ? (bottomRowCenterY + cardH / 2 + 22) : (H / 2 + (n > 2 ? 168 : 178));
+    const hint = this.add.text(W / 2, hintY, hintText, {
       fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#64748b'
     }).setOrigin(0.5).setDepth(41).setAlpha(0);
     items.push(hint);
     this.tweens.add({ targets: hint, alpha: 0.8, duration: 400, delay: 500 });
-    this.tweens.add({ targets: hint, y: { from: H / 2 + 178, to: H / 2 + 184 }, duration: 700, delay: 500, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    this.tweens.add({ targets: hint, y: { from: hint.y, to: hint.y + 6 }, duration: 700, delay: 500, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
   }
 
   // Drawn "face" avatar for the select screen — sphere-shaded circle with
@@ -446,7 +554,7 @@ class MainScene extends Phaser.Scene {
       g.beginPath();
       g.arc(x, y + r * 0.32, r * 0.32, Phaser.Math.DegToRad(15), Phaser.Math.DegToRad(150), false);
       g.strokePath();
-    } else {
+    } else if (key === 'brick') {
       // brick: furrowed brows, gritted-teeth determination
       g.lineStyle(4, dark, 1);
       g.lineBetween(x - eyeSpacing - 9, eyeY - 7, x - eyeSpacing + 4, eyeY - 15);
@@ -464,6 +572,99 @@ class MainScene extends Phaser.Scene {
         const lx = x + i * (r * 0.13);
         g.lineBetween(lx, y + r * 0.26, lx, y + r * 0.26 + r * 0.2);
       }
+    } else if (key === 'arc') {
+      // arc: calm, level-browed focus — a sharpshooter's steady aim,
+      // plus a little sparkle for "precision"
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - eyeSpacing - 6, eyeY - 13, x - eyeSpacing + 6, eyeY - 13);
+      g.lineBetween(x + eyeSpacing - 6, eyeY - 13, x + eyeSpacing + 6, eyeY - 13);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 6);
+      g.fillCircle(x + eyeSpacing, eyeY, 6);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 3);
+      g.fillCircle(x + eyeSpacing, eyeY, 3);
+      g.lineStyle(3, dark, 1);
+      g.beginPath();
+      g.arc(x, y + r * 0.3, r * 0.22, Phaser.Math.DegToRad(20), Phaser.Math.DegToRad(160), false);
+      g.strokePath();
+      g.fillStyle(COLOR.gold, 0.9);
+      const spx = x + r * 0.58, spy = y - r * 0.62;
+      g.fillRect(spx - 1, spy - 4, 2, 8);
+      g.fillRect(spx - 4, spy - 1, 8, 2);
+    } else if (key === 'tank') {
+      // tank: thick flat brows, small stern eyes, flat mouth, heavy jaw shadow
+      g.fillStyle(dark, 0.22);
+      g.fillEllipse(x, y + r * 0.55, r * 0.95, r * 0.4);
+      g.lineStyle(5, dark, 1);
+      g.lineBetween(x - eyeSpacing - 8, eyeY - 10, x - eyeSpacing + 8, eyeY - 10);
+      g.lineBetween(x + eyeSpacing - 8, eyeY - 10, x + eyeSpacing + 8, eyeY - 10);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 2, 4.5);
+      g.fillCircle(x + eyeSpacing, eyeY + 2, 4.5);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 2, 2.2);
+      g.fillCircle(x + eyeSpacing, eyeY + 2, 2.2);
+      g.lineStyle(3.5, dark, 1);
+      g.lineBetween(x - r * 0.22, y + r * 0.36, x + r * 0.22, y + r * 0.36);
+    } else if (key === 'zip') {
+      // zip: huge grin, energetic raised brows — permanently mid-highlight-reel
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - eyeSpacing - 7, eyeY - 15, x - eyeSpacing + 5, eyeY - 9);
+      g.lineBetween(x + eyeSpacing - 5, eyeY - 9, x + eyeSpacing + 7, eyeY - 15);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 6.5);
+      g.fillCircle(x + eyeSpacing, eyeY, 6.5);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 3.2);
+      g.fillCircle(x + eyeSpacing, eyeY, 3.2);
+      g.fillStyle(dark, 1);
+      g.fillEllipse(x, y + r * 0.34, r * 0.4, r * 0.22);
+      g.fillStyle(COLOR.white, 1);
+      g.fillEllipse(x, y + r * 0.3, r * 0.32, r * 0.12);
+    } else if (key === 'bull') {
+      // bull: lowered head, angry eyes, steam-ahead energy
+      g.fillStyle(dark, 0.2);
+      g.fillEllipse(x, y + r * 0.05, r * 1.05, r * 0.95);
+      g.lineStyle(4, dark, 1);
+      g.lineBetween(x - eyeSpacing - 8, eyeY - 4, x - eyeSpacing + 6, eyeY - 12);
+      g.lineBetween(x + eyeSpacing + 8, eyeY - 4, x + eyeSpacing - 6, eyeY - 12);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 3, 5);
+      g.fillCircle(x + eyeSpacing, eyeY + 3, 5);
+      g.fillStyle(0x7f1d1d, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 3, 2.6);
+      g.fillCircle(x + eyeSpacing, eyeY + 3, 2.6);
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - r * 0.2, y + r * 0.38, x + r * 0.2, y + r * 0.38);
+    } else if (key === 'flick') {
+      // flick: relaxed, one eyebrow raised — a trick shot they've already called
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - eyeSpacing - 6, eyeY - 11, x - eyeSpacing + 6, eyeY - 11);
+      g.lineBetween(x + eyeSpacing - 7, eyeY - 17, x + eyeSpacing + 5, eyeY - 10);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 5.5);
+      g.fillCircle(x + eyeSpacing, eyeY, 5.5);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 2.6);
+      g.fillCircle(x + eyeSpacing, eyeY, 2.6);
+      g.lineStyle(3, dark, 1);
+      g.beginPath();
+      g.arc(x, y + r * 0.3, r * 0.26, Phaser.Math.DegToRad(10), Phaser.Math.DegToRad(120), false);
+      g.strokePath();
+    } else if (key === 'grit') {
+      // grit: flat, unbothered expression — nothing moves this one
+      g.lineStyle(3.5, dark, 1);
+      g.lineBetween(x - eyeSpacing - 6, eyeY - 11, x - eyeSpacing + 6, eyeY - 11);
+      g.lineBetween(x + eyeSpacing - 6, eyeY - 11, x + eyeSpacing + 6, eyeY - 11);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 1, 5);
+      g.fillCircle(x + eyeSpacing, eyeY + 1, 5);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 1, 2.4);
+      g.fillCircle(x + eyeSpacing, eyeY + 1, 2.4);
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - r * 0.18, y + r * 0.36, x + r * 0.18, y + r * 0.36);
     }
   }
 
@@ -472,7 +673,7 @@ class MainScene extends Phaser.Scene {
   refreshActorStats(actor) {
     const arch = actor.arch;
     if (!arch) return;
-    actor.speed = PLAYER_SPEED * arch.speed;
+    actor.speed = PLAYER_SPEED * arch.speed * (actor.careerSpeedMult || 1);
     actor.jumpVy = JUMP_VY * arch.jump;
     actor.grabRadius = this.grabRadius * arch.steal;
     actor.shotMult = arch.shot;
@@ -497,6 +698,209 @@ class MainScene extends Phaser.Scene {
       fontFamily: 'system-ui, sans-serif', fontSize: this.twoPlayerMode ? '12px' : '13px', color: '#94a3b8'
     }).setOrigin(0.5, 1).setDepth(20).setAlpha(0.85);
     this.tweens.add({ targets: this.controlsHint, alpha: 0, delay: 4000, duration: 900 });
+  }
+
+  // ------------------------------------------------------------
+  // Career mode — streak ladder. Win → advance to the next rung
+  // automatically; lose → the run ends (progress already saved stays).
+  // ------------------------------------------------------------
+  applyCareerDifficulty() {
+    const rung = CAREER_LADDER[this.careerRung];
+    this.ai.careerSpeedMult = rung.speedMult;
+    this.ai.decisionMs = rung.decisionMs;
+    this.ai.shotWindupMs = rung.shotWindupMs;
+    this.refreshActorStats(this.ai); // re-derive speed with the career multiplier folded in
+  }
+
+  // A tiny 2-beat "cutscene": a title card (rung + opponent), then the
+  // opponent's intro lines one at a time — a little pre-match dialogue
+  // rather than a single flavor sentence.
+  showCareerIntro(rung, onDone) {
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.68).setDepth(40);
+
+    const tag = this.add.text(W / 2, H / 2 - 30, `RUNG ${this.careerRung + 1} / ${CAREER_LADDER.length}`, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#fbbf24', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(41).setAlpha(0);
+
+    const name = this.add.text(W / 2, H / 2 + 12, rung.name.toUpperCase(), {
+      fontFamily: 'system-ui, sans-serif', fontSize: '34px', color: '#F2F4F7', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.85);
+
+    const oppArch = ARCHETYPES[rung.opponent];
+    const oppHex = '#' + oppArch.color.toString(16).padStart(6, '0');
+    const vs = this.add.text(W / 2, H / 2 + 50, `VS ${oppArch.name}`, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: oppHex, fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(41).setAlpha(0);
+
+    const titleItems = [tag, name, vs];
+    this.tweens.add({ targets: [tag, vs], alpha: 0.9, duration: 300, delay: 100 });
+    this.tweens.add({ targets: name, alpha: 1, scale: 1, duration: 420, ease: 'Back.Out' });
+
+    const lines = rung.intro && rung.intro.length ? rung.intro : [`${oppArch.name}: "Let's play."`];
+
+    const showLine = (idx) => {
+      const text = this.add.text(W / 2, H / 2 + 10, lines[idx], {
+        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: oppHex, fontStyle: 'bold', align: 'center',
+        wordWrap: { width: 560 }
+      }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.94);
+      this.tweens.add({ targets: text, alpha: 1, scale: 1, duration: 260, ease: 'Cubic.Out' });
+      this.time.delayedCall(1250, () => {
+        this.tweens.add({
+          targets: text, alpha: 0, duration: 220,
+          onComplete: () => {
+            text.destroy();
+            if (idx + 1 < lines.length) showLine(idx + 1);
+            else finish();
+          }
+        });
+      });
+    };
+
+    const finish = () => {
+      this.tweens.add({
+        targets: dim, alpha: 0, duration: 260,
+        onComplete: () => { dim.destroy(); onDone(); }
+      });
+    };
+
+    this.time.delayedCall(1100, () => {
+      this.tweens.add({
+        targets: titleItems, alpha: 0, duration: 220,
+        onComplete: () => { titleItems.forEach(o => o.destroy()); showLine(0); }
+      });
+    });
+  }
+
+  continueCareerMatch() {
+    this.resetPositions();
+    this.score = { player: 0, ai: 0 };
+    this.hudPlayerScore.setText('0');
+    this.hudAiScore.setText('0');
+    this.hudAiLabel.setText(this.ai.arch.name + ' (AI)');
+    this.hudAiLabel.setColor('#' + this.ai.color.toString(16).padStart(6, '0'));
+    this.msgText.setText('');
+    this.round = 1;
+    this.rollModifier();
+    this.showRoundBanner(true);
+    this.matchOver = false;
+  }
+
+  // Called from onScore() instead of the normal endless-play reset when
+  // this.careerActive is true.
+  // A one-line reaction popup — used for a beaten opponent's parting shot
+  // before the next rung's intro plays.
+  showQuickLine(text, colorHex, onDone) {
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0).setDepth(40);
+    const t = this.add.text(W / 2, H / 2, text, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: colorHex, fontStyle: 'bold', align: 'center',
+      wordWrap: { width: 560 }
+    }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.92);
+    this.tweens.add({ targets: dim, alpha: 0.55, duration: 250 });
+    this.tweens.add({ targets: t, alpha: 1, scale: 1, duration: 280, ease: 'Cubic.Out' });
+    this.time.delayedCall(1300, () => {
+      this.tweens.add({
+        targets: [dim, t], alpha: 0, duration: 260,
+        onComplete: () => { dim.destroy(); t.destroy(); onDone(); }
+      });
+    });
+  }
+
+  handleCareerMatchEnd(scorer) {
+    if (scorer === 'player') {
+      const beatenRung = CAREER_LADDER[this.careerRung];
+      if (this.careerRung >= career.milestonesComplete) {
+        career.milestonesComplete = this.careerRung + 1;
+        career.stars = (career.stars || 0) + 1;
+        saveCareer(career);
+      }
+      const advance = () => {
+        if (this.careerRung + 1 >= CAREER_LADDER.length) {
+          this.showCareerEnd(true);
+        } else {
+          this.careerRung += 1;
+          const rungData = CAREER_LADDER[this.careerRung];
+          this.ai.arch = ARCHETYPES[rungData.opponent];
+          this.ai.color = ARCHETYPES[rungData.opponent].color;
+          this.refreshActorStats(this.ai);
+          this.applyCareerDifficulty();
+          this.showCareerIntro(rungData, () => this.continueCareerMatch());
+        }
+      };
+      if (beatenRung.winLine) {
+        const oppHex = '#' + ARCHETYPES[beatenRung.opponent].color.toString(16).padStart(6, '0');
+        this.showQuickLine(beatenRung.winLine, oppHex, advance);
+      } else {
+        advance();
+      }
+    } else {
+      this.showCareerEnd(false);
+    }
+  }
+
+  showCareerEnd(won) {
+    const items = [];
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.7).setDepth(40);
+    items.push(dim);
+
+    const rung = CAREER_LADDER[this.careerRung];
+    const oppArch = ARCHETYPES[rung.opponent];
+    const quote = won ? rung.winLine : rung.loseLine;
+
+    const titleText = won ? 'CHAMPION!' : 'RUN OVER';
+    const titleColor = won ? '#fbbf24' : '#FF6B6B';
+    const subText = won
+      ? `You cleared all ${CAREER_LADDER.length} rungs of the ladder.`
+      : `You reached rung ${this.careerRung + 1} of ${CAREER_LADDER.length}. Your progress is saved.`;
+
+    const title = this.add.text(W / 2, H / 2 - 56, titleText, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '36px', color: titleColor, fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.85);
+    items.push(title);
+    this.tweens.add({ targets: title, alpha: 1, scale: 1, duration: 420, ease: 'Back.Out' });
+
+    const sub = this.add.text(W / 2, H / 2 - 20, subText, {
+      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8', align: 'center',
+      wordWrap: { width: 520 }
+    }).setOrigin(0.5).setDepth(41).setAlpha(0);
+    items.push(sub);
+    this.tweens.add({ targets: sub, alpha: 0.9, duration: 300, delay: 150 });
+
+    if (quote) {
+      const oppHex = '#' + oppArch.color.toString(16).padStart(6, '0');
+      const quoteText = this.add.text(W / 2, H / 2 + 10, quote, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: oppHex, fontStyle: 'bold', align: 'center',
+        wordWrap: { width: 520 }
+      }).setOrigin(0.5).setDepth(41).setAlpha(0);
+      items.push(quoteText);
+      this.tweens.add({ targets: quoteText, alpha: 0.95, duration: 300, delay: 300 });
+    }
+
+    const btnW = 220, btnH = 60, btnColor = won ? COLOR.gold : COLOR.p1;
+    const container = this.add.container(W / 2, H / 2 + 75).setDepth(41).setAlpha(0).setScale(0.9);
+    items.push(container);
+    const glow = this.add.rectangle(0, 0, btnW + 14, btnH + 14, btnColor, 0).setStrokeStyle(3, btnColor, 0);
+    const btn = this.add.rectangle(0, 0, btnW, btnH, 0x11161f, 0.96).setStrokeStyle(3, btnColor, 0.9);
+    const label = this.add.text(0, 0, won ? 'PLAY AGAIN' : 'TRY AGAIN', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '17px', color: '#F2F4F7', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    container.add([glow, btn, label]);
+    btn.setInteractive({ useHandCursor: true });
+
+    const restart = () => { this.scene.restart(); };
+    btn.on('pointerover', () => {
+      this.tweens.add({ targets: container, scaleX: 1.05, scaleY: 1.05, duration: 140, ease: 'Cubic.Out' });
+      glow.setStrokeStyle(3, btnColor, 0.55);
+      btn.setFillStyle(0x1a2230, 1);
+    });
+    btn.on('pointerout', () => {
+      this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 140, ease: 'Cubic.Out' });
+      glow.setStrokeStyle(3, btnColor, 0);
+      btn.setFillStyle(0x11161f, 0.96);
+    });
+    btn.on('pointerdown', () => {
+      this.tweens.add({ targets: container, scaleX: 0.95, scaleY: 0.95, duration: 70, yoyo: true, onComplete: restart });
+    });
+    this.tweens.add({ targets: container, alpha: 1, scaleX: 1, scaleY: 1, duration: 380, delay: 300, ease: 'Back.Out' });
   }
 
   // ------------------------------------------------------------
@@ -1103,7 +1507,7 @@ class MainScene extends Phaser.Scene {
       const dPlayer = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, this.player.body.position.x, this.player.body.position.y);
       if (dPlayer < TACKLE_RANGE + 20) {
         ai.defendActionTimer += dt;
-        if (ai.defendActionTimer > 260) {
+        if (ai.defendActionTimer > (ai.decisionMs || 260)) {
           ai.defendActionTimer = 0;
           if (Math.random() < 0.5) this.tryTackle(ai, this.player);
           else this.tryShove(ai, this.player);
@@ -1116,7 +1520,7 @@ class MainScene extends Phaser.Scene {
       if (distToHoop < 260 && distToHoop > 60) {
         ai.shootWindupTimer += dt;
         targetX = ai.body.position.x;
-        if (ai.shootWindupTimer > 420) {
+        if (ai.shootWindupTimer > (ai.shotWindupMs || 420)) {
           ai.armSwing = 1;
           this.tweens.add({ targets: ai, armSwing: 0, duration: 260 });
           this.shootBall(ai);
@@ -1173,6 +1577,10 @@ class MainScene extends Phaser.Scene {
     }
     this.time.delayedCall(1000, () => {
       if (this.score.player >= WIN_SCORE || this.score.ai >= WIN_SCORE) {
+        if (this.careerActive) {
+          this.time.delayedCall(900, () => this.handleCareerMatchEnd(scorer));
+          return;
+        }
         this.time.delayedCall(1200, () => {
           this.score = { player: 0, ai: 0 };
           this.hudPlayerScore.setText('0');
