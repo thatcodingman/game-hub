@@ -216,72 +216,60 @@ class MainScene extends Phaser.Scene {
       g.fillCircle(lx, 20, 6);
     }
 
-    // crowd — 3 staggered bleacher rows of actual little people (head,
-    // torso, arms — some raised in a cheer), not dots or blobs
-    const rowCount = 3;
-    const rowH = 32;
-    const bandTop = courtTop - rowCount * rowH;
-    g.fillStyle(0x0a0e14, 1);
-    g.fillRect(0, bandTop, W, rowCount * rowH);
-
-    let seed = 7;
+    // crowd — two small arcade-style sections, one flanking each basket,
+    // built from the same mini-figure language as the actual roster
+    // (round head, blocky torso, colorful) rather than a full stadium band
+    const rosterColors = [0x24B7FF, 0xFF6B6B, 0xa78bfa, 0xf59e0b, 0x4ade80, 0xfbbf24, 0x3b82f6, 0xf1f5f9];
+    let seed = 11;
     const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
 
-    for (let row = 0; row < rowCount; row++) {
-      const rowY = bandTop + row * rowH + rowH * 0.68;
-      const spacing = 17;
-      const offset = (row % 2) * (spacing / 2);
-      // back rows sit slightly darker/smaller (depth), front row brightest
-      const depthScale = [0.75, 0.88, 1][row];
-      const baseShades = [
-        [0x2a3242, 0x323b4e, 0x3d4760],
-        [0x3a2828, 0x452e2e, 0x522f2f],
-        [0x243a2e, 0x2c4636, 0x335039],
-        [0x3a2f1e, 0x483a26, 0x554429]
-      ];
-      for (let bx = -offset; bx < W + spacing; bx += spacing) {
-        const jitter = Math.sin(bx * 0.7 + row * 3.1) * 1.5;
-        const cy = rowY + jitter * 0.3;
-        const palette = baseShades[Math.floor(rand() * baseShades.length)];
-        const shirt = palette[row];
-        const cheering = rand() < 0.18;
-        const s = depthScale;
+    const drawCrowdSection = (centerX, sectionW) => {
+      const rows = 2, rowH = 22, spacing = 15;
+      const bandTop = courtTop - rows * rowH - 2;
+      const left = centerX - sectionW / 2;
 
-        // legs (implied — just enough to sit them on the bench)
-        g.fillStyle(0x141a24, 1);
-        g.fillRect(bx - 3 * s, cy + 8 * s, 3 * s, 5 * s);
-        g.fillRect(bx + 0.5 * s, cy + 8 * s, 3 * s, 5 * s);
+      // low riser/platform under the section
+      g.fillStyle(0x11161f, 1);
+      g.fillRect(left - 6, bandTop - 4, sectionW + 12, rows * rowH + 8);
 
-        // torso — trapezoid (wider shoulders than waist)
-        g.fillStyle(shirt, 1);
-        g.fillTriangle(
-          bx - 6 * s, cy + 2 * s,
-          bx + 6 * s, cy + 2 * s,
-          bx + 4 * s, cy + 10 * s
-        );
-        g.fillTriangle(
-          bx - 6 * s, cy + 2 * s,
-          bx + 4 * s, cy + 10 * s,
-          bx - 4 * s, cy + 10 * s
-        );
+      for (let row = 0; row < rows; row++) {
+        const rowY = bandTop + row * rowH + rowH * 0.68;
+        const s = row === 0 ? 0.8 : 1; // back row a touch smaller
+        const offset = (row % 2) * (spacing / 2);
+        for (let bx = left + offset; bx < left + sectionW; bx += spacing) {
+          const c = rosterColors[Math.floor(rand() * rosterColors.length)];
+          const dark = Phaser.Display.Color.ValueToColor(c).darken(35).color;
+          const cheering = rand() < 0.25;
 
-        // arms — down normally, one or both raised for a "cheering" figure
-        g.lineStyle(2 * s, shirt, 1);
-        if (cheering) {
-          g.lineBetween(bx - 5 * s, cy + 3 * s, bx - 8 * s, cy - 5 * s);
-          g.lineBetween(bx + 5 * s, cy + 3 * s, bx + 8 * s, cy - 5 * s);
-        } else {
-          g.lineBetween(bx - 5 * s, cy + 3 * s, bx - 7 * s, cy + 8 * s);
-          g.lineBetween(bx + 5 * s, cy + 3 * s, bx + 7 * s, cy + 8 * s);
+          // legs
+          g.fillStyle(dark, 1);
+          g.fillRect(bx - 3 * s, rowY + 7 * s, 2.5 * s, 5 * s);
+          g.fillRect(bx + 0.5 * s, rowY + 7 * s, 2.5 * s, 5 * s);
+
+          // torso — small rounded block, matching the players' silhouette style
+          g.fillStyle(c, 1);
+          g.fillRoundedRect(bx - 5 * s, rowY - 1 * s, 10 * s, 9 * s, 2.5);
+
+          // arms — up if cheering
+          g.lineStyle(2 * s, dark, 1);
+          if (cheering) {
+            g.lineBetween(bx - 5 * s, rowY, bx - 8 * s, rowY - 7 * s);
+            g.lineBetween(bx + 5 * s, rowY, bx + 8 * s, rowY - 7 * s);
+          } else {
+            g.lineBetween(bx - 5 * s, rowY, bx - 6.5 * s, rowY + 6 * s);
+            g.lineBetween(bx + 5 * s, rowY, bx + 6.5 * s, rowY + 6 * s);
+          }
+
+          // head
+          g.fillStyle(c, 1);
+          g.fillCircle(bx, rowY - 4.5 * s, 4 * s);
         }
-
-        // neck + head
-        g.fillStyle(0x1a2028, 1);
-        g.fillRect(bx - 1.5 * s, cy - 1 * s, 3 * s, 3 * s);
-        g.fillStyle(0x232a36, 1);
-        g.fillCircle(bx, cy - 4 * s, 4.2 * s);
       }
-    }
+    };
+
+    drawCrowdSection(HOOP_L_X + 30, 210);
+    drawCrowdSection(HOOP_R_X - 30, 210);
+
     // railing separating stands from the court
     g.fillStyle(0x1a2230, 1);
     g.fillRect(0, courtTop - 4, W, 4);
