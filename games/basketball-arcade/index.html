@@ -66,6 +66,13 @@ const JUMP_VY = -11;
 const BASE_GRAB_RADIUS = 42;
 const BASE_SHOOT_VX = 8;
 const BASE_SHOOT_VY = -13;
+const TACKLE_RANGE = 46;
+const SHOVE_RANGE = 50;
+const TACKLE_SUCCESS = 0.3;
+const TACKLE_COOLDOWN = 550;
+const SHOVE_COOLDOWN = 350;
+const STUMBLE_DURATION = 500;      // successful tackle knocks the target down this long
+const WHIFF_STUMBLE_DURATION = 220; // a failed tackle briefly overextends the tackler
 
 // ---------------------------------------------------------------------
 // Round modifiers — Basket-Random-style chaos between rounds.
@@ -83,6 +90,18 @@ const MODIFIERS = [
   { id: 'tinyHoop',  name: 'TINY HOOP',    desc: 'The rim shrinks.' },
   { id: 'doublePts', name: 'DOUBLE POINTS',desc: 'Next basket counts double.' }
 ];
+
+// ---------------------------------------------------------------------
+// Physics archetypes — real per-actor stat multipliers (speed, jump,
+// steal/grab reach, shot power, and Matter body mass) so Jett and Brick
+// genuinely move and collide differently, not just look different.
+// ---------------------------------------------------------------------
+const ARCHETYPES = {
+  jett:  { id: 'jett',  name: 'JETT',  color: 0x24B7FF, speed: 1.15, jump: 1.20, steal: 1.05, shot: 0.90, mass: 0.85,
+           tag: 'Fast & slippery' },
+  brick: { id: 'brick', name: 'BRICK', color: 0xFF6B6B, speed: 0.80, jump: 0.80, steal: 0.90, shot: 1.10, mass: 1.35,
+           tag: 'Heavy & powerful' }
+};
 
 class MainScene extends Phaser.Scene {
   constructor() { super('main'); }
@@ -155,29 +174,19 @@ class MainScene extends Phaser.Scene {
     this.gravityScale = 1;
     this.activeModifier = MODIFIERS[0];
 
-    this.resetPositions();
-
-    // ---- HUD ----
-    this.score = { player: 0, ai: 0 };
-    this.matchOver = false;
-    this.buildHUD();
-    this.showRoundBanner(true);
-
-    this.controlsHint = this.add.text(W / 2, H - 16, '← / →  move     ↑ / W  jump     F / Space  action', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
-    }).setOrigin(0.5, 1).setDepth(20).setAlpha(0.85);
-    this.tweens.add({ targets: this.controlsHint, alpha: 0, delay: 3200, duration: 900 });
-
     // Arrow keys are the default; WASD/Space work too, both bound at once
     // so either scheme just works with no menu to configure.
     this.keys = this.input.keyboard.addKeys({
-      left: 'A', right: 'D', jump: 'W', action: 'F',
+      left: 'A', right: 'D', jump: 'W', action: 'F', shove: 'E',
       leftArrow: 'LEFT', rightArrow: 'RIGHT', upArrow: 'UP', space: 'SPACE'
     });
-    const doAction = () => this.tryAction();
+    const doShoot = () => { if (this.ballCarrier === 'player') this.shootBall(this.player); };
+    const doTackle = () => this.tryTackle(this.player, this.ai);
+    const doShove = () => this.tryShove(this.player, this.ai);
     const doJump = () => this.tryJump(this.player);
-    this.keys.action.on('down', doAction);
-    this.keys.space.on('down', doAction);
+    this.keys.space.on('down', doShoot);
+    this.keys.action.on('down', doTackle);
+    this.keys.shove.on('down', doShove);
     this.keys.jump.on('down', doJump);
     this.keys.upArrow.on('down', doJump);
 
@@ -195,6 +204,105 @@ class MainScene extends Phaser.Scene {
         if (labels === 'ball|ground') this.playSfx('bounce');
       }
     });
+
+    // ---- Archetype select screen gates the actual match ----
+    this.selecting = true;
+    this.matchOver = true; // keep game logic idle until startMatch()
+    this.buildSelectScreen();
+  }
+
+  // ------------------------------------------------------------
+  // Archetype select screen — pick Jett or Brick, AI gets the other
+  // ------------------------------------------------------------
+  buildSelectScreen() {
+    const items = [];
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.55).setDepth(40);
+    items.push(dim);
+
+    const title = this.add.text(W / 2, H / 2 - 150, 'CHOOSE YOUR PLAYER', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(41);
+    items.push(title);
+
+    const cardW = 260, cardH = 260;
+    const positions = [{ key: 'jett', x: W / 2 - 160 }, { key: 'brick', x: W / 2 + 160 }];
+
+    positions.forEach(({ key, x }) => {
+      const arch = ARCHETYPES[key];
+      const card = this.add.rectangle(x, H / 2 + 10, cardW, cardH, 0x11161f, 0.95)
+        .setStrokeStyle(3, arch.color).setDepth(41).setInteractive({ useHandCursor: true });
+      items.push(card);
+
+      const swatch = this.add.circle(x, H / 2 - 60, 34, arch.color).setDepth(42);
+      items.push(swatch);
+
+      const name = this.add.text(x, H / 2 - 5, arch.name, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(42);
+      items.push(name);
+
+      const tag = this.add.text(x, H / 2 + 26, arch.tag, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8'
+      }).setOrigin(0.5).setDepth(42);
+      items.push(tag);
+
+      const stats = this.add.text(x, H / 2 + 55,
+        `SPEED ${Math.round(arch.speed * 100)}%\nSHOT  ${Math.round(arch.shot * 100)}%\nJUMP  ${Math.round(arch.jump * 100)}%`, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#cbd5e1', align: 'center', lineSpacing: 4
+      }).setOrigin(0.5, 0).setDepth(42);
+      items.push(stats);
+
+      const pick = () => {
+        if (!this.selecting) return;
+        this.selecting = false;
+        items.forEach(o => o.destroy());
+        const otherKey = key === 'jett' ? 'brick' : 'jett';
+        this.player.arch = ARCHETYPES[key];
+        this.ai.arch = ARCHETYPES[otherKey];
+        this.player.color = ARCHETYPES[key].color;
+        this.ai.color = ARCHETYPES[otherKey].color;
+        this.refreshActorStats(this.player);
+        this.refreshActorStats(this.ai);
+        this.startMatch();
+      };
+      card.on('pointerdown', pick);
+      card.on('pointerover', () => card.setFillStyle(0x1a2230, 1));
+      card.on('pointerout', () => card.setFillStyle(0x11161f, 0.95));
+    });
+
+    const hint = this.add.text(W / 2, H / 2 + 170, 'Click a card to pick your player', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#64748b'
+    }).setOrigin(0.5).setDepth(41);
+    items.push(hint);
+  }
+
+  // Real per-actor stat derivation from the chosen archetype, layered on
+  // top of the current (possibly modifier-scaled) baseline values.
+  refreshActorStats(actor) {
+    const arch = actor.arch;
+    if (!arch) return;
+    actor.speed = PLAYER_SPEED * arch.speed;
+    actor.jumpVy = JUMP_VY * arch.jump;
+    actor.grabRadius = this.grabRadius * arch.steal;
+    actor.shotMult = arch.shot;
+    if (actor.baseMass) {
+      this.matter.body.setMass(actor.body, actor.baseMass * arch.mass);
+    }
+  }
+
+  startMatch() {
+    this.resetPositions();
+
+    // ---- HUD ----
+    this.score = { player: 0, ai: 0 };
+    this.matchOver = false;
+    this.buildHUD();
+    this.showRoundBanner(true);
+
+    this.controlsHint = this.add.text(W / 2, H - 16, '← / →  move     ↑ / W  jump     Space  shoot     F  tackle     E  shove', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+    }).setOrigin(0.5, 1).setDepth(20).setAlpha(0.85);
+    this.tweens.add({ targets: this.controlsHint, alpha: 0, delay: 3200, duration: 900 });
   }
 
   // ------------------------------------------------------------
@@ -391,13 +499,20 @@ class MainScene extends Phaser.Scene {
       friction: 0.05, frictionAir: 0.015, restitution: 0.1, label, inertia: Infinity
     });
     const gfx = this.add.graphics().setDepth(4);
-    return { body, gfx, color, facing: label === 'player' ? 1 : -1, wasGrounded: true, armSwing: 0, grounded: true };
+    return {
+      body, gfx, color, facing: label === 'player' ? 1 : -1, wasGrounded: true, armSwing: 0, grounded: true,
+      baseMass: body.mass, tackleCooldown: 0, shoveCooldown: 0, stumbleTimer: 0, defendActionTimer: 0
+    };
   }
 
   drawActor(actor) {
-    const { x, y } = actor.body.position;
+    const stumbling = actor.stumbleTimer > 0;
+    const jitter = stumbling ? (Math.random() - 0.5) * 5 : 0;
+    const x = actor.body.position.x + jitter;
+    const y = actor.body.position.y;
     const g = actor.gfx;
     g.clear();
+    g.setAlpha(stumbling ? 0.6 : 1);
     const scale = actor.scale || 1;
     const c = actor.color;
     const dark = Phaser.Display.Color.ValueToColor(c).darken(30).color;
@@ -503,18 +618,23 @@ class MainScene extends Phaser.Scene {
   // ------------------------------------------------------------
   buildHUD() {
     const midX = W / 2;
-    this.hudPlayerLabel = this.add.text(midX - 170, 18, 'YOU', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#24B7FF', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
-    this.hudPlayerScore = this.add.text(midX - 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: '#24B7FF', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    const pHex = '#' + this.player.color.toString(16).padStart(6, '0');
+    const aHex = '#' + this.ai.color.toString(16).padStart(6, '0');
+    const pName = this.player.arch ? this.player.arch.name : 'YOU';
+    const aName = this.ai.arch ? this.ai.arch.name : 'AI';
+    this.hudPlayerLabel = this.add.text(midX - 170, 18, pName, { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: pHex, fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudPlayerScore = this.add.text(midX - 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: pHex, fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
     this.hudDot = this.add.text(midX, 44, '•', { fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#475569' }).setOrigin(0.5, 0).setDepth(20);
-    this.hudAiLabel = this.add.text(midX + 170, 18, 'AI', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#FF6B6B', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
-    this.hudAiScore = this.add.text(midX + 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: '#FF6B6B', fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudAiLabel = this.add.text(midX + 170, 18, aName, { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: aHex, fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
+    this.hudAiScore = this.add.text(midX + 170, 34, '0', { fontFamily: 'system-ui, sans-serif', fontSize: '46px', color: aHex, fontStyle: 'bold' }).setOrigin(0.5, 0).setDepth(20);
     this.msgText = this.add.text(W / 2, H / 2 - 40, '', { fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#fbbf24', fontStyle: 'bold' }).setOrigin(0.5).setDepth(30);
     this.roundText = this.add.text(W / 2, 90, '', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#fbbf24', fontStyle: 'bold' }).setOrigin(0.5).setDepth(30).setAlpha(0);
   }
 
   popScore(scorer, points) {
     const x = scorer === 'player' ? W / 2 - 170 : W / 2 + 170;
-    const color = scorer === 'player' ? '#24B7FF' : '#FF6B6B';
+    const colorNum = scorer === 'player' ? this.player.color : this.ai.color;
+    const color = '#' + colorNum.toString(16).padStart(6, '0');
     const pop = this.add.text(x + 38, 38, '+' + points, { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color, fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(21);
     this.tweens.add({ targets: pop, y: pop.y - 20, alpha: 0, duration: 700, onComplete: () => pop.destroy() });
     const scoreLabel = scorer === 'player' ? this.hudPlayerScore : this.hudAiScore;
@@ -575,6 +695,10 @@ class MainScene extends Phaser.Scene {
         break;
       default: break;
     }
+
+    // re-derive per-actor grab radius etc. now that the baseline moved
+    if (this.player && this.player.arch) this.refreshActorStats(this.player);
+    if (this.ai && this.ai.arch) this.refreshActorStats(this.ai);
   }
 
   rollModifier() {
@@ -595,6 +719,9 @@ class MainScene extends Phaser.Scene {
     this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
     this.ballCarrier = null;
     this.ai.state = 'SEEK';
+    [this.player, this.ai].forEach(a => {
+      a.tackleCooldown = 0; a.shoveCooldown = 0; a.stumbleTimer = 0; a.defendActionTimer = 0;
+    });
   }
 
   playSfx(name) {
@@ -608,62 +735,87 @@ class MainScene extends Phaser.Scene {
   }
 
   tryJump(actor) {
-    if (this.matchOver) return;
+    if (this.matchOver || this.selecting || actor.stumbleTimer > 0) return;
     if (Math.abs(actor.body.velocity.y) < 0.3) { // roughly grounded
-      this.matter.body.setVelocity(actor.body, { x: actor.body.velocity.x, y: JUMP_VY });
+      const jumpVy = actor.jumpVy || JUMP_VY;
+      this.matter.body.setVelocity(actor.body, { x: actor.body.velocity.x, y: jumpVy });
       this.spawnDust(actor.body.position.x, GROUND_Y - 2);
     }
   }
 
-  // Single contextual action: grab if free ball in range, shoot if carrying,
-  // steal-swat if opponent is carrying and in range. Every press swings the arm.
-  tryAction() {
-    if (this.matchOver) return;
-    const p = this.player;
-    p.armSwing = 1;
-    this.tweens.add({ targets: p, armSwing: 0, duration: 260, ease: 'Cubic.Out' });
-
-    if (this.ballCarrier === 'player') {
-      this.shootBall(p);
-      return;
-    }
-
-    const dBall = Phaser.Math.Distance.Between(p.body.position.x, p.body.position.y, this.ball.position.x, this.ball.position.y);
-    if (!this.ballCarrier && dBall < this.grabRadius) {
-      // not perfectly reliable — a slightly-off swing can whiff, keeps the ball
-      // from being too easy to control per the chaos-first direction
-      const missChance = 0.08;
-      if (Math.random() > missChance) {
-        this.ballCarrier = 'player';
+  // Ball possession is now automatic — this just checks proximity each frame
+  // and hands the ball to whichever actor's body is actually touching it.
+  updateAutoCatch() {
+    if (this.ballCarrier || this.ballScoredCooldown || this.matchOver || this.selecting) return;
+    const b = this.ball;
+    for (const actor of [this.player, this.ai]) {
+      if (actor.stumbleTimer > 0) continue; // can't scoop it up while knocked down
+      const catchRadius = (actor.grabRadius || this.grabRadius) * 0.75;
+      const d = Phaser.Math.Distance.Between(actor.body.position.x, actor.body.position.y, b.position.x, b.position.y);
+      if (d < catchRadius) {
+        this.ballCarrier = actor.body.label;
         this.playSfx('grab');
-        this.spawnFlash(this.ball.position.x, this.ball.position.y, COLOR.p1);
-      } else {
-        this.playSfx('whiff');
+        this.spawnFlash(b.position.x, b.position.y, actor.color);
+        return;
       }
-      return;
     }
+  }
 
-    if (this.ballCarrier === 'ai') {
-      const dOpp = Phaser.Math.Distance.Between(p.body.position.x, p.body.position.y, this.ai.body.position.x, this.ai.body.position.y);
-      if (dOpp < this.grabRadius + 10) {
-        // steal-swat: chance to jar it loose
-        if (Math.random() > 0.5) {
-          this.dropBall(true);
-          this.playSfx('grab');
-          this.spawnFlash(this.ai.body.position.x, this.ai.body.position.y, COLOR.p1);
-        } else {
-          this.playSfx('whiff');
-        }
-      }
+  // Tackle: higher risk, bigger payoff — ~30% chance to land, but a hit
+  // guarantees a knockdown and strips the ball if the target was carrying.
+  // A miss briefly overextends the tackler instead.
+  tryTackle(actor, opponent) {
+    if (this.matchOver || this.selecting) return;
+    if (actor.tackleCooldown > 0 || actor.stumbleTimer > 0) return;
+    const d = Phaser.Math.Distance.Between(actor.body.position.x, actor.body.position.y, opponent.body.position.x, opponent.body.position.y);
+    if (d > TACKLE_RANGE) return;
+
+    actor.tackleCooldown = TACKLE_COOLDOWN;
+    actor.armSwing = 1;
+    this.tweens.add({ targets: actor, armSwing: 0, duration: 260, ease: 'Cubic.Out' });
+
+    if (Math.random() < TACKLE_SUCCESS) {
+      opponent.stumbleTimer = STUMBLE_DURATION;
+      const dir = opponent.body.position.x >= actor.body.position.x ? 1 : -1;
+      this.matter.body.setVelocity(opponent.body, { x: dir * 3.5, y: -2.2 });
+      this.shakeCamera(4);
+      this.spawnFlash(opponent.body.position.x, opponent.body.position.y, COLOR.white);
+      this.playSfx('collision');
+      if (this.ballCarrier === opponent.body.label) this.dropBall(true);
+    } else {
+      actor.stumbleTimer = WHIFF_STUMBLE_DURATION;
+      this.playSfx('whiff');
+    }
+  }
+
+  // Shove: reliable and always connects in range, but it's just a knockback —
+  // no guaranteed knockdown, and only a modest chance to jar the ball loose.
+  tryShove(actor, opponent) {
+    if (this.matchOver || this.selecting) return;
+    if (actor.shoveCooldown > 0 || actor.stumbleTimer > 0) return;
+    const d = Phaser.Math.Distance.Between(actor.body.position.x, actor.body.position.y, opponent.body.position.x, opponent.body.position.y);
+    if (d > SHOVE_RANGE) return;
+
+    actor.shoveCooldown = SHOVE_COOLDOWN;
+    actor.armSwing = 1;
+    this.tweens.add({ targets: actor, armSwing: 0, duration: 220, ease: 'Cubic.Out' });
+
+    const dir = opponent.body.position.x >= actor.body.position.x ? 1 : -1;
+    this.matter.body.setVelocity(opponent.body, { x: dir * 6, y: -1.5 });
+    this.spawnDust(opponent.body.position.x, GROUND_Y - 2);
+    this.playSfx('bounce');
+    if (this.ballCarrier === opponent.body.label && Math.random() < 0.2) {
+      this.dropBall(true);
     }
   }
 
   shootBall(actor) {
     // shot isn't perfectly controllable — a bit of spread per the "not easy
     // to line up perfectly" direction
+    const shotMult = actor.shotMult || 1;
     const spread = (Math.random() - 0.5) * 1.6;
-    const vx = actor.facing * this.shootVx + actor.body.velocity.x * 0.3 + spread;
-    const vy = this.shootVy + (Math.random() - 0.5) * 1.2;
+    const vx = actor.facing * this.shootVx * shotMult + actor.body.velocity.x * 0.3 + spread;
+    const vy = this.shootVy * shotMult + (Math.random() - 0.5) * 1.2;
     this.matter.body.setVelocity(this.ball, { x: vx, y: vy });
     this.ballCarrier = null;
     this.ballScoredCooldown = false;
@@ -679,6 +831,11 @@ class MainScene extends Phaser.Scene {
     const ai = this.ai;
     const ball = this.ball;
 
+    if (ai.stumbleTimer > 0) {
+      this.matter.body.setVelocity(ai.body, { x: 0, y: ai.body.velocity.y });
+      return;
+    }
+
     if (this.ballCarrier === 'ai') ai.state = 'ATTACK';
     else if (this.ballCarrier === 'player') ai.state = 'DEFEND';
     else ai.state = 'SEEK';
@@ -687,22 +844,22 @@ class MainScene extends Phaser.Scene {
     let wantsJump = false;
 
     if (ai.state === 'SEEK') {
+      // ball possession is automatic on contact now — AI just needs to get there
       targetX = ball.position.x;
       if (ball.position.y < ai.body.position.y - 30) wantsJump = true;
-      const d = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, ball.position.x, ball.position.y);
-      if (d < this.grabRadius) {
-        ai.reactionTimer += dt;
-        if (ai.reactionTimer > 180) {
-          ai.armSwing = 1;
-          this.tweens.add({ targets: ai, armSwing: 0, duration: 260 });
-          this.ballCarrier = 'ai';
-          this.playSfx('grab');
-          this.spawnFlash(ball.position.x, ball.position.y, COLOR.p2);
-          ai.reactionTimer = 0;
-        }
-      } else ai.reactionTimer = 0;
     } else if (ai.state === 'DEFEND') {
       targetX = Phaser.Math.Clamp(this.player.body.position.x + 90, 400, HOOP_R_X - 60);
+      const dPlayer = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, this.player.body.position.x, this.player.body.position.y);
+      if (dPlayer < TACKLE_RANGE + 20) {
+        ai.defendActionTimer += dt;
+        if (ai.defendActionTimer > 260) {
+          ai.defendActionTimer = 0;
+          if (Math.random() < 0.5) this.tryTackle(ai, this.player);
+          else this.tryShove(ai, this.player);
+        }
+      } else {
+        ai.defendActionTimer = 0;
+      }
     } else if (ai.state === 'ATTACK') {
       const distToHoop = ai.body.position.x - HOOP_L_X;
       if (distToHoop < 260 && distToHoop > 60) {
@@ -725,7 +882,8 @@ class MainScene extends Phaser.Scene {
     const dx = targetX - ai.body.position.x;
     if (Math.abs(dx) > 4) {
       ai.facing = dx > 0 ? 1 : -1;
-      this.matter.body.setVelocity(ai.body, { x: ai.facing * PLAYER_SPEED * 0.85, y: ai.body.velocity.y });
+      const aiSpeed = ai.speed || PLAYER_SPEED;
+      this.matter.body.setVelocity(ai.body, { x: ai.facing * aiSpeed * 0.85, y: ai.body.velocity.y });
     } else {
       this.matter.body.setVelocity(ai.body, { x: 0, y: ai.body.velocity.y });
     }
@@ -787,13 +945,31 @@ class MainScene extends Phaser.Scene {
   }
 
   update(time, dt) {
+    if (this.selecting) {
+      this.drawActor(this.player);
+      this.drawActor(this.ai);
+      this.drawBall();
+      this.hoops.forEach(h => this.drawNet(h));
+      return;
+    }
+
     if (!this.matchOver) {
+      [this.player, this.ai].forEach(a => {
+        a.tackleCooldown = Math.max(0, (a.tackleCooldown || 0) - dt);
+        a.shoveCooldown = Math.max(0, (a.shoveCooldown || 0) - dt);
+        a.stumbleTimer = Math.max(0, (a.stumbleTimer || 0) - dt);
+      });
+
+      const playerSpeed = this.player.speed || PLAYER_SPEED;
       let vx = 0;
-      if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -PLAYER_SPEED; this.player.facing = -1; }
-      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = PLAYER_SPEED; this.player.facing = 1; }
+      if (this.player.stumbleTimer <= 0) {
+        if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -playerSpeed; this.player.facing = -1; }
+        else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = playerSpeed; this.player.facing = 1; }
+      }
       this.matter.body.setVelocity(this.player.body, { x: vx, y: this.player.body.velocity.y });
 
       this.updateAI(dt);
+      this.updateAutoCatch();
 
       if (this.ballCarrier) this.lastToTouch = this.ballCarrier;
 
