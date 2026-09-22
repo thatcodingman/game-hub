@@ -69,10 +69,10 @@ const BASE_SHOOT_VY = -13;
 const TACKLE_RANGE = 46;
 const SHOVE_RANGE = 50;
 const TACKLE_SUCCESS = 0.3;
-const TACKLE_COOLDOWN = 550;
+const TACKLE_COOLDOWN = 700;
 const SHOVE_COOLDOWN = 350;
-const STUMBLE_DURATION = 500;      // successful tackle knocks the target down this long
-const WHIFF_STUMBLE_DURATION = 220; // a failed tackle briefly overextends the tackler
+const TACKLE_DOWN_DURATION = 700;  // a landed tackle: both players go down, then get up together
+const WHIFF_STUMBLE_DURATION = 220; // a failed tackle briefly overextends the tackler (stays standing)
 
 // ---------------------------------------------------------------------
 // Round modifiers — Basket-Random-style chaos between rounds.
@@ -216,41 +216,83 @@ class MainScene extends Phaser.Scene {
   // ------------------------------------------------------------
   buildSelectScreen() {
     const items = [];
-    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.55).setDepth(40);
+
+    // dim + soft vignette instead of a flat overlay
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.6).setDepth(40);
     items.push(dim);
+    const vignette = this.add.graphics().setDepth(40);
+    vignette.fillStyle(0x000000, 0.001);
+    vignette.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0, 0, 0.35, 0.35);
+    vignette.fillCircle(W / 2, H / 2, 340);
+    items.push(vignette);
 
-    const title = this.add.text(W / 2, H / 2 - 150, 'CHOOSE YOUR PLAYER', {
-      fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
-    }).setOrigin(0.5).setDepth(41);
+    const titleGlow = this.add.text(W / 2, H / 2 - 152, 'CHOOSE YOUR PLAYER', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: '#fbbf24', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(40).setAlpha(0.35).setScale(1.08);
+    items.push(titleGlow);
+    const title = this.add.text(W / 2, H / 2 - 152, 'CHOOSE YOUR PLAYER', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: '#F2F4F7', fontStyle: 'bold', letterSpacing: 1
+    }).setOrigin(0.5).setDepth(41).setAlpha(0).setScale(0.9);
     items.push(title);
+    this.tweens.add({ targets: title, alpha: 1, scale: 1, duration: 380, ease: 'Back.Out' });
+    this.tweens.add({
+      targets: titleGlow, alpha: { from: 0.15, to: 0.4 }, scale: { from: 1.05, to: 1.12 },
+      duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.InOut'
+    });
 
-    const cardW = 260, cardH = 260;
-    const positions = [{ key: 'jett', x: W / 2 - 160 }, { key: 'brick', x: W / 2 + 160 }];
+    // pulsing VS badge between the two cards
+    const vs = this.add.text(W / 2, H / 2 + 10, 'VS', {
+      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#475569', fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(42).setAlpha(0);
+    items.push(vs);
+    this.tweens.add({ targets: vs, alpha: 0.8, duration: 300, delay: 500 });
+    this.tweens.add({ targets: vs, scale: { from: 1, to: 1.2 }, duration: 700, delay: 500, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
 
-    positions.forEach(({ key, x }) => {
+    const cardW = 250, cardH = 270;
+    const positions = [{ key: 'jett', x: W / 2 - 155 }, { key: 'brick', x: W / 2 + 155 }];
+
+    positions.forEach(({ key, x }, idx) => {
       const arch = ARCHETYPES[key];
-      const card = this.add.rectangle(x, H / 2 + 10, cardW, cardH, 0x11161f, 0.95)
-        .setStrokeStyle(3, arch.color).setDepth(41).setInteractive({ useHandCursor: true });
-      items.push(card);
+      const baseY = H / 2 + 14;
+      const container = this.add.container(x, baseY).setDepth(41).setAlpha(0).setScale(0.82);
+      items.push(container);
 
-      const swatch = this.add.circle(x, H / 2 - 60, 34, arch.color).setDepth(42);
-      items.push(swatch);
+      const glow = this.add.rectangle(0, 0, cardW + 16, cardH + 16, arch.color, 0).setStrokeStyle(3, arch.color, 0);
+      const card = this.add.rectangle(0, 0, cardW, cardH, 0x11161f, 0.96).setStrokeStyle(3, arch.color, 0.9);
 
-      const name = this.add.text(x, H / 2 - 5, arch.name, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#F2F4F7', fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(42);
-      items.push(name);
+      const avatarG = this.add.graphics();
+      this.drawAvatarFace(avatarG, 0, -78, 36, key);
 
-      const tag = this.add.text(x, H / 2 + 26, arch.tag, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8'
-      }).setOrigin(0.5).setDepth(42);
-      items.push(tag);
+      const name = this.add.text(0, -22, arch.name, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '25px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5);
 
-      const stats = this.add.text(x, H / 2 + 55,
-        `SPEED ${Math.round(arch.speed * 100)}%\nSHOT  ${Math.round(arch.shot * 100)}%\nJUMP  ${Math.round(arch.jump * 100)}%`, {
-        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#cbd5e1', align: 'center', lineSpacing: 4
-      }).setOrigin(0.5, 0).setDepth(42);
-      items.push(stats);
+      const tag = this.add.text(0, 8, arch.tag, {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+      }).setOrigin(0.5);
+
+      const statBars = this.add.graphics();
+      const statRows = [
+        ['SPEED', arch.speed], ['SHOT', arch.shot], ['JUMP', arch.jump]
+      ];
+      statRows.forEach(([label, val], i) => {
+        const ry = 34 + i * 22;
+        const t = this.add.text(-92, ry, label, { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#94a3b8' }).setOrigin(0, 0.5);
+        container.add(t);
+        const trackW = 100;
+        statBars.fillStyle(0x1f2937, 1);
+        statBars.fillRoundedRect(-30, ry - 5, trackW, 10, 5);
+        const pct = Phaser.Math.Clamp(val / 1.4, 0.15, 1);
+        statBars.fillStyle(arch.color, 1);
+        statBars.fillRoundedRect(-30, ry - 5, trackW * pct, 10, 5);
+      });
+
+      const hint2 = this.add.text(0, cardH / 2 - 20, 'CLICK TO PICK', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(0.5).setAlpha(0.7);
+
+      container.add([glow, card, avatarG, name, tag, statBars, hint2]);
+      card.setInteractive({ useHandCursor: true });
 
       const pick = () => {
         if (!this.selecting) return;
@@ -265,15 +307,88 @@ class MainScene extends Phaser.Scene {
         this.refreshActorStats(this.ai);
         this.startMatch();
       };
-      card.on('pointerdown', pick);
-      card.on('pointerover', () => card.setFillStyle(0x1a2230, 1));
-      card.on('pointerout', () => card.setFillStyle(0x11161f, 0.95));
+
+      card.on('pointerover', () => {
+        this.tweens.add({ targets: container, scaleX: 1.05, scaleY: 1.05, y: baseY - 8, duration: 150, ease: 'Cubic.Out' });
+        glow.setStrokeStyle(3, arch.color, 0.55);
+        card.setFillStyle(0x1a2230, 1);
+      });
+      card.on('pointerout', () => {
+        this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, y: baseY, duration: 150, ease: 'Cubic.Out' });
+        glow.setStrokeStyle(3, arch.color, 0);
+        card.setFillStyle(0x11161f, 0.96);
+      });
+      card.on('pointerdown', () => {
+        this.tweens.add({ targets: container, scaleX: 0.95, scaleY: 0.95, duration: 70, yoyo: true, onComplete: pick });
+      });
+
+      this.tweens.add({
+        targets: container, alpha: 1, scaleX: 1, scaleY: 1,
+        duration: 420, delay: 150 + idx * 130, ease: 'Back.Out'
+      });
     });
 
-    const hint = this.add.text(W / 2, H / 2 + 170, 'Click a card to pick your player', {
+    const hint = this.add.text(W / 2, H / 2 + 178, 'Click a card to pick your player', {
       fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#64748b'
-    }).setOrigin(0.5).setDepth(41);
+    }).setOrigin(0.5).setDepth(41).setAlpha(0);
     items.push(hint);
+    this.tweens.add({ targets: hint, alpha: 0.8, duration: 400, delay: 500 });
+    this.tweens.add({ targets: hint, y: { from: H / 2 + 178, to: H / 2 + 184 }, duration: 700, delay: 500, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+  }
+
+  // Drawn "face" avatar for the select screen — sphere-shaded circle with
+  // archetype-specific expression, since the game draws everything (no
+  // external character art), matching the same silhouette style as drawActor.
+  drawAvatarFace(g, x, y, r, key) {
+    const arch = ARCHETYPES[key];
+    const c = arch.color;
+    const dark = Phaser.Display.Color.ValueToColor(c).darken(35).color;
+    const light = Phaser.Display.Color.ValueToColor(c).lighten(22).color;
+
+    g.fillStyle(c, 1);
+    g.fillCircle(x, y, r);
+    g.fillStyle(light, 0.35);
+    g.fillEllipse(x - r * 0.32, y - r * 0.38, r * 0.9, r * 0.6);
+    g.lineStyle(3, dark, 0.6);
+    g.strokeCircle(x, y, r);
+
+    const eyeY = y - r * 0.05;
+    const eyeSpacing = r * 0.38;
+
+    if (key === 'jett') {
+      // confident: raked eyebrows, sly grin
+      g.lineStyle(3, dark, 1);
+      g.lineBetween(x - eyeSpacing - 7, eyeY - 12, x - eyeSpacing + 6, eyeY - 16);
+      g.lineBetween(x + eyeSpacing - 6, eyeY - 15, x + eyeSpacing + 7, eyeY - 10);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY, 6);
+      g.fillCircle(x + eyeSpacing, eyeY, 6);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing + 2, eyeY, 3);
+      g.fillCircle(x + eyeSpacing + 2, eyeY, 3);
+      g.lineStyle(3, dark, 1);
+      g.beginPath();
+      g.arc(x, y + r * 0.32, r * 0.32, Phaser.Math.DegToRad(15), Phaser.Math.DegToRad(150), false);
+      g.strokePath();
+    } else {
+      // brick: furrowed brows, gritted-teeth determination
+      g.lineStyle(4, dark, 1);
+      g.lineBetween(x - eyeSpacing - 9, eyeY - 7, x - eyeSpacing + 4, eyeY - 15);
+      g.lineBetween(x + eyeSpacing + 9, eyeY - 7, x + eyeSpacing - 4, eyeY - 15);
+      g.fillStyle(COLOR.white, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 2, 5.5);
+      g.fillCircle(x + eyeSpacing, eyeY + 2, 5.5);
+      g.fillStyle(0x0f172a, 1);
+      g.fillCircle(x - eyeSpacing, eyeY + 2, 2.6);
+      g.fillCircle(x + eyeSpacing, eyeY + 2, 2.6);
+      g.fillStyle(COLOR.white, 1);
+      g.fillRoundedRect(x - r * 0.34, y + r * 0.26, r * 0.68, r * 0.2, 2);
+      g.lineStyle(1.5, dark, 0.85);
+      for (let i = -2; i <= 2; i++) {
+        const lx = x + i * (r * 0.13);
+        g.lineBetween(lx, y + r * 0.26, lx, y + r * 0.26 + r * 0.2);
+      }
+    }
   }
 
   // Real per-actor stat derivation from the chosen archetype, layered on
@@ -501,11 +616,12 @@ class MainScene extends Phaser.Scene {
     const gfx = this.add.graphics().setDepth(4);
     return {
       body, gfx, color, facing: label === 'player' ? 1 : -1, wasGrounded: true, armSwing: 0, grounded: true,
-      baseMass: body.mass, tackleCooldown: 0, shoveCooldown: 0, stumbleTimer: 0, defendActionTimer: 0
+      baseMass: body.mass, tackleCooldown: 0, shoveCooldown: 0, stumbleTimer: 0, tackleDownTimer: 0, defendActionTimer: 0
     };
   }
 
   drawActor(actor) {
+    if (actor.tackleDownTimer > 0) { this.drawActorDown(actor); return; }
     const stumbling = actor.stumbleTimer > 0;
     const jitter = stumbling ? (Math.random() - 0.5) * 5 : 0;
     const x = actor.body.position.x + jitter;
@@ -559,6 +675,54 @@ class MainScene extends Phaser.Scene {
     g.fillCircle(eyeX + actor.facing * 3 * scale, y - 31 * scale, 3 * scale);
     g.fillStyle(0x0f172a, 1);
     g.fillCircle(eyeX + actor.facing * 4 * scale, y - 31 * scale, 1.4 * scale);
+  }
+
+  // Lying-down pose used while tackleDownTimer is active — a flattened
+  // silhouette on the ground with a little dizzy-stars spin above the head,
+  // so a landed tackle actually reads as "both players down for a beat"
+  // instead of just freezing the standing sprite.
+  drawActorDown(actor) {
+    const x = actor.body.position.x;
+    const groundY = GROUND_Y - 4;
+    const g = actor.gfx;
+    g.clear();
+    const c = actor.color;
+    const dark = Phaser.Display.Color.ValueToColor(c).darken(30).color;
+    const dir = actor.facing || 1;
+
+    g.fillStyle(0x000000, 0.35);
+    g.fillEllipse(x, groundY + 5, 48, 10);
+
+    // legs
+    g.lineStyle(7, dark, 1);
+    g.lineBetween(x - dir * 16, groundY - 2, x - dir * 30, groundY + 6);
+    g.lineBetween(x - dir * 10, groundY - 2, x - dir * 22, groundY - 8);
+
+    // torso, lying flat
+    g.fillStyle(c, 1);
+    g.fillRoundedRect(x - 18, groundY - 10, 36, 15, 6);
+
+    // arm
+    g.lineStyle(5, dark, 1);
+    g.lineBetween(x + dir * 6, groundY - 4, x + dir * 18, groundY + 6);
+
+    // head
+    g.fillStyle(c, 1);
+    g.fillCircle(x + dir * 24, groundY - 4, 10);
+    g.fillStyle(COLOR.white, 1);
+    g.fillCircle(x + dir * 27, groundY - 6, 2.6);
+    g.fillStyle(0x0f172a, 1);
+    g.fillCircle(x + dir * 28, groundY - 6, 1.3);
+
+    // dizzy stars circling above the head
+    const spin = (this.time.now / 140) % (Math.PI * 2);
+    for (let i = 0; i < 3; i++) {
+      const a = spin + i * (Math.PI * 2 / 3);
+      const sx = x + dir * 24 + Math.cos(a) * 13;
+      const sy = groundY - 20 + Math.sin(a) * 4;
+      g.fillStyle(COLOR.gold, 0.9);
+      g.fillCircle(sx, sy, 2.2);
+    }
   }
 
   // ------------------------------------------------------------
@@ -720,7 +884,7 @@ class MainScene extends Phaser.Scene {
     this.ballCarrier = null;
     this.ai.state = 'SEEK';
     [this.player, this.ai].forEach(a => {
-      a.tackleCooldown = 0; a.shoveCooldown = 0; a.stumbleTimer = 0; a.defendActionTimer = 0;
+      a.tackleCooldown = 0; a.shoveCooldown = 0; a.stumbleTimer = 0; a.tackleDownTimer = 0; a.defendActionTimer = 0;
     });
   }
 
@@ -761,9 +925,11 @@ class MainScene extends Phaser.Scene {
     }
   }
 
-  // Tackle: higher risk, bigger payoff — ~30% chance to land, but a hit
+  // Tackle: higher risk, bigger payoff — only ~30% chance to actually land
+  // (that's the point: it's not guaranteed). On a hit, BOTH players go down
+  // together for a beat and get back up around the same time; it also
   // guarantees a knockdown and strips the ball if the target was carrying.
-  // A miss briefly overextends the tackler instead.
+  // A miss just briefly overextends the tackler — nobody falls.
   tryTackle(actor, opponent) {
     if (this.matchOver || this.selecting) return;
     if (actor.tackleCooldown > 0 || actor.stumbleTimer > 0) return;
@@ -771,18 +937,24 @@ class MainScene extends Phaser.Scene {
     if (d > TACKLE_RANGE) return;
 
     actor.tackleCooldown = TACKLE_COOLDOWN;
-    actor.armSwing = 1;
-    this.tweens.add({ targets: actor, armSwing: 0, duration: 260, ease: 'Cubic.Out' });
 
     if (Math.random() < TACKLE_SUCCESS) {
-      opponent.stumbleTimer = STUMBLE_DURATION;
-      const dir = opponent.body.position.x >= actor.body.position.x ? 1 : -1;
-      this.matter.body.setVelocity(opponent.body, { x: dir * 3.5, y: -2.2 });
-      this.shakeCamera(4);
-      this.spawnFlash(opponent.body.position.x, opponent.body.position.y, COLOR.white);
+      // both go down together
+      actor.tackleDownTimer = TACKLE_DOWN_DURATION;
+      actor.stumbleTimer = TACKLE_DOWN_DURATION;
+      opponent.tackleDownTimer = TACKLE_DOWN_DURATION;
+      opponent.stumbleTimer = TACKLE_DOWN_DURATION;
+      this.matter.body.setVelocity(actor.body, { x: 0, y: actor.body.velocity.y });
+      this.matter.body.setVelocity(opponent.body, { x: 0, y: opponent.body.velocity.y });
+      this.shakeCamera(5);
+      this.spawnFlash((actor.body.position.x + opponent.body.position.x) / 2, (actor.body.position.y + opponent.body.position.y) / 2, COLOR.white);
+      this.spawnDust(opponent.body.position.x, GROUND_Y - 2);
+      this.spawnDust(actor.body.position.x, GROUND_Y - 2);
       this.playSfx('collision');
-      if (this.ballCarrier === opponent.body.label) this.dropBall(true);
+      if (this.ballCarrier === opponent.body.label || this.ballCarrier === actor.body.label) this.dropBall(true);
     } else {
+      actor.armSwing = 1;
+      this.tweens.add({ targets: actor, armSwing: 0, duration: 260, ease: 'Cubic.Out' });
       actor.stumbleTimer = WHIFF_STUMBLE_DURATION;
       this.playSfx('whiff');
     }
@@ -958,6 +1130,7 @@ class MainScene extends Phaser.Scene {
         a.tackleCooldown = Math.max(0, (a.tackleCooldown || 0) - dt);
         a.shoveCooldown = Math.max(0, (a.shoveCooldown || 0) - dt);
         a.stumbleTimer = Math.max(0, (a.stumbleTimer || 0) - dt);
+        a.tackleDownTimer = Math.max(0, (a.tackleDownTimer || 0) - dt);
       });
 
       const playerSpeed = this.player.speed || PLAYER_SPEED;
