@@ -151,7 +151,7 @@ class MainScene extends Phaser.Scene {
   preload() {}
 
   create() {
-    this.matter.world.setBounds(0, 0, W, H, 32, true, true, false, true);
+    this.matter.world.setBounds(0, 0, W, H, 32, true, true, true, true);
     this.matter.world.engine.world.gravity.y = 1;
     this.cameras.main.setBackgroundColor(COLOR.bg);
 
@@ -1443,7 +1443,15 @@ class MainScene extends Phaser.Scene {
 
   tryJump(actor) {
     if (this.matchOver || this.selecting || actor.stumbleTimer > 0) return;
-    if (Math.abs(actor.body.velocity.y) < 0.3) { // roughly grounded
+    // BUG: checking velocity.y alone for "grounded" is also true for one frame
+    // at the very PEAK of any jump (vertical velocity crosses ~0 there too).
+    // The AI's SEEK jump condition re-evaluates every single frame, so it could
+    // catch that apex frame and re-jump right as it crossed zero — stacking a
+    // fresh jump impulse on top of the previous one, over and over, launching
+    // it higher every time with nothing to stop it (there was also no ceiling —
+    // fixed separately). Require it to actually be down near the ground too.
+    const nearGround = actor.body.position.y > GROUND_Y - 40;
+    if (nearGround && Math.abs(actor.body.velocity.y) < 0.3) {
       const jumpVy = actor.jumpVy || JUMP_VY;
       this.matter.body.setVelocity(actor.body, { x: actor.body.velocity.x, y: jumpVy });
       this.spawnDust(actor.body.position.x, GROUND_Y - 2);
@@ -1586,10 +1594,16 @@ class MainScene extends Phaser.Scene {
       // range (TACKLE_RANGE+20 = 66px) — so it could never actually close in
       // and try a tackle/shove, and would just defend forever without ever
       // getting the ball. Now it presses in to steal range instead of parking.
+      // BUG: this used to clamp the chase target's lower bound to x=400, so
+      // any time the player was left of midcourt (very common — that's the
+      // AI's own defensive half) the AI's target got yanked back up to 400
+      // regardless of where the player actually was. It would just stand
+      // there like a statue until the player wandered rightward into its
+      // clamped zone. It should track the player anywhere on the court.
       const dPlayer = Phaser.Math.Distance.Between(ai.body.position.x, ai.body.position.y, this.player.body.position.x, this.player.body.position.y);
       const stealRange = TACKLE_RANGE + 20;
       if (dPlayer > stealRange - 8) {
-        targetX = Phaser.Math.Clamp(this.player.body.position.x, 400, HOOP_R_X - 60);
+        targetX = Phaser.Math.Clamp(this.player.body.position.x, 140, HOOP_R_X - 40);
       } else {
         targetX = ai.body.position.x; // already in range — hold and look for a window
       }
@@ -1755,7 +1769,12 @@ class MainScene extends Phaser.Scene {
 
       this.checkScore();
 
-      if (this.ball.position.y > H + 100) {
+      // Was only checking for falling through the bottom, 100px past the edge
+      // before resetting — anything that got launched off the TOP, or off
+      // either SIDE, just kept going and took a long time (or forever) to
+      // come back. Now it's a tighter, all-directions bounds check.
+      const bx = this.ball.position.x, by = this.ball.position.y;
+      if (by > H + 40 || by < -40 || bx < -40 || bx > W + 40) {
         this.matter.body.setPosition(this.ball, { x: W / 2, y: GROUND_Y - 60 });
         this.matter.body.setVelocity(this.ball, { x: 0, y: 0 });
         this.ballCarrier = null;
