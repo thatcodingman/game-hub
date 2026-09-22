@@ -19,16 +19,19 @@
   'use strict';
 
   // ---------------------------------------------------------------------
-  // PHASE 2 — QB + ball + snap + throwing, on top of the locked-in Phase 1
-  // field/camera/body style. No routes/receivers/defenders yet — that's
-  // next. Locked decisions: TD=6, no XP/FG/punts, 960x540 canvas,
-  // scrollable world ~1300px per 100 yards, camera follows the ball carrier.
+  // PHASE 2.5 — Kickoff, game clock & stadium, layered on top of the
+  // locked-in QB/snap/throw + field/camera/body style from Phase 2.
+  // No routes/receivers/defenders yet — that's next. Locked decisions:
+  // TD=6, no XP/FG/punts, 960x540 canvas, scrollable world ~1300px per
+  // 100 yards, camera follows the ball carrier.
   // ---------------------------------------------------------------------
 
   const W = 960, H = 540;
-  const HUD_H = 64;                 // top HUD strip
-  const FIELD_TOP = HUD_H;
-  const FIELD_H = H - HUD_H;        // sideline-to-sideline vertical space
+  const HUD_H = 64;                 // top HUD strip (screen-space, via uiCamera)
+  const FIELD_TOP = 90;             // world-space — leaves room for stands above
+  const FIELD_H = 360;              // sideline-to-sideline vertical space
+  // bottom stand band works out to WORLD_H - (FIELD_TOP + FIELD_H) = 90px,
+  // matching the top band, without touching camera zoom/bounds at all.
 
   const PX_PER_YARD = 13;           // ~1300px per 100 yards, per spec
   const ENDZONE_YARDS = 10;
@@ -42,6 +45,8 @@
   const RIGHT_GOAL_X = LEFT_GOAL_X + FIELD_YARDS * PX_PER_YARD;
   const RIGHT_EZ_X = WORLD_W;
 
+  const QUARTER_SECONDS = 70;       // arcade-scaled quarter length
+
   const COLOR = {
     field: 0x1e5f3a, fieldAlt: 0x1a5534, ezHome: 0x1d3a8f, ezAway: 0x8f1d2c,
     line: 0xf2f4f7, sideline: 0xf2f4f7, hud: 0x0b0f14, ball: 0x7c3f14
@@ -53,8 +58,7 @@
   // Data-driven body system — one universal base body (round head/helmet,
   // torso, line-limbs for arms/legs, shadow) differentiated by proportions
   // + colors per position, rather than a custom draw function per role.
-  // QB is the only position in Phase 2; RB/WR/LB/CB etc. will just be new
-  // presets layered on this same drawFootballPlayer().
+  // QB and the kicker share this exact system — just different presets.
   // -----------------------------------------------------------------------
   function makeBody(overrides) {
     return Object.assign({
@@ -70,6 +74,7 @@
   }
 
   const QB_BODY = makeBody({ jersey: 0x24b7ff, helmet: 0x0b1220, stripe: 0xfbbf24 });
+  const KICKER_BODY = makeBody({ jersey: 0x94a3b8, helmet: 0x1f2937, stripe: 0xef4444 });
 
   function drawFootballPlayer(g, x, y, facing, body, anim) {
     anim = anim || {};
@@ -163,29 +168,47 @@
     create() {
       this.cameras.main.setBackgroundColor(0x0b0f14);
 
+      this.drawStadium();
       this.drawField();
       this.buildHUD();
 
-      const snapX = LEFT_GOAL_X + 25 * PX_PER_YARD; // line of scrimmage — the 25
+      this.clock = { quarter: 1, secondsLeft: QUARTER_SECONDS, running: false, over: false };
+
       const snapY = FIELD_TOP + FIELD_H / 2;
+      this.snapY = snapY;
 
-      // ---- QB ----
-      this.qb = {
-        x: snapX - 34, y: snapY, facing: 1,
-        gfx: this.add.graphics().setDepth(10),
-        body: QB_BODY, animPhase: 0, gaitAmp: 0,
-        throwState: null // {t, duration} while a throw is playing out
-      };
-
-      // ---- Ball — starts on the ground at the line of scrimmage (pre-snap),
-      // then hikes into the QB's hands a moment after kickoff ----
+      // ---- Ball — repositioned per phase (kickoff spot -> line of scrimmage) ----
       this.ball = {
-        x: snapX, y: snapY, gfx: this.add.graphics().setDepth(9),
+        x: 0, y: 0, gfx: this.add.graphics().setDepth(9),
         carriedBy: null, snapped: false,
         inFlight: false, vx: 0, vy: 0, height: 0, heightVel: 0, gravity: 0.028
       };
-      this.snapAnim = null; // {t, duration, fromX, fromY}
-      this.time.delayedCall(700, () => this.doSnap());
+
+      // ---- Kicker (away team) lines up for a run-up from behind the ball,
+      // teed up on their own 35 ----
+      const ballSpotX = RIGHT_GOAL_X - 35 * PX_PER_YARD;
+      this.kickerStartX = ballSpotX + 40;
+      this.kickerPlantX = ballSpotX - 6;
+      this.kickoffT = 0;
+      this.kicker = {
+        x: this.kickerStartX, y: snapY, facing: -1,
+        gfx: this.add.graphics().setDepth(10),
+        body: KICKER_BODY, animPhase: 0, gaitAmp: 0
+      };
+      this.ball.x = ballSpotX;
+      this.ball.y = snapY;
+
+      // ---- QB — object exists from the start (clean camera/graphics setup)
+      // but stays un-drawn/inactive until the kickoff resolves ----
+      this.qb = {
+        x: 0, y: snapY, facing: 1,
+        gfx: this.add.graphics().setDepth(10),
+        body: QB_BODY, animPhase: 0, gaitAmp: 0,
+        throwState: null, active: false
+      };
+
+      this.snapAnim = null;
+      this.phase = 'kickoff-setup'; // kickoff-setup -> kickoff-flight -> touchback -> presnap
 
       this.keys = this.input.keyboard.addKeys({
         up: 'W', down: 'S', left: 'A', right: 'D',
@@ -194,17 +217,72 @@
       });
       this.keys.throw.on('down', () => this.tryThrow());
 
-      // ---- Camera follows the QB, bounded to the scrollable world ----
+      // ---- Camera starts on the kicker, hands off to the ball in flight,
+      // then to the QB once the drive goes live — same bounded/zoomed
+      // camera the whole time, just re-pointing a shared follow target ----
       this.cameras.main.setZoom(1.3);
       this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
-      this.cameras.main.startFollow(this.followTarget = new Phaser.Math.Vector2(this.qb.x, this.qb.y), true, 0.12, 0.12);
+      this.followTarget = new Phaser.Math.Vector2(this.kicker.x, this.kicker.y);
+      this.cameras.main.startFollow(this.followTarget, true, 0.12, 0.12);
 
-      this.redrawQB();
+      drawFootballPlayer(this.kicker.gfx, this.kicker.x, this.kicker.y, this.kicker.facing, this.kicker.body, {});
       this.drawBall();
+
+      this.time.delayedCall(900, () => this.kickBall());
 
       this.cameras.main.ignore(this.hudObjects);
       this.uiCamera = this.cameras.add(0, 0, W, H);
       this.uiCamera.ignore(this.children.list.filter(o => this.hudObjects.indexOf(o) === -1));
+    }
+
+    kickBall() {
+      if (this.phase !== 'kickoff-setup') return;
+      this.phase = 'kickoff-flight';
+      this.ball.inFlight = true;
+      this.ball.vx = this.kicker.facing * 6.2;
+      this.ball.vy = 0;
+      this.ball.height = 4;
+      this.ball.heightVel = 3.6;
+      this.ball.gravity = 0.05; // punchier/higher arc than a throw
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(300, 0.08); } catch (e) {}
+      }
+    }
+
+    onKickLanded() {
+      this.phase = 'touchback';
+      this.ball.gravity = 0.028; // back to throw/carry scale for later
+      this.touchbackMsg = this.add.text(W / 2, H / 2 - 14, 'TOUCHBACK', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(60);
+      this.touchbackSub = this.add.text(W / 2, H / 2 + 18, 'BALL ON THE 25', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#94a3b8'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(60);
+      // these are fixed HUD-style overlays created after the initial
+      // camera/ignore setup, so they need their own explicit exclusion
+      // from the zoomed main camera (same trick buildHUD() relies on)
+      this.cameras.main.ignore([this.touchbackMsg, this.touchbackSub]);
+      this.time.delayedCall(1600, () => this.startPresnap());
+    }
+
+    startPresnap() {
+      if (this.touchbackMsg) { this.touchbackMsg.destroy(); this.touchbackMsg = null; }
+      if (this.touchbackSub) { this.touchbackSub.destroy(); this.touchbackSub = null; }
+      this.kicker.gfx.clear();
+
+      const snapX = LEFT_GOAL_X + 25 * PX_PER_YARD; // line of scrimmage — the 25
+      this.qb.x = snapX - 34;
+      this.qb.y = this.snapY;
+      this.qb.facing = 1;
+      this.qb.active = true;
+
+      this.ball.x = snapX;
+      this.ball.y = this.snapY;
+      this.ball.carriedBy = null;
+      this.ball.snapped = false;
+
+      this.phase = 'presnap';
+      this.time.delayedCall(700, () => this.doSnap());
     }
 
     doSnap() {
@@ -212,7 +290,7 @@
     }
 
     tryThrow() {
-      if (this.ball.carriedBy !== 'qb' || this.qb.throwState) return;
+      if (!this.qb.active || this.ball.carriedBy !== 'qb' || this.qb.throwState) return;
       this.qb.throwState = { t: 0, duration: 420 };
     }
 
@@ -227,8 +305,44 @@
       this.ball.vy = 0; // Phase 2 throws straight downfield in the facing direction — aiming/routes come next
       this.ball.height = 6;
       this.ball.heightVel = THROW_ARC;
+      this.ball.gravity = 0.028;
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(500, 0.05); } catch (e) {}
+      }
+    }
+
+    drawStadium() {
+      // Fills the two margin bands (above/below the field, inside the same
+      // world space) with a dark stand, jittered crowd-dot rows and a
+      // handful of light towers along the top edge — pure Graphics, no
+      // assets, drawn once behind the field.
+      const g = this.add.graphics().setDepth(-1);
+      const bands = [
+        { y0: 0, y1: FIELD_TOP },
+        { y0: FIELD_TOP + FIELD_H, y1: WORLD_H }
+      ];
+      const grays = [0x3a4150, 0x4b5468, 0x2c3240, 0x565f74];
+      bands.forEach(b => {
+        const bandH = b.y1 - b.y0;
+        g.fillStyle(0x14181f, 1);
+        g.fillRect(0, b.y0, WORLD_W, bandH);
+        for (let r = 0; r < 4; r++) {
+          const rowY = b.y0 + bandH * (0.22 + r * 0.2);
+          for (let x = 8; x < WORLD_W; x += 9) {
+            if (Math.random() < 0.15) continue; // gaps in the crowd
+            const shade = grays[Phaser.Math.Between(0, grays.length - 1)];
+            g.fillStyle(shade, 0.9);
+            g.fillCircle(x + Phaser.Math.Between(-3, 3), rowY + Phaser.Math.Between(-2, 2), 2.3);
+          }
+        }
+      });
+      const towerCount = 6;
+      for (let i = 0; i < towerCount; i++) {
+        const tx = (WORLD_W / (towerCount + 1)) * (i + 1);
+        g.fillStyle(0x6b7280, 1);
+        g.fillRect(tx - 2, 2, 4, FIELD_TOP - 14);
+        g.fillStyle(0xfde68a, 0.9);
+        g.fillRect(tx - 10, 0, 20, 6);
       }
     }
 
@@ -297,7 +411,7 @@
       this.hudObjects = [];
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.title = this.add.text(16, 10, 'PHASE 2 — QB, SNAP & THROW', {
+      this.title = this.add.text(16, 10, 'PHASE 2.5 — KICKOFF, CLOCK & STADIUM', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.title);
@@ -305,6 +419,10 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.yardLabel);
+      this.clockLabel = this.add.text(W / 2, 30, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(51);
+      this.hudObjects.push(this.clockLabel);
       this.hint = this.add.text(W - 16, 24, 'WASD / Arrows to move · Space to throw', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
       }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
@@ -318,6 +436,25 @@
       if (Math.abs(yardsFromLeftGoal - 50) < 0.5) return "50";
       if (yardsFromLeftGoal < 50) return 'OWN ' + Math.round(yardsFromLeftGoal);
       return 'OPP ' + Math.round(100 - yardsFromLeftGoal);
+    }
+
+    formatClock() {
+      if (this.clock.over) return 'FINAL';
+      const secs = Math.max(0, Math.ceil(this.clock.secondsLeft));
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return 'Q' + this.clock.quarter + ' • ' + m + ':' + String(s).padStart(2, '0');
+    }
+
+    advanceQuarter() {
+      if (this.clock.quarter < 4) {
+        this.clock.quarter += 1;
+        this.clock.secondsLeft = QUARTER_SECONDS;
+      } else {
+        this.clock.running = false;
+        this.clock.secondsLeft = 0;
+        this.clock.over = true;
+      }
     }
 
     redrawQB() {
@@ -351,58 +488,31 @@
     }
 
     update(time, dt) {
-      // ---- snap animation: ball hikes from the ground into the QB's hands ----
-      if (this.snapAnim) {
-        this.snapAnim.t += dt;
-        const p = Phaser.Math.Clamp(this.snapAnim.t / this.snapAnim.duration, 0, 1);
-        this.ball.x = Phaser.Math.Linear(this.snapAnim.fromX, this.qb.throwHandX, p);
-        this.ball.y = Phaser.Math.Linear(this.snapAnim.fromY, this.qb.throwHandY, p);
-        if (p >= 1) {
-          this.snapAnim = null;
-          this.ball.carriedBy = 'qb';
-          this.ball.snapped = true;
-        }
+      // ---- game clock — only ticks once the ball is live in a QB's hands ----
+      if (this.clock.running && !this.clock.over) {
+        this.clock.secondsLeft -= dt / 1000;
+        if (this.clock.secondsLeft <= 0) this.advanceQuarter();
+      }
+      this.clockLabel.setText(this.formatClock());
+
+      // ---- kickoff run-up: kicker jogs from the tee-up spot to the ball,
+      // camera stays on the kicker until the boot ----
+      if (this.phase === 'kickoff-setup') {
+        this.kickoffT += dt;
+        const p = Phaser.Math.Clamp(this.kickoffT / 900, 0, 1);
+        this.kicker.x = Phaser.Math.Linear(this.kickerStartX, this.kickerPlantX, p);
+        this.kicker.gaitAmp = Math.min(1, this.kickoffT / 300);
+        this.kicker.animPhase += dt * 0.018;
+        if (this.kicker.animPhase > Math.PI * 2) this.kicker.animPhase -= Math.PI * 2;
+        drawFootballPlayer(this.kicker.gfx, this.kicker.x, this.kicker.y, this.kicker.facing, this.kicker.body, {
+          legPhase: this.kicker.animPhase, gaitAmp: this.kicker.gaitAmp
+        });
+        this.followTarget.set(this.kicker.x, this.kicker.y);
+      } else if (this.phase === 'kickoff-flight') {
+        this.followTarget.set(this.ball.x, this.ball.y);
       }
 
-      // ---- QB movement (locked once a throw is in its release half) ----
-      const throwing = !!this.qb.throwState;
-      const locked = throwing && this.qb.throwState.t / this.qb.throwState.duration > 0.4;
-      let vx = 0, vy = 0;
-      if (!locked) {
-        if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.qb.facing = -1; }
-        else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.qb.facing = 1; }
-        if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
-        else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
-      }
-      if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
-      const moving = vx !== 0 || vy !== 0;
-
-      this.qb.x = Phaser.Math.Clamp(this.qb.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
-      this.qb.y = Phaser.Math.Clamp(this.qb.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
-
-      // run-cycle: ease the stride amplitude in/out, advance phase while moving
-      this.qb.gaitAmp += ((moving ? 1 : 0) - this.qb.gaitAmp) * 0.25;
-      if (moving) {
-        this.qb.animPhase += dt * 0.012;
-        if (this.qb.animPhase > Math.PI * 2) this.qb.animPhase -= Math.PI * 2;
-      }
-
-      // ---- throw windup/release ----
-      if (this.qb.throwState) {
-        this.qb.throwState.t += dt;
-        if (this.qb.throwState.t >= this.qb.throwState.duration) {
-          this.releaseThrow();
-          this.qb.throwState = null;
-        }
-      }
-
-      // ball follows the QB's hand while carried (pre-throw)
-      if (this.ball.carriedBy === 'qb') {
-        this.ball.x = this.qb.throwHandX;
-        this.ball.y = this.qb.throwHandY;
-      }
-
-      // ---- ball flight physics (simple fake-height parabola) ----
+      // ---- ball flight physics (shared by kickoffs and throws) ----
       if (this.ball.inFlight) {
         this.ball.x += this.ball.vx * (dt / 16.667);
         this.ball.y += this.ball.vy * (dt / 16.667);
@@ -412,16 +522,73 @@
           this.ball.height = 0;
           this.ball.inFlight = false;
           this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0;
+          if (this.phase === 'kickoff-flight') this.onKickLanded();
         }
       }
 
-      this.followTarget.set(this.qb.x, this.qb.y);
-      this.yardLabel.setText(this.yardLineLabel(this.qb.x));
+      // ---- presnap / live drive: QB movement, snap, throw, camera-on-QB ----
+      if (this.phase === 'presnap') {
+        if (this.snapAnim) {
+          this.snapAnim.t += dt;
+          const p = Phaser.Math.Clamp(this.snapAnim.t / this.snapAnim.duration, 0, 1);
+          this.ball.x = Phaser.Math.Linear(this.snapAnim.fromX, this.qb.throwHandX, p);
+          this.ball.y = Phaser.Math.Linear(this.snapAnim.fromY, this.qb.throwHandY, p);
+          if (p >= 1) {
+            this.snapAnim = null;
+            this.ball.carriedBy = 'qb';
+            this.ball.snapped = true;
+            this.clock.running = true; // clock starts once the ball is live
+          }
+        }
 
-      this.redrawQB();
-      // ball may reposition to the (possibly just-updated) throwHand above,
-      // so draw it after redrawQB()
-      if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
+        const throwing = !!this.qb.throwState;
+        const locked = throwing && this.qb.throwState.t / this.qb.throwState.duration > 0.4;
+        let vx = 0, vy = 0;
+        if (!locked) {
+          if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.qb.facing = -1; }
+          else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.qb.facing = 1; }
+          if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+          else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+        }
+        if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+        const moving = vx !== 0 || vy !== 0;
+
+        this.qb.x = Phaser.Math.Clamp(this.qb.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
+        this.qb.y = Phaser.Math.Clamp(this.qb.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+        // run-cycle: ease the stride amplitude in/out, advance phase while moving
+        this.qb.gaitAmp += ((moving ? 1 : 0) - this.qb.gaitAmp) * 0.25;
+        if (moving) {
+          this.qb.animPhase += dt * 0.012;
+          if (this.qb.animPhase > Math.PI * 2) this.qb.animPhase -= Math.PI * 2;
+        }
+
+        // ---- throw windup/release ----
+        if (this.qb.throwState) {
+          this.qb.throwState.t += dt;
+          if (this.qb.throwState.t >= this.qb.throwState.duration) {
+            this.releaseThrow();
+            this.qb.throwState = null;
+          }
+        }
+
+        // ball follows the QB's hand while carried (pre-throw)
+        if (this.ball.carriedBy === 'qb') {
+          this.ball.x = this.qb.throwHandX;
+          this.ball.y = this.qb.throwHandY;
+        }
+
+        this.followTarget.set(this.qb.x, this.qb.y);
+        this.yardLabel.setText(this.yardLineLabel(this.qb.x));
+
+        this.redrawQB();
+        // ball may reposition to the (possibly just-updated) throwHand above,
+        // so draw it after redrawQB()
+        if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
+      } else {
+        this.yardLabel.setText('');
+      }
+
       this.drawBall();
     }
   }
