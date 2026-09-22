@@ -57,7 +57,9 @@ const COLOR = {
 // ---------------------------------------------------------------------
 const W = 960, H = 540;
 const GROUND_Y = H - 90;
-const HOOP_X = 860, HOOP_Y = 190;
+const HOOP_Y = 190;
+const HOOP_R_X = 860;   // right hoop — player's target
+const HOOP_L_X = 100;   // left hoop — AI's target
 const WIN_SCORE = 5;
 const PLAYER_SPEED = 4.2;
 const JUMP_VY = -11;
@@ -94,16 +96,26 @@ class MainScene extends Phaser.Scene {
     this.drawCourt();
     this.matter.add.rectangle(W / 2, GROUND_Y + 30, W, 60, { isStatic: true, friction: 0.8, label: 'ground' });
 
-    this.drawHoop();
-    this.matter.add.rectangle(HOOP_X + 34, HOOP_Y - 32, 10, 92, { isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard' });
-
     this.rimScale = 1;
-    this.rimBody = this.matter.add.circle(HOOP_X, HOOP_Y, 7, {
-      isStatic: true, restitution: 0.35, friction: 0.1, label: 'rim',
-      onCollideCallback: () => { this.playSfx('rim'); this.rimBounce = 1; }
+    this.hoops = [
+      { x: HOOP_R_X, mirror: 1, side: 'right' },
+      { x: HOOP_L_X, mirror: -1, side: 'left' }
+    ];
+    this.hoops.forEach((h) => {
+      h.rimBounce = 0;
+      h.netStretch = 0;
+      this.matter.add.rectangle(h.x + h.mirror * 34, HOOP_Y - 32, 10, 92, {
+        isStatic: true, friction: 0.1, restitution: 0.6, label: 'backboard'
+      });
+      h.rimBody = this.matter.add.circle(h.x, HOOP_Y, 7, {
+        isStatic: true, restitution: 0.35, friction: 0.1, label: 'rim',
+        onCollideCallback: () => { this.playSfx('rim'); h.rimBounce = 1; }
+      });
+      h.sensor = this.matter.add.rectangle(h.x - h.mirror * 6, HOOP_Y + 18, 30, 10, {
+        isStatic: true, isSensor: true, label: 'hoopSensor'
+      });
+      this.drawHoop(h);
     });
-    this.hoopSensor = this.matter.add.rectangle(HOOP_X - 6, HOOP_Y + 18, 30, 10, { isStatic: true, isSensor: true, label: 'hoopSensor' });
-    this.netStretch = 0;
 
     // ---- Ball ----
     this.ballCarrier = null;
@@ -228,71 +240,79 @@ class MainScene extends Phaser.Scene {
     g.lineBetween(W / 2, courtTop + 4, W / 2, GROUND_Y);
     g.strokeCircle(W / 2, (GROUND_Y + courtTop) / 2, 44);
 
-    // key / lane + free-throw circle, hugging the hoop
+    // key / lane + free-throw circle, hugging each hoop
     const laneW = 130, laneH = 150;
-    const laneX = HOOP_X + 40 - laneW;
     g.lineStyle(2.5, COLOR.lines, 0.75);
-    g.strokeRect(laneX, HOOP_Y + 20, laneW, laneH);
-    g.strokeCircle(laneX, HOOP_Y + 20 + laneH, 40);
+    // right lane
+    const laneXR = HOOP_R_X + 40 - laneW;
+    g.strokeRect(laneXR, HOOP_Y + 20, laneW, laneH);
+    g.strokeCircle(laneXR, HOOP_Y + 20 + laneH, 40);
+    // left lane (mirrored)
+    const laneXL = HOOP_L_X - 40;
+    g.strokeRect(laneXL, HOOP_Y + 20, laneW, laneH);
+    g.strokeCircle(laneXL + laneW, HOOP_Y + 20 + laneH, 40);
 
-    // 3-point arc — hugs the hoop, doesn't fly off-court
+    // 3-point arcs — hug each hoop, don't fly off-court
     g.lineStyle(2.5, COLOR.lines, 0.7);
     g.beginPath();
-    g.arc(HOOP_X - 4, HOOP_Y + 24, 190, Phaser.Math.DegToRad(95), Phaser.Math.DegToRad(265), false);
+    g.arc(HOOP_R_X - 4, HOOP_Y + 24, 190, Phaser.Math.DegToRad(95), Phaser.Math.DegToRad(265), false);
+    g.strokePath();
+    g.beginPath();
+    g.arc(HOOP_L_X + 4, HOOP_Y + 24, 190, Phaser.Math.DegToRad(275), Phaser.Math.DegToRad(85), false);
     g.strokePath();
 
     this.courtGfx = g;
   }
 
-  drawHoop() {
+  drawHoop(h) {
     const g = this.add.graphics().setDepth(1);
-    const backTop = HOOP_Y - 78, backH = 92, backX = HOOP_X + 34;
+    const m = h.mirror;
+    const backTop = HOOP_Y - 78, backH = 92, backX = h.x + m * 34;
 
     // support pole (behind backboard)
     g.lineStyle(7, 0x1c1917, 1);
-    g.lineBetween(backX + 4, backTop + backH * 0.55, backX + 4, GROUND_Y);
+    g.lineBetween(backX + m * 4, backTop + backH * 0.55, backX + m * 4, GROUND_Y);
     g.lineStyle(5, 0x2a2523, 1);
-    g.lineBetween(backX + 4, backTop + backH * 0.55, HOOP_X + 6, HOOP_Y - 4);
+    g.lineBetween(backX + m * 4, backTop + backH * 0.55, h.x + m * 6, HOOP_Y - 4);
 
     // backboard — real rectangle, not a stray line
     g.fillStyle(0x0d1117, 0.4);
-    g.fillRect(backX - 4, backTop + 4, 10, backH); // drop shadow
+    g.fillRect(backX - 4 + m * 6, backTop + 4, 10, backH); // drop shadow
     g.fillStyle(COLOR.white, 1);
-    g.fillRoundedRect(backX - 6, backTop, 10, backH, 2);
+    g.fillRoundedRect(backX - 6 + m * 1, backTop, 10, backH, 2);
     g.lineStyle(2, COLOR.ball, 0.9);
-    g.strokeRoundedRect(backX - 6, backTop, 10, backH, 2);
+    g.strokeRoundedRect(backX - 6 + m * 1, backTop, 10, backH, 2);
     // shooter's square on the board
     g.lineStyle(1.5, COLOR.ball, 0.7);
-    g.strokeRect(backX - 6, HOOP_Y - 22, 10, 24);
+    g.strokeRect(backX - 6 + m * 1, HOOP_Y - 22, 10, 24);
 
-    this.hoopGfx = g;
-    this.rimBounce = 0;
+    h.gfx = g;
     // rim + net are drawn dynamically in update() so they can react to hits/scores
   }
 
-  drawNet() {
-    const g = this.hoopGfx;
+  drawNet(h) {
+    const g = h.gfx;
     const rimW = 34 * this.rimScale, rimH = 11 * this.rimScale;
 
     // rim shadow/give on hit
-    const give = this.rimBounce || 0;
+    const give = h.rimBounce || 0;
     g.lineStyle(5, COLOR.ball, 1);
-    g.strokeEllipse(HOOP_X, HOOP_Y + give * 2, rimW, rimH);
+    g.strokeEllipse(h.x, HOOP_Y + give * 2, rimW, rimH);
     g.lineStyle(2, 0xc2410c, 1);
-    g.strokeEllipse(HOOP_X, HOOP_Y + give * 2, rimW * 0.94, rimH * 0.8);
+    g.strokeEllipse(h.x, HOOP_Y + give * 2, rimW * 0.94, rimH * 0.8);
 
     // net — denser strand set, stretches on a make
-    const stretch = this.netStretch;
+    const stretch = h.netStretch;
     const netTop = HOOP_Y + 3, netBottom = HOOP_Y + 32 + stretch * 20;
     g.lineStyle(1.5, COLOR.white, 0.75);
     for (let i = -4; i <= 4; i++) {
-      const xTop = HOOP_X + i * (rimW / 9);
-      const xBot = HOOP_X + i * (2.2 - stretch * 0.6);
+      const xTop = h.x + i * (rimW / 9);
+      const xBot = h.x + i * (2.2 - stretch * 0.6);
       g.lineBetween(xTop, netTop, xBot, netBottom);
     }
     g.lineStyle(1, COLOR.white, 0.5);
-    g.strokeEllipse(HOOP_X, netTop + 10, rimW * 0.75, 5);
-    g.strokeEllipse(HOOP_X, netTop + 20 + stretch * 8, rimW * 0.5, 4);
+    g.strokeEllipse(h.x, netTop + 10, rimW * 0.75, 5);
+    g.strokeEllipse(h.x, netTop + 20 + stretch * 8, rimW * 0.5, 4);
   }
 
   // ------------------------------------------------------------
@@ -614,9 +634,9 @@ class MainScene extends Phaser.Scene {
         }
       } else ai.reactionTimer = 0;
     } else if (ai.state === 'DEFEND') {
-      targetX = Phaser.Math.Clamp(this.player.body.position.x + 90, 400, HOOP_X - 60);
+      targetX = Phaser.Math.Clamp(this.player.body.position.x + 90, 400, HOOP_R_X - 60);
     } else if (ai.state === 'ATTACK') {
-      const distToHoop = HOOP_X - ai.body.position.x;
+      const distToHoop = ai.body.position.x - HOOP_L_X;
       if (distToHoop < 260 && distToHoop > 60) {
         ai.shootWindupTimer += dt;
         targetX = ai.body.position.x;
@@ -627,7 +647,7 @@ class MainScene extends Phaser.Scene {
           ai.shootWindupTimer = 0;
         }
       } else {
-        targetX = HOOP_X - 150;
+        targetX = HOOP_L_X + 150;
         ai.shootWindupTimer = 0;
       }
     }
@@ -646,21 +666,24 @@ class MainScene extends Phaser.Scene {
   checkScore() {
     if (this.ballCarrier || this.ballScoredCooldown || this.matchOver) return;
     const b = this.ball;
-    const dx = Math.abs(b.position.x - (HOOP_X - 6));
-    const dy = Math.abs(b.position.y - (HOOP_Y + 18));
     const hoopHalf = 15 * this.rimScale;
-    if (dx < hoopHalf && dy < 9 && b.velocity.y > 0) {
-      this.ballScoredCooldown = true;
-      const scorer = (this.lastToTouch === 'ai') ? 'ai' : 'player';
-      const points = this.pointsThisRound;
-      this.score[scorer] += points;
-      this.hudPlayerScore.setText(String(this.score.player));
-      this.hudAiScore.setText(String(this.score.ai));
-      this.popScore(scorer, points);
-      this.playSfx('score');
-      this.netStretch = 1;
-      this.shakeCamera(2);
-      this.onScore(scorer);
+    for (const h of this.hoops) {
+      const dx = Math.abs(b.position.x - (h.x - h.mirror * 6));
+      const dy = Math.abs(b.position.y - (HOOP_Y + 18));
+      if (dx < hoopHalf && dy < 9 && b.velocity.y > 0) {
+        this.ballScoredCooldown = true;
+        const scorer = (this.lastToTouch === 'ai') ? 'ai' : 'player';
+        const points = this.pointsThisRound;
+        this.score[scorer] += points;
+        this.hudPlayerScore.setText(String(this.score.player));
+        this.hudAiScore.setText(String(this.score.ai));
+        this.popScore(scorer, points);
+        this.playSfx('score');
+        h.netStretch = 1;
+        this.shakeCamera(2);
+        this.onScore(scorer);
+        return;
+      }
     }
   }
 
@@ -734,7 +757,7 @@ class MainScene extends Phaser.Scene {
     this.drawActor(this.player);
     this.drawActor(this.ai);
     this.drawBall();
-    this.drawNet();
+    this.hoops.forEach(h => this.drawNet(h));
 
     this.dustGfx.clear();
     this.dustParticles = this.dustParticles.filter(p => p.life > 0);
@@ -752,8 +775,10 @@ class MainScene extends Phaser.Scene {
       this.flashGfx.fillCircle(f.x, f.y, 18 * (1 - f.life) + 4);
     });
 
-    if (this.netStretch > 0) this.netStretch = Math.max(0, this.netStretch - 0.06);
-    if (this.rimBounce > 0) this.rimBounce = Math.max(0, this.rimBounce - 0.1);
+    this.hoops.forEach(h => {
+      if (h.netStretch > 0) h.netStretch = Math.max(0, h.netStretch - 0.06);
+      if (h.rimBounce > 0) h.rimBounce = Math.max(0, h.rimBounce - 0.1);
+    });
   }
 }
 
