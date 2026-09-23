@@ -564,6 +564,19 @@
     for (let i = -2; i <= 2; i++) g.fillCircle(losX + 14, cy + i * (h * 0.14), 3.5);
   }
 
+  // ---- shortest distance from a point to a line SEGMENT (not an infinite
+  // line) — lets a fast-moving ball's catch check look at the whole path
+  // it swept through this frame instead of just where it ended up, so it
+  // can't skip clean over a receiver standing between two frame positions. ----
+  function distanceToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+    t = Phaser.Math.Clamp(t, 0, 1);
+    const cx = ax + dx * t, cy = ay + dy * t;
+    return Math.sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+  }
+
   class FieldScene extends Phaser.Scene {
     constructor() { super('field'); }
 
@@ -1364,33 +1377,79 @@
       }
     }
 
+    // ---- walks a receiver's remaining route waypoints forward by a fixed
+    // distance to predict where he'll actually be — following the real
+    // path (including a route break partway through) instead of just the
+    // direction of the very next waypoint, which is wrong right at a cut.
+    // Once his route's finished, it falls back to the same slow forward
+    // drift updateOffenseRoutes gives a receiver as a late checkdown. ----
+    getPointAlongRoute(receiver, lookaheadDist) {
+      let x = receiver.x, y = receiver.y;
+      let remaining = Math.max(0, lookaheadDist);
+      let idx = receiver.routeIndex || 0;
+      const wps = receiver.routeWaypoints;
+      if (wps) {
+        while (remaining > 0 && idx < wps.length) {
+          const wp = wps[idx];
+          const dx = wp.x - x, dy = wp.y - y;
+          const segDist = Math.sqrt(dx * dx + dy * dy);
+          if (segDist <= remaining) {
+            x = wp.x; y = wp.y; remaining -= segDist; idx++;
+          } else {
+            const t = segDist > 0 ? remaining / segDist : 0;
+            x += dx * t; y += dy * t;
+            remaining = 0;
+          }
+        }
+      }
+      if (remaining > 0) x += remaining * 0.4;
+      return { x, y };
+    }
+
     releaseThrow() {
-      const THROW_SPEED = 8.2;      // ground-plane px/ms-ish (scaled by dt below)
+      const THROW_SPEED = 8.2;      // ball's constant 2D speed (px per nominal 60fps tick)
       this.ball.carriedBy = null;
       this.ball.inFlight = true;
       this.ball.pastPeak = false;
       this.ball.x = this.qb.throwHandX;
       this.ball.y = this.qb.throwHandY;
+      this.ball.prevX = this.ball.x;
+      this.ball.prevY = this.ball.y;
       this.ball.flightMs = 0;
+      this.ball.passTarget = null;
 
       const target = this.pickThrowTarget();
-      const vx = this.qb.facing * THROW_SPEED;
+      let vx = this.qb.facing * THROW_SPEED;
       let vy = 0;
-      let frames = 10; // fallback hang-time (ticks) when nobody's a legal target
+      let ticks = 10; // fallback hang-time (nominal 60fps ticks) when nobody's a legal target
+
       if (target) {
-        frames = Math.max(4, Math.abs(target.x - this.ball.x) / Math.abs(vx));
-        // lead the throw toward wherever the route is taking him next
-        // instead of the exact spot he was standing in when the ball left
-        // the hand — otherwise a receiver mid-break (or just running) has
-        // moved on by the time a longer throw actually gets there.
-        let aimY = target.y;
-        const wp = target.routeWaypoints && target.routeWaypoints[target.routeIndex];
-        if (wp) {
-          const wdx = wp.x - target.x, wdy = wp.y - target.y;
-          const wd = Math.sqrt(wdx * wdx + wdy * wdy) || 1;
-          aimY += (wdy / wd) * RECEIVER_SPEED * Math.min(frames, 10) * 0.5;
-        }
-        vy = (aimY - this.ball.y) / frames;
+        // two-pass lead prediction: estimate flight time to his CURRENT
+        // spot, walk him that far along his actual remaining route, then
+        // redo the flight-time estimate off THAT predicted point once
+        // more (two passes converges fine for an arcade throw — no need
+        // for a real interception solver). Using THROW_SPEED as the
+        // distance/time constant here isn't an approximation: the final
+        // ball velocity below is built to have exactly that magnitude, so
+        // the same constant applies on the real throw too.
+        let dist = Math.hypot(target.x - this.ball.x, target.y - this.ball.y);
+        let t = Phaser.Math.Clamp(dist / THROW_SPEED, 4, 90);
+        let lead = this.getPointAlongRoute(target, RECEIVER_SPEED * t * 0.6);
+        dist = Math.hypot(lead.x - this.ball.x, lead.y - this.ball.y);
+        t = Phaser.Math.Clamp(dist / THROW_SPEED, 4, 90);
+        lead = this.getPointAlongRoute(target, RECEIVER_SPEED * t * 0.6);
+
+        let dx = lead.x - this.ball.x, dy = lead.y - this.ball.y;
+        // the QB only ever releases toward the side he's facing — if the
+        // lead point ends up behind him (e.g. a receiver breaking back
+        // toward the QB on a comeback right at release), clamp the
+        // horizontal component forward instead of throwing backward
+        if (Math.sign(dx || this.qb.facing) !== this.qb.facing) dx = this.qb.facing * 4;
+        const d = Math.hypot(dx, dy) || 1;
+        vx = (dx / d) * THROW_SPEED;
+        vy = (dy / d) * THROW_SPEED;
+        ticks = Phaser.Math.Clamp(d / THROW_SPEED, 4, 90);
+        this.ball.passTarget = target;
       }
       this.ball.vx = vx;
       this.ball.vy = vy;
@@ -1398,12 +1457,15 @@
       // ---- resolution is timed off real elapsed flight time now, not the
       // height arc (a mismatched heightVel/gravity pair used to send the
       // ball hundreds of pixels past the target before it ever came back
-      // down into a "catchable" height band). minResolveMs just keeps the
-      // ball from being scooped up a foot from the QB's hand; the arc
-      // below is purely cosmetic from here on. ----
-      this.ball.minResolveMs = Math.max(110, frames * 16.667 * 0.8);
+      // down into a "catchable" height band). minResolveMs keeps the ball
+      // from being scooped up a foot from the QB's hand; maxFlightMs is a
+      // hard stop so a miss goes incomplete right around where the throw
+      // was actually aimed instead of sailing on. The arc below is now
+      // purely cosmetic, it doesn't gate anything. ----
+      this.ball.minResolveMs = Math.max(110, ticks * 16.667 * 0.8);
+      this.ball.maxFlightMs = ticks * 16.667 * 1.35 + 150;
       this.ball.height = 6;
-      this.ball.heightVel = Phaser.Math.Clamp(2.4 + frames * 0.05, 2.4, 4.6);
+      this.ball.heightVel = Phaser.Math.Clamp(2.4 + ticks * 0.05, 2.4, 4.6);
       this.ball.gravity = 0.05;
       this.phase = 'live-pass-air';
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
@@ -1411,33 +1473,41 @@
       }
     }
 
-    // ---- resolves a pass in the air once it's low enough to be caught,
-    // reusing the exact same catch-radius idea already proven on kickoffs.
-    // Whoever's nearest the ball wins it; if that's an offensive receiver,
-    // his separation from the nearest defender rolls interception risk
-    // using the PDF's own breakpoints. ----
+    // ---- resolves a pass in the air once it's had enough flight time.
+    // Distance is measured to the SWEPT segment the ball traveled this
+    // frame (prevX/prevY -> x/y), not just its current point — a fast
+    // throw can cross a whole catch radius between two frames without
+    // ever landing a point-check inside it. The intended target (whoever
+    // releaseThrow() actually aimed at) gets a little forgiveness so a
+    // defender who happens to be a couple pixels closer doesn't snatch an
+    // accurate throw away from the guy it was actually thrown to; beyond
+    // that his separation from the nearest defender still rolls
+    // interception risk using the PDF's own breakpoints. ----
     resolveAirBall() {
       const offAssignments = this.currentOffensePlay.assignments;
+      const speed = Math.hypot(this.ball.vx, this.ball.vy);
+      const effRadius = CATCH_RADIUS + Math.min(speed * 0.5, 10);
+      const TARGET_BONUS = 8; // px of extra forgiveness for the intended receiver
+
       let nearestOff = null, offDist = Infinity;
       for (const p of this.offenseFormation) {
         const a = offAssignments[p.role];
         if (!a || (a.type !== 'route' && a.type !== 'clear')) continue;
-        const dx = this.ball.x - p.x, dy = this.ball.y - p.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        let dist = distanceToSegment(p.x, p.y, this.ball.prevX, this.ball.prevY, this.ball.x, this.ball.y);
+        if (p === this.ball.passTarget) dist -= TARGET_BONUS;
         if (dist < offDist) { offDist = dist; nearestOff = p; }
       }
       let nearestDef = null, defDist = Infinity;
       for (const d of this.defenseFormation) {
-        const dx = this.ball.x - d.x, dy = this.ball.y - d.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const dist = distanceToSegment(d.x, d.y, this.ball.prevX, this.ball.prevY, this.ball.x, this.ball.y);
         if (dist < defDist) { defDist = dist; nearestDef = d; }
       }
 
-      if (nearestDef && defDist < CATCH_RADIUS && defDist < offDist) {
+      if (nearestDef && defDist < effRadius && defDist < offDist) {
         this.interceptedBy(nearestDef);
         return;
       }
-      if (nearestOff && offDist < CATCH_RADIUS) {
+      if (nearestOff && offDist < effRadius) {
         let sep = Infinity;
         for (const d of this.defenseFormation) {
           const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
@@ -2370,6 +2440,12 @@
 
       // ---- ball flight physics (shared by kickoffs and throws) ----
       if (this.ball.inFlight) {
+        // remember where the ball was before it moves this frame — a fast
+        // throw can cross a whole catch radius between two frames without
+        // its END position ever landing inside it, so resolveAirBall()
+        // checks the swept segment (prev -> current), not just a point
+        this.ball.prevX = this.ball.x;
+        this.ball.prevY = this.ball.y;
         this.ball.x += this.ball.vx * (dt / 16.667);
         this.ball.y += this.ball.vy * (dt / 16.667);
         this.ball.height += this.ball.heightVel * (dt / 16.667);
@@ -2388,6 +2464,13 @@
         // at the QB's hand but also can't sail forever past the receiver
         if (this.phase === 'live-pass-air' && this.ball.flightMs >= (this.ball.minResolveMs || 110)) {
           this.resolveAirBall();
+        }
+        // hard stop — if nobody's within range by well past the throw's
+        // own expected arrival time, it's incomplete right there, instead
+        // of physically flying on until the arc happens to bring it to
+        // the ground somewhere way downfield
+        if (this.phase === 'live-pass-air' && this.ball.flightMs >= (this.ball.maxFlightMs || 900)) {
+          this.incompletePass();
         }
 
         if (this.ball.inFlight && this.ball.height <= 0) {
