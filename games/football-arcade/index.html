@@ -321,6 +321,9 @@
     }
   };
 
+  // playbook tab groups offense plays by their formation, in this order
+  const PLAYBOOK_FORMATIONS = ['shotgun', 'iForm', 'singleback'];
+
   const PLAYS = {
     insideZone: {
       label: 'INSIDE ZONE', type: 'run', carrier: 'RB', formation: 'iForm',
@@ -374,9 +377,61 @@
         LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
         RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
       }
+    },
+    // three verticals — every eligible receiver takes the top off the
+    // defense at once; no easy checkdown, but it's the answer to a defense
+    // that's sitting on everything short.
+    fourVerts: {
+      label: 'FOUR VERTS', type: 'pass', formation: 'shotgun',
+      assignments: {
+        WR2: { type: 'route', route: [[0, 0], [18, 0]], window: { open: 650, duration: 700 }, priority: 1 },
+        WR1: { type: 'route', route: [[0, 0], [18, 0]], window: { open: 650, duration: 700 }, priority: 2 },
+        TE: { type: 'route', route: [[0, 0], [14, -4]], window: { open: 500, duration: 650 }, priority: 3 },
+        RB: { type: 'block' }, FB: { type: 'block' },
+        LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
+        RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
+      }
+    },
+    // quick screen left to the RB — everyone else clears out to drag
+    // coverage away and give him the whole left sideline to work with.
+    screenLeft: {
+      label: 'SCREEN LEFT', type: 'pass', formation: 'shotgun',
+      assignments: {
+        RB: { type: 'route', route: [[1, 0], [2, -8], [4, -8]], window: { open: 150, duration: 900 }, priority: 1 },
+        WR1: { type: 'clear', route: [[0, 0], [16, 0]] },
+        WR2: { type: 'clear', route: [[0, 0], [16, 0]] },
+        TE: { type: 'clear', route: [[0, 0], [10, 4]] },
+        FB: { type: 'block' },
+        LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
+        RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
+      }
+    },
+    // downhill gap run behind the fullback's lead block to the left —
+    // I-Form's answer to Power Right on the opposite side.
+    isoLeft: {
+      label: 'ISO LEFT', type: 'run', carrier: 'RB', formation: 'iForm',
+      assignments: {
+        LT: { type: 'runBlock' }, LG: { type: 'runBlock' }, C: { type: 'runBlock' },
+        RG: { type: 'runBlock' }, RT: { type: 'runBlock' },
+        TE: { type: 'runBlock' }, FB: { type: 'runBlock' },
+        WR1: { type: 'runBlock' }, WR2: { type: 'runBlock' },
+        RB: { type: 'run', aimDy: -8 }
+      }
+    },
+    // backside guard pulls all the way around to the left edge — slower to
+    // develop than Power Right, but it gets outside the tackle box entirely.
+    sweepLeft: {
+      label: 'SWEEP LEFT', type: 'run', carrier: 'RB', formation: 'singleback',
+      assignments: {
+        LT: { type: 'runBlock' }, LG: { type: 'runBlock' }, C: { type: 'runBlock' },
+        RG: { type: 'runBlock', pull: true }, RT: { type: 'runBlock' },
+        TE: { type: 'runBlock' }, FB: { type: 'runBlock' },
+        WR1: { type: 'runBlock' }, WR2: { type: 'runBlock' },
+        RB: { type: 'run', aimDy: -14 }
+      }
     }
   };
-  const OFFENSE_PLAY_KEYS = ['insideZone', 'slantFlat', 'powerRight', 'floodRight'];
+  const OFFENSE_PLAY_KEYS = ['insideZone', 'slantFlat', 'powerRight', 'floodRight', 'fourVerts', 'screenLeft', 'isoLeft', 'sweepLeft'];
 
   // zone anchors — depth (yards downfield of the LOS) + lateral offset from
   // the field's vertical center. Zone defenders drift from this anchor
@@ -588,6 +643,17 @@
       }));
       this.blockersActive = false;
 
+      // ---- receiver-select overlay for manual passing — a "1/2/3/4" tag
+      // floating over each eligible receiver (in priority order) plus a
+      // pulsing ring on whichever one is currently picked. Lives in world
+      // space (not hudObjects) so it tracks players as the camera pans. ----
+      this.targetLabels = [1, 2, 3, 4].map(n => this.add.text(0, 0, String(n), {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#0b0f14', fontStyle: 'bold',
+        backgroundColor: '#fbbf24', padding: { x: 4, y: 1 }
+      }).setOrigin(0.5).setDepth(20).setVisible(false));
+      this.targetRing = this.add.graphics().setDepth(19);
+      this.manualTarget = null;
+
       this.snapAnim = null;
       this.kickDirIndex = 1;
       this.kickDirection = KICK_DIRS[this.kickDirIndex];
@@ -603,6 +669,10 @@
       this.selectedDefensePlay = null;
       this.lastOffensePlay = null;
       this.playCallIndex = 0;
+      this.playCallTab = 'suggestions';
+      this.playbookFormationIndex = 0;
+      this.suggestedPlays = [];
+      this.recentPlays = [];
 
       this.keys = this.input.keyboard.addKeys({
         up: 'W', down: 'S', left: 'A', right: 'D',
@@ -621,6 +691,18 @@
       this.input.keyboard.on('keydown-LEFT', () => { this.cycleKickDirection(-1); this.cyclePlayCallChoice(-1); });
       this.input.keyboard.on('keydown-D', () => { this.cycleKickDirection(1); this.cyclePlayCallChoice(1); });
       this.input.keyboard.on('keydown-RIGHT', () => { this.cycleKickDirection(1); this.cyclePlayCallChoice(1); });
+      // play-call tab bar (1/2/3) — also doubles as the manual pass-target
+      // picker once the ball is live; each handler guards on its own phase
+      // so the two uses never step on each other.
+      this.input.keyboard.on('keydown-ONE', () => { this.setPlayCallTab('suggestions'); this.selectThrowTarget(1); });
+      this.input.keyboard.on('keydown-TWO', () => { this.setPlayCallTab('playbook'); this.selectThrowTarget(2); });
+      this.input.keyboard.on('keydown-THREE', () => { this.setPlayCallTab('recent'); this.selectThrowTarget(3); });
+      this.input.keyboard.on('keydown-FOUR', () => { this.selectThrowTarget(4); });
+      // W/S (or ▲▼) flip through playbook formations while on that tab
+      this.input.keyboard.on('keydown-W', () => this.cyclePlaybookFormation(-1));
+      this.input.keyboard.on('keydown-UP', () => this.cyclePlaybookFormation(-1));
+      this.input.keyboard.on('keydown-S', () => this.cyclePlaybookFormation(1));
+      this.input.keyboard.on('keydown-DOWN', () => this.cyclePlaybookFormation(1));
 
       // ---- Camera: kicker during the kick, the returner from the moment
       // the ball is booted (so the player can track/position for it) all
@@ -978,26 +1060,83 @@
     // phase — it just rolls one of its 2 calls at random. ----
     startPlayCall() {
       this.phase = 'playcall';
-      this.playCallIndex = this.lastOffensePlay ? Math.max(0, OFFENSE_PLAY_KEYS.indexOf(this.lastOffensePlay)) : 0;
+      this.playCallTab = 'suggestions';
+      this.suggestedPlays = this.computeSuggestedPlays();
+      this.playbookFormationIndex = 0;
+      this.playCallIndex = 0;
       this.playCallTimeLeft = PLAY_CALL_SECONDS * 1000;
       this.playCallBackdrop.setVisible(true);
-      this.playCallChips.forEach(c => { c.bg.setVisible(true); c.diagram.setVisible(true); c.txt.setVisible(true); });
+      this.playCallTabs.forEach(t => t.txt.setVisible(true));
+      this.playCallSubHeader.setVisible(true);
       this.playCallPrompt.setVisible(true);
+      this.refreshPlayCallChips();
+    }
+
+    // ---- 3 lists to pick a play from: hand-picked SUGGESTIONS for the
+    // current down & distance, the full PLAYBOOK grouped by formation, and
+    // a running RECENT list of your own last calls. All three just resolve
+    // to a play-key array; the card row and the confirm/cycle logic below
+    // don't care which tab produced it. ----
+    getPlayCallList() {
+      if (this.playCallTab === 'suggestions') return this.suggestedPlays || [];
+      if (this.playCallTab === 'recent') return this.recentPlays || [];
+      const formationKey = PLAYBOOK_FORMATIONS[this.playbookFormationIndex];
+      return OFFENSE_PLAY_KEYS.filter(k => PLAYS[k].formation === formationKey);
+    }
+
+    // ---- a simple down & distance heuristic, not a real defense read (the
+    // defense's call isn't even picked until confirmPlayCall) — short
+    // yardage leans run, long yardage leans pass, otherwise a balanced mix,
+    // always topped off with whatever else is in the book. ----
+    computeSuggestedPlays() {
+      const toGo = this.drive ? this.drive.toGo : 10;
+      const down = this.drive ? this.drive.down : 1;
+      let order;
+      if (toGo <= 3) {
+        order = ['powerRight', 'isoLeft', 'sweepLeft', 'insideZone', 'slantFlat', 'screenLeft', 'floodRight', 'fourVerts'];
+      } else if (toGo >= 8 || down >= 3) {
+        order = ['fourVerts', 'floodRight', 'slantFlat', 'screenLeft', 'powerRight', 'sweepLeft', 'insideZone', 'isoLeft'];
+      } else {
+        order = ['slantFlat', 'powerRight', 'floodRight', 'isoLeft', 'insideZone', 'sweepLeft', 'fourVerts', 'screenLeft'];
+      }
+      const seen = new Set(), list = [];
+      order.forEach(k => { if (OFFENSE_PLAY_KEYS.includes(k) && !seen.has(k)) { seen.add(k); list.push(k); } });
+      return list.slice(0, 4);
+    }
+
+    setPlayCallTab(tab) {
+      if (this.phase !== 'playcall' || this.playCallTab === tab) return;
+      this.playCallTab = tab;
+      this.playCallIndex = 0;
+      this.refreshPlayCallChips();
+    }
+
+    cyclePlaybookFormation(delta) {
+      if (this.phase !== 'playcall' || this.playCallTab !== 'playbook') return;
+      this.playbookFormationIndex = Phaser.Math.Clamp(this.playbookFormationIndex + delta, 0, PLAYBOOK_FORMATIONS.length - 1);
+      this.playCallIndex = 0;
       this.refreshPlayCallChips();
     }
 
     cyclePlayCallChoice(delta) {
       if (this.phase !== 'playcall') return;
-      this.playCallIndex = Phaser.Math.Clamp(this.playCallIndex + delta, 0, OFFENSE_PLAY_KEYS.length - 1);
+      const list = this.getPlayCallList();
+      if (!list.length) return;
+      this.playCallIndex = Phaser.Math.Clamp(this.playCallIndex + delta, 0, list.length - 1);
       this.refreshPlayCallChips();
     }
 
     confirmPlayCall() {
       if (this.phase !== 'playcall') return;
-      this.selectedOffensePlay = OFFENSE_PLAY_KEYS[this.playCallIndex];
+      const list = this.getPlayCallList();
+      this.selectedOffensePlay = list[this.playCallIndex] || list[0] || this.lastOffensePlay || OFFENSE_PLAY_KEYS[0];
       this.lastOffensePlay = this.selectedOffensePlay;
+      this.recentPlays = [this.selectedOffensePlay].concat((this.recentPlays || []).filter(k => k !== this.selectedOffensePlay)).slice(0, 4);
       this.selectedDefensePlay = DEFENSE_PLAY_KEYS[Phaser.Math.Between(0, DEFENSE_PLAY_KEYS.length - 1)];
       this.playCallBackdrop.setVisible(false);
+      this.playCallTabs.forEach(t => t.txt.setVisible(false));
+      this.playCallSubHeader.setVisible(false);
+      this.playCallEmptyMsg.setVisible(false);
       this.playCallChips.forEach(c => { c.bg.setVisible(false); c.diagram.setVisible(false); c.txt.setVisible(false); });
       this.playCallPrompt.setVisible(false);
       // the offense actually shifts into the called play's real formation
@@ -1033,12 +1172,43 @@
     }
 
     refreshPlayCallChips() {
+      const list = this.getPlayCallList();
+      if (this.playCallIndex > Math.max(0, list.length - 1)) this.playCallIndex = Math.max(0, list.length - 1);
+
+      this.playCallTabs.forEach(tab => {
+        tab.txt.setColor(tab.key === this.playCallTab ? '#fbbf24' : '#64748b');
+      });
+
+      if (this.playCallTab === 'suggestions') {
+        const d = this.drive;
+        this.playCallSubHeader.setText(d ? ('SUGGESTED FOR ' + this.ordinal(d.down) + ' & ' + d.toGo) : 'SUGGESTED PLAYS');
+      } else if (this.playCallTab === 'playbook') {
+        const formationKey = PLAYBOOK_FORMATIONS[this.playbookFormationIndex];
+        this.playCallSubHeader.setText('◀ ' + FORMATIONS[formationKey].label + ' ▶   (W/S to change formation)');
+      } else {
+        this.playCallSubHeader.setText(list.length ? 'YOUR LAST CALLS' : 'NO PLAYS CALLED YET');
+      }
+
+      this.playCallEmptyMsg.setVisible(!list.length);
+      if (!list.length) {
+        this.playCallEmptyMsg.setText(this.playCallTab === 'recent' ? "You haven't called a play yet this game." : 'Nothing in this formation.');
+      }
+
       this.playCallChips.forEach((chip, i) => {
+        const key = list[i];
+        if (!key) {
+          chip.bg.setVisible(false); chip.diagram.setVisible(false); chip.txt.setVisible(false);
+          chip.key = null;
+          return;
+        }
+        chip.key = key;
+        chip.bg.setVisible(true); chip.diagram.setVisible(true); chip.txt.setVisible(true);
         const selected = i === this.playCallIndex;
         chip.bg.setFillStyle(selected ? 0x1c3a5e : 0x141a24, 1);
         chip.bg.setStrokeStyle(3, selected ? 0xfbbf24 : 0x2a3140);
         chip.txt.setColor(selected ? '#F2F4F7' : '#64748b');
-        drawPlayDiagram(chip.diagram, chip.cx, chip.cy - 14, chip.size, chip.key);
+        chip.txt.setText(PLAYS[key].label);
+        drawPlayDiagram(chip.diagram, chip.cx, chip.cy - 14, chip.size, key);
       });
     }
 
@@ -1073,6 +1243,7 @@
         }
       });
       this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; d.strugglePhase = 0; d.trackX = d.x; d.trackY = d.y; });
+      this.manualTarget = null;
 
       if (offPlay.type === 'run') {
         this.phase = 'live-run';
@@ -1084,7 +1255,7 @@
         this.hint.setText('WASD / Arrows to run · Space to go down');
       } else {
         this.phase = 'live-pass';
-        this.hint.setText('WASD / Arrows to move · Space to throw');
+        this.hint.setText('WASD to move · 1-4 to pick a target · Space to throw');
       }
     }
 
@@ -1093,11 +1264,43 @@
       this.qb.throwState = { t: 0, duration: 420 };
     }
 
-    // picks who the ball is going to: the highest-priority eligible
-    // receiver currently inside their Read & React window (falling back to
-    // priority order among everyone downfield of the QB if nobody's window
-    // is open yet) — a stand-in for real analog aiming, per the PDF's own
-    // note that the QB still just throws in the direction he's facing.
+    // ---- every eligible receiver in the current play, ranked by their own
+    // route priority (1 = primary read) — the same ranking both the 1-4
+    // target-select keys and the auto-throw fallback use, so "2" always
+    // means the same receiver the HUD tag over his head says it does. ----
+    eligibleReceivers() {
+      if (!this.currentOffensePlay) return [];
+      const assignments = this.currentOffensePlay.assignments;
+      return this.offenseFormation
+        .filter(p => {
+          const a = assignments[p.role];
+          return a && (a.type === 'route' || a.type === 'clear');
+        })
+        .sort((a, b) => (assignments[a.role].priority || 9) - (assignments[b.role].priority || 9));
+    }
+
+    // ---- manual targeting: 1-4 locks the QB onto whichever receiver is
+    // currently wearing that number (same priority order as the HUD tags).
+    // The lock only matters if that receiver is still throwable when Space
+    // is pressed — pickThrowTarget() below falls back to the old auto-read
+    // logic if he isn't (e.g. the QB has since turned away from him). ----
+    selectThrowTarget(n) {
+      if (this.phase !== 'live-pass') return;
+      const picked = this.eligibleReceivers()[n - 1];
+      if (!picked) return;
+      this.manualTarget = picked.role;
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(680 + n * 55, 0.03); } catch (e) {}
+      }
+    }
+
+    // picks who the ball is going to: a manually-selected target if one's
+    // been locked in and is still throwable, otherwise the highest-priority
+    // eligible receiver currently inside their Read & React window (falling
+    // back to priority order among everyone downfield of the QB if nobody's
+    // window is open yet) — a stand-in for real analog aiming, per the
+    // PDF's own note that the QB still just throws in the direction he's
+    // facing.
     pickThrowTarget() {
       if (!this.currentOffensePlay) return null;
       const assignments = this.currentOffensePlay.assignments;
@@ -1107,6 +1310,12 @@
         return a && (a.type === 'route' || a.type === 'clear') && Math.sign(p.x - this.qb.x) === this.qb.facing;
       });
       if (!eligibles.length) return null;
+
+      if (this.manualTarget) {
+        const picked = eligibles.find(p => p.role === this.manualTarget);
+        if (picked) return picked;
+      }
+
       const open = eligibles.filter(p => {
         const w = assignments[p.role].window;
         return !w || (elapsed >= w.open && elapsed <= w.open + w.duration);
@@ -1114,6 +1323,37 @@
       const pool = open.length ? open : eligibles;
       pool.sort((a, b) => (assignments[a.role].priority || 9) - (assignments[b.role].priority || 9));
       return pool[0];
+    }
+
+    // ---- draws the floating "1/2/3/4" tags over each eligible receiver
+    // and a pulsing ring around the manually-selected one, every frame
+    // while a pass is live; hidden the rest of the time. ----
+    updateTargetIndicators() {
+      if (this.phase !== 'live-pass' && this.phase !== 'live-pass-air') {
+        this.targetLabels.forEach(t => t.setVisible(false));
+        this.targetRing.clear();
+        return;
+      }
+      const eligibles = this.eligibleReceivers();
+      this.targetLabels.forEach((label, i) => {
+        const p = eligibles[i];
+        if (p) {
+          label.setPosition(p.x, p.y - p.body.torsoH - 14);
+          label.setVisible(true);
+        } else {
+          label.setVisible(false);
+        }
+      });
+
+      this.targetRing.clear();
+      if (this.manualTarget) {
+        const picked = eligibles.find(p => p.role === this.manualTarget);
+        if (picked) {
+          const pulse = 3 + Math.sin((this.livePlayElapsedMs || 0) * 0.012) * 2;
+          this.targetRing.lineStyle(2.5, 0xfbbf24, 0.9);
+          this.targetRing.strokeCircle(picked.x, picked.y, 18 + pulse);
+        }
+      }
     }
 
     releaseThrow() {
@@ -1817,37 +2057,68 @@
     // adding a play later automatically gets a diagram for free. A dark
     // backdrop dims the field behind it while you're choosing. ----
     buildPlayCallUI() {
-      const boxSize = 150, gap = 18;
-      const totalW = boxSize * OFFENSE_PLAY_KEYS.length + gap * (OFFENSE_PLAY_KEYS.length - 1);
+      const MAX_CARDS = 4;
+      const boxSize = 138, gap = 16;
+      const totalW = boxSize * MAX_CARDS + gap * (MAX_CARDS - 1);
       const startX = W / 2 - totalW / 2 + boxSize / 2;
-      const cardY = H / 2 + 16;
+      const cardY = H / 2 + 46;
 
       this.playCallBackdrop = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.6)
         .setScrollFactor(0).setDepth(53).setVisible(false);
       this.hudObjects.push(this.playCallBackdrop);
 
-      this.playCallPrompt = this.add.text(W / 2, cardY - boxSize / 2 - 30, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
+      // ---- tab bar — SUGGESTIONS / PLAYBOOK / RECENT, switched with 1/2/3 ----
+      const tabY = cardY - boxSize / 2 - 78;
+      const tabDefs = [
+        { key: 'suggestions', label: '1 · SUGGESTIONS' },
+        { key: 'playbook', label: '2 · PLAYBOOK' },
+        { key: 'recent', label: '3 · RECENT' }
+      ];
+      const tabGap = 190;
+      const tabStartX = W / 2 - tabGap;
+      this.playCallTabs = tabDefs.map((def, i) => {
+        const txt = this.add.text(tabStartX + i * tabGap, tabY, def.label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#64748b', fontStyle: 'bold'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(55).setVisible(false);
+        this.hudObjects.push(txt);
+        return { key: def.key, txt };
+      });
+
+      this.playCallSubHeader = this.add.text(W / 2, tabY + 26, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(55).setVisible(false);
+      this.hudObjects.push(this.playCallSubHeader);
+
+      this.playCallPrompt = this.add.text(W / 2, cardY - boxSize / 2 - 24, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(55).setVisible(false);
       this.hudObjects.push(this.playCallPrompt);
 
-      this.playCallChips = OFFENSE_PLAY_KEYS.map((key, i) => {
+      this.playCallEmptyMsg = this.add.text(W / 2, cardY, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#64748b', fontStyle: 'italic'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(55).setVisible(false);
+      this.hudObjects.push(this.playCallEmptyMsg);
+
+      this.playCallChips = [];
+      for (let i = 0; i < MAX_CARDS; i++) {
         const cx = startX + i * (boxSize + gap);
         const bg = this.add.rectangle(cx, cardY, boxSize, boxSize, 0x141a24, 1)
           .setStrokeStyle(3, 0x2a3140).setScrollFactor(0).setDepth(54).setVisible(false);
         const diagram = this.add.graphics().setScrollFactor(0).setDepth(55).setVisible(false);
-        const txt = this.add.text(cx, cardY + boxSize / 2 - 18, PLAYS[key].label, {
-          fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8', fontStyle: 'bold'
+        const txt = this.add.text(cx, cardY + boxSize / 2 - 18, '', {
+          fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(56).setVisible(false);
         this.hudObjects.push(bg, diagram, txt);
-        return { bg, diagram, txt, cx, cy: cardY, size: boxSize, key };
-      });
+        this.playCallChips.push({ bg, diagram, txt, cx, cy: cardY, size: boxSize, key: null });
+      }
     }
 
     updatePlayCallTimer(dt) {
       this.playCallTimeLeft -= dt;
       const secLeft = Math.max(0, Math.ceil(this.playCallTimeLeft / 1000));
-      this.playCallPrompt.setText('A / D or ◀ ▶ to pick a play · SPACE to lock in — ' + secLeft + 's');
+      const list = this.getPlayCallList();
+      const navHint = this.playCallTab === 'playbook' ? 'A/D pick · W/S formation · 1-3 tabs' : 'A/D pick · 1-3 tabs';
+      this.playCallPrompt.setText((list.length ? navHint : 'No plays here — try another tab') + ' · SPACE to lock in — ' + secLeft + 's');
       this.followTarget.set(this.qb.x, this.qb.y);
       if (this.playCallTimeLeft <= 0) this.confirmPlayCall();
     }
@@ -1983,6 +2254,8 @@
         this.updateChasePursuit(dt);
         this.yardLabel.setText(this.downDistanceLabel());
       }
+
+      this.updateTargetIndicators();
 
       // ---- ball flight physics (shared by kickoffs and throws) ----
       if (this.ball.inFlight) {
