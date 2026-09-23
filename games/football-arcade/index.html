@@ -677,6 +677,15 @@
       this.targetRing = this.add.graphics().setDepth(19);
       this.manualTarget = null;
 
+      // ---- Break Meter feedback — a world-space ring that lights up
+      // while a carrier's evasion window is active, and a floating popup
+      // for "JUKE!"/"SPIN!"/"STIFF ARM!"/"BROKEN TACKLE!" call-outs ----
+      this.breakRing = this.add.graphics().setDepth(19);
+      this.breakPopupText = this.add.text(0, 0, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#fbbf24', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(21).setVisible(false);
+      this.breakPopupTimer = 0;
+
       this.snapAnim = null;
       this.kickDirIndex = 1;
       this.kickDirection = KICK_DIRS[this.kickDirIndex];
@@ -729,6 +738,11 @@
       // pause menu — the on-screen MENU button, or Esc/M from the keyboard
       this.input.keyboard.on('keydown-ESC', () => this.togglePauseMenu());
       this.input.keyboard.on('keydown-M', () => this.togglePauseMenu());
+      // Break Meter moves — only do anything while you're actually the
+      // live ball carrier (tryBreakMove guards on phase === 'live-run')
+      this.input.keyboard.on('keydown-SHIFT', () => this.tryBreakMove('juke'));
+      this.input.keyboard.on('keydown-Q', () => this.tryBreakMove('spin'));
+      this.input.keyboard.on('keydown-E', () => this.tryBreakMove('stiffarm'));
 
       // ---- Camera: kicker during the kick, the returner from the moment
       // the ball is booted (so the player can track/position for it) all
@@ -1004,6 +1018,14 @@
     // himself up, and now every live-drive play result too
     showPlayMessage(headline, sub, callback) {
       this.hint.setText('');
+      // the play's over — hide the Break Meter HUD/ring/popup, they only
+      // mean anything while someone's actually carrying the ball live
+      this.breakMeterLabel.setVisible(false);
+      this.breakMeterBg.setVisible(false);
+      this.breakMeterFill.setVisible(false);
+      this.breakRing.clear();
+      this.breakPopupText.setVisible(false);
+      this.breakPopupTimer = 0;
       this.touchbackMsg = this.add.text(W / 2, H / 2 - 14, headline, {
         fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(60);
@@ -1278,7 +1300,8 @@
         this.liveCarrier = carrier;
         this.ball.carriedBy = carrier.role;
         this.followTarget.set(carrier.x, carrier.y);
-        this.hint.setText('WASD / Arrows to run · Space to go down');
+        this.resetBreakMeter(carrier);
+        this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
       } else {
         this.phase = 'live-pass';
         this.hint.setText('WASD to move · 1-4 to pick a target · Space to throw');
@@ -1567,7 +1590,8 @@
       this.liveCarrier = receiver;
       this.chaseMode = true;
       this.phase = 'live-run';
-      this.hint.setText('WASD / Arrows to run · Space to go down');
+      this.resetBreakMeter(receiver);
+      this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
       this.followTarget.set(receiver.x, receiver.y);
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(650, 0.05); } catch (e) {}
@@ -1963,8 +1987,100 @@
         drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
 
         const tdx = carrier.x - d.x, tdy = carrier.y - d.y;
-        if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) { this.tackleCarrier(); break; }
+        if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) {
+          // Break Meter payoff: an active evasion window (juke/spin) or a
+          // flat 8% "shrugged it off" chance breaks the tackle instead of
+          // ending the play — the defender stumbles (reuses the same
+          // blockTimer stumble/jitter every blocked defender already
+          // draws with) and the carrier plays on.
+          if (carrier.evasionT > 0 || Math.random() < 0.08) {
+            d.blockTimer = 420;
+            d.strugglePhase = 0;
+            carrier.evasionT = 0;
+            carrier.brokenTackles = (carrier.brokenTackles || 0) + 1;
+            this.showBreakPopup(carrier, 'BROKEN TACKLE!', '#22c55e');
+            if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+              try { SFX.tone(330, 0.06); } catch (e) {}
+            }
+            continue;
+          }
+          this.tackleCarrier();
+          break;
+        }
       }
+    }
+
+    // ---- Break Meter — the runner's skill layer. A resource (0-100) that
+    // slowly regenerates while he's on his feet and spends on three moves:
+    // JUKE (quick lateral dodge), SPIN (360, breaks a tackle attempted
+    // head-on), STIFF ARM (shoves the nearest defender in range off his
+    // feet). Juke/spin open a brief "evasion window" where a tackle
+    // attempt breaks instead of landing; stiff arm doesn't dodge so much
+    // as directly stagger whoever's closest. There's also a small flat
+    // chance to shrug off a tackle even with no move active — real backs
+    // break arm tackles sometimes without doing anything fancy. ----
+    resetBreakMeter(carrier) {
+      carrier.breakMeter = 100;
+      carrier.moveCooldown = 0;
+      carrier.evasionT = 0;
+      carrier.brokenTackles = 0;
+    }
+
+    tryBreakMove(type) {
+      if (this.phase !== 'live-run' || !this.liveCarrier) return;
+      const carrier = this.liveCarrier;
+      if ((carrier.moveCooldown || 0) > 0) return;
+      const COSTS = { juke: 22, spin: 32, stiffarm: 28 };
+      const cost = COSTS[type];
+      if ((carrier.breakMeter == null ? 100 : carrier.breakMeter) < cost) return;
+
+      carrier.breakMeter -= cost;
+      carrier.moveCooldown = 520;
+
+      if (type === 'juke') {
+        carrier.evasionT = 300;
+        // dodge whichever way you're already leaning, so the move reads
+        // as a response to your own input rather than a random hop
+        let kick = 0;
+        if (this.keys.up.isDown || this.keys.upArrow.isDown) kick = -1;
+        else if (this.keys.down.isDown || this.keys.downArrow.isDown) kick = 1;
+        else kick = Phaser.Math.Between(0, 1) ? 1 : -1;
+        carrier.y = Phaser.Math.Clamp(carrier.y + kick * 24, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+        this.showBreakPopup(carrier, 'JUKE!', '#38bdf8');
+      } else if (type === 'spin') {
+        carrier.evasionT = 380;
+        this.showBreakPopup(carrier, 'SPIN!', '#a78bfa');
+      } else if (type === 'stiffarm') {
+        carrier.evasionT = 160;
+        let target = null, bestDist = Infinity;
+        for (const d of this.defenseFormation) {
+          if (d.blockTimer > 0) continue;
+          const dx = d.x - carrier.x, dy = d.y - carrier.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 34 && dist < bestDist) { bestDist = dist; target = d; }
+        }
+        if (target) {
+          target.blockTimer = 480;
+          target.strugglePhase = 0;
+          const dx = target.x - carrier.x, dy = target.y - carrier.y;
+          const d2 = Math.sqrt(dx * dx + dy * dy) || 1;
+          target.x = Phaser.Math.Clamp(target.x + (dx / d2) * 18, 20, WORLD_W - 20);
+          target.y = Phaser.Math.Clamp(target.y + (dy / d2) * 18, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+        }
+        this.showBreakPopup(carrier, 'STIFF ARM!', '#fb923c');
+      }
+
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(type === 'spin' ? 420 : type === 'stiffarm' ? 240 : 560, 0.05); } catch (e) {}
+      }
+    }
+
+    showBreakPopup(carrier, text, color) {
+      this.breakPopupText.setText(text);
+      this.breakPopupText.setColor(color || '#fbbf24');
+      this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
+      this.breakPopupText.setVisible(true);
+      this.breakPopupTimer = 650;
     }
 
     // ---- generic WASD ball-carrier mover — parameterized by whichever
@@ -1996,6 +2112,31 @@
       this.ball.x = carrier.x + carrier.facing * 10;
       this.ball.y = carrier.y;
       if (carrier.x >= RIGHT_GOAL_X) this.scoreTouchdown();
+
+      // ---- Break Meter bookkeeping — regen while he's up, count down
+      // cooldown/evasion, keep the HUD bar and evasion ring in sync ----
+      carrier.moveCooldown = Math.max(0, (carrier.moveCooldown || 0) - dt);
+      carrier.evasionT = Math.max(0, (carrier.evasionT || 0) - dt);
+      carrier.breakMeter = Math.min(100, (carrier.breakMeter == null ? 100 : carrier.breakMeter) + dt * 0.015);
+
+      this.breakMeterLabel.setVisible(true);
+      this.breakMeterBg.setVisible(true);
+      this.breakMeterFill.setVisible(true);
+      const pct = Phaser.Math.Clamp(carrier.breakMeter / 100, 0, 1);
+      this.breakMeterFill.setSize(Math.max(2, 146 * pct), 6);
+      this.breakMeterFill.setFillStyle(pct > 0.55 ? 0x22c55e : pct > 0.25 ? 0xfbbf24 : 0xef4444, 1);
+
+      this.breakRing.clear();
+      if (carrier.evasionT > 0) {
+        this.breakRing.lineStyle(2.5, 0x38bdf8, 0.85);
+        this.breakRing.strokeCircle(carrier.x, carrier.y, 17);
+      }
+
+      if (this.breakPopupTimer > 0) {
+        this.breakPopupTimer -= dt;
+        this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
+        if (this.breakPopupTimer <= 0) this.breakPopupText.setVisible(false);
+      }
     }
 
     ordinal(n) {
@@ -2129,6 +2270,20 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
       }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.hint);
+
+      // ---- Break Meter bar — only shown while you're carrying the ball
+      // in the open field (updatePlayCallTimer/etc. never touch it; it's
+      // toggled from updateLiveCarrierMovement) ----
+      this.breakMeterLabel = this.add.text(W / 2 - 92, 78, 'BREAK', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#94a3b8', fontStyle: 'bold'
+      }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(51).setVisible(false);
+      this.hudObjects.push(this.breakMeterLabel);
+      this.breakMeterBg = this.add.rectangle(W / 2 + 4, 78, 150, 10, 0x1c2430, 1)
+        .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
+      this.hudObjects.push(this.breakMeterBg);
+      this.breakMeterFill = this.add.rectangle(W / 2 - 71, 78, 146, 6, 0x22c55e, 1)
+        .setOrigin(0, 0.5).setScrollFactor(0).setDepth(51.5).setVisible(false);
+      this.hudObjects.push(this.breakMeterFill);
     }
 
     // ---- an always-visible MENU button (top-right corner) that opens a
