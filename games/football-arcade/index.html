@@ -234,6 +234,25 @@
     { dy: (FIELD_H / 2 - 20), body: DB_BODY }
   ];
 
+  const BLOCK_ENGAGE_RADIUS = 24;
+  const BLOCK_DURATION = 700;   // ms a blocked coverage defender is locked up
+  const BLOCKER_SPEED = 3.1;    // slightly faster than coverage — they have the jump on them
+
+  // return blockers — 10 home-team players seeded ahead of the returner
+  // who peel back to engage the nearest oncoming coverage defender.
+  const BLOCKER_SPECS = [
+    { dy: -(FIELD_H / 2 - 20), body: WR_BODY },
+    { dy: -(FIELD_H / 2 - 60), body: WR_BODY },
+    { dy: -(FIELD_H / 2 - 100), body: RB_BODY },
+    { dy: -(FIELD_H / 2 - 140), body: RB_BODY },
+    { dy: -20, body: RB_BODY },
+    { dy: 20, body: RB_BODY },
+    { dy: (FIELD_H / 2 - 140), body: RB_BODY },
+    { dy: (FIELD_H / 2 - 100), body: RB_BODY },
+    { dy: (FIELD_H / 2 - 60), body: WR_BODY },
+    { dy: (FIELD_H / 2 - 20), body: WR_BODY }
+  ];
+
   class FieldScene extends Phaser.Scene {
     constructor() { super('field'); }
 
@@ -294,10 +313,19 @@
       // by teeUpKickoff() and activated the instant the ball is kicked ----
       this.coverage = COVERAGE_SPECS.map(spec => ({
         body: spec.body, dy: spec.dy, facing: -1,
-        x: 0, y: snapY + spec.dy, gaitAmp: 0, animPhase: 0,
+        x: 0, y: snapY + spec.dy, gaitAmp: 0, animPhase: 0, blockTimer: 0,
         gfx: this.add.graphics().setDepth(8)
       }));
       this.coverageActive = false;
+
+      // ---- Return blockers — peel back to engage the nearest oncoming
+      // coverage defender and lock them up for a bit ----
+      this.blockers = BLOCKER_SPECS.map(spec => ({
+        body: spec.body, dy: spec.dy, facing: 1,
+        x: 0, y: snapY + spec.dy, gaitAmp: 0, animPhase: 0, cooldown: 0,
+        gfx: this.add.graphics().setDepth(8)
+      }));
+      this.blockersActive = false;
 
       this.snapAnim = null;
       this.kickDirIndex = 1;
@@ -361,10 +389,18 @@
       const coverX = ballSpotX + 15; // kicking team's restraining line
       this.coverage.forEach(d => {
         d.x = coverX; d.y = this.snapY + d.dy; d.facing = -1;
-        d.gaitAmp = 0; d.animPhase = 0;
+        d.gaitAmp = 0; d.animPhase = 0; d.blockTimer = 0;
         drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, {});
       });
       this.coverageActive = false;
+
+      const blockerX = LEFT_GOAL_X + 20 * PX_PER_YARD; // the wall, ahead of the returner
+      this.blockers.forEach(b => {
+        b.x = blockerX; b.y = this.snapY + b.dy; b.facing = 1;
+        b.gaitAmp = 0; b.animPhase = 0; b.cooldown = 0;
+        drawFootballPlayer(b.gfx, b.x, b.y, b.facing, b.body, {});
+      });
+      this.blockersActive = false;
 
       this.qb.active = false;
       this.qb.gfx.clear();
@@ -386,20 +422,27 @@
       this.phase = 'kickoff-aim';
       this.kickDirIndex = 1;
       this.kickDirection = KICK_DIRS[this.kickDirIndex];
+      this.kickPrompt.setText('A / D or ◀ ▶ to pick a lane · SPACE to lock it in');
       this.kickPrompt.setVisible(true);
+      this.kickChips.forEach(chip => { chip.bg.setVisible(true); chip.txt.setVisible(true); });
+      this.refreshKickChips();
     }
 
     cycleKickDirection(delta) {
       if (this.phase !== 'kickoff-aim') return;
       this.kickDirIndex = Phaser.Math.Clamp(this.kickDirIndex + delta, 0, KICK_DIRS.length - 1);
       this.kickDirection = KICK_DIRS[this.kickDirIndex];
+      this.refreshKickChips();
     }
 
     confirmKickDirection() {
       if (this.phase !== 'kickoff-aim') return;
       this.phase = 'kickoff-power';
       this.kickMeterT = 0;
+      this.kickChips.forEach(chip => { chip.bg.setVisible(false); chip.txt.setVisible(false); });
+      this.kickPrompt.setText('SPACE to set your kick power — hit the green for a big boot!');
       this.kickMeterBg.setVisible(true);
+      this.kickMeterSweet.setVisible(true);
       this.kickMeterFill.setVisible(true);
     }
 
@@ -409,6 +452,7 @@
       const direction = this.kickDirection;
       this.kickPrompt.setVisible(false);
       this.kickMeterBg.setVisible(false);
+      this.kickMeterSweet.setVisible(false);
       this.kickMeterFill.setVisible(false);
       this.executeKick(power, direction);
     }
@@ -436,6 +480,7 @@
 
       this.returner.active = true;
       this.coverageActive = true;
+      this.blockersActive = true;
       this.followTarget.set(this.returner.x, this.returner.y);
       this.hint.setText('Get under it — catch and run, or let it go');
 
@@ -482,9 +527,19 @@
 
     // ---- coverage AI: simple pursuit toward the returner's current spot,
     // a touch slower than him so open space is escapable. Tackles once a
-    // defender closes within TACKLE_RADIUS while he's carrying the ball. ----
+    // defender closes within TACKLE_RADIUS while he's carrying the ball.
+    // A defender with blockTimer > 0 is engaged by a blocker and stands
+    // his ground (struggling) instead of chasing. ----
     updateCoverage(dt) {
       for (const d of this.coverage) {
+        if (d.blockTimer > 0) {
+          d.blockTimer -= dt;
+          d.gaitAmp = Math.max(0, d.gaitAmp - 0.1);
+          d.animPhase += dt * 0.004; // slow struggle, not a run cycle
+          drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+          continue;
+        }
+
         const dx = this.returner.x - d.x, dy = this.returner.y - d.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const moveX = (dx / dist) * COVERAGE_SPEED, moveY = (dy / dist) * COVERAGE_SPEED;
@@ -501,6 +556,50 @@
           const tdx = this.returner.x - d.x, tdy = this.returner.y - d.y;
           if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) { this.tackleReturner(); break; }
         }
+      }
+    }
+
+    // ---- blocker AI: each blocker seeks the nearest unblocked coverage
+    // defender; on contact it locks that defender down for BLOCK_DURATION
+    // and then takes a short cooldown itself, so no single matchup turns
+    // into a permanent, every-frame re-lock. ----
+    updateBlockers(dt) {
+      for (const b of this.blockers) {
+        if (b.cooldown > 0) {
+          b.cooldown -= dt;
+          b.gaitAmp = Math.max(0, b.gaitAmp - 0.1);
+          drawFootballPlayer(b.gfx, b.x, b.y, b.facing, b.body, { legPhase: b.animPhase, gaitAmp: b.gaitAmp });
+          continue;
+        }
+
+        let target = null, bestDist = Infinity;
+        for (const d of this.coverage) {
+          if (d.blockTimer > 0) continue;
+          const dx = d.x - b.x, dy = d.y - b.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) { bestDist = dist; target = d; }
+        }
+
+        if (target && bestDist < BLOCK_ENGAGE_RADIUS) {
+          target.blockTimer = BLOCK_DURATION;
+          b.cooldown = BLOCK_DURATION + 500;
+          b.gaitAmp = Math.max(0, b.gaitAmp - 0.2);
+          if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+            try { SFX.tone(180, 0.05); } catch (e) {}
+          }
+        } else if (target) {
+          const dx = target.x - b.x, dy = target.y - b.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const moveX = (dx / dist) * BLOCKER_SPEED, moveY = (dy / dist) * BLOCKER_SPEED;
+          b.x = Phaser.Math.Clamp(b.x + moveX, 20, WORLD_W - 20);
+          b.y = Phaser.Math.Clamp(b.y + moveY, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+          if (Math.abs(moveX) > 0.05) b.facing = moveX > 0 ? 1 : -1;
+          b.gaitAmp = Math.min(1, b.gaitAmp + 0.08);
+        }
+
+        b.animPhase += dt * 0.014;
+        if (b.animPhase > Math.PI * 2) b.animPhase -= Math.PI * 2;
+        drawFootballPlayer(b.gfx, b.x, b.y, b.facing, b.body, { legPhase: b.animPhase, gaitAmp: b.gaitAmp });
       }
     }
 
@@ -549,6 +648,8 @@
       this.returner.active = false;
       this.coverage.forEach(d => d.gfx.clear());
       this.coverageActive = false;
+      this.blockers.forEach(b => b.gfx.clear());
+      this.blockersActive = false;
 
       const losX = this.driveSpotX;
       this.qb.x = losX - 34;
@@ -724,7 +825,7 @@
       this.hudObjects = [];
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.title = this.add.text(16, 10, 'PHASE 2.8 — LIVE KICKOFF COVERAGE', {
+      this.title = this.add.text(16, 10, 'PHASE 2.9 — BLOCKERS & KICK UI', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.title);
@@ -743,18 +844,50 @@
     }
 
     buildKickUI() {
-      this.kickPrompt = this.add.text(W / 2, 40, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
+      this.kickPrompt = this.add.text(W / 2, 24, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(51).setVisible(false);
       this.hudObjects.push(this.kickPrompt);
 
-      this.kickMeterBg = this.add.rectangle(W / 2, 60, 220, 14, 0x1c2430, 1)
+      // ---- three lane chips (LEFT / MID / RIGHT) — the selected one lights
+      // up, so aiming reads at a glance instead of parsing a text label ----
+      const labels = ['◀ LEFT', 'MID', 'RIGHT ▶'];
+      const chipW = 74, chipH = 22, gap = 8;
+      const totalW = chipW * 3 + gap * 2;
+      const startX = W / 2 - totalW / 2 + chipW / 2;
+      this.kickChips = labels.map((label, i) => {
+        const cx = startX + i * (chipW + gap);
+        const bg = this.add.rectangle(cx, 48, chipW, chipH, 0x1c2430, 1)
+          .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
+        const txt = this.add.text(cx, 48, label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(52).setVisible(false);
+        this.hudObjects.push(bg, txt);
+        return { bg, txt };
+      });
+
+      // ---- power meter — same slot as the chips (never shown together),
+      // with a highlighted sweet-spot zone near max power ----
+      this.kickMeterBg = this.add.rectangle(W / 2, 48, 220, 16, 0x1c2430, 1)
         .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
       this.hudObjects.push(this.kickMeterBg);
 
-      this.kickMeterFill = this.add.rectangle(W / 2 - 108, 60, 2, 12, 0xfbbf24, 1)
+      this.kickMeterSweet = this.add.rectangle(W / 2 + 108, 48, 30, 16, 0x22c55e, 0.35)
+        .setOrigin(1, 0.5).setScrollFactor(0).setDepth(51.5).setVisible(false);
+      this.hudObjects.push(this.kickMeterSweet);
+
+      this.kickMeterFill = this.add.rectangle(W / 2 - 108, 48, 2, 14, 0xfbbf24, 1)
         .setOrigin(0, 0.5).setScrollFactor(0).setDepth(52).setVisible(false);
       this.hudObjects.push(this.kickMeterFill);
+    }
+
+    refreshKickChips() {
+      this.kickChips.forEach((chip, i) => {
+        const selected = i === this.kickDirIndex;
+        chip.bg.setFillStyle(selected ? 0x24b7ff : 0x1c2430, 1);
+        chip.bg.setStrokeStyle(2, selected ? 0xfbbf24 : 0x2a3140);
+        chip.txt.setColor(selected ? '#0b1220' : '#64748b');
+      });
     }
 
     yardLineLabel(worldX) {
@@ -837,17 +970,16 @@
         });
         this.followTarget.set(this.kicker.x, this.kicker.y);
       } else if (this.phase === 'kickoff-aim') {
-        this.kickPrompt.setText('A/D or ◀ ▶ to aim:  [ ' + this.kickDirection.toUpperCase() + ' ]  ·  SPACE to lock');
         this.followTarget.set(this.kicker.x, this.kicker.y);
       } else if (this.phase === 'kickoff-power') {
         this.kickMeterT += dt;
         this.kickPower = (Math.sin(this.kickMeterT * 0.006) + 1) / 2; // oscillates 0..1
-        this.kickMeterFill.setSize(Math.max(2, 216 * this.kickPower), 12);
-        this.kickPrompt.setText('SPACE to set your kick power!');
+        this.kickMeterFill.setSize(Math.max(2, 216 * this.kickPower), 14);
         this.followTarget.set(this.kicker.x, this.kicker.y);
       } else if (this.phase === 'kickoff-flight' || this.phase === 'kickoff-return') {
         this.updateReturnerMovement(dt);
         if (this.coverageActive) this.updateCoverage(dt);
+        if (this.blockersActive) this.updateBlockers(dt);
         if (this.phase === 'kickoff-return') {
           this.ball.x = this.returner.x + this.returner.facing * 10;
           this.ball.y = this.returner.y;
