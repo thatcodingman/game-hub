@@ -1528,12 +1528,23 @@
           const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
           sep = Math.min(sep, Math.sqrt(dx * dx + dy * dy));
         }
-        let intRisk = 0;
-        if (sep < 15) intRisk = 0.35;
-        else if (sep < 25) intRisk = 0.20;
-        else if (sep < 40) intRisk = 0.10;
-        else if (sep < 60) intRisk = 0.03;
-        if (Math.random() < intRisk) {
+        // ---- three-way outcome, all driven by that same separation
+        // number: CATCH / DROP (contested — the ball got there, he just
+        // couldn't bring it in) / INTERCEPTION. Before this, anything that
+        // wasn't a pick was an automatic catch, so tight coverage only
+        // ever showed up as "sometimes he picks it" — nothing made a
+        // contested catch actually risky to attempt. Even a wide-open
+        // throw isn't a guaranteed catch any more (95%), same as a real
+        // route — receivers drop easy ones occasionally. ----
+        let catchChance, intRisk;
+        if (sep < 15) { catchChance = 0.35; intRisk = 0.35; }
+        else if (sep < 25) { catchChance = 0.55; intRisk = 0.20; }
+        else if (sep < 40) { catchChance = 0.72; intRisk = 0.10; }
+        else if (sep < 60) { catchChance = 0.85; intRisk = 0.03; }
+        else { catchChance = 0.95; intRisk = 0; }
+
+        const roll = Math.random();
+        if (roll < intRisk) {
           let picker = null, pd = Infinity;
           for (const d of this.defenseFormation) {
             const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
@@ -1541,8 +1552,10 @@
             if (dist < pd) { pd = dist; picker = d; }
           }
           this.interceptedBy(picker);
-        } else {
+        } else if (roll < intRisk + catchChance) {
           this.completePass(nearestOff);
+        } else {
+          this.incompletePass('DROPPED PASS');
         }
       }
     }
@@ -1572,16 +1585,16 @@
       this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => this.awayPossession());
     }
 
-    incompletePass() {
+    incompletePass(headline) {
       if (this.phase === 'dead-ball') return;
       this.phase = 'dead-ball';
       this.clock.running = false;
       this.ball.inFlight = false; this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
       this.drive.down += 1;
-      let turnover = false, sub = 'INCOMPLETE';
+      let turnover = false, sub = headline === 'DROPPED PASS' ? 'DROPPED' : 'INCOMPLETE';
       if (this.drive.down > 4) { turnover = true; sub += ' — TURNOVER ON DOWNS'; }
       this.driveSpotX = this.drive.losX;
-      this.showPlayMessage('INCOMPLETE PASS', sub, () => {
+      this.showPlayMessage(headline || 'INCOMPLETE PASS', sub, () => {
         if (turnover) this.awayPossession(); else this.startPresnap(false);
       });
     }
