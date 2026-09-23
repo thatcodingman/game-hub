@@ -19,11 +19,13 @@
   'use strict';
 
   // ---------------------------------------------------------------------
-  // PHASE 2.5 — Kickoff, game clock & stadium, layered on top of the
-  // locked-in QB/snap/throw + field/camera/body style from Phase 2.
-  // No routes/receivers/defenders yet — that's next. Locked decisions:
-  // TD=6, no XP/FG/punts, 960x540 canvas, scrollable world ~1300px per
-  // 100 yards, camera follows the ball carrier.
+  // PHASE 2.6 — Kick meter + direction, and full 11v11 formations on top
+  // of the locked-in QB/snap/throw + field/camera/body style. Formations
+  // are static (proper alignment, no blocking/coverage AI yet) — routes,
+  // Read & React, Break Meter, AI defenders and possession switching are
+  // still the next phases. Locked decisions: TD=6, no XP/FG/punts,
+  // 960x540 canvas, scrollable world ~1300px per 100 yards, camera
+  // follows the ball carrier.
   // ---------------------------------------------------------------------
 
   const W = 960, H = 540;
@@ -58,7 +60,8 @@
   // Data-driven body system — one universal base body (round head/helmet,
   // torso, line-limbs for arms/legs, shadow) differentiated by proportions
   // + colors per position, rather than a custom draw function per role.
-  // QB and the kicker share this exact system — just different presets.
+  // Every position on the field — QB, kicker, O-line, skill players,
+  // D-line, linebackers, DBs — is just a new preset on this same body.
   // -----------------------------------------------------------------------
   function makeBody(overrides) {
     return Object.assign({
@@ -73,8 +76,22 @@
     }, overrides);
   }
 
-  const QB_BODY = makeBody({ jersey: 0x24b7ff, helmet: 0x0b1220, stripe: 0xfbbf24 });
-  const KICKER_BODY = makeBody({ jersey: 0x94a3b8, helmet: 0x1f2937, stripe: 0xef4444 });
+  const HOME = { jersey: 0x24b7ff, helmet: 0x0b1220, stripe: 0xfbbf24 };
+  const AWAY = { jersey: 0x94a3b8, helmet: 0x1f2937, stripe: 0xef4444 };
+
+  const QB_BODY = makeBody(HOME);
+  const KICKER_BODY = makeBody(AWAY);
+
+  // offense (home) — bulkier line, lean skill players
+  const OL_BODY = makeBody(Object.assign({ headR: 12, torsoW: 27, torsoH: 27, armLen: 15, legLen: 15 }, HOME));
+  const TE_BODY = makeBody(Object.assign({ headR: 11, torsoW: 21, torsoH: 24, armLen: 16, legLen: 16 }, HOME));
+  const RB_BODY = makeBody(Object.assign({ headR: 11, torsoW: 19, torsoH: 21, armLen: 15, legLen: 17 }, HOME));
+  const WR_BODY = makeBody(Object.assign({ headR: 10, torsoW: 16, torsoH: 20, armLen: 16, legLen: 18 }, HOME));
+
+  // defense (away) — bulkier line, lean DBs
+  const DL_BODY = makeBody(Object.assign({ headR: 12, torsoW: 28, torsoH: 28, armLen: 15, legLen: 15 }, AWAY));
+  const LB_BODY = makeBody(Object.assign({ headR: 11, torsoW: 21, torsoH: 23, armLen: 16, legLen: 16 }, AWAY));
+  const DB_BODY = makeBody(Object.assign({ headR: 10, torsoW: 16, torsoH: 20, armLen: 16, legLen: 18 }, AWAY));
 
   function drawFootballPlayer(g, x, y, facing, body, anim) {
     anim = anim || {};
@@ -162,6 +179,39 @@
     g.fillRect(headX + facing * body.headR * 0.15, headY - 2, facing * body.headR * 0.7, 2.4);
   }
 
+  // -----------------------------------------------------------------------
+  // Formation specs — offsets (dx, dy) from the line of scrimmage / the
+  // field's vertical center. 10 offensive teammates around the QB in a
+  // shotgun spread, 10 defenders in a 4-3 shell across from them.
+  // -----------------------------------------------------------------------
+  const OFFENSE_SPECS = [
+    { role: 'LT', dx: 0, dy: -28, body: OL_BODY },
+    { role: 'LG', dx: 0, dy: -14, body: OL_BODY },
+    { role: 'C', dx: 0, dy: 0, body: OL_BODY },
+    { role: 'RG', dx: 0, dy: 14, body: OL_BODY },
+    { role: 'RT', dx: 0, dy: 28, body: OL_BODY },
+    { role: 'TE', dx: 0, dy: 54, body: TE_BODY },
+    { role: 'WR1', dx: 0, dy: -(FIELD_H / 2 - 30), body: WR_BODY },
+    { role: 'WR2', dx: 0, dy: (FIELD_H / 2 - 30), body: WR_BODY },
+    { role: 'RB', dx: -52, dy: 20, body: RB_BODY },
+    { role: 'FB', dx: -26, dy: -18, body: RB_BODY }
+  ];
+
+  const DEFENSE_SPECS = [
+    { role: 'DE1', dx: 18, dy: -26, body: DL_BODY },
+    { role: 'DT1', dx: 18, dy: -10, body: DL_BODY },
+    { role: 'DT2', dx: 18, dy: 10, body: DL_BODY },
+    { role: 'DE2', dx: 18, dy: 26, body: DL_BODY },
+    { role: 'LB1', dx: 55, dy: -20, body: LB_BODY },
+    { role: 'LB2', dx: 55, dy: 0, body: LB_BODY },
+    { role: 'LB3', dx: 55, dy: 20, body: LB_BODY },
+    { role: 'CB1', dx: 45, dy: -(FIELD_H / 2 - 30), body: DB_BODY },
+    { role: 'CB2', dx: 45, dy: (FIELD_H / 2 - 30), body: DB_BODY },
+    { role: 'S1', dx: 95, dy: 0, body: DB_BODY }
+  ];
+
+  const KICK_DIRS = ['left', 'middle', 'right'];
+
   class FieldScene extends Phaser.Scene {
     constructor() { super('field'); }
 
@@ -171,11 +221,13 @@
       this.drawStadium();
       this.drawField();
       this.buildHUD();
+      this.buildKickUI();
 
       this.clock = { quarter: 1, secondsLeft: QUARTER_SECONDS, running: false, over: false };
 
       const snapY = FIELD_TOP + FIELD_H / 2;
       this.snapY = snapY;
+      this.snapX = LEFT_GOAL_X + 25 * PX_PER_YARD; // line of scrimmage — the 25
 
       // ---- Ball — repositioned per phase (kickoff spot -> line of scrimmage) ----
       this.ball = {
@@ -207,15 +259,40 @@
         throwState: null, active: false
       };
 
+      // ---- The other 20 players — proper formation, drawn once presnap
+      // begins. Positions are static for now (no blocking/coverage AI yet). ----
+      this.offenseFormation = OFFENSE_SPECS.map(spec => ({
+        role: spec.role, body: spec.body, facing: 1,
+        x: this.snapX + spec.dx, y: snapY + spec.dy,
+        gfx: this.add.graphics().setDepth(8)
+      }));
+      this.defenseFormation = DEFENSE_SPECS.map(spec => ({
+        role: spec.role, body: spec.body, facing: -1,
+        x: this.snapX + spec.dx, y: snapY + spec.dy,
+        gfx: this.add.graphics().setDepth(8)
+      }));
+
       this.snapAnim = null;
-      this.phase = 'kickoff-setup'; // kickoff-setup -> kickoff-flight -> touchback -> presnap
+      this.phase = 'kickoff-setup'; // kickoff-setup -> kickoff-aim -> kickoff-power -> kickoff-flight -> touchback -> presnap
+      this.kickDirIndex = 1;
+      this.kickDirection = KICK_DIRS[this.kickDirIndex];
+      this.kickPower = 0;
+      this.kickMeterT = 0;
 
       this.keys = this.input.keyboard.addKeys({
         up: 'W', down: 'S', left: 'A', right: 'D',
         upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT',
         throw: 'SPACE'
       });
-      this.keys.throw.on('down', () => this.tryThrow());
+      this.keys.throw.on('down', () => {
+        if (this.phase === 'kickoff-aim') this.confirmKickDirection();
+        else if (this.phase === 'kickoff-power') this.lockKickPower();
+        else this.tryThrow();
+      });
+      this.input.keyboard.on('keydown-A', () => this.cycleKickDirection(-1));
+      this.input.keyboard.on('keydown-LEFT', () => this.cycleKickDirection(-1));
+      this.input.keyboard.on('keydown-D', () => this.cycleKickDirection(1));
+      this.input.keyboard.on('keydown-RIGHT', () => this.cycleKickDirection(1));
 
       // ---- Camera starts on the kicker, hands off to the ball in flight,
       // then to the QB once the drive goes live — same bounded/zoomed
@@ -228,22 +305,67 @@
       drawFootballPlayer(this.kicker.gfx, this.kicker.x, this.kicker.y, this.kicker.facing, this.kicker.body, {});
       this.drawBall();
 
-      this.time.delayedCall(900, () => this.kickBall());
+      this.time.delayedCall(900, () => this.beginKickAim());
 
       this.cameras.main.ignore(this.hudObjects);
       this.uiCamera = this.cameras.add(0, 0, W, H);
       this.uiCamera.ignore(this.children.list.filter(o => this.hudObjects.indexOf(o) === -1));
     }
 
-    kickBall() {
+    // ---- kickoff: run-up -> aim (pick a lane) -> power (timed meter) -> kick ----
+    beginKickAim() {
       if (this.phase !== 'kickoff-setup') return;
+      this.phase = 'kickoff-aim';
+      this.kickDirIndex = 1;
+      this.kickDirection = KICK_DIRS[this.kickDirIndex];
+      this.kickPrompt.setVisible(true);
+    }
+
+    cycleKickDirection(delta) {
+      if (this.phase !== 'kickoff-aim') return;
+      this.kickDirIndex = Phaser.Math.Clamp(this.kickDirIndex + delta, 0, KICK_DIRS.length - 1);
+      this.kickDirection = KICK_DIRS[this.kickDirIndex];
+    }
+
+    confirmKickDirection() {
+      if (this.phase !== 'kickoff-aim') return;
+      this.phase = 'kickoff-power';
+      this.kickMeterT = 0;
+      this.kickMeterBg.setVisible(true);
+      this.kickMeterFill.setVisible(true);
+    }
+
+    lockKickPower() {
+      if (this.phase !== 'kickoff-power') return;
+      const power = this.kickPower;
+      const direction = this.kickDirection;
+      this.kickPrompt.setVisible(false);
+      this.kickMeterBg.setVisible(false);
+      this.kickMeterFill.setVisible(false);
+      this.executeKick(power, direction);
+    }
+
+    executeKick(power, direction) {
       this.phase = 'kickoff-flight';
+      const distYards = Phaser.Math.Linear(32, 72, power);      // weak tap -> full boot
+      const distPx = distYards * PX_PER_YARD;
+      const gravity = 0.05;                                     // punchier/higher arc than a throw
+      const heightVel = Phaser.Math.Linear(2.6, 4.4, power);
+      const frames = (2 * heightVel) / gravity;
+      const vx = (distPx / frames) * this.kicker.facing;
+
+      let targetY = this.snapY;
+      if (direction === 'left') targetY = FIELD_TOP + FIELD_H * 0.22;
+      else if (direction === 'right') targetY = FIELD_TOP + FIELD_H * 0.78;
+      const vy = (targetY - this.ball.y) / frames;
+
       this.ball.inFlight = true;
-      this.ball.vx = this.kicker.facing * 6.2;
-      this.ball.vy = 0;
+      this.ball.vx = vx;
+      this.ball.vy = vy;
       this.ball.height = 4;
-      this.ball.heightVel = 3.6;
-      this.ball.gravity = 0.05; // punchier/higher arc than a throw
+      this.ball.heightVel = heightVel;
+      this.ball.gravity = gravity;
+
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(300, 0.08); } catch (e) {}
       }
@@ -270,17 +392,21 @@
       if (this.touchbackSub) { this.touchbackSub.destroy(); this.touchbackSub = null; }
       this.kicker.gfx.clear();
 
-      const snapX = LEFT_GOAL_X + 25 * PX_PER_YARD; // line of scrimmage — the 25
-      this.qb.x = snapX - 34;
+      this.qb.x = this.snapX - 34;
       this.qb.y = this.snapY;
       this.qb.facing = 1;
       this.qb.active = true;
 
-      this.ball.x = snapX;
+      this.ball.x = this.snapX;
       this.ball.y = this.snapY;
       this.ball.carriedBy = null;
       this.ball.snapped = false;
 
+      // proper 11-man formations line up for the snap
+      this.offenseFormation.forEach(p => drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {}));
+      this.defenseFormation.forEach(p => drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {}));
+
+      this.hint.setText('WASD / Arrows to move · Space to throw');
       this.phase = 'presnap';
       this.time.delayedCall(700, () => this.doSnap());
     }
@@ -411,7 +537,7 @@
       this.hudObjects = [];
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.title = this.add.text(16, 10, 'PHASE 2.5 — KICKOFF, CLOCK & STADIUM', {
+      this.title = this.add.text(16, 10, 'PHASE 2.6 — KICK METER & FULL FORMATIONS', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.title);
@@ -419,14 +545,29 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.yardLabel);
-      this.clockLabel = this.add.text(W / 2, 30, '', {
+      this.clockLabel = this.add.text(W / 2, 12, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.clockLabel);
-      this.hint = this.add.text(W - 16, 24, 'WASD / Arrows to move · Space to throw', {
+      this.hint = this.add.text(W - 16, 24, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
       }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.hint);
+    }
+
+    buildKickUI() {
+      this.kickPrompt = this.add.text(W / 2, 40, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(51).setVisible(false);
+      this.hudObjects.push(this.kickPrompt);
+
+      this.kickMeterBg = this.add.rectangle(W / 2, 60, 220, 14, 0x1c2430, 1)
+        .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
+      this.hudObjects.push(this.kickMeterBg);
+
+      this.kickMeterFill = this.add.rectangle(W / 2 - 108, 60, 2, 12, 0xfbbf24, 1)
+        .setOrigin(0, 0.5).setScrollFactor(0).setDepth(52).setVisible(false);
+      this.hudObjects.push(this.kickMeterFill);
     }
 
     yardLineLabel(worldX) {
@@ -496,7 +637,7 @@
       this.clockLabel.setText(this.formatClock());
 
       // ---- kickoff run-up: kicker jogs from the tee-up spot to the ball,
-      // camera stays on the kicker until the boot ----
+      // camera stays on the kicker until aim/power resolve ----
       if (this.phase === 'kickoff-setup') {
         this.kickoffT += dt;
         const p = Phaser.Math.Clamp(this.kickoffT / 900, 0, 1);
@@ -507,6 +648,15 @@
         drawFootballPlayer(this.kicker.gfx, this.kicker.x, this.kicker.y, this.kicker.facing, this.kicker.body, {
           legPhase: this.kicker.animPhase, gaitAmp: this.kicker.gaitAmp
         });
+        this.followTarget.set(this.kicker.x, this.kicker.y);
+      } else if (this.phase === 'kickoff-aim') {
+        this.kickPrompt.setText('A/D or ◀ ▶ to aim:  [ ' + this.kickDirection.toUpperCase() + ' ]  ·  SPACE to lock');
+        this.followTarget.set(this.kicker.x, this.kicker.y);
+      } else if (this.phase === 'kickoff-power') {
+        this.kickMeterT += dt;
+        this.kickPower = (Math.sin(this.kickMeterT * 0.006) + 1) / 2; // oscillates 0..1
+        this.kickMeterFill.setSize(Math.max(2, 216 * this.kickPower), 12);
+        this.kickPrompt.setText('SPACE to set your kick power!');
         this.followTarget.set(this.kicker.x, this.kicker.y);
       } else if (this.phase === 'kickoff-flight') {
         this.followTarget.set(this.ball.x, this.ball.y);
