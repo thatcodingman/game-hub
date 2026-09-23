@@ -98,6 +98,7 @@
     const legPhase = anim.legPhase || 0;
     const gaitAmp = anim.gaitAmp || 0;       // 0 = standing still, 1 = full stride
     const throwT = anim.throwT;              // undefined, or 0..1 windup->release
+    const blocking = !!anim.blocking;        // engaged in a run/pass block — hands-up punch pose
     const dark = Phaser.Display.Color.ValueToColor(body.jersey).darken(30).color;
     const helmetDark = Phaser.Display.Color.ValueToColor(body.helmet).darken(20).color;
 
@@ -128,44 +129,67 @@
     g.fillStyle(dark, 0.5);
     g.fillRect(x - body.torsoW / 2 + lean, y - 2, body.torsoW, 3);
 
-    // ---- back arm (non-throwing side) — small run-swing only ----
-    const backSwing = -legSwing * 0.8;
-    g.lineStyle(6, dark, 1);
-    const backHandX = x - facing * body.torsoW * 0.5 + Math.sin(backSwing) * body.armLen * facing * 0.4;
-    const backHandY = shoulderY + Math.cos(backSwing) * body.armLen * 0.7 + body.armLen * 0.3;
-    g.lineBetween(x - facing * body.torsoW * 0.35, shoulderY, backHandX, backHandY);
-    g.fillStyle(dark, 1);
-    g.fillCircle(backHandX, backHandY, 3.5);
+    if (blocking) {
+      // ---- hands-up punch pose — both arms drive forward and up into the
+      // block, pulsing on legPhase (which the block-struggle code feeds a
+      // slow oscillation into) instead of a normal running arm swing, so an
+      // engaged O-lineman actually reads as punching/locked-out rather than
+      // just standing there ----
+      const punch = 0.55 + Math.sin(legPhase) * 0.45; // 0.1..1 pulse
+      g.lineStyle(6, dark, 1);
+      const backHandX = x - facing * body.torsoW * 0.05 + facing * body.armLen * 0.5 * punch;
+      const backHandY = shoulderY - body.armLen * 0.55 * punch;
+      g.lineBetween(x - facing * body.torsoW * 0.3, shoulderY, backHandX, backHandY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(backHandX, backHandY, 3.5);
 
-    // ---- front/throwing arm — run-swing normally, wind-up→release arc
-    // during a throw (torso rotates back then snaps forward with it) ----
-    let frontAngle; // radians, 0 = pointing straight down
-    if (throwT !== undefined) {
-      // windup (0 -> 0.55): swings back/up behind the shoulder
-      // release (0.55 -> 1): snaps forward/up in the facing direction
-      const backAngle = -2.0;   // cocked back, up and behind
-      const releaseAngle = -0.65; // forward and slightly up, toward facing
-      const restAngle = 0.15;
-      if (throwT < 0.55) {
-        const t = throwT / 0.55;
-        frontAngle = Phaser.Math.Linear(restAngle, backAngle, t);
-      } else {
-        const t = (throwT - 0.55) / 0.45;
-        frontAngle = Phaser.Math.Linear(backAngle, releaseAngle, Phaser.Math.Easing.Cubic.Out(t));
-      }
+      const handX = x + facing * body.torsoW * 0.2 + facing * body.armLen * 0.62 * punch;
+      const handY = shoulderY - body.armLen * 0.62 * punch;
+      g.lineStyle(6, dark, 1);
+      g.lineBetween(x + facing * body.torsoW * 0.35, shoulderY, handX, handY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(handX, handY, 3.5);
+      anim.throwHand = { x: handX, y: handY };
     } else {
-      frontAngle = 0.15 - legSwing * 0.9; // normal run swing, opposite the front leg
+      // ---- back arm (non-throwing side) — small run-swing only ----
+      const backSwing = -legSwing * 0.8;
+      g.lineStyle(6, dark, 1);
+      const backHandX = x - facing * body.torsoW * 0.5 + Math.sin(backSwing) * body.armLen * facing * 0.4;
+      const backHandY = shoulderY + Math.cos(backSwing) * body.armLen * 0.7 + body.armLen * 0.3;
+      g.lineBetween(x - facing * body.torsoW * 0.35, shoulderY, backHandX, backHandY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(backHandX, backHandY, 3.5);
+
+      // ---- front/throwing arm — run-swing normally, wind-up→release arc
+      // during a throw (torso rotates back then snaps forward with it) ----
+      let frontAngle; // radians, 0 = pointing straight down
+      if (throwT !== undefined) {
+        // windup (0 -> 0.55): swings back/up behind the shoulder
+        // release (0.55 -> 1): snaps forward/up in the facing direction
+        const backAngle = -2.0;   // cocked back, up and behind
+        const releaseAngle = -0.65; // forward and slightly up, toward facing
+        const restAngle = 0.15;
+        if (throwT < 0.55) {
+          const t = throwT / 0.55;
+          frontAngle = Phaser.Math.Linear(restAngle, backAngle, t);
+        } else {
+          const t = (throwT - 0.55) / 0.45;
+          frontAngle = Phaser.Math.Linear(backAngle, releaseAngle, Phaser.Math.Easing.Cubic.Out(t));
+        }
+      } else {
+        frontAngle = 0.15 - legSwing * 0.9; // normal run swing, opposite the front leg
+      }
+      const fx = x + facing * body.torsoW * 0.35;
+      const fy = shoulderY;
+      // hand position: angle measured from straight-down
+      const handX = fx + Math.sin(frontAngle) * body.armLen * facing;
+      const handY = fy + Math.cos(frontAngle) * body.armLen;
+      g.lineStyle(6, dark, 1);
+      g.lineBetween(fx, fy, handX, handY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(handX, handY, 3.5);
+      anim.throwHand = { x: handX, y: handY };
     }
-    const fx = x + facing * body.torsoW * 0.35;
-    const fy = shoulderY;
-    // hand position: angle measured from straight-down
-    const handX = fx + Math.sin(frontAngle) * body.armLen * facing;
-    const handY = fy + Math.cos(frontAngle) * body.armLen;
-    g.lineStyle(6, dark, 1);
-    g.lineBetween(fx, fy, handX, handY);
-    g.fillStyle(dark, 1);
-    g.fillCircle(handX, handY, 3.5);
-    anim.throwHand = { x: handX, y: handY };
 
     // ---- head / helmet ----
     const headX = x + lean * 0.6, headY = y - body.torsoH / 2 - body.headR * 0.7;
@@ -264,7 +288,7 @@
   // -----------------------------------------------------------------------
   const PLAY_CALL_SECONDS = 5;
   const RUSHER_SPEED = 2.9;
-  const MAN_COVERAGE_SPEED = 2.85;
+  const MAN_COVERAGE_SPEED = 2.6; // trimmed — man defenders also react on a lag now, see updateDefenseAssignments
   const ZONE_SPEED = 2.8;
   const RECEIVER_SPEED = 3.2;
   // small on purpose — OL and DL already line up close together (a real
@@ -1048,7 +1072,7 @@
           p.routeWaypoints = null;
         }
       });
-      this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; d.strugglePhase = 0; });
+      this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; d.strugglePhase = 0; d.trackX = d.x; d.trackY = d.y; });
 
       if (offPlay.type === 'run') {
         this.phase = 'live-run';
@@ -1418,12 +1442,13 @@
 
         if (p.cooldown > 0) {
           p.cooldown -= dt;
-          // still "in" the block, not just frozen — a small forward-driving
-          // jitter so a locked-up matchup reads as an active shove, not two
-          // players standing still
+          // still "in" the block, not just frozen — hands-up punch pose
+          // pulsing on strugglePhase, plus a small forward jitter, so a
+          // locked-up matchup reads as an active shove, not two players
+          // standing still
           p.strugglePhase = (p.strugglePhase || 0) + dt;
           const jitter = Math.sin(p.strugglePhase * 0.02) * 1.6;
-          drawFootballPlayer(p.gfx, p.x + jitter, p.y, p.facing, p.body, { legPhase: p.strugglePhase * 0.01, gaitAmp: 0.35 });
+          drawFootballPlayer(p.gfx, p.x + jitter, p.y, p.facing, p.body, { legPhase: p.strugglePhase * 0.012, gaitAmp: 0.2, blocking: true });
           continue;
         }
 
@@ -1435,6 +1460,7 @@
           if (dist < bestDist) { bestDist = dist; target = d; }
         }
 
+        let closingIn = false;
         if (target && bestDist < OL_ENGAGE_RADIUS) {
           target.blockTimer = OL_BLOCK_DURATION;
           target.strugglePhase = 0;
@@ -1454,11 +1480,13 @@
           p.y = Phaser.Math.Clamp(p.y + moveY, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
           if (Math.abs(moveX) > 0.05) p.facing = moveX > 0 ? 1 : -1;
           p.gaitAmp = Math.min(1, (p.gaitAmp || 0) + 0.08);
+          // hands come up once he's closing in on his man, not from the snap
+          closingIn = dist < OL_ENGAGE_RADIUS * 2.5;
         }
 
         p.animPhase = (p.animPhase || 0) + dt * 0.014;
         if (p.animPhase > Math.PI * 2) p.animPhase -= Math.PI * 2;
-        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase, gaitAmp: p.gaitAmp });
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase, gaitAmp: p.gaitAmp, blocking: closingIn });
       }
     }
 
@@ -1479,7 +1507,7 @@
           // the jitter from the other side so the two dots visibly grapple
           d.strugglePhase = (d.strugglePhase || 0) + dt;
           const jitter = Math.sin(d.strugglePhase * 0.02 + Math.PI) * 1.6;
-          drawFootballPlayer(d.gfx, d.x + jitter, d.y, d.facing, d.body, { legPhase: d.strugglePhase * 0.01, gaitAmp: 0.35 });
+          drawFootballPlayer(d.gfx, d.x + jitter, d.y, d.facing, d.body, { legPhase: d.strugglePhase * 0.012, gaitAmp: 0.2, blocking: true });
           continue;
         }
 
@@ -1488,7 +1516,17 @@
 
         if (a && a.type === 'man') {
           const tgt = this.offenseFormation.find(o => o.role === a.target);
-          if (tgt) { targetX = tgt.x; targetY = tgt.y; }
+          if (tgt) {
+            // reaction lag — defender tracks a trailing "sensed" point instead
+            // of the receiver's exact live position, so a hard cut buys the
+            // receiver a beat of real separation instead of getting mirrored
+            // instantly. trackX/trackY chase the real target at a limited rate.
+            if (d.trackX === undefined) { d.trackX = tgt.x; d.trackY = tgt.y; }
+            const lag = 0.08; // lower = slower to react, easier to beat
+            d.trackX = Phaser.Math.Linear(d.trackX, tgt.x, lag);
+            d.trackY = Phaser.Math.Linear(d.trackY, tgt.y, lag);
+            targetX = d.trackX; targetY = d.trackY;
+          }
           speed = MAN_COVERAGE_SPEED;
         } else if (a && a.type === 'zone') {
           const z = ZONES[a.zone];
