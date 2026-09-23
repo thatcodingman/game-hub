@@ -575,6 +575,11 @@
       this.buildHUD();
       this.buildKickUI();
       this.buildPlayCallUI();
+      this.buildPauseMenu();
+
+      this.paused = false;
+      this.prePausePhase = null;
+      this.prePauseClockRunning = false;
 
       this.score = { home: 0, away: 0 };
       this.clock = { quarter: 1, secondsLeft: QUARTER_SECONDS, running: false, over: false };
@@ -703,6 +708,9 @@
       this.input.keyboard.on('keydown-UP', () => this.cyclePlaybookFormation(-1));
       this.input.keyboard.on('keydown-S', () => this.cyclePlaybookFormation(1));
       this.input.keyboard.on('keydown-DOWN', () => this.cyclePlaybookFormation(1));
+      // pause menu — the on-screen MENU button, or Esc/M from the keyboard
+      this.input.keyboard.on('keydown-ESC', () => this.togglePauseMenu());
+      this.input.keyboard.on('keydown-M', () => this.togglePauseMenu());
 
       // ---- Camera: kicker during the kick, the returner from the moment
       // the ball is booted (so the player can track/position for it) all
@@ -1357,26 +1365,46 @@
     }
 
     releaseThrow() {
-      const THROW_SPEED = 9.5;      // ground-plane px/ms-ish (scaled by dt below)
-      const THROW_ARC = 6.5;        // initial upward velocity of the "height" fake-3D
+      const THROW_SPEED = 8.2;      // ground-plane px/ms-ish (scaled by dt below)
       this.ball.carriedBy = null;
       this.ball.inFlight = true;
       this.ball.pastPeak = false;
       this.ball.x = this.qb.throwHandX;
       this.ball.y = this.qb.throwHandY;
+      this.ball.flightMs = 0;
 
       const target = this.pickThrowTarget();
       const vx = this.qb.facing * THROW_SPEED;
       let vy = 0;
+      let frames = 10; // fallback hang-time (ticks) when nobody's a legal target
       if (target) {
-        const frames = Math.max(1, Math.abs(target.x - this.ball.x) / Math.abs(vx));
-        vy = (target.y - this.ball.y) / frames;
+        frames = Math.max(4, Math.abs(target.x - this.ball.x) / Math.abs(vx));
+        // lead the throw toward wherever the route is taking him next
+        // instead of the exact spot he was standing in when the ball left
+        // the hand — otherwise a receiver mid-break (or just running) has
+        // moved on by the time a longer throw actually gets there.
+        let aimY = target.y;
+        const wp = target.routeWaypoints && target.routeWaypoints[target.routeIndex];
+        if (wp) {
+          const wdx = wp.x - target.x, wdy = wp.y - target.y;
+          const wd = Math.sqrt(wdx * wdx + wdy * wdy) || 1;
+          aimY += (wdy / wd) * RECEIVER_SPEED * Math.min(frames, 10) * 0.5;
+        }
+        vy = (aimY - this.ball.y) / frames;
       }
       this.ball.vx = vx;
       this.ball.vy = vy;
+
+      // ---- resolution is timed off real elapsed flight time now, not the
+      // height arc (a mismatched heightVel/gravity pair used to send the
+      // ball hundreds of pixels past the target before it ever came back
+      // down into a "catchable" height band). minResolveMs just keeps the
+      // ball from being scooped up a foot from the QB's hand; the arc
+      // below is purely cosmetic from here on. ----
+      this.ball.minResolveMs = Math.max(110, frames * 16.667 * 0.8);
       this.ball.height = 6;
-      this.ball.heightVel = THROW_ARC;
-      this.ball.gravity = 0.028;
+      this.ball.heightVel = Phaser.Math.Clamp(2.4 + frames * 0.05, 2.4, 4.6);
+      this.ball.gravity = 0.05;
       this.phase = 'live-pass-air';
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(500, 0.05); } catch (e) {}
@@ -2005,6 +2033,87 @@
       this.hudObjects.push(this.hint);
     }
 
+    // ---- an always-visible MENU button (top-right corner) that opens a
+    // pause overlay — Resume or Restart Game. Pausing just sets a flag
+    // update() bails out on immediately, so the clock, every AI update and
+    // the ball's flight physics all genuinely freeze, not just the visuals.
+    // Esc or M do the same thing from the keyboard. ----
+    buildPauseMenu() {
+      this.menuBtnBg = this.add.rectangle(W - 34, 15, 48, 20, 0x1c2430, 1)
+        .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(52)
+        .setInteractive({ useHandCursor: true });
+      this.hudObjects.push(this.menuBtnBg);
+      this.menuBtnTxt = this.add.text(W - 34, 15, '☰ MENU', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#94a3b8', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(53);
+      this.hudObjects.push(this.menuBtnTxt);
+      this.menuBtnBg.on('pointerdown', () => this.togglePauseMenu());
+      this.menuBtnBg.on('pointerover', () => this.menuBtnBg.setFillStyle(0x27313f, 1));
+      this.menuBtnBg.on('pointerout', () => this.menuBtnBg.setFillStyle(0x1c2430, 1));
+
+      this.pauseBackdrop = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.72)
+        .setScrollFactor(0).setDepth(60).setVisible(false);
+      this.hudObjects.push(this.pauseBackdrop);
+
+      this.pauseTitle = this.add.text(W / 2, H / 2 - 64, 'PAUSED', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(61).setVisible(false);
+      this.hudObjects.push(this.pauseTitle);
+
+      const btnDefs = [
+        { label: 'RESUME', action: () => this.togglePauseMenu() },
+        { label: 'RESTART GAME', action: () => this.restartGame() }
+      ];
+      this.pauseButtons = btnDefs.map((def, i) => {
+        const by = H / 2 - 6 + i * 52;
+        const bg = this.add.rectangle(W / 2, by, 220, 42, 0x141a24, 1)
+          .setStrokeStyle(3, 0x2a3140).setScrollFactor(0).setDepth(61).setVisible(false)
+          .setInteractive({ useHandCursor: true });
+        const txt = this.add.text(W / 2, by, def.label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#F2F4F7', fontStyle: 'bold'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(62).setVisible(false);
+        bg.on('pointerdown', def.action);
+        bg.on('pointerover', () => bg.setStrokeStyle(3, 0xfbbf24));
+        bg.on('pointerout', () => bg.setStrokeStyle(3, 0x2a3140));
+        this.hudObjects.push(bg, txt);
+        return { bg, txt };
+      });
+
+      this.pauseHint = this.add.text(W / 2, H / 2 + 84, 'Esc or M also opens/closes this menu', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(61).setVisible(false);
+      this.hudObjects.push(this.pauseHint);
+    }
+
+    togglePauseMenu() {
+      if (!this.paused) {
+        this.prePausePhase = this.phase;
+        this.prePauseClockRunning = this.clock.running;
+        this.paused = true;
+        this.phase = 'paused';
+        this.clock.running = false;
+        this.pauseBackdrop.setVisible(true);
+        this.pauseTitle.setVisible(true);
+        this.pauseHint.setVisible(true);
+        this.pauseButtons.forEach(b => { b.bg.setVisible(true); b.txt.setVisible(true); });
+      } else {
+        this.paused = false;
+        this.phase = this.prePausePhase;
+        this.clock.running = this.prePauseClockRunning;
+        this.pauseBackdrop.setVisible(false);
+        this.pauseTitle.setVisible(false);
+        this.pauseHint.setVisible(false);
+        this.pauseButtons.forEach(b => { b.bg.setVisible(false); b.txt.setVisible(false); });
+      }
+    }
+
+    // ---- full reset — re-runs create() from scratch via Phaser's own
+    // scene lifecycle, so score/clock/downs/every player all come back
+    // exactly like a fresh load rather than hand-resetting each field. ----
+    restartGame() {
+      this.scene.restart();
+    }
+
     buildKickUI() {
       this.kickPrompt = this.add.text(W / 2, 24, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
@@ -2182,6 +2291,8 @@
     }
 
     update(time, dt) {
+      if (this.paused) return;
+
       // ---- game clock — only ticks once the ball is live in a QB's hands ----
       if (this.clock.running && !this.clock.over) {
         this.clock.secondsLeft -= dt / 1000;
@@ -2264,15 +2375,18 @@
         this.ball.height += this.ball.heightVel * (dt / 16.667);
         this.ball.heightVel -= this.ball.gravity * (dt / 16.667);
         if (this.ball.heightVel <= 0) this.ball.pastPeak = true;
+        if (this.phase === 'live-pass-air') this.ball.flightMs = (this.ball.flightMs || 0) + dt;
 
         // a returner close enough under a low ball hauls it in
         if (this.phase === 'kickoff-flight' && this.ball.height > 0 && this.ball.height < CATCH_MAX_HEIGHT) {
           const dx = this.ball.x - this.returner.x, dy = this.ball.y - this.returner.y;
           if (Math.sqrt(dx * dx + dy * dy) < CATCH_RADIUS) this.catchBall();
         }
-        // a thrown ball only resolves on the way down, never a foot from
-        // the QB's hand at release
-        if (this.phase === 'live-pass-air' && this.ball.pastPeak && this.ball.height > 0 && this.ball.height < CATCH_MAX_HEIGHT) {
+        // a thrown ball resolves once it's had enough real flight time to
+        // actually reach the target (not gated on the cosmetic height arc
+        // any more — see releaseThrow()), so it can't be scooped up right
+        // at the QB's hand but also can't sail forever past the receiver
+        if (this.phase === 'live-pass-air' && this.ball.flightMs >= (this.ball.minResolveMs || 110)) {
           this.resolveAirBall();
         }
 
