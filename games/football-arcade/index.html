@@ -293,9 +293,40 @@
         LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
         RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
       }
+    },
+    // strongside gap run — the backside guard pulls around to lead the RB
+    // through the playside (right/+dy) hole instead of every lineman
+    // blocking straight ahead like Inside Zone. aimDy on the RB's 'run'
+    // assignment is what actually bends the play-call diagram's arrow
+    // toward the right side, so Power Right visibly differs from Inside Zone.
+    powerRight: {
+      label: 'POWER RIGHT', type: 'run', carrier: 'RB',
+      assignments: {
+        LT: { type: 'runBlock' }, LG: { type: 'runBlock', pull: true }, C: { type: 'runBlock' },
+        RG: { type: 'runBlock' }, RT: { type: 'runBlock' },
+        TE: { type: 'runBlock' }, FB: { type: 'runBlock' },
+        WR1: { type: 'runBlock' }, WR2: { type: 'runBlock' },
+        RB: { type: 'run', aimDy: 8 }
+      }
+    },
+    // 3-level flood to the right sideline — WR2's deep corner, the TE's
+    // intermediate out and the RB's flat all stack the same side at
+    // different depths, so one defender can't cover the whole flood.
+    // WR1 just clears out deep on the backside to keep the middle honest.
+    floodRight: {
+      label: 'FLOOD RIGHT', type: 'pass',
+      assignments: {
+        WR2: { type: 'route', route: [[0, 0], [10, 0], [16, 10]], window: { open: 600, duration: 600 }, priority: 1 },
+        TE: { type: 'route', route: [[0, 0], [8, 0], [8, 8]], window: { open: 350, duration: 650 }, priority: 2 },
+        RB: { type: 'route', route: [[2, 0], [3, 6], [6, 10]], window: { open: 150, duration: 900 }, priority: 3 },
+        WR1: { type: 'clear', route: [[0, 0], [18, 0]] },
+        FB: { type: 'block' },
+        LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
+        RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
+      }
     }
   };
-  const OFFENSE_PLAY_KEYS = ['insideZone', 'slantFlat'];
+  const OFFENSE_PLAY_KEYS = ['insideZone', 'slantFlat', 'powerRight', 'floodRight'];
 
   // zone anchors — depth (yards downfield of the LOS) + lateral offset from
   // the field's vertical center. Zone defenders drift from this anchor
@@ -325,9 +356,32 @@
         CB1: { type: 'man', target: 'WR1' }, CB2: { type: 'man', target: 'WR2' }, S1: { type: 'man', target: 'TE' },
         LB1: { type: 'man', target: 'RB' }, LB2: { type: 'man', target: 'FB' }, LB3: { type: 'zone', zone: 'middleHook' }
       }
+    },
+    // two deep-half zones instead of one deep-middle — better against a
+    // sideline shot like Flood Right, softer underneath (only 3 defenders
+    // covering the short/middle zones plus a single-high robber).
+    cover2: {
+      label: 'COVER 2',
+      assignments: {
+        DE1: { type: 'rush' }, DT1: { type: 'rush' }, DT2: { type: 'rush' }, DE2: { type: 'rush' },
+        CB1: { type: 'zone', zone: 'deepLeft' }, CB2: { type: 'zone', zone: 'deepRight' },
+        LB1: { type: 'zone', zone: 'shortLeft' }, LB2: { type: 'zone', zone: 'middleHook' }, LB3: { type: 'zone', zone: 'shortRight' },
+        S1: { type: 'zone', zone: 'deepMiddle' }
+      }
+    },
+    // sends 2 extra rushers to blow up a run before it develops; strong
+    // vs Inside Zone/Power Right, but the RB and FB are left completely
+    // uncovered — a quick pass beats it easily.
+    runBlitz: {
+      label: 'RUN BLITZ',
+      assignments: {
+        DE1: { type: 'rush' }, DT1: { type: 'rush' }, DT2: { type: 'rush' }, DE2: { type: 'rush' },
+        LB1: { type: 'rush' }, LB2: { type: 'rush' }, LB3: { type: 'zone', zone: 'middleHook' },
+        CB1: { type: 'man', target: 'WR1' }, CB2: { type: 'man', target: 'WR2' }, S1: { type: 'man', target: 'TE' }
+      }
     }
   };
-  const DEFENSE_PLAY_KEYS = ['cover3', 'manPress'];
+  const DEFENSE_PLAY_KEYS = ['cover3', 'manPress', 'cover2', 'runBlitz'];
 
   // ---- mini play-diagram for the play-call cards — driven straight off a
   // play's own assignment data (not hand-drawn per play), so any play added
@@ -353,22 +407,51 @@
       g.fillStyle(isEligible ? 0xfbbf24 : 0x64748b, 1);
       g.fillCircle(losX, py, 4);
 
+      // a pulling lineman (Power Right's backside guard) gets a short blue
+      // arrow showing him pulling toward the ball carrier's actual side,
+      // instead of looking identical to every other lineman's dot
+      if (a.pull) {
+        const rbAssign = play.assignments.RB;
+        const targetDy = (rbAssign && rbAssign.aimDy) || 0;
+        const pullNx = losX + 4 * yardScale;
+        const pullNy = Phaser.Math.Clamp(py + targetDy * yardScale * 0.7, cy - h / 2 + 4, cy + h / 2 - 4);
+        g.lineStyle(2, 0x60a5fa, 0.9);
+        g.lineBetween(losX, py, pullNx, pullNy);
+        g.fillStyle(0x60a5fa, 1);
+        g.fillCircle(pullNx, pullNy, 3);
+      }
+
       if (a.type === 'route' || a.type === 'clear') {
         g.lineStyle(2, 0xfbbf24, 0.9);
         let curX = losX, curY = py;
         a.route.forEach(wp => {
-          const nx = losX + wp[0] * yardScale, ny = py + wp[1] * dyScale;
+          // both axes of a route waypoint are yards, so both use the same
+          // px-per-yard scale — using dyScale (the formation-spread scale)
+          // here made every lateral break shrink to ~1px, which is why the
+          // slant looked like a straight go route instead of an actual break
+          const nx = losX + wp[0] * yardScale;
+          const ny = Phaser.Math.Clamp(py + wp[1] * yardScale, cy - h / 2 + 4, cy + h / 2 - 4);
           g.lineBetween(curX, curY, nx, ny);
           curX = nx; curY = ny;
         });
         g.fillStyle(0xfbbf24, 1);
         g.fillCircle(curX, curY, 2.5);
       } else if (a.type === 'run') {
+        // aimDy (yards, same convention as a route's lateral waypoints)
+        // bends the arrow toward the actual playside hole — Power Right's
+        // arrow visibly cuts right instead of drawing an identical
+        // straight-ahead arrow to Inside Zone's
         const nx = losX + 10 * yardScale;
+        const ny = Phaser.Math.Clamp(py + (a.aimDy || 0) * yardScale, cy - h / 2 + 4, cy + h / 2 - 4);
         g.lineStyle(3, 0xfbbf24, 0.9);
-        g.lineBetween(losX, py, nx, py);
+        g.lineBetween(losX, py, nx, ny);
+        const ang = Math.atan2(ny - py, nx - losX);
         g.fillStyle(0xfbbf24, 1);
-        g.fillTriangle(nx, py - 4, nx, py + 4, nx + 6, py);
+        g.fillTriangle(
+          nx + Math.cos(ang) * 6, ny + Math.sin(ang) * 6,
+          nx + Math.cos(ang + 2.4) * 6, ny + Math.sin(ang + 2.4) * 6,
+          nx + Math.cos(ang - 2.4) * 6, ny + Math.sin(ang - 2.4) * 6
+        );
       }
     });
 
@@ -1562,7 +1645,7 @@
       this.hudObjects = [];
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.title = this.add.text(16, 10, 'PHASE A — PLAY CALLING', {
+      this.title = this.add.text(16, 10, 'PHASE B — PLAY CALLING', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.title);
@@ -1636,7 +1719,7 @@
     // adding a play later automatically gets a diagram for free. A dark
     // backdrop dims the field behind it while you're choosing. ----
     buildPlayCallUI() {
-      const boxSize = 176, gap = 26;
+      const boxSize = 150, gap = 18;
       const totalW = boxSize * OFFENSE_PLAY_KEYS.length + gap * (OFFENSE_PLAY_KEYS.length - 1);
       const startX = W / 2 - totalW / 2 + boxSize / 2;
       const cardY = H / 2 + 16;
