@@ -200,10 +200,10 @@
   ];
 
   const DEFENSE_SPECS = [
-    { role: 'DE1', dx: 18, dy: -26, body: DL_BODY },
-    { role: 'DT1', dx: 18, dy: -10, body: DL_BODY },
-    { role: 'DT2', dx: 18, dy: 10, body: DL_BODY },
-    { role: 'DE2', dx: 18, dy: 26, body: DL_BODY },
+    { role: 'DE1', dx: 30, dy: -26, body: DL_BODY },
+    { role: 'DT1', dx: 30, dy: -10, body: DL_BODY },
+    { role: 'DT2', dx: 30, dy: 10, body: DL_BODY },
+    { role: 'DE2', dx: 30, dy: 26, body: DL_BODY },
     { role: 'LB1', dx: 55, dy: -20, body: LB_BODY },
     { role: 'LB2', dx: 55, dy: 0, body: LB_BODY },
     { role: 'LB3', dx: 55, dy: 20, body: LB_BODY },
@@ -267,13 +267,39 @@
   const MAN_COVERAGE_SPEED = 2.85;
   const ZONE_SPEED = 2.8;
   const RECEIVER_SPEED = 3.2;
-  const OL_ENGAGE_RADIUS = 26;
+  // small on purpose — OL and DL already line up close together (a real
+  // neutral zone is only ~1 yard), so a big engage radius let them "lock"
+  // the instant the ball was snapped with zero travel and zero motion.
+  // This forces a real step-and-drive before contact resolves.
+  const OL_ENGAGE_RADIUS = 13;
   const OL_BLOCK_DURATION = 650;
   const SACK_RADIUS = 22;
 
+  // real presnap looks — the O-line and split-out skill players (TE/WRs)
+  // barely move formation to formation in real football, so only the QB's
+  // depth and the backfield (RB/FB) actually change; everything else keeps
+  // OFFENSE_SPECS' default alignment. Each play picks one of these.
+  const FORMATIONS = {
+    shotgun: {
+      label: 'SHOTGUN',
+      qbDx: -70,
+      backfield: { RB: { dx: -66, dy: 34 }, FB: { dx: -66, dy: -34 } }
+    },
+    iForm: {
+      label: 'I-FORM',
+      qbDx: -16,
+      backfield: { FB: { dx: -38, dy: 0 }, RB: { dx: -66, dy: 0 } }
+    },
+    singleback: {
+      label: 'SINGLEBACK',
+      qbDx: -16,
+      backfield: { RB: { dx: -50, dy: 0 }, FB: { dx: 0, dy: 62 } }
+    }
+  };
+
   const PLAYS = {
     insideZone: {
-      label: 'INSIDE ZONE', type: 'run', carrier: 'RB',
+      label: 'INSIDE ZONE', type: 'run', carrier: 'RB', formation: 'iForm',
       assignments: {
         LT: { type: 'runBlock' }, LG: { type: 'runBlock' }, C: { type: 'runBlock' },
         RG: { type: 'runBlock' }, RT: { type: 'runBlock' },
@@ -283,7 +309,7 @@
       }
     },
     slantFlat: {
-      label: 'SLANT / FLAT', type: 'pass',
+      label: 'SLANT / FLAT', type: 'pass', formation: 'shotgun',
       assignments: {
         WR1: { type: 'route', route: [[0, 0], [4, 0], [7, 5], [12, 5]], window: { open: 450, duration: 550 }, priority: 1 },
         TE: { type: 'route', route: [[0, 0], [6, 0], [6, 2]], window: { open: 300, duration: 700 }, priority: 2 },
@@ -300,7 +326,7 @@
     // assignment is what actually bends the play-call diagram's arrow
     // toward the right side, so Power Right visibly differs from Inside Zone.
     powerRight: {
-      label: 'POWER RIGHT', type: 'run', carrier: 'RB',
+      label: 'POWER RIGHT', type: 'run', carrier: 'RB', formation: 'singleback',
       assignments: {
         LT: { type: 'runBlock' }, LG: { type: 'runBlock', pull: true }, C: { type: 'runBlock' },
         RG: { type: 'runBlock' }, RT: { type: 'runBlock' },
@@ -314,7 +340,7 @@
     // different depths, so one defender can't cover the whole flood.
     // WR1 just clears out deep on the backside to keep the middle honest.
     floodRight: {
-      label: 'FLOOD RIGHT', type: 'pass',
+      label: 'FLOOD RIGHT', type: 'pass', formation: 'shotgun',
       assignments: {
         WR2: { type: 'route', route: [[0, 0], [10, 0], [16, 10]], window: { open: 600, duration: 600 }, priority: 1 },
         TE: { type: 'route', route: [[0, 0], [8, 0], [8, 8]], window: { open: 350, duration: 650 }, priority: 2 },
@@ -950,9 +976,36 @@
       this.playCallBackdrop.setVisible(false);
       this.playCallChips.forEach(c => { c.bg.setVisible(false); c.diagram.setVisible(false); c.txt.setVisible(false); });
       this.playCallPrompt.setVisible(false);
+      // the offense actually shifts into the called play's real formation
+      // now that we know which one it is — Shotgun/I-Form/Singleback all
+      // look different at the line, not just one generic spread every snap
+      this.applyFormation(PLAYS[this.selectedOffensePlay].formation);
       this.phase = 'presnap';
       this.hint.setText('Get set...');
       this.time.delayedCall(700, () => this.doSnap());
+    }
+
+    // ---- lines the QB and backfield up in the called play's real formation.
+    // The O-line, TE and both WRs keep their normal split (that barely
+    // changes formation to formation in real football) — only QB depth and
+    // RB/FB alignment actually move. ----
+    applyFormation(formationKey) {
+      const formation = FORMATIONS[formationKey] || FORMATIONS.singleback;
+      const losX = this.drive.losX;
+      this.qb.x = losX + formation.qbDx;
+      this.qb.y = this.snapY;
+      this.qb.facing = 1;
+
+      this.offenseFormation.forEach(p => {
+        const spec = OFFENSE_SPECS.find(s => s.role === p.role);
+        const override = formation.backfield && formation.backfield[p.role];
+        const dx = override ? override.dx : spec.dx;
+        const dy = override ? override.dy : spec.dy;
+        p.x = losX + dx; p.y = this.snapY + dy; p.facing = 1;
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {});
+      });
+
+      this.redrawQB();
     }
 
     refreshPlayCallChips() {
@@ -987,7 +1040,7 @@
       this.currentDefensePlay = defPlay;
 
       this.offenseFormation.forEach(p => {
-        p.cooldown = 0; p.blockTimer = 0; p.homeX = p.x; p.homeY = p.y; p.routeIndex = 0;
+        p.cooldown = 0; p.blockTimer = 0; p.strugglePhase = 0; p.homeX = p.x; p.homeY = p.y; p.routeIndex = 0;
         const a = offPlay.assignments[p.role];
         if (a && (a.type === 'route' || a.type === 'clear')) {
           p.routeWaypoints = a.route.map(wp => ({ x: p.x + wp[0] * PX_PER_YARD, y: p.y + wp[1] * PX_PER_YARD }));
@@ -995,7 +1048,7 @@
           p.routeWaypoints = null;
         }
       });
-      this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; });
+      this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; d.strugglePhase = 0; });
 
       if (offPlay.type === 'run') {
         this.phase = 'live-run';
@@ -1365,8 +1418,12 @@
 
         if (p.cooldown > 0) {
           p.cooldown -= dt;
-          p.gaitAmp = Math.max(0, (p.gaitAmp || 0) - 0.1);
-          drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase || 0, gaitAmp: p.gaitAmp });
+          // still "in" the block, not just frozen — a small forward-driving
+          // jitter so a locked-up matchup reads as an active shove, not two
+          // players standing still
+          p.strugglePhase = (p.strugglePhase || 0) + dt;
+          const jitter = Math.sin(p.strugglePhase * 0.02) * 1.6;
+          drawFootballPlayer(p.gfx, p.x + jitter, p.y, p.facing, p.body, { legPhase: p.strugglePhase * 0.01, gaitAmp: 0.35 });
           continue;
         }
 
@@ -1380,8 +1437,9 @@
 
         if (target && bestDist < OL_ENGAGE_RADIUS) {
           target.blockTimer = OL_BLOCK_DURATION;
+          target.strugglePhase = 0;
           p.cooldown = OL_BLOCK_DURATION + 400;
-          p.gaitAmp = Math.max(0, (p.gaitAmp || 0) - 0.2);
+          p.strugglePhase = 0;
           if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
             try { SFX.tone(180, 0.05); } catch (e) {}
           }
@@ -1417,9 +1475,11 @@
       for (const d of this.defenseFormation) {
         if (d.blockTimer > 0) {
           d.blockTimer -= dt;
-          d.gaitAmp = Math.max(0, (d.gaitAmp || 0) - 0.1);
-          d.animPhase = (d.animPhase || 0) + dt * 0.004;
-          drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+          // being blocked isn't standing still either — push back against
+          // the jitter from the other side so the two dots visibly grapple
+          d.strugglePhase = (d.strugglePhase || 0) + dt;
+          const jitter = Math.sin(d.strugglePhase * 0.02 + Math.PI) * 1.6;
+          drawFootballPlayer(d.gfx, d.x + jitter, d.y, d.facing, d.body, { legPhase: d.strugglePhase * 0.01, gaitAmp: 0.35 });
           continue;
         }
 
