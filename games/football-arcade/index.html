@@ -329,6 +329,53 @@
   };
   const DEFENSE_PLAY_KEYS = ['cover3', 'manPress'];
 
+  // ---- mini play-diagram for the play-call cards — driven straight off a
+  // play's own assignment data (not hand-drawn per play), so any play added
+  // to PLAYS later gets a diagram for free. Gold dot+line = an eligible
+  // receiver/ball-carrier and his route/run path; slate dot = a blocker.
+  // A handful of decorative defender dots sit across the LOS for context. ----
+  function drawPlayDiagram(g, cx, cy, size, playKey) {
+    g.clear();
+    const play = PLAYS[playKey];
+    const w = size - 40, h = size - 64;
+    const losX = cx - w * 0.32;
+    const dyScale = (h * 0.46) / (FIELD_H / 2);
+    const yardScale = (w * 0.66) / 14;
+
+    g.lineStyle(2, 0x334155, 1);
+    g.lineBetween(losX, cy - h / 2, losX, cy + h / 2);
+
+    OFFENSE_SPECS.forEach(spec => {
+      const a = play.assignments[spec.role];
+      if (!a) return;
+      const py = cy + spec.dy * dyScale;
+      const isEligible = a.type === 'route' || a.type === 'clear' || a.type === 'run';
+      g.fillStyle(isEligible ? 0xfbbf24 : 0x64748b, 1);
+      g.fillCircle(losX, py, 4);
+
+      if (a.type === 'route' || a.type === 'clear') {
+        g.lineStyle(2, 0xfbbf24, 0.9);
+        let curX = losX, curY = py;
+        a.route.forEach(wp => {
+          const nx = losX + wp[0] * yardScale, ny = py + wp[1] * dyScale;
+          g.lineBetween(curX, curY, nx, ny);
+          curX = nx; curY = ny;
+        });
+        g.fillStyle(0xfbbf24, 1);
+        g.fillCircle(curX, curY, 2.5);
+      } else if (a.type === 'run') {
+        const nx = losX + 10 * yardScale;
+        g.lineStyle(3, 0xfbbf24, 0.9);
+        g.lineBetween(losX, py, nx, py);
+        g.fillStyle(0xfbbf24, 1);
+        g.fillTriangle(nx, py - 4, nx, py + 4, nx + 6, py);
+      }
+    });
+
+    g.fillStyle(0x475569, 1);
+    for (let i = -2; i <= 2; i++) g.fillCircle(losX + 14, cy + i * (h * 0.14), 3.5);
+  }
+
   class FieldScene extends Phaser.Scene {
     constructor() { super('field'); }
 
@@ -708,7 +755,7 @@
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(700, 0.1); } catch (e) {}
       }
-      this.showPlayMessage('TOUCHDOWN!', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.teeUpKickoff());
+      this.showPlayMessage('TOUCHDOWN!', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.awayPossession());
     }
 
     // shared "the play just ended here, pause on a message, then run some
@@ -800,7 +847,8 @@
       this.phase = 'playcall';
       this.playCallIndex = this.lastOffensePlay ? Math.max(0, OFFENSE_PLAY_KEYS.indexOf(this.lastOffensePlay)) : 0;
       this.playCallTimeLeft = PLAY_CALL_SECONDS * 1000;
-      this.playCallChips.forEach(c => { c.bg.setVisible(true); c.txt.setVisible(true); });
+      this.playCallBackdrop.setVisible(true);
+      this.playCallChips.forEach(c => { c.bg.setVisible(true); c.diagram.setVisible(true); c.txt.setVisible(true); });
       this.playCallPrompt.setVisible(true);
       this.refreshPlayCallChips();
     }
@@ -816,7 +864,8 @@
       this.selectedOffensePlay = OFFENSE_PLAY_KEYS[this.playCallIndex];
       this.lastOffensePlay = this.selectedOffensePlay;
       this.selectedDefensePlay = DEFENSE_PLAY_KEYS[Phaser.Math.Between(0, DEFENSE_PLAY_KEYS.length - 1)];
-      this.playCallChips.forEach(c => { c.bg.setVisible(false); c.txt.setVisible(false); });
+      this.playCallBackdrop.setVisible(false);
+      this.playCallChips.forEach(c => { c.bg.setVisible(false); c.diagram.setVisible(false); c.txt.setVisible(false); });
       this.playCallPrompt.setVisible(false);
       this.phase = 'presnap';
       this.hint.setText('Get set...');
@@ -826,9 +875,10 @@
     refreshPlayCallChips() {
       this.playCallChips.forEach((chip, i) => {
         const selected = i === this.playCallIndex;
-        chip.bg.setFillStyle(selected ? 0x24b7ff : 0x1c2430, 1);
-        chip.bg.setStrokeStyle(2, selected ? 0xfbbf24 : 0x2a3140);
-        chip.txt.setColor(selected ? '#0b1220' : '#64748b');
+        chip.bg.setFillStyle(selected ? 0x1c3a5e : 0x141a24, 1);
+        chip.bg.setStrokeStyle(3, selected ? 0xfbbf24 : 0x2a3140);
+        chip.txt.setColor(selected ? '#F2F4F7' : '#64748b');
+        drawPlayDiagram(chip.diagram, chip.cx, chip.cy - 14, chip.size, chip.key);
       });
     }
 
@@ -1006,7 +1056,7 @@
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(150, 0.08); } catch (e) {}
       }
-      this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => this.teeUpKickoff());
+      this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => this.awayPossession());
     }
 
     incompletePass() {
@@ -1019,7 +1069,7 @@
       if (this.drive.down > 4) { turnover = true; sub += ' — TURNOVER ON DOWNS'; }
       this.driveSpotX = this.drive.losX;
       this.showPlayMessage('INCOMPLETE PASS', sub, () => {
-        if (turnover) this.teeUpKickoff(); else this.startPresnap(false);
+        if (turnover) this.awayPossession(); else this.startPresnap(false);
       });
     }
 
@@ -1073,8 +1123,46 @@
       this.driveSpotX = this.drive.losX;
 
       this.showPlayMessage(headline, sub, () => {
-        if (turnover) this.teeUpKickoff(); else this.startPresnap(false);
+        if (turnover) this.awayPossession(); else this.startPresnap(false);
       });
+    }
+
+    // ---- away's "possession" between your drives — a real (simulated)
+    // set of downs for the other team, not just handing you the ball right
+    // back. No manual-defense/mirrored-offense engine yet, so it's resolved
+    // as a quick AI-vs-AI sequence with its own down/distance and the same
+    // no-punts/4th-down-or-bust rule as your drives; it can score (AWAY
+    // points go up for real) or turn it over on downs, then a real,
+    // player-returnable kickoff brings the ball back to you. ----
+    awayPossession() {
+      this.phase = 'dead-ball';
+      this.clock.running = false;
+      let down = 1, toGo = 10, progress = 0;
+      const yardsToScore = 75;
+
+      const playOne = () => {
+        const gain = Phaser.Math.Between(-2, 12);
+        progress += gain;
+        if (progress >= yardsToScore) {
+          this.score.away += 6;
+          this.scoreLabel.setText('HOME ' + this.score.home + ' — AWAY ' + this.score.away);
+          this.showPlayMessage('AWAY TOUCHDOWN', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.teeUpKickoff());
+          return;
+        }
+        down += 1;
+        toGo -= gain;
+        let sub = (gain >= 0 ? '+' : '') + gain + ' YDS';
+        if (toGo <= 0) {
+          down = 1; toGo = 10;
+          sub += ' — AWAY 1ST DOWN';
+        } else if (down > 4) {
+          this.showPlayMessage('AWAY TURNOVER ON DOWNS', 'BALL BACK TO HOME', () => this.teeUpKickoff());
+          return;
+        }
+        this.showPlayMessage('AWAY BALL', sub, playOne);
+      };
+
+      this.showPlayMessage('KICKOFF', 'AWAY RECEIVES AND DRIVES', playOne);
     }
 
     // ---- shared movement/animation for whoever's currently controllable
@@ -1543,28 +1631,35 @@
       });
     }
 
-    // ---- play-call chip row — same visual language as the kick lane
-    // chips (built separately since the chip counts differ and the two
-    // never show at once), sitting in the same HUD slot. ----
+    // ---- play-call screen — big square cards (not thin HUD chips) with a
+    // real mini play-diagram drawn from the play's own assignment data, so
+    // adding a play later automatically gets a diagram for free. A dark
+    // backdrop dims the field behind it while you're choosing. ----
     buildPlayCallUI() {
-      this.playCallPrompt = this.add.text(W / 2, 24, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
-      }).setOrigin(0.5).setScrollFactor(0).setDepth(51).setVisible(false);
+      const boxSize = 176, gap = 26;
+      const totalW = boxSize * OFFENSE_PLAY_KEYS.length + gap * (OFFENSE_PLAY_KEYS.length - 1);
+      const startX = W / 2 - totalW / 2 + boxSize / 2;
+      const cardY = H / 2 + 16;
+
+      this.playCallBackdrop = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.6)
+        .setScrollFactor(0).setDepth(53).setVisible(false);
+      this.hudObjects.push(this.playCallBackdrop);
+
+      this.playCallPrompt = this.add.text(W / 2, cardY - boxSize / 2 - 30, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(55).setVisible(false);
       this.hudObjects.push(this.playCallPrompt);
 
-      const labels = OFFENSE_PLAY_KEYS.map(k => PLAYS[k].label);
-      const chipW = 130, chipH = 22, gap = 10;
-      const totalW = chipW * labels.length + gap * (labels.length - 1);
-      const startX = W / 2 - totalW / 2 + chipW / 2;
-      this.playCallChips = labels.map((label, i) => {
-        const cx = startX + i * (chipW + gap);
-        const bg = this.add.rectangle(cx, 48, chipW, chipH, 0x1c2430, 1)
-          .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
-        const txt = this.add.text(cx, 48, label, {
-          fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(52).setVisible(false);
-        this.hudObjects.push(bg, txt);
-        return { bg, txt };
+      this.playCallChips = OFFENSE_PLAY_KEYS.map((key, i) => {
+        const cx = startX + i * (boxSize + gap);
+        const bg = this.add.rectangle(cx, cardY, boxSize, boxSize, 0x141a24, 1)
+          .setStrokeStyle(3, 0x2a3140).setScrollFactor(0).setDepth(54).setVisible(false);
+        const diagram = this.add.graphics().setScrollFactor(0).setDepth(55).setVisible(false);
+        const txt = this.add.text(cx, cardY + boxSize / 2 - 18, PLAYS[key].label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8', fontStyle: 'bold'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(56).setVisible(false);
+        this.hudObjects.push(bg, diagram, txt);
+        return { bg, diagram, txt, cx, cy: cardY, size: boxSize, key };
       });
     }
 
