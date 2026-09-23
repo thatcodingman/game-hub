@@ -889,7 +889,8 @@
       this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
       this.ball.carriedBy = 'returner';
       this.phase = 'kickoff-return';
-      this.hint.setText('WASD / Arrows to run · Space to down the ball');
+      this.resetBreakMeter(this.returner);
+      this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to down the ball');
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(650, 0.05); } catch (e) {}
       }
@@ -949,7 +950,21 @@
 
         if (this.phase === 'kickoff-return') {
           const tdx = this.returner.x - d.x, tdy = this.returner.y - d.y;
-          if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) { this.tackleReturner(); break; }
+          if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) {
+            if (this.returner.evasionT > 0 || Math.random() < 0.08) {
+              d.blockTimer = 420;
+              d.strugglePhase = 0;
+              this.returner.evasionT = 0;
+              this.returner.brokenTackles = (this.returner.brokenTackles || 0) + 1;
+              this.showBreakPopup(this.returner, 'BROKEN TACKLE!', '#22c55e');
+              if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+                try { SFX.tone(330, 0.06); } catch (e) {}
+              }
+              continue;
+            }
+            this.tackleReturner();
+            break;
+          }
         }
       }
     }
@@ -1304,7 +1319,8 @@
         this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
       } else {
         this.phase = 'live-pass';
-        this.hint.setText('WASD to move · 1-4 to pick a target · Space to throw');
+        this.resetBreakMeter(this.qb);
+        this.hint.setText('WASD to move · Shift/Q/E to juke/spin/stiff-arm · 1-4 target · Space to throw');
       }
     }
 
@@ -1740,6 +1756,8 @@
         legPhase: this.returner.animPhase, gaitAmp: this.returner.gaitAmp
       });
       this.followTarget.set(this.returner.x, this.returner.y);
+
+      if (this.phase === 'kickoff-return') this.updateBreakMeterBookkeeping(this.returner, dt);
     }
 
     // ---- QB movement/throw-windup + redraw, shared by the presnap hold
@@ -1783,6 +1801,10 @@
       if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
       this.redrawQB();
       if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
+
+      if (this.ball.snapped && this.phase === 'live-pass' && this.ball.carriedBy === 'qb') {
+        this.updateBreakMeterBookkeeping(this.qb, dt);
+      }
     }
 
     // ---- generic route runner — any offense player with a 'route' or
@@ -1937,7 +1959,23 @@
           targetX = this.qb.x; targetY = this.qb.y;
           speed = RUSHER_SPEED;
           const dx = this.qb.x - d.x, dy = this.qb.y - d.y;
-          if (Math.sqrt(dx * dx + dy * dy) < SACK_RADIUS && this.ball.carriedBy === 'qb' && !this.qb.throwState) qbSacked = true;
+          if (Math.sqrt(dx * dx + dy * dy) < SACK_RADIUS && this.ball.carriedBy === 'qb' && !this.qb.throwState) {
+            // same Break Meter payoff as an open-field tackle: an active
+            // evasion window or the flat shrug-off chance spins the QB
+            // out of the sack instead of ending the play
+            if (this.qb.evasionT > 0 || Math.random() < 0.08) {
+              d.blockTimer = 420;
+              d.strugglePhase = 0;
+              this.qb.evasionT = 0;
+              this.qb.brokenTackles = (this.qb.brokenTackles || 0) + 1;
+              this.showBreakPopup(this.qb, 'BROKEN TACKLE!', '#22c55e');
+              if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+                try { SFX.tone(330, 0.06); } catch (e) {}
+              }
+            } else {
+              qbSacked = true;
+            }
+          }
         }
 
         const dx = targetX - d.x, dy = targetY - d.y;
@@ -2026,13 +2064,30 @@
       carrier.brokenTackles = 0;
     }
 
+    // ---- whoever currently "has the ball" in a juke-able sense: the RB/
+    // receiver on a run or after a catch, the QB any time he's holding it
+    // (pocket or scrambling, not mid-throw), or the kickoff returner once
+    // he's caught it. One resolver so tryBreakMove/HUD/bookkeeping all
+    // agree on the same carrier without re-deriving the phase logic. ----
+    activeCarrier() {
+      if (this.phase === 'live-run' && this.liveCarrier) return this.liveCarrier;
+      if (this.phase === 'live-pass' && this.ball.carriedBy === 'qb' && !this.qb.throwState) return this.qb;
+      if (this.phase === 'kickoff-return' && this.returner && this.returner.active) return this.returner;
+      return null;
+    }
+
     tryBreakMove(type) {
-      if (this.phase !== 'live-run' || !this.liveCarrier) return;
-      const carrier = this.liveCarrier;
+      const carrier = this.activeCarrier();
+      if (!carrier) return;
       if ((carrier.moveCooldown || 0) > 0) return;
       const COSTS = { juke: 22, spin: 32, stiffarm: 28 };
       const cost = COSTS[type];
       if ((carrier.breakMeter == null ? 100 : carrier.breakMeter) < cost) return;
+
+      // the pool of defenders a stiff arm can stagger depends on which
+      // phase we're in — kickoff return is covered by this.coverage, an
+      // open-field run/catch or a scrambling QB by this.defenseFormation
+      const defenders = this.phase === 'kickoff-return' ? this.coverage : this.defenseFormation;
 
       carrier.breakMeter -= cost;
       carrier.moveCooldown = 520;
@@ -2053,7 +2108,7 @@
       } else if (type === 'stiffarm') {
         carrier.evasionT = 160;
         let target = null, bestDist = Infinity;
-        for (const d of this.defenseFormation) {
+        for (const d of defenders) {
           if (d.blockTimer > 0) continue;
           const dx = d.x - carrier.x, dy = d.y - carrier.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
@@ -2081,6 +2136,35 @@
       this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
       this.breakPopupText.setVisible(true);
       this.breakPopupTimer = 650;
+    }
+
+    // ---- shared Break Meter upkeep (regen, cooldown/evasion countdown,
+    // HUD bar + ring + popup timer) — called from whichever movement
+    // function currently owns the active carrier (RB/receiver, QB, or the
+    // kickoff returner) so the bar/ring track the right guy either way. ----
+    updateBreakMeterBookkeeping(carrier, dt) {
+      carrier.moveCooldown = Math.max(0, (carrier.moveCooldown || 0) - dt);
+      carrier.evasionT = Math.max(0, (carrier.evasionT || 0) - dt);
+      carrier.breakMeter = Math.min(100, (carrier.breakMeter == null ? 100 : carrier.breakMeter) + dt * 0.015);
+
+      this.breakMeterLabel.setVisible(true);
+      this.breakMeterBg.setVisible(true);
+      this.breakMeterFill.setVisible(true);
+      const pct = Phaser.Math.Clamp(carrier.breakMeter / 100, 0, 1);
+      this.breakMeterFill.setSize(Math.max(2, 146 * pct), 6);
+      this.breakMeterFill.setFillStyle(pct > 0.55 ? 0x22c55e : pct > 0.25 ? 0xfbbf24 : 0xef4444, 1);
+
+      this.breakRing.clear();
+      if (carrier.evasionT > 0) {
+        this.breakRing.lineStyle(2.5, 0x38bdf8, 0.85);
+        this.breakRing.strokeCircle(carrier.x, carrier.y, 17);
+      }
+
+      if (this.breakPopupTimer > 0) {
+        this.breakPopupTimer -= dt;
+        this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
+        if (this.breakPopupTimer <= 0) this.breakPopupText.setVisible(false);
+      }
     }
 
     // ---- generic WASD ball-carrier mover — parameterized by whichever
@@ -2113,30 +2197,7 @@
       this.ball.y = carrier.y;
       if (carrier.x >= RIGHT_GOAL_X) this.scoreTouchdown();
 
-      // ---- Break Meter bookkeeping — regen while he's up, count down
-      // cooldown/evasion, keep the HUD bar and evasion ring in sync ----
-      carrier.moveCooldown = Math.max(0, (carrier.moveCooldown || 0) - dt);
-      carrier.evasionT = Math.max(0, (carrier.evasionT || 0) - dt);
-      carrier.breakMeter = Math.min(100, (carrier.breakMeter == null ? 100 : carrier.breakMeter) + dt * 0.015);
-
-      this.breakMeterLabel.setVisible(true);
-      this.breakMeterBg.setVisible(true);
-      this.breakMeterFill.setVisible(true);
-      const pct = Phaser.Math.Clamp(carrier.breakMeter / 100, 0, 1);
-      this.breakMeterFill.setSize(Math.max(2, 146 * pct), 6);
-      this.breakMeterFill.setFillStyle(pct > 0.55 ? 0x22c55e : pct > 0.25 ? 0xfbbf24 : 0xef4444, 1);
-
-      this.breakRing.clear();
-      if (carrier.evasionT > 0) {
-        this.breakRing.lineStyle(2.5, 0x38bdf8, 0.85);
-        this.breakRing.strokeCircle(carrier.x, carrier.y, 17);
-      }
-
-      if (this.breakPopupTimer > 0) {
-        this.breakPopupTimer -= dt;
-        this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
-        if (this.breakPopupTimer <= 0) this.breakPopupText.setVisible(false);
-      }
+      this.updateBreakMeterBookkeeping(carrier, dt);
     }
 
     ordinal(n) {
