@@ -55,6 +55,11 @@
   };
 
   const PLAYER_SPEED = 3.4;
+  // this offense always drives toward RIGHT_GOAL_X — fixed for the whole
+  // game, unlike qb.facing (which just tracks whichever way he's
+  // currently strafing/scrambling frame to frame). Anything that means
+  // "forward, downfield" should use this, never qb.facing.
+  const OFFENSE_DIR = 1;
 
   // -----------------------------------------------------------------------
   // Data-driven body system — one universal base body (round head/helmet,
@@ -1326,9 +1331,16 @@
       if (!this.currentOffensePlay) return null;
       const assignments = this.currentOffensePlay.assignments;
       const elapsed = this.livePlayElapsedMs || 0;
+      // NOTE: no qb.facing check here on purpose — facing is just whichever
+      // way he's currently strafing (updates every frame off arrow-key
+      // input), not the offense's actual driving direction, and gating
+      // eligibility on it meant a QB who'd drifted left while scrambling
+      // would drop every real receiver (all of whom are downfield to the
+      // right) and either whiff on a manual target or fall through to the
+      // "nobody's open" branch below.
       const eligibles = this.offenseFormation.filter(p => {
         const a = assignments[p.role];
-        return a && (a.type === 'route' || a.type === 'clear') && Math.sign(p.x - this.qb.x) === this.qb.facing;
+        return a && (a.type === 'route' || a.type === 'clear');
       });
       if (!eligibles.length) return null;
 
@@ -1419,7 +1431,7 @@
       this.ball.passTarget = null;
 
       const target = this.pickThrowTarget();
-      let vx = this.qb.facing * THROW_SPEED;
+      let vx = OFFENSE_DIR * THROW_SPEED; // a QB never accidentally throws it behind his own line
       let vy = 0;
       let ticks = 10; // fallback hang-time (nominal 60fps ticks) when nobody's a legal target
 
@@ -1440,11 +1452,14 @@
         lead = this.getPointAlongRoute(target, RECEIVER_SPEED * t * 0.6);
 
         let dx = lead.x - this.ball.x, dy = lead.y - this.ball.y;
-        // the QB only ever releases toward the side he's facing — if the
-        // lead point ends up behind him (e.g. a receiver breaking back
-        // toward the QB on a comeback right at release), clamp the
-        // horizontal component forward instead of throwing backward
-        if (Math.sign(dx || this.qb.facing) !== this.qb.facing) dx = this.qb.facing * 4;
+        // never actually throw backward toward his own end zone — checked
+        // against OFFENSE_DIR (the fixed driving direction), NOT
+        // qb.facing, which is just whichever way he's currently strafing
+        // and flips constantly while scrambling; using facing here was
+        // the bug that sent throws the wrong way whenever you were
+        // holding left/A (a completely normal thing to do in the pocket)
+        // at the moment you released
+        if (Math.sign(dx || OFFENSE_DIR) !== OFFENSE_DIR) dx = OFFENSE_DIR * 4;
         const d = Math.hypot(dx, dy) || 1;
         vx = (dx / d) * THROW_SPEED;
         vy = (dy / d) * THROW_SPEED;
