@@ -253,6 +253,82 @@
     { dy: (FIELD_H / 2 - 20), body: WR_BODY }
   ];
 
+  // -----------------------------------------------------------------------
+  // PHASE A — offensive/defensive playbook + play-calling. Each formation
+  // role gets a post-snap "assignment" (route / clear / runBlock / passBlock
+  // / block / man / zone / rush) executed by one generic handler per
+  // assignment type, rather than bespoke code per play. Route waypoints are
+  // [downfieldYards, lateralYards] pairs RELATIVE TO the role's own presnap
+  // spot. Only 4 of the eventual 12 plays are wired up this phase (2
+  // offense, 2 defense) — same data shape scales to the rest later.
+  // -----------------------------------------------------------------------
+  const PLAY_CALL_SECONDS = 5;
+  const RUSHER_SPEED = 2.9;
+  const MAN_COVERAGE_SPEED = 2.85;
+  const ZONE_SPEED = 2.8;
+  const RECEIVER_SPEED = 3.2;
+  const OL_ENGAGE_RADIUS = 26;
+  const OL_BLOCK_DURATION = 650;
+  const SACK_RADIUS = 22;
+
+  const PLAYS = {
+    insideZone: {
+      label: 'INSIDE ZONE', type: 'run', carrier: 'RB',
+      assignments: {
+        LT: { type: 'runBlock' }, LG: { type: 'runBlock' }, C: { type: 'runBlock' },
+        RG: { type: 'runBlock' }, RT: { type: 'runBlock' },
+        TE: { type: 'runBlock' }, FB: { type: 'runBlock' },
+        WR1: { type: 'runBlock' }, WR2: { type: 'runBlock' },
+        RB: { type: 'run' }
+      }
+    },
+    slantFlat: {
+      label: 'SLANT / FLAT', type: 'pass',
+      assignments: {
+        WR1: { type: 'route', route: [[0, 0], [4, 0], [7, 5], [12, 5]], window: { open: 450, duration: 550 }, priority: 1 },
+        TE: { type: 'route', route: [[0, 0], [6, 0], [6, 2]], window: { open: 300, duration: 700 }, priority: 2 },
+        WR2: { type: 'clear', route: [[0, 0], [18, 0]] },
+        RB: { type: 'route', route: [[2, 0], [3, -5], [6, -5]], window: { open: 200, duration: 900 }, priority: 3 },
+        FB: { type: 'block' },
+        LT: { type: 'passBlock' }, LG: { type: 'passBlock' }, C: { type: 'passBlock' },
+        RG: { type: 'passBlock' }, RT: { type: 'passBlock' }
+      }
+    }
+  };
+  const OFFENSE_PLAY_KEYS = ['insideZone', 'slantFlat'];
+
+  // zone anchors — depth (yards downfield of the LOS) + lateral offset from
+  // the field's vertical center. Zone defenders drift from this anchor
+  // toward the nearest route-runner who wanders into range.
+  const ZONES = {
+    shortLeft: { depth: 6, lateral: -(FIELD_H / 2 - 60) },
+    middleHook: { depth: 8, lateral: 0 },
+    shortRight: { depth: 6, lateral: (FIELD_H / 2 - 60) },
+    deepLeft: { depth: 16, lateral: -(FIELD_H / 2 - 40) },
+    deepRight: { depth: 16, lateral: (FIELD_H / 2 - 40) },
+    deepMiddle: { depth: 18, lateral: 0 }
+  };
+
+  const DEFENSES = {
+    cover3: {
+      label: 'COVER 3',
+      assignments: {
+        DE1: { type: 'rush' }, DT1: { type: 'rush' }, DT2: { type: 'rush' }, DE2: { type: 'rush' },
+        LB1: { type: 'zone', zone: 'shortLeft' }, LB2: { type: 'zone', zone: 'middleHook' }, LB3: { type: 'zone', zone: 'shortRight' },
+        CB1: { type: 'zone', zone: 'deepLeft' }, CB2: { type: 'zone', zone: 'deepRight' }, S1: { type: 'zone', zone: 'deepMiddle' }
+      }
+    },
+    manPress: {
+      label: 'MAN PRESS',
+      assignments: {
+        DE1: { type: 'rush' }, DT1: { type: 'rush' }, DT2: { type: 'rush' }, DE2: { type: 'rush' },
+        CB1: { type: 'man', target: 'WR1' }, CB2: { type: 'man', target: 'WR2' }, S1: { type: 'man', target: 'TE' },
+        LB1: { type: 'man', target: 'RB' }, LB2: { type: 'man', target: 'FB' }, LB3: { type: 'zone', zone: 'middleHook' }
+      }
+    }
+  };
+  const DEFENSE_PLAY_KEYS = ['cover3', 'manPress'];
+
   class FieldScene extends Phaser.Scene {
     constructor() { super('field'); }
 
@@ -263,7 +339,9 @@
       this.drawField();
       this.buildHUD();
       this.buildKickUI();
+      this.buildPlayCallUI();
 
+      this.score = { home: 0, away: 0 };
       this.clock = { quarter: 1, secondsLeft: QUARTER_SECONDS, running: false, over: false };
 
       const snapY = FIELD_TOP + FIELD_H / 2;
@@ -301,12 +379,15 @@
       this.offenseFormation = OFFENSE_SPECS.map(spec => ({
         role: spec.role, body: spec.body, facing: 1, dx: spec.dx, dy: spec.dy,
         x: this.snapX + spec.dx, y: snapY + spec.dy,
-        gfx: this.add.graphics().setDepth(8)
+        gfx: this.add.graphics().setDepth(8),
+        gaitAmp: 0, animPhase: 0, cooldown: 0, blockTimer: 0,
+        routeIndex: 0, routeWaypoints: null, homeX: 0, homeY: 0
       }));
       this.defenseFormation = DEFENSE_SPECS.map(spec => ({
         role: spec.role, body: spec.body, facing: -1, dx: spec.dx, dy: spec.dy,
         x: this.snapX + spec.dx, y: snapY + spec.dy,
-        gfx: this.add.graphics().setDepth(8)
+        gfx: this.add.graphics().setDepth(8),
+        gaitAmp: 0, animPhase: 0, cooldown: 0, blockTimer: 0
       }));
 
       // ---- Kickoff coverage — live defenders on the return, reset/spread
@@ -333,6 +414,16 @@
       this.kickPower = 0;
       this.kickMeterT = 0;
 
+      this.drive = null;
+      this.liveCarrier = null;
+      this.chaseMode = false;
+      this.currentOffensePlay = null;
+      this.currentDefensePlay = null;
+      this.selectedOffensePlay = null;
+      this.selectedDefensePlay = null;
+      this.lastOffensePlay = null;
+      this.playCallIndex = 0;
+
       this.keys = this.input.keyboard.addKeys({
         up: 'W', down: 'S', left: 'A', right: 'D',
         upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT',
@@ -342,12 +433,14 @@
         if (this.phase === 'kickoff-aim') this.confirmKickDirection();
         else if (this.phase === 'kickoff-power') this.lockKickPower();
         else if (this.phase === 'kickoff-return') this.downReturner();
+        else if (this.phase === 'playcall') this.confirmPlayCall();
+        else if (this.phase === 'live-run') this.downCarrier();
         else this.tryThrow();
       });
-      this.input.keyboard.on('keydown-A', () => this.cycleKickDirection(-1));
-      this.input.keyboard.on('keydown-LEFT', () => this.cycleKickDirection(-1));
-      this.input.keyboard.on('keydown-D', () => this.cycleKickDirection(1));
-      this.input.keyboard.on('keydown-RIGHT', () => this.cycleKickDirection(1));
+      this.input.keyboard.on('keydown-A', () => { this.cycleKickDirection(-1); this.cyclePlayCallChoice(-1); });
+      this.input.keyboard.on('keydown-LEFT', () => { this.cycleKickDirection(-1); this.cyclePlayCallChoice(-1); });
+      this.input.keyboard.on('keydown-D', () => { this.cycleKickDirection(1); this.cyclePlayCallChoice(1); });
+      this.input.keyboard.on('keydown-RIGHT', () => { this.cycleKickDirection(1); this.cyclePlayCallChoice(1); });
 
       // ---- Camera: kicker during the kick, the returner from the moment
       // the ball is booted (so the player can track/position for it) all
@@ -603,29 +696,25 @@
       }
     }
 
-    touchdownOnReturn() {
+    // ---- scoring — a real scoreboard now backs every TD, whether it comes
+    // from a kickoff return or a live offensive drive. Locked rule: TD=6,
+    // no XP/2pt/FG, so a score always just resets to another kickoff. ----
+    scoreTouchdown() {
+      if (this.phase === 'dead-ball') return;
       this.phase = 'dead-ball';
-      this.hint.setText('');
-      this.touchbackMsg = this.add.text(W / 2, H / 2 - 14, 'TOUCHDOWN!', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: '#fbbf24', fontStyle: 'bold'
-      }).setOrigin(0.5).setScrollFactor(0).setDepth(60);
-      this.touchbackSub = this.add.text(W / 2, H / 2 + 18, 'KICKOFF RETURNED FOR A SCORE', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#94a3b8'
-      }).setOrigin(0.5).setScrollFactor(0).setDepth(60);
-      this.cameras.main.ignore([this.touchbackMsg, this.touchbackSub]);
-      this.time.delayedCall(2000, () => {
-        this.touchbackMsg.destroy(); this.touchbackMsg = null;
-        this.touchbackSub.destroy(); this.touchbackSub = null;
-        this.teeUpKickoff();
-      });
+      this.clock.running = false;
+      this.score.home += 6;
+      this.scoreLabel.setText('HOME ' + this.score.home + ' — AWAY ' + this.score.away);
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(700, 0.1); } catch (e) {}
+      }
+      this.showPlayMessage('TOUCHDOWN!', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.teeUpKickoff());
     }
 
-    // shared "the play just ended here, pause on a message, then set up
-    // the next snap at that spot" — used by touchbacks, downed kicks and
-    // a returner choosing to give himself up
-    endKickoffAt(x, headline, sub) {
-      this.driveSpotX = x;
-      this.phase = 'dead-ball';
+    // shared "the play just ended here, pause on a message, then run some
+    // callback" — used by touchbacks, downed kicks, a returner giving
+    // himself up, and now every live-drive play result too
+    showPlayMessage(headline, sub, callback) {
       this.hint.setText('');
       this.touchbackMsg = this.add.text(W / 2, H / 2 - 14, headline, {
         fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F2F4F7', fontStyle: 'bold'
@@ -637,10 +726,25 @@
       // camera/ignore setup, so they need their own explicit exclusion
       // from the zoomed main camera (same trick buildHUD() relies on)
       this.cameras.main.ignore([this.touchbackMsg, this.touchbackSub]);
-      this.time.delayedCall(1600, () => this.startPresnap());
+      this.time.delayedCall(1600, () => {
+        if (this.touchbackMsg) { this.touchbackMsg.destroy(); this.touchbackMsg = null; }
+        if (this.touchbackSub) { this.touchbackSub.destroy(); this.touchbackSub = null; }
+        callback();
+      });
     }
 
-    startPresnap() {
+    endKickoffAt(x, headline, sub) {
+      this.driveSpotX = x;
+      this.phase = 'dead-ball';
+      this.showPlayMessage(headline, sub, () => this.startPresnap(true));
+    }
+
+    // freshDrive=true (default) starts a brand-new drive (1st & 10 at
+    // driveSpotX) — used after a kickoff/touchback/downed kick. false keeps
+    // the current drive's down/distance going, just moving the LOS to
+    // wherever the last play ended — used between downs on a live drive.
+    startPresnap(freshDrive) {
+      if (freshDrive === undefined) freshDrive = true;
       if (this.touchbackMsg) { this.touchbackMsg.destroy(); this.touchbackMsg = null; }
       if (this.touchbackSub) { this.touchbackSub.destroy(); this.touchbackSub = null; }
       this.kicker.gfx.clear();
@@ -651,11 +755,18 @@
       this.blockers.forEach(b => b.gfx.clear());
       this.blockersActive = false;
 
+      if (freshDrive) {
+        this.drive = { down: 1, toGo: 10, losX: this.driveSpotX };
+      } else {
+        this.drive.losX = this.driveSpotX;
+      }
+
       const losX = this.driveSpotX;
       this.qb.x = losX - 34;
       this.qb.y = this.snapY;
       this.qb.facing = 1;
       this.qb.active = true;
+      this.qb.throwState = null;
 
       this.ball.x = losX;
       this.ball.y = this.snapY;
@@ -664,21 +775,135 @@
 
       // proper 11-man formations line up for the snap, relative to
       // wherever this drive is actually starting from
-      this.offenseFormation.forEach(p => { p.x = losX + p.dx; p.y = this.snapY + p.dy; drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {}); });
-      this.defenseFormation.forEach(p => { p.x = losX + p.dx; p.y = this.snapY + p.dy; drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {}); });
+      this.offenseFormation.forEach(p => {
+        p.x = losX + p.dx; p.y = this.snapY + p.dy; p.facing = 1;
+        p.gaitAmp = 0; p.animPhase = 0; p.routeWaypoints = null; p.routeIndex = 0;
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {});
+      });
+      this.defenseFormation.forEach(p => {
+        p.x = losX + p.dx; p.y = this.snapY + p.dy; p.facing = -1;
+        p.gaitAmp = 0; p.animPhase = 0; p.blockTimer = 0;
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, {});
+      });
 
-      this.hint.setText('WASD / Arrows to move · Space to throw');
+      this.redrawQB();
+      this.followTarget.set(this.qb.x, this.qb.y);
+      this.startPlayCall();
+    }
+
+    // ---- play-calling: offense picks from the 2 wired-up calls via a
+    // chip selector (A/D or ◀ ▶, SPACE to lock in), 5s timer auto-confirms
+    // (falling back to the previous call, or the first one on your very
+    // first snap) if you don't choose in time. Defense is 100% AI this
+    // phase — it just rolls one of its 2 calls at random. ----
+    startPlayCall() {
+      this.phase = 'playcall';
+      this.playCallIndex = this.lastOffensePlay ? Math.max(0, OFFENSE_PLAY_KEYS.indexOf(this.lastOffensePlay)) : 0;
+      this.playCallTimeLeft = PLAY_CALL_SECONDS * 1000;
+      this.playCallChips.forEach(c => { c.bg.setVisible(true); c.txt.setVisible(true); });
+      this.playCallPrompt.setVisible(true);
+      this.refreshPlayCallChips();
+    }
+
+    cyclePlayCallChoice(delta) {
+      if (this.phase !== 'playcall') return;
+      this.playCallIndex = Phaser.Math.Clamp(this.playCallIndex + delta, 0, OFFENSE_PLAY_KEYS.length - 1);
+      this.refreshPlayCallChips();
+    }
+
+    confirmPlayCall() {
+      if (this.phase !== 'playcall') return;
+      this.selectedOffensePlay = OFFENSE_PLAY_KEYS[this.playCallIndex];
+      this.lastOffensePlay = this.selectedOffensePlay;
+      this.selectedDefensePlay = DEFENSE_PLAY_KEYS[Phaser.Math.Between(0, DEFENSE_PLAY_KEYS.length - 1)];
+      this.playCallChips.forEach(c => { c.bg.setVisible(false); c.txt.setVisible(false); });
+      this.playCallPrompt.setVisible(false);
       this.phase = 'presnap';
+      this.hint.setText('Get set...');
       this.time.delayedCall(700, () => this.doSnap());
+    }
+
+    refreshPlayCallChips() {
+      this.playCallChips.forEach((chip, i) => {
+        const selected = i === this.playCallIndex;
+        chip.bg.setFillStyle(selected ? 0x24b7ff : 0x1c2430, 1);
+        chip.bg.setStrokeStyle(2, selected ? 0xfbbf24 : 0x2a3140);
+        chip.txt.setColor(selected ? '#0b1220' : '#64748b');
+      });
     }
 
     doSnap() {
       this.snapAnim = { t: 0, duration: 150, fromX: this.ball.x, fromY: this.ball.y };
     }
 
+    // ---- fires the instant the snap animation finishes — assigns every
+    // formation player their route/block/coverage job for the play just
+    // called, and drops into either 'live-run' (ball goes straight to the
+    // RB) or 'live-pass' (QB holds it, can move/scramble/throw). ----
+    beginLivePlay() {
+      this.ball.carriedBy = 'qb';
+      this.ball.snapped = true;
+      this.clock.running = true;
+      this.livePlayElapsedMs = 0;
+      this.chaseMode = false;
+      this.liveCarrier = null;
+
+      const offPlay = PLAYS[this.selectedOffensePlay];
+      const defPlay = DEFENSES[this.selectedDefensePlay];
+      this.currentOffensePlay = offPlay;
+      this.currentDefensePlay = defPlay;
+
+      this.offenseFormation.forEach(p => {
+        p.cooldown = 0; p.blockTimer = 0; p.homeX = p.x; p.homeY = p.y; p.routeIndex = 0;
+        const a = offPlay.assignments[p.role];
+        if (a && (a.type === 'route' || a.type === 'clear')) {
+          p.routeWaypoints = a.route.map(wp => ({ x: p.x + wp[0] * PX_PER_YARD, y: p.y + wp[1] * PX_PER_YARD }));
+        } else {
+          p.routeWaypoints = null;
+        }
+      });
+      this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; });
+
+      if (offPlay.type === 'run') {
+        this.phase = 'live-run';
+        this.chaseMode = true;
+        const carrier = this.offenseFormation.find(p => p.role === (offPlay.carrier || 'RB'));
+        this.liveCarrier = carrier;
+        this.ball.carriedBy = carrier.role;
+        this.followTarget.set(carrier.x, carrier.y);
+        this.hint.setText('WASD / Arrows to run · Space to go down');
+      } else {
+        this.phase = 'live-pass';
+        this.hint.setText('WASD / Arrows to move · Space to throw');
+      }
+    }
+
     tryThrow() {
-      if (!this.qb.active || this.ball.carriedBy !== 'qb' || this.qb.throwState) return;
+      if (this.phase !== 'live-pass' || !this.qb.active || this.ball.carriedBy !== 'qb' || this.qb.throwState) return;
       this.qb.throwState = { t: 0, duration: 420 };
+    }
+
+    // picks who the ball is going to: the highest-priority eligible
+    // receiver currently inside their Read & React window (falling back to
+    // priority order among everyone downfield of the QB if nobody's window
+    // is open yet) — a stand-in for real analog aiming, per the PDF's own
+    // note that the QB still just throws in the direction he's facing.
+    pickThrowTarget() {
+      if (!this.currentOffensePlay) return null;
+      const assignments = this.currentOffensePlay.assignments;
+      const elapsed = this.livePlayElapsedMs || 0;
+      const eligibles = this.offenseFormation.filter(p => {
+        const a = assignments[p.role];
+        return a && (a.type === 'route' || a.type === 'clear') && Math.sign(p.x - this.qb.x) === this.qb.facing;
+      });
+      if (!eligibles.length) return null;
+      const open = eligibles.filter(p => {
+        const w = assignments[p.role].window;
+        return !w || (elapsed >= w.open && elapsed <= w.open + w.duration);
+      });
+      const pool = open.length ? open : eligibles;
+      pool.sort((a, b) => (assignments[a.role].priority || 9) - (assignments[b.role].priority || 9));
+      return pool[0];
     }
 
     releaseThrow() {
@@ -686,16 +911,170 @@
       const THROW_ARC = 6.5;        // initial upward velocity of the "height" fake-3D
       this.ball.carriedBy = null;
       this.ball.inFlight = true;
+      this.ball.pastPeak = false;
       this.ball.x = this.qb.throwHandX;
       this.ball.y = this.qb.throwHandY;
-      this.ball.vx = this.qb.facing * THROW_SPEED;
-      this.ball.vy = 0; // Phase 2 throws straight downfield in the facing direction — aiming/routes come next
+
+      const target = this.pickThrowTarget();
+      const vx = this.qb.facing * THROW_SPEED;
+      let vy = 0;
+      if (target) {
+        const frames = Math.max(1, Math.abs(target.x - this.ball.x) / Math.abs(vx));
+        vy = (target.y - this.ball.y) / frames;
+      }
+      this.ball.vx = vx;
+      this.ball.vy = vy;
       this.ball.height = 6;
       this.ball.heightVel = THROW_ARC;
       this.ball.gravity = 0.028;
+      this.phase = 'live-pass-air';
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(500, 0.05); } catch (e) {}
       }
+    }
+
+    // ---- resolves a pass in the air once it's low enough to be caught,
+    // reusing the exact same catch-radius idea already proven on kickoffs.
+    // Whoever's nearest the ball wins it; if that's an offensive receiver,
+    // his separation from the nearest defender rolls interception risk
+    // using the PDF's own breakpoints. ----
+    resolveAirBall() {
+      const offAssignments = this.currentOffensePlay.assignments;
+      let nearestOff = null, offDist = Infinity;
+      for (const p of this.offenseFormation) {
+        const a = offAssignments[p.role];
+        if (!a || (a.type !== 'route' && a.type !== 'clear')) continue;
+        const dx = this.ball.x - p.x, dy = this.ball.y - p.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < offDist) { offDist = dist; nearestOff = p; }
+      }
+      let nearestDef = null, defDist = Infinity;
+      for (const d of this.defenseFormation) {
+        const dx = this.ball.x - d.x, dy = this.ball.y - d.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < defDist) { defDist = dist; nearestDef = d; }
+      }
+
+      if (nearestDef && defDist < CATCH_RADIUS && defDist < offDist) {
+        this.interceptedBy(nearestDef);
+        return;
+      }
+      if (nearestOff && offDist < CATCH_RADIUS) {
+        let sep = Infinity;
+        for (const d of this.defenseFormation) {
+          const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
+          sep = Math.min(sep, Math.sqrt(dx * dx + dy * dy));
+        }
+        let intRisk = 0;
+        if (sep < 15) intRisk = 0.35;
+        else if (sep < 25) intRisk = 0.20;
+        else if (sep < 40) intRisk = 0.10;
+        else if (sep < 60) intRisk = 0.03;
+        if (Math.random() < intRisk) {
+          let picker = null, pd = Infinity;
+          for (const d of this.defenseFormation) {
+            const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < pd) { pd = dist; picker = d; }
+          }
+          this.interceptedBy(picker);
+        } else {
+          this.completePass(nearestOff);
+        }
+      }
+    }
+
+    completePass(receiver) {
+      if (this.phase === 'dead-ball') return;
+      this.ball.inFlight = false; this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
+      this.ball.carriedBy = receiver.role;
+      this.liveCarrier = receiver;
+      this.chaseMode = true;
+      this.phase = 'live-run';
+      this.hint.setText('WASD / Arrows to run · Space to go down');
+      this.followTarget.set(receiver.x, receiver.y);
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(650, 0.05); } catch (e) {}
+      }
+    }
+
+    interceptedBy(defender) {
+      if (this.phase === 'dead-ball') return;
+      this.phase = 'dead-ball';
+      this.clock.running = false;
+      this.ball.inFlight = false; this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(150, 0.08); } catch (e) {}
+      }
+      this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => this.teeUpKickoff());
+    }
+
+    incompletePass() {
+      if (this.phase === 'dead-ball') return;
+      this.phase = 'dead-ball';
+      this.clock.running = false;
+      this.ball.inFlight = false; this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
+      this.drive.down += 1;
+      let turnover = false, sub = 'INCOMPLETE';
+      if (this.drive.down > 4) { turnover = true; sub += ' — TURNOVER ON DOWNS'; }
+      this.driveSpotX = this.drive.losX;
+      this.showPlayMessage('INCOMPLETE PASS', sub, () => {
+        if (turnover) this.teeUpKickoff(); else this.startPresnap(false);
+      });
+    }
+
+    sackQB() {
+      if (this.phase !== 'live-pass') return;
+      const spot = Phaser.Math.Clamp(this.qb.x, LEFT_GOAL_X + 2, RIGHT_GOAL_X - 2);
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(120, 0.09); } catch (e) {}
+      }
+      this.endLivePlayAt(spot, 'SACKED!');
+    }
+
+    downCarrier() {
+      if (this.phase !== 'live-run' || !this.liveCarrier) return;
+      const spot = Phaser.Math.Clamp(this.liveCarrier.x, LEFT_GOAL_X + 2, RIGHT_GOAL_X - 2);
+      this.endLivePlayAt(spot, 'DOWN');
+    }
+
+    tackleCarrier() {
+      if (this.phase !== 'live-run' || !this.liveCarrier) return;
+      const spot = Phaser.Math.Clamp(this.liveCarrier.x, LEFT_GOAL_X + 2, RIGHT_GOAL_X - 2);
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(150, 0.07); } catch (e) {}
+      }
+      this.endLivePlayAt(spot, 'TACKLED');
+    }
+
+    // ---- shared "the down just ended here" resolver for every live-drive
+    // outcome (tackle, going down, a sack) — updates down/distance/LOS and
+    // either sets up the next down or hands the ball over on downs. ----
+    endLivePlayAt(x, headline) {
+      if (this.phase === 'dead-ball') return;
+      this.phase = 'dead-ball';
+      this.clock.running = false;
+
+      const yardsGained = Math.round((x - this.drive.losX) / PX_PER_YARD);
+      let sub = (yardsGained >= 0 ? '+' : '') + yardsGained + ' YD' + (Math.abs(yardsGained) === 1 ? '' : 'S');
+
+      this.drive.toGo -= yardsGained;
+      this.drive.down += 1;
+      let turnover = false;
+      if (this.drive.toGo <= 0) {
+        this.drive.down = 1;
+        this.drive.toGo = 10;
+        sub += ' — 1ST DOWN';
+      } else if (this.drive.down > 4) {
+        turnover = true;
+        sub += ' — TURNOVER ON DOWNS';
+      }
+      this.drive.losX = Phaser.Math.Clamp(x, LEFT_GOAL_X + 5, RIGHT_GOAL_X - 5);
+      this.driveSpotX = this.drive.losX;
+
+      this.showPlayMessage(headline, sub, () => {
+        if (turnover) this.teeUpKickoff(); else this.startPresnap(false);
+      });
     }
 
     // ---- shared movement/animation for whoever's currently controllable
@@ -723,6 +1102,276 @@
         legPhase: this.returner.animPhase, gaitAmp: this.returner.gaitAmp
       });
       this.followTarget.set(this.returner.x, this.returner.y);
+    }
+
+    // ---- QB movement/throw-windup + redraw, shared by the presnap hold
+    // (movement locked, just redrawing so the snap has a hand position to
+    // target) and the live pass play (full WASD scramble + SPACE to throw) ----
+    updateQBMovement(dt) {
+      if (this.ball.snapped && this.phase === 'live-pass') {
+        const throwing = !!this.qb.throwState;
+        const locked = throwing && this.qb.throwState.t / this.qb.throwState.duration > 0.4;
+        let vx = 0, vy = 0;
+        if (!locked) {
+          if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.qb.facing = -1; }
+          else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.qb.facing = 1; }
+          if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+          else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+        }
+        if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+        const moving = vx !== 0 || vy !== 0;
+
+        this.qb.x = Phaser.Math.Clamp(this.qb.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
+        this.qb.y = Phaser.Math.Clamp(this.qb.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+        this.qb.gaitAmp += ((moving ? 1 : 0) - this.qb.gaitAmp) * 0.25;
+        if (moving) {
+          this.qb.animPhase += dt * 0.012;
+          if (this.qb.animPhase > Math.PI * 2) this.qb.animPhase -= Math.PI * 2;
+        }
+
+        if (this.qb.throwState) {
+          this.qb.throwState.t += dt;
+          if (this.qb.throwState.t >= this.qb.throwState.duration) {
+            this.releaseThrow();
+            this.qb.throwState = null;
+          }
+        }
+
+        // a scrambling QB can walk it in himself
+        if (this.ball.carriedBy === 'qb' && this.qb.x >= RIGHT_GOAL_X) { this.scoreTouchdown(); return; }
+      }
+
+      if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
+      this.redrawQB();
+      if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
+    }
+
+    // ---- generic route runner — any offense player with a 'route' or
+    // 'clear' assignment walks their waypoints (computed once at the snap,
+    // relative to their own presnap spot) in order, then drifts slowly
+    // forward as a late checkdown once the route's finished. ----
+    updateOffenseRoutes(dt) {
+      const assignments = this.currentOffensePlay.assignments;
+      for (const p of this.offenseFormation) {
+        const a = assignments[p.role];
+        if (!a || (a.type !== 'route' && a.type !== 'clear') || !p.routeWaypoints) continue;
+
+        if (p.routeIndex < p.routeWaypoints.length) {
+          const wp = p.routeWaypoints[p.routeIndex];
+          const dx = wp.x - p.x, dy = wp.y - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 4) {
+            p.routeIndex++;
+          } else {
+            const moveX = (dx / dist) * RECEIVER_SPEED, moveY = (dy / dist) * RECEIVER_SPEED;
+            p.x += moveX; p.y += moveY;
+            if (Math.abs(moveX) > 0.05) p.facing = moveX > 0 ? 1 : -1;
+          }
+        } else {
+          p.x += 0.4; // route's done — drift on as a late checkdown option
+        }
+        p.x = Phaser.Math.Clamp(p.x, 20, WORLD_W - 20);
+        p.y = Phaser.Math.Clamp(p.y, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+        p.gaitAmp = Math.min(1, (p.gaitAmp || 0) + 0.08);
+        p.animPhase = (p.animPhase || 0) + dt * 0.014;
+        if (p.animPhase > Math.PI * 2) p.animPhase -= Math.PI * 2;
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase, gaitAmp: p.gaitAmp });
+      }
+    }
+
+    // ---- generic blocker — any offense player with a 'runBlock',
+    // 'passBlock' or 'block' assignment seeks the nearest unblocked
+    // defender and locks them up on contact. Exactly the same engage +
+    // lock-timer + cooldown pattern already proven on kickoff blockers, so
+    // no single matchup turns into a permanent every-frame re-lock. Pass
+    // blockers hold closer to the pocket; run blockers drive further. ----
+    updateOffenseBlocking(dt) {
+      const assignments = this.currentOffensePlay.assignments;
+      for (const p of this.offenseFormation) {
+        const a = assignments[p.role];
+        if (!a || (a.type !== 'runBlock' && a.type !== 'passBlock' && a.type !== 'block')) continue;
+
+        if (p.cooldown > 0) {
+          p.cooldown -= dt;
+          p.gaitAmp = Math.max(0, (p.gaitAmp || 0) - 0.1);
+          drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase || 0, gaitAmp: p.gaitAmp });
+          continue;
+        }
+
+        let target = null, bestDist = Infinity;
+        for (const d of this.defenseFormation) {
+          if (d.blockTimer > 0) continue;
+          const dx = d.x - p.x, dy = d.y - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bestDist) { bestDist = dist; target = d; }
+        }
+
+        if (target && bestDist < OL_ENGAGE_RADIUS) {
+          target.blockTimer = OL_BLOCK_DURATION;
+          p.cooldown = OL_BLOCK_DURATION + 400;
+          p.gaitAmp = Math.max(0, (p.gaitAmp || 0) - 0.2);
+          if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+            try { SFX.tone(180, 0.05); } catch (e) {}
+          }
+        } else if (target) {
+          const dx = target.x - p.x, dy = target.y - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const holdsPocket = a.type === 'passBlock' || a.type === 'block';
+          const speed = holdsPocket ? 1.6 : BLOCKER_SPEED;
+          let moveX = (dx / dist) * speed, moveY = (dy / dist) * speed;
+          if (holdsPocket && Math.abs((p.x + moveX) - p.homeX) > 16) moveX = 0;
+          p.x = Phaser.Math.Clamp(p.x + moveX, 20, WORLD_W - 20);
+          p.y = Phaser.Math.Clamp(p.y + moveY, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+          if (Math.abs(moveX) > 0.05) p.facing = moveX > 0 ? 1 : -1;
+          p.gaitAmp = Math.min(1, (p.gaitAmp || 0) + 0.08);
+        }
+
+        p.animPhase = (p.animPhase || 0) + dt * 0.014;
+        if (p.animPhase > Math.PI * 2) p.animPhase -= Math.PI * 2;
+        drawFootballPlayer(p.gfx, p.x, p.y, p.facing, p.body, { legPhase: p.animPhase, gaitAmp: p.gaitAmp });
+      }
+    }
+
+    // ---- generic defense — rush/man/zone per the called defense, only
+    // used before the ball's live with a carrier (chaseMode off). A rusher
+    // that gets a clean run at the QB sacks him; man defenders track their
+    // assigned player's live position; zone defenders hold their anchor
+    // and drift toward whichever route-runner wanders closest. ----
+    updateDefenseAssignments(dt) {
+      const defAssignments = this.currentDefensePlay.assignments;
+      const offAssignments = this.currentOffensePlay.assignments;
+      let qbSacked = false;
+
+      for (const d of this.defenseFormation) {
+        if (d.blockTimer > 0) {
+          d.blockTimer -= dt;
+          d.gaitAmp = Math.max(0, (d.gaitAmp || 0) - 0.1);
+          d.animPhase = (d.animPhase || 0) + dt * 0.004;
+          drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+          continue;
+        }
+
+        const a = defAssignments[d.role];
+        let targetX = d.x, targetY = d.y, speed = ZONE_SPEED;
+
+        if (a && a.type === 'man') {
+          const tgt = this.offenseFormation.find(o => o.role === a.target);
+          if (tgt) { targetX = tgt.x; targetY = tgt.y; }
+          speed = MAN_COVERAGE_SPEED;
+        } else if (a && a.type === 'zone') {
+          const z = ZONES[a.zone];
+          const anchorX = this.drive.losX + z.depth * PX_PER_YARD;
+          const anchorY = this.snapY + z.lateral;
+          let nearest = null, bestDist = Infinity;
+          for (const o of this.offenseFormation) {
+            const oa = offAssignments[o.role];
+            if (!oa || (oa.type !== 'route' && oa.type !== 'clear')) continue;
+            const dx = o.x - anchorX, dy = o.y - anchorY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 70 && dist < bestDist) { bestDist = dist; nearest = o; }
+          }
+          targetX = nearest ? Phaser.Math.Linear(anchorX, nearest.x, 0.6) : anchorX;
+          targetY = nearest ? Phaser.Math.Linear(anchorY, nearest.y, 0.6) : anchorY;
+          speed = ZONE_SPEED;
+        } else if (a && a.type === 'rush') {
+          targetX = this.qb.x; targetY = this.qb.y;
+          speed = RUSHER_SPEED;
+          const dx = this.qb.x - d.x, dy = this.qb.y - d.y;
+          if (Math.sqrt(dx * dx + dy * dy) < SACK_RADIUS && this.ball.carriedBy === 'qb' && !this.qb.throwState) qbSacked = true;
+        }
+
+        const dx = targetX - d.x, dy = targetY - d.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > 2) {
+          const moveX = (dx / dist) * speed, moveY = (dy / dist) * speed;
+          d.x = Phaser.Math.Clamp(d.x + moveX, 20, WORLD_W - 20);
+          d.y = Phaser.Math.Clamp(d.y + moveY, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+          if (Math.abs(moveX) > 0.05) d.facing = moveX > 0 ? 1 : -1;
+          d.gaitAmp = Math.min(1, (d.gaitAmp || 0) + 0.08);
+        } else {
+          d.gaitAmp = Math.max(0, (d.gaitAmp || 0) - 0.1);
+        }
+        d.animPhase = (d.animPhase || 0) + dt * 0.014;
+        if (d.animPhase > Math.PI * 2) d.animPhase -= Math.PI * 2;
+        drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+      }
+
+      if (qbSacked) this.sackQB();
+    }
+
+    // ---- once the ball's live with a carrier (handoff, or a caught pass),
+    // every defender switches to simple pursuit + tackle — the exact same
+    // pattern already proven chasing the kickoff returner, just generalized
+    // to chase whoever this.liveCarrier currently is. ----
+    updateChasePursuit(dt) {
+      const carrier = this.liveCarrier;
+      if (!carrier) return;
+      for (const d of this.defenseFormation) {
+        if (d.blockTimer > 0) {
+          d.blockTimer -= dt;
+          d.gaitAmp = Math.max(0, (d.gaitAmp || 0) - 0.1);
+          d.animPhase = (d.animPhase || 0) + dt * 0.004;
+          drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+          continue;
+        }
+
+        const dx = carrier.x - d.x, dy = carrier.y - d.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const moveX = (dx / dist) * COVERAGE_SPEED, moveY = (dy / dist) * COVERAGE_SPEED;
+        d.x = Phaser.Math.Clamp(d.x + moveX, 20, WORLD_W - 20);
+        d.y = Phaser.Math.Clamp(d.y + moveY, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+        if (Math.abs(moveX) > 0.05) d.facing = moveX > 0 ? 1 : -1;
+        d.gaitAmp = Math.min(1, (d.gaitAmp || 0) + 0.08);
+        d.animPhase = (d.animPhase || 0) + dt * 0.014;
+        if (d.animPhase > Math.PI * 2) d.animPhase -= Math.PI * 2;
+        drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase, gaitAmp: d.gaitAmp });
+
+        const tdx = carrier.x - d.x, tdy = carrier.y - d.y;
+        if (Math.sqrt(tdx * tdx + tdy * tdy) < TACKLE_RADIUS) { this.tackleCarrier(); break; }
+      }
+    }
+
+    // ---- generic WASD ball-carrier mover — parameterized by whichever
+    // formation player object is currently live (the RB on a run play, or
+    // a receiver after the catch), rather than hardcoded to one role. ----
+    updateLiveCarrierMovement(carrier, dt) {
+      if (!carrier) return;
+      let vx = 0, vy = 0;
+      if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; carrier.facing = -1; }
+      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; carrier.facing = 1; }
+      if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+      else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+      if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+      const moving = vx !== 0 || vy !== 0;
+
+      carrier.x = Phaser.Math.Clamp(carrier.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
+      carrier.y = Phaser.Math.Clamp(carrier.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+      carrier.gaitAmp = (carrier.gaitAmp || 0) + ((moving ? 1 : 0) - (carrier.gaitAmp || 0)) * 0.25;
+      if (moving) {
+        carrier.animPhase = (carrier.animPhase || 0) + dt * 0.012;
+        if (carrier.animPhase > Math.PI * 2) carrier.animPhase -= Math.PI * 2;
+      }
+
+      drawFootballPlayer(carrier.gfx, carrier.x, carrier.y, carrier.facing, carrier.body, {
+        legPhase: carrier.animPhase || 0, gaitAmp: carrier.gaitAmp || 0
+      });
+      this.followTarget.set(carrier.x, carrier.y);
+      this.ball.x = carrier.x + carrier.facing * 10;
+      this.ball.y = carrier.y;
+      if (carrier.x >= RIGHT_GOAL_X) this.scoreTouchdown();
+    }
+
+    ordinal(n) {
+      const suf = ['th', 'st', 'nd', 'rd'], v = n % 100;
+      return n + (suf[(v - 20) % 10] || suf[v] || suf[0]);
+    }
+
+    downDistanceLabel() {
+      if (!this.drive) return '';
+      const toGo = Math.max(1, Math.round(this.drive.toGo));
+      return this.ordinal(this.drive.down) + ' & ' + toGo + ' · ' + this.yardLineLabel(this.drive.losX);
     }
 
     drawStadium() {
@@ -825,18 +1474,22 @@
       this.hudObjects = [];
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, COLOR.hud, 1).setScrollFactor(0).setDepth(50));
       this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.title = this.add.text(16, 10, 'PHASE 2.9 — BLOCKERS & KICK UI', {
+      this.title = this.add.text(16, 10, 'PHASE A — PLAY CALLING', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.title);
       this.yardLabel = this.add.text(16, 30, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#F2F4F7', fontStyle: 'bold'
+        fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
       }).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.yardLabel);
       this.clockLabel = this.add.text(W / 2, 12, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F2F4F7', fontStyle: 'bold'
+        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#F2F4F7', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(51);
       this.hudObjects.push(this.clockLabel);
+      this.scoreLabel = this.add.text(W / 2, 30, 'HOME 0 — AWAY 0', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(51);
+      this.hudObjects.push(this.scoreLabel);
       this.hint = this.add.text(W - 16, 24, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8'
       }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(51);
@@ -888,6 +1541,39 @@
         chip.bg.setStrokeStyle(2, selected ? 0xfbbf24 : 0x2a3140);
         chip.txt.setColor(selected ? '#0b1220' : '#64748b');
       });
+    }
+
+    // ---- play-call chip row — same visual language as the kick lane
+    // chips (built separately since the chip counts differ and the two
+    // never show at once), sitting in the same HUD slot. ----
+    buildPlayCallUI() {
+      this.playCallPrompt = this.add.text(W / 2, 24, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#94a3b8', fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(51).setVisible(false);
+      this.hudObjects.push(this.playCallPrompt);
+
+      const labels = OFFENSE_PLAY_KEYS.map(k => PLAYS[k].label);
+      const chipW = 130, chipH = 22, gap = 10;
+      const totalW = chipW * labels.length + gap * (labels.length - 1);
+      const startX = W / 2 - totalW / 2 + chipW / 2;
+      this.playCallChips = labels.map((label, i) => {
+        const cx = startX + i * (chipW + gap);
+        const bg = this.add.rectangle(cx, 48, chipW, chipH, 0x1c2430, 1)
+          .setStrokeStyle(2, 0x2a3140).setScrollFactor(0).setDepth(51).setVisible(false);
+        const txt = this.add.text(cx, 48, label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(52).setVisible(false);
+        this.hudObjects.push(bg, txt);
+        return { bg, txt };
+      });
+    }
+
+    updatePlayCallTimer(dt) {
+      this.playCallTimeLeft -= dt;
+      const secLeft = Math.max(0, Math.ceil(this.playCallTimeLeft / 1000));
+      this.playCallPrompt.setText('A / D or ◀ ▶ to pick a play · SPACE to lock in — ' + secLeft + 's');
+      this.followTarget.set(this.qb.x, this.qb.y);
+      if (this.playCallTimeLeft <= 0) this.confirmPlayCall();
     }
 
     yardLineLabel(worldX) {
@@ -983,8 +1669,43 @@
         if (this.phase === 'kickoff-return') {
           this.ball.x = this.returner.x + this.returner.facing * 10;
           this.ball.y = this.returner.y;
-          if (this.returner.x >= RIGHT_GOAL_X) this.touchdownOnReturn();
+          if (this.returner.x >= RIGHT_GOAL_X) this.scoreTouchdown();
         }
+      } else if (this.phase === 'playcall') {
+        this.updatePlayCallTimer(dt);
+        this.yardLabel.setText(this.downDistanceLabel());
+      } else if (this.phase === 'presnap') {
+        if (this.snapAnim) {
+          this.snapAnim.t += dt;
+          const p = Phaser.Math.Clamp(this.snapAnim.t / this.snapAnim.duration, 0, 1);
+          this.ball.x = Phaser.Math.Linear(this.snapAnim.fromX, this.qb.throwHandX, p);
+          this.ball.y = Phaser.Math.Linear(this.snapAnim.fromY, this.qb.throwHandY, p);
+          if (p >= 1) {
+            this.snapAnim = null;
+            this.beginLivePlay();
+          }
+        }
+        this.updateQBMovement(dt);
+        this.followTarget.set(this.qb.x, this.qb.y);
+        this.yardLabel.setText(this.downDistanceLabel());
+      } else if (this.phase === 'live-pass') {
+        this.livePlayElapsedMs = (this.livePlayElapsedMs || 0) + dt;
+        this.updateQBMovement(dt);
+        this.updateOffenseRoutes(dt);
+        this.updateOffenseBlocking(dt);
+        this.updateDefenseAssignments(dt);
+        this.followTarget.set(this.qb.x, this.qb.y);
+        this.yardLabel.setText(this.downDistanceLabel());
+      } else if (this.phase === 'live-pass-air') {
+        this.updateOffenseRoutes(dt);
+        this.updateDefenseAssignments(dt);
+        this.followTarget.set(this.ball.x, this.ball.y);
+        this.yardLabel.setText(this.downDistanceLabel());
+      } else if (this.phase === 'live-run') {
+        this.updateLiveCarrierMovement(this.liveCarrier, dt);
+        this.updateOffenseBlocking(dt);
+        this.updateChasePursuit(dt);
+        this.yardLabel.setText(this.downDistanceLabel());
       }
 
       // ---- ball flight physics (shared by kickoffs and throws) ----
@@ -993,11 +1714,17 @@
         this.ball.y += this.ball.vy * (dt / 16.667);
         this.ball.height += this.ball.heightVel * (dt / 16.667);
         this.ball.heightVel -= this.ball.gravity * (dt / 16.667);
+        if (this.ball.heightVel <= 0) this.ball.pastPeak = true;
 
         // a returner close enough under a low ball hauls it in
         if (this.phase === 'kickoff-flight' && this.ball.height > 0 && this.ball.height < CATCH_MAX_HEIGHT) {
           const dx = this.ball.x - this.returner.x, dy = this.ball.y - this.returner.y;
           if (Math.sqrt(dx * dx + dy * dy) < CATCH_RADIUS) this.catchBall();
+        }
+        // a thrown ball only resolves on the way down, never a foot from
+        // the QB's hand at release
+        if (this.phase === 'live-pass-air' && this.ball.pastPeak && this.ball.height > 0 && this.ball.height < CATCH_MAX_HEIGHT) {
+          this.resolveAirBall();
         }
 
         if (this.ball.inFlight && this.ball.height <= 0) {
@@ -1005,71 +1732,13 @@
           this.ball.inFlight = false;
           this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0;
           if (this.phase === 'kickoff-flight') this.onKickLanded();
+          else if (this.phase === 'live-pass-air') this.incompletePass();
         }
       }
 
-      // ---- presnap / live drive: QB movement, snap, throw, camera-on-QB ----
-      if (this.phase === 'presnap') {
-        if (this.snapAnim) {
-          this.snapAnim.t += dt;
-          const p = Phaser.Math.Clamp(this.snapAnim.t / this.snapAnim.duration, 0, 1);
-          this.ball.x = Phaser.Math.Linear(this.snapAnim.fromX, this.qb.throwHandX, p);
-          this.ball.y = Phaser.Math.Linear(this.snapAnim.fromY, this.qb.throwHandY, p);
-          if (p >= 1) {
-            this.snapAnim = null;
-            this.ball.carriedBy = 'qb';
-            this.ball.snapped = true;
-            this.clock.running = true; // clock starts once the ball is live
-          }
-        }
-
-        const throwing = !!this.qb.throwState;
-        const locked = throwing && this.qb.throwState.t / this.qb.throwState.duration > 0.4;
-        let vx = 0, vy = 0;
-        if (!locked) {
-          if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.qb.facing = -1; }
-          else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.qb.facing = 1; }
-          if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
-          else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
-        }
-        if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
-        const moving = vx !== 0 || vy !== 0;
-
-        this.qb.x = Phaser.Math.Clamp(this.qb.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
-        this.qb.y = Phaser.Math.Clamp(this.qb.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
-
-        // run-cycle: ease the stride amplitude in/out, advance phase while moving
-        this.qb.gaitAmp += ((moving ? 1 : 0) - this.qb.gaitAmp) * 0.25;
-        if (moving) {
-          this.qb.animPhase += dt * 0.012;
-          if (this.qb.animPhase > Math.PI * 2) this.qb.animPhase -= Math.PI * 2;
-        }
-
-        // ---- throw windup/release ----
-        if (this.qb.throwState) {
-          this.qb.throwState.t += dt;
-          if (this.qb.throwState.t >= this.qb.throwState.duration) {
-            this.releaseThrow();
-            this.qb.throwState = null;
-          }
-        }
-
-        // ball follows the QB's hand while carried (pre-throw)
-        if (this.ball.carriedBy === 'qb') {
-          this.ball.x = this.qb.throwHandX;
-          this.ball.y = this.qb.throwHandY;
-        }
-
-        this.followTarget.set(this.qb.x, this.qb.y);
-        this.yardLabel.setText(this.yardLineLabel(this.qb.x));
-
-        this.redrawQB();
-        // ball may reposition to the (possibly just-updated) throwHand above,
-        // so draw it after redrawQB()
-        if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
-      } else if (this.phase === 'kickoff-return') {
+      if (this.phase === 'kickoff-return') {
         this.yardLabel.setText(this.yardLineLabel(this.returner.x));
-      } else {
+      } else if (this.phase !== 'presnap' && this.phase !== 'live-pass' && this.phase !== 'live-pass-air' && this.phase !== 'live-run' && this.phase !== 'playcall') {
         this.yardLabel.setText('');
       }
 
