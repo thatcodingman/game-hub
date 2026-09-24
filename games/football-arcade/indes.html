@@ -803,7 +803,14 @@
       // Break Meter moves — only do anything while you're actually the
       // live ball carrier (tryBreakMove guards on phase === 'live-run')
       this.input.keyboard.on('keydown-SHIFT', () => this.tryBreakMove('juke'));
-      this.input.keyboard.on('keydown-Q', () => this.tryBreakMove('spin'));
+      // Q does double duty: spin move while you're a ball carrier, switch
+      // controlled defender while you're on defense during a CPU drive —
+      // the two never overlap (you're never both at once), so one key
+      // covers both without stepping on each other
+      this.input.keyboard.on('keydown-Q', () => {
+        if (this.offenseSide === 'away') this.switchControlledDefender();
+        else this.tryBreakMove('spin');
+      });
       this.input.keyboard.on('keydown-E', () => this.tryBreakMove('stiffarm'));
 
       // ---- Camera: kicker during the kick, the returner from the moment
@@ -1224,7 +1231,7 @@
       this.selectedDefensePlay = DEFENSE_PLAY_KEYS[Phaser.Math.Between(0, DEFENSE_PLAY_KEYS.length - 1)];
       this.applyFormation(PLAYS[this.selectedOffensePlay].formation);
       this.phase = 'presnap';
-      this.hint.setText('AWAY BALL — get ready on defense');
+      this.hint.setText('AWAY BALL — WASD to move · Q to switch defender');
       this.time.delayedCall(800, () => {
         if (this.phase === 'presnap' && this.offenseSide === 'away') this.doSnap();
       });
@@ -1432,7 +1439,7 @@
         this.ball.carriedBy = carrier.role;
         this.resetBreakMeter(carrier);
         if (cpuOffense) {
-          this.hint.setText('Defense — close in and tackle the ball carrier');
+          this.hint.setText('Defense — WASD to close in · Q to switch defender');
         } else {
           this.followTarget.set(carrier.x, carrier.y);
           this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
@@ -1441,7 +1448,7 @@
         this.phase = 'live-pass';
         this.resetBreakMeter(this.qb);
         if (cpuOffense) {
-          this.hint.setText('Defense — cover your man, jump the throw');
+          this.hint.setText('Defense — WASD to cover · Q to switch defender');
           // AI QB "decides" to throw after a short randomized beat, using
           // the exact same auto-read pickThrowTarget() your own QB falls
           // back to when you don't manually pick a target
@@ -1686,16 +1693,19 @@
       this.controlIndicatorGfx.clear();
       if (this.offenseSide !== 'away' || !this.controlledDefender) return;
       const d = this.controlledDefender;
-      const pulse = Math.sin((this.time && this.time.now || 0) * 0.006) * 2;
+      // feet sit below his center by (hip offset + leg length) — computed
+      // from his own body proportions so the marker sits right at his feet
+      // whether he's a lineman or a DB
+      const feetY = d.y + d.body.torsoH * 0.42 + d.body.legLen * 0.85;
+      const pulse = Math.sin((this.time && this.time.now || 0) * 0.006) * 1.5;
       const g = this.controlIndicatorGfx;
-      g.lineStyle(2.5, 0x38bdf8, 0.95);
-      g.strokeCircle(d.x, d.y, 22 + pulse);
-      const arrowY = d.y - 34;
-      g.fillStyle(0x38bdf8, 1);
+      g.lineStyle(2, 0x38bdf8, 0.55);
+      g.strokeEllipse(d.x, feetY + 3, 22, 8);
+      g.fillStyle(0x38bdf8, 0.95);
       g.fillTriangle(
-        d.x - 6, arrowY,
-        d.x + 6, arrowY,
-        d.x, arrowY + 9
+        d.x - 7, feetY + 14 + pulse,
+        d.x + 7, feetY + 14 + pulse,
+        d.x, feetY + 5 + pulse
       );
     }
 
@@ -1899,7 +1909,7 @@
       this.phase = 'live-run';
       this.resetBreakMeter(receiver);
       if (this.offenseSide === 'away') {
-        this.hint.setText('Defense — close in, tackle the ball carrier');
+        this.hint.setText('Defense — WASD to close in · Q to switch defender');
       } else {
         this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
         this.followTarget.set(receiver.x, receiver.y);
@@ -2023,8 +2033,8 @@
 
     // ---- starts a real, playable AWAY drive — the CPU calls its own
     // plays and runs its own QB/RB (aiStartPlayCall/updateAIRunner), and
-    // you control one defender instead (auto-switches to whoever's
-    // closest to the ball — see updateDefenderAutoSwitch). Same field,
+    // you control one defender instead (WASD to move, Q to switch to
+    // whoever's closest to the ball — see switchControlledDefender). Same field,
     // same PLAYS/DEFENSES engine, same no-punts/4th-down-or-bust rule as
     // your own drives — just the other team snapping it. spotX defaults to
     // the 25 (the same touchback convention used everywhere else) for a
@@ -2585,13 +2595,15 @@
       }
     }
 
-    // ---- Manual Defense — each frame during an AWAY drive, re-targets
-    // controlledDefender to whichever of your defenseFormation is closest
-    // to the ball's current carrier/target. A small hysteresis bonus for
-    // the current pick keeps it "sticky" so it doesn't flicker between two
-    // similarly-distant defenders. ----
-    updateDefenderAutoSwitch() {
-      if (this.offenseSide !== 'away') return;
+    // ---- Manual Defense — switches control to whoever's currently
+    // closest to the ball/carrier/QB, EXCLUDING whoever you're on now, so
+    // it's a clean handoff instead of a tie that could bounce right back.
+    // Only fires when you press the switch key (Q) — this used to re-run
+    // every single frame automatically, which meant just moving toward or
+    // away from the play could flip which defender was "closest" and yank
+    // control out from under you mid-move. Now it's entirely your call. ----
+    switchControlledDefender() {
+      if (this.offenseSide !== 'away' || !this.defenseFormation.length) return;
       let aimX, aimY;
       if (this.phase === 'live-run' && this.liveCarrier) { aimX = this.liveCarrier.x; aimY = this.liveCarrier.y; }
       else if (this.ball.carriedBy === 'qb') { aimX = this.qb.x; aimY = this.qb.y; }
@@ -2599,12 +2611,17 @@
 
       let best = null, bestDist = Infinity;
       for (const d of this.defenseFormation) {
+        if (d === this.controlledDefender) continue;
         const dx = aimX - d.x, dy = aimY - d.y;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        if (d === this.controlledDefender) dist -= 40;
+        const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < bestDist) { bestDist = dist; best = d; }
       }
-      if (best) this.controlledDefender = best;
+      if (best) {
+        this.controlledDefender = best;
+        if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+          try { SFX.tone(520, 0.03); } catch (e) {}
+        }
+      }
     }
 
     // ---- Manual Defense — simple AI for the CPU's own ball carrier on a
@@ -3177,7 +3194,6 @@
         this.yardLabel.setText(this.downDistanceLabel());
       }
 
-      this.updateDefenderAutoSwitch();
       this.updateControlIndicator();
       this.updateTargetIndicators();
       this.updateReadReactCues();
