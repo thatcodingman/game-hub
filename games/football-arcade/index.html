@@ -737,6 +737,13 @@
       this.drive = null;
       this.liveCarrier = null;
       this.chaseMode = false;
+      // ---- Manual Defense — which side is actually on offense THIS drive.
+      // 'home' is the normal, unchanged experience (you call plays, control
+      // the QB/RB/receivers). 'away' is the new mode: the CPU calls plays
+      // and runs its own QB/RB, and you control one defender instead
+      // (auto-switches to whoever's closest to the ball). ----
+      this.offenseSide = 'home';
+      this.controlledDefender = null;
       this.currentOffensePlay = null;
       this.currentDefensePlay = null;
       this.selectedOffensePlay = null;
@@ -1062,12 +1069,20 @@
       if (this.phase === 'dead-ball') return;
       this.phase = 'dead-ball';
       this.clock.running = false;
-      this.score.home += 6;
+      const awayScored = this.offenseSide === 'away';
+      if (awayScored) this.score.away += 6; else this.score.home += 6;
       this.scoreLabel.setText('HOME ' + this.score.home + ' — AWAY ' + this.score.away);
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(700, 0.1); } catch (e) {}
       }
-      this.showPlayMessage('TOUCHDOWN!', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.awayPossession());
+      const headline = awayScored ? 'AWAY TOUCHDOWN' : 'TOUCHDOWN!';
+      const sub = 'HOME ' + this.score.home + ' — AWAY ' + this.score.away;
+      this.showPlayMessage(headline, sub, () => {
+        // an away score means the CPU offense beat your defense — they
+        // kick off to you, same as any other real kickoff. A home score
+        // hands the CPU their own real drive to defend against.
+        if (awayScored) this.teeUpKickoff(); else this.startAwayDrive();
+      });
     }
 
     // shared "the play just ended here, pause on a message, then run some
@@ -1103,6 +1118,9 @@
     endKickoffAt(x, headline, sub) {
       this.driveSpotX = x;
       this.phase = 'dead-ball';
+      // every kickoff in this game is HOME receiving (the human always
+      // returns), so whatever drive follows it is always a home drive
+      this.offenseSide = 'home';
       this.showPlayMessage(headline, sub, () => this.startPresnap(true));
     }
 
@@ -1155,7 +1173,40 @@
 
       this.redrawQB();
       this.followTarget.set(this.qb.x, this.qb.y);
-      this.startPlayCall();
+
+      if (this.offenseSide === 'away') {
+        // Manual Defense — the CPU calls its own play, you don't get a
+        // play-call screen; instead pick an initial defender to control
+        // (closest to the ball) before the CPU snaps
+        this.controlledDefender = this.defenseFormation.reduce((best, d) => {
+          const dx = losX - d.x, dy = this.snapY - d.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (!best || dist < best.dist) return { d, dist };
+          return best;
+        }, null).d;
+        this.startAIPlayCall();
+      } else {
+        this.controlledDefender = null;
+        this.startPlayCall();
+      }
+    }
+
+    // ---- AI calls the offense's play for an AWAY drive — no play-call UI
+    // since you're playing defense this drive, not offense. Leans on the
+    // same down/distance suggestion list the human play-call UI is built
+    // from, just auto-picked instead of chosen, then snaps after a short
+    // beat so you have a second to see the formation before the ball's
+    // live. ----
+    startAIPlayCall() {
+      const suggestions = this.computeSuggestedPlays();
+      this.selectedOffensePlay = suggestions[Phaser.Math.Between(0, suggestions.length - 1)] || OFFENSE_PLAY_KEYS[0];
+      this.selectedDefensePlay = DEFENSE_PLAY_KEYS[Phaser.Math.Between(0, DEFENSE_PLAY_KEYS.length - 1)];
+      this.applyFormation(PLAYS[this.selectedOffensePlay].formation);
+      this.phase = 'presnap';
+      this.hint.setText('AWAY BALL — get ready on defense');
+      this.time.delayedCall(800, () => {
+        if (this.phase === 'presnap' && this.offenseSide === 'away') this.doSnap();
+      });
     }
 
     // ---- play-calling: offense picks from the 2 wired-up calls via a
@@ -1350,19 +1401,35 @@
       this.defenseFormation.forEach(d => { d.cooldown = 0; d.blockTimer = 0; d.strugglePhase = 0; d.trackX = d.x; d.trackY = d.y; });
       this.manualTarget = null;
 
+      const cpuOffense = this.offenseSide === 'away';
+
       if (offPlay.type === 'run') {
         this.phase = 'live-run';
         this.chaseMode = true;
         const carrier = this.offenseFormation.find(p => p.role === (offPlay.carrier || 'RB'));
         this.liveCarrier = carrier;
         this.ball.carriedBy = carrier.role;
-        this.followTarget.set(carrier.x, carrier.y);
         this.resetBreakMeter(carrier);
-        this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
+        if (cpuOffense) {
+          this.hint.setText('Defense — close in and tackle the ball carrier');
+        } else {
+          this.followTarget.set(carrier.x, carrier.y);
+          this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
+        }
       } else {
         this.phase = 'live-pass';
         this.resetBreakMeter(this.qb);
-        this.hint.setText('WASD to move · Shift/Q/E to juke/spin/stiff-arm · 1-4 target · Space to throw');
+        if (cpuOffense) {
+          this.hint.setText('Defense — cover your man, jump the throw');
+          // AI QB "decides" to throw after a short randomized beat, using
+          // the exact same auto-read pickThrowTarget() your own QB falls
+          // back to when you don't manually pick a target
+          this.time.delayedCall(Phaser.Math.Between(550, 1350), () => {
+            if (this.phase === 'live-pass' && this.ball.carriedBy === 'qb' && !this.qb.throwState) this.tryThrow();
+          });
+        } else {
+          this.hint.setText('WASD to move · Shift/Q/E to juke/spin/stiff-arm · 1-4 target · Space to throw');
+        }
       }
     }
 
@@ -1406,7 +1473,7 @@
     // is pressed — pickThrowTarget() below falls back to the old auto-read
     // logic if he isn't (e.g. the QB has since turned away from him). ----
     selectThrowTarget(n) {
-      if (this.phase !== 'live-pass') return;
+      if (this.phase !== 'live-pass' || this.offenseSide === 'away') return;
       const picked = this.eligibleReceivers()[n - 1];
       if (!picked) return;
       this.manualTarget = picked.role;
@@ -1457,7 +1524,9 @@
     // and a pulsing ring around the manually-selected one, every frame
     // while a pass is live; hidden the rest of the time. ----
     updateTargetIndicators() {
-      if (this.phase !== 'live-pass' && this.phase !== 'live-pass-air') {
+      // these are about picking YOUR OWN team's target — meaningless (and
+      // an unfair scout of the CPU's play) while you're playing defense
+      if ((this.phase !== 'live-pass' && this.phase !== 'live-pass-air') || this.offenseSide === 'away') {
         this.targetLabels.forEach(t => t.setVisible(false));
         this.targetRing.clear();
         return;
@@ -1499,7 +1568,7 @@
     // route with no window (a 'clear' decoy) draws nothing. ----
     updateReadReactCues() {
       this.readReactGfx.clear();
-      if (this.phase !== 'live-pass' || !this.currentOffensePlay) return;
+      if (this.phase !== 'live-pass' || !this.currentOffensePlay || this.offenseSide === 'away') return;
 
       const assignments = this.currentOffensePlay.assignments;
       const elapsed = this.livePlayElapsedMs || 0;
@@ -1777,8 +1846,12 @@
       this.chaseMode = true;
       this.phase = 'live-run';
       this.resetBreakMeter(receiver);
-      this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
-      this.followTarget.set(receiver.x, receiver.y);
+      if (this.offenseSide === 'away') {
+        this.hint.setText('Defense — close in, tackle the ball carrier');
+      } else {
+        this.hint.setText('WASD to run · Shift/Q/E to juke/spin/stiff-arm · Space to go down');
+        this.followTarget.set(receiver.x, receiver.y);
+      }
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(650, 0.05); } catch (e) {}
       }
@@ -1800,7 +1873,13 @@
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(150, 0.08); } catch (e) {}
       }
-      this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => this.awayPossession());
+      const spot = Phaser.Math.Clamp(defender ? defender.x : this.drive.losX, LEFT_GOAL_X + 5, RIGHT_GOAL_X - 5);
+      const wasAway = this.offenseSide === 'away';
+      this.showPlayMessage('INTERCEPTED!', 'POSSESSION CHANGE', () => {
+        // your defense just picked off the CPU (or vice versa) — the ball
+        // changes hands at the spot of the pick, not a generic restart
+        if (wasAway) this.giveBallToHome(spot); else this.startAwayDrive(spot);
+      });
     }
 
     incompletePass(headline) {
@@ -1812,8 +1891,13 @@
       let turnover = false, sub = headline === 'DROPPED PASS' ? 'DROPPED' : 'INCOMPLETE';
       if (this.drive.down > 4) { turnover = true; sub += ' — TURNOVER ON DOWNS'; }
       this.driveSpotX = this.drive.losX;
+      const wasAway = this.offenseSide === 'away';
       this.showPlayMessage(headline || 'INCOMPLETE PASS', sub, () => {
-        if (turnover) this.awayPossession(); else this.startPresnap(false);
+        if (turnover) {
+          if (wasAway) this.giveBallToHome(this.driveSpotX); else this.startAwayDrive();
+        } else {
+          this.startPresnap(false);
+        }
       });
     }
 
@@ -1866,47 +1950,37 @@
       this.drive.losX = Phaser.Math.Clamp(x, LEFT_GOAL_X + 5, RIGHT_GOAL_X - 5);
       this.driveSpotX = this.drive.losX;
 
+      const wasAway = this.offenseSide === 'away';
       this.showPlayMessage(headline, sub, () => {
-        if (turnover) this.awayPossession(); else this.startPresnap(false);
+        if (turnover) {
+          if (wasAway) this.giveBallToHome(this.driveSpotX); else this.startAwayDrive();
+        } else {
+          this.startPresnap(false);
+        }
       });
     }
 
-    // ---- away's "possession" between your drives — a real (simulated)
-    // set of downs for the other team, not just handing you the ball right
-    // back. No manual-defense/mirrored-offense engine yet, so it's resolved
-    // as a quick AI-vs-AI sequence with its own down/distance and the same
-    // no-punts/4th-down-or-bust rule as your drives; it can score (AWAY
-    // points go up for real) or turn it over on downs, then a real,
-    // player-returnable kickoff brings the ball back to you. ----
-    awayPossession() {
-      this.phase = 'dead-ball';
-      this.clock.running = false;
-      let down = 1, toGo = 10, progress = 0;
-      const yardsToScore = 75;
+    // ---- Manual Defense — hands the ball to HOME's offense at a spot,
+    // fresh set of downs. Used after your defense forces a turnover
+    // (interception or stop on downs) against the CPU's drive. ----
+    giveBallToHome(spotX) {
+      this.offenseSide = 'home';
+      this.driveSpotX = Phaser.Math.Clamp(spotX, LEFT_GOAL_X + 5, RIGHT_GOAL_X - 5);
+      this.startPresnap(true);
+    }
 
-      const playOne = () => {
-        const gain = Phaser.Math.Between(-2, 12);
-        progress += gain;
-        if (progress >= yardsToScore) {
-          this.score.away += 6;
-          this.scoreLabel.setText('HOME ' + this.score.home + ' — AWAY ' + this.score.away);
-          this.showPlayMessage('AWAY TOUCHDOWN', 'HOME ' + this.score.home + ' — AWAY ' + this.score.away, () => this.teeUpKickoff());
-          return;
-        }
-        down += 1;
-        toGo -= gain;
-        let sub = (gain >= 0 ? '+' : '') + gain + ' YDS';
-        if (toGo <= 0) {
-          down = 1; toGo = 10;
-          sub += ' — AWAY 1ST DOWN';
-        } else if (down > 4) {
-          this.showPlayMessage('AWAY TURNOVER ON DOWNS', 'BALL BACK TO HOME', () => this.teeUpKickoff());
-          return;
-        }
-        this.showPlayMessage('AWAY BALL', sub, playOne);
-      };
-
-      this.showPlayMessage('KICKOFF', 'AWAY RECEIVES AND DRIVES', playOne);
+    // ---- starts a real, playable AWAY drive — the CPU calls its own
+    // plays and runs its own QB/RB (aiStartPlayCall/updateAIRunner), and
+    // you control one defender instead (auto-switches to whoever's
+    // closest to the ball — see updateDefenderAutoSwitch). Same field,
+    // same PLAYS/DEFENSES engine, same no-punts/4th-down-or-bust rule as
+    // your own drives — just the other team snapping it. spotX defaults to
+    // the 25 (the same touchback convention used everywhere else) for a
+    // fresh possession; a live turnover passes the actual spot instead. ----
+    startAwayDrive(spotX) {
+      this.offenseSide = 'away';
+      this.driveSpotX = Phaser.Math.Clamp(spotX != null ? spotX : this.snapX, LEFT_GOAL_X + 5, RIGHT_GOAL_X - 5);
+      this.startPresnap(true);
     }
 
     // ---- shared movement/animation for whoever's currently controllable
@@ -1946,7 +2020,9 @@
         const throwing = !!this.qb.throwState;
         const locked = throwing && this.qb.throwState.t / this.qb.throwState.duration > 0.4;
         let vx = 0, vy = 0;
-        if (!locked) {
+        // AI-controlled QB (an AWAY drive) never reads WASD — those keys
+        // are driving your defender instead this drive
+        if (!locked && this.offenseSide !== 'away') {
           if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; this.qb.facing = -1; }
           else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; this.qb.facing = 1; }
           if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
@@ -1980,7 +2056,7 @@
       this.redrawQB();
       if (this.ball.carriedBy === 'qb') { this.ball.x = this.qb.throwHandX; this.ball.y = this.qb.throwHandY; }
 
-      if (this.ball.snapped && this.phase === 'live-pass' && this.ball.carriedBy === 'qb') {
+      if (this.ball.snapped && this.phase === 'live-pass' && this.ball.carriedBy === 'qb' && this.offenseSide !== 'away') {
         this.updateBreakMeterBookkeeping(this.qb, dt);
       }
     }
@@ -2091,6 +2167,10 @@
       let qbSacked = false;
 
       for (const d of this.defenseFormation) {
+        // Manual Defense — the human's controlled defender moves/draws
+        // himself via updateControlledDefenderMovement instead
+        if (this.offenseSide === 'away' && d === this.controlledDefender) continue;
+
         if (d.blockTimer > 0) {
           d.blockTimer -= dt;
           // being blocked isn't standing still either — push back against
@@ -2183,6 +2263,10 @@
       const carrier = this.liveCarrier;
       if (!carrier) return;
       for (const d of this.defenseFormation) {
+        // Manual Defense — skip the human's own defender here too; his
+        // tackle check is handled by updateControlledDefenderMovement
+        if (this.offenseSide === 'away' && d === this.controlledDefender) continue;
+
         if (d.blockTimer > 0) {
           d.blockTimer -= dt;
           d.gaitAmp = Math.max(0, (d.gaitAmp || 0) - 0.1);
@@ -2250,6 +2334,14 @@
     // he's caught it. One resolver so tryBreakMove/HUD/bookkeeping all
     // agree on the same carrier without re-deriving the phase logic. ----
     activeCarrier() {
+      // Break Meter only ever belongs to whichever side is actually on
+      // offense — during an AWAY drive that's the CPU, not you, so none of
+      // this applies (kickoff returns are the one exception: you always
+      // return kicks regardless of offenseSide)
+      if (this.offenseSide === 'away') {
+        if (this.phase === 'kickoff-return' && this.returner && this.returner.active) return this.returner;
+        return null;
+      }
       if (this.phase === 'live-run' && this.liveCarrier) return this.liveCarrier;
       if (this.phase === 'live-pass' && this.ball.carriedBy === 'qb' && !this.qb.throwState) return this.qb;
       if (this.phase === 'kickoff-return' && this.returner && this.returner.active) return this.returner;
@@ -2359,6 +2451,138 @@
         this.breakPopupText.setPosition(carrier.x, carrier.y - carrier.body.torsoH - 26);
         if (this.breakPopupTimer <= 0) this.breakPopupText.setVisible(false);
       }
+    }
+
+    // ---- Manual Defense — you move this defender directly with WASD while
+    // the CPU runs its own offense. Free movement (no assignment AI) plus
+    // its own tackle/sack checks, reusing the exact same evasion-window /
+    // broken-tackle math updateDefenseAssignments' rush check and
+    // updateChasePursuit already use, just driven by your position instead
+    // of AI pursuit. Skips entirely if he's mid-block-stumble. ----
+    updateControlledDefenderMovement(dt) {
+      const d = this.controlledDefender;
+      if (!d) return;
+      if (d.blockTimer > 0) {
+        d.blockTimer -= dt;
+        d.strugglePhase = (d.strugglePhase || 0) + dt;
+        const jitter = Math.sin(d.strugglePhase * 0.02 + Math.PI) * 1.6;
+        drawFootballPlayer(d.gfx, d.x + jitter, d.y, d.facing, d.body, { legPhase: d.strugglePhase * 0.012, gaitAmp: 0.2, blocking: true });
+        return;
+      }
+
+      let vx = 0, vy = 0;
+      if (this.keys.left.isDown || this.keys.leftArrow.isDown) { vx = -1; d.facing = -1; }
+      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) { vx = 1; d.facing = 1; }
+      if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+      else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+      if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+      const moving = vx !== 0 || vy !== 0;
+
+      const speed = COVERAGE_SPEED + 0.5; // a shade faster than AI defenders — a human should be able to close distance
+      d.x = Phaser.Math.Clamp(d.x + vx * speed, 20, WORLD_W - 20);
+      d.y = Phaser.Math.Clamp(d.y + vy * speed, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+      d.gaitAmp = (d.gaitAmp || 0) + ((moving ? 1 : 0) - (d.gaitAmp || 0)) * 0.25;
+      if (moving) {
+        d.animPhase = (d.animPhase || 0) + dt * 0.012;
+        if (d.animPhase > Math.PI * 2) d.animPhase -= Math.PI * 2;
+      }
+      drawFootballPlayer(d.gfx, d.x, d.y, d.facing, d.body, { legPhase: d.animPhase || 0, gaitAmp: d.gaitAmp || 0 });
+      this.followTarget.set(d.x, d.y);
+
+      if (this.phase === 'live-pass' && this.ball.carriedBy === 'qb' && !this.qb.throwState) {
+        const dx = this.qb.x - d.x, dy = this.qb.y - d.y;
+        if (Math.sqrt(dx * dx + dy * dy) < SACK_RADIUS) {
+          if (this.qb.evasionT > 0 || Math.random() < 0.08) {
+            d.blockTimer = 420;
+            d.strugglePhase = 0;
+            this.qb.evasionT = 0;
+            this.qb.brokenTackles = (this.qb.brokenTackles || 0) + 1;
+            this.showBreakPopup(this.qb, 'BROKEN TACKLE!', '#22c55e');
+            if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+              try { SFX.tone(330, 0.06); } catch (e) {}
+            }
+          } else {
+            this.sackQB();
+          }
+        }
+      } else if (this.phase === 'live-run' && this.liveCarrier) {
+        const carrier = this.liveCarrier;
+        const dx = carrier.x - d.x, dy = carrier.y - d.y;
+        if (Math.sqrt(dx * dx + dy * dy) < TACKLE_RADIUS) {
+          if (carrier.evasionT > 0 || Math.random() < 0.08) {
+            d.blockTimer = 420;
+            d.strugglePhase = 0;
+            carrier.evasionT = 0;
+            carrier.brokenTackles = (carrier.brokenTackles || 0) + 1;
+            this.showBreakPopup(carrier, 'BROKEN TACKLE!', '#22c55e');
+            if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+              try { SFX.tone(330, 0.06); } catch (e) {}
+            }
+          } else {
+            this.tackleCarrier();
+          }
+        }
+      }
+    }
+
+    // ---- Manual Defense — each frame during an AWAY drive, re-targets
+    // controlledDefender to whichever of your defenseFormation is closest
+    // to the ball's current carrier/target. A small hysteresis bonus for
+    // the current pick keeps it "sticky" so it doesn't flicker between two
+    // similarly-distant defenders. ----
+    updateDefenderAutoSwitch() {
+      if (this.offenseSide !== 'away') return;
+      let aimX, aimY;
+      if (this.phase === 'live-run' && this.liveCarrier) { aimX = this.liveCarrier.x; aimY = this.liveCarrier.y; }
+      else if (this.ball.carriedBy === 'qb') { aimX = this.qb.x; aimY = this.qb.y; }
+      else { aimX = this.ball.x; aimY = this.ball.y; }
+
+      let best = null, bestDist = Infinity;
+      for (const d of this.defenseFormation) {
+        const dx = aimX - d.x, dy = aimY - d.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (d === this.controlledDefender) dist -= 40;
+        if (dist < bestDist) { bestDist = dist; best = d; }
+      }
+      if (best) this.controlledDefender = best;
+    }
+
+    // ---- Manual Defense — simple AI for the CPU's own ball carrier on a
+    // run play it called: drives toward RIGHT_GOAL_X with a mild lateral
+    // steer away from the nearest defender. Tackling itself is still
+    // handled by updateChasePursuit/updateControlledDefenderMovement, same
+    // as any other carrier. ----
+    updateAIRunner(carrier, dt) {
+      if (!carrier) return;
+      const nearest = this.defenseFormation.reduce((best, d) => {
+        const dx = d.x - carrier.x, dy = d.y - carrier.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (!best || dist < best.dist) return { d, dist };
+        return best;
+      }, null);
+
+      let vx = 1, vy = 0;
+      if (nearest && nearest.dist < 90) {
+        vy = carrier.y > nearest.d.y ? 0.6 : -0.6;
+      }
+      const mag = Math.sqrt(vx * vx + vy * vy);
+      vx /= mag; vy /= mag;
+      carrier.facing = 1;
+
+      carrier.x = Phaser.Math.Clamp(carrier.x + vx * PLAYER_SPEED, 20, WORLD_W - 20);
+      carrier.y = Phaser.Math.Clamp(carrier.y + vy * PLAYER_SPEED, FIELD_TOP + 24, FIELD_TOP + FIELD_H - 24);
+
+      carrier.gaitAmp = Math.min(1, (carrier.gaitAmp || 0) + 0.08);
+      carrier.animPhase = (carrier.animPhase || 0) + dt * 0.012;
+      if (carrier.animPhase > Math.PI * 2) carrier.animPhase -= Math.PI * 2;
+
+      drawFootballPlayer(carrier.gfx, carrier.x, carrier.y, carrier.facing, carrier.body, {
+        legPhase: carrier.animPhase, gaitAmp: carrier.gaitAmp, spinRot: carrier.spinRot || 0
+      });
+      this.ball.x = carrier.x + carrier.facing * 10;
+      this.ball.y = carrier.y;
+      if (carrier.x >= RIGHT_GOAL_X) this.scoreTouchdown();
     }
 
     // ---- generic WASD ball-carrier mover — parameterized by whichever
@@ -2853,7 +3077,11 @@
           }
         }
         this.updateQBMovement(dt);
-        this.followTarget.set(this.qb.x, this.qb.y);
+        if (this.offenseSide === 'away') {
+          this.updateControlledDefenderMovement(dt);
+        } else {
+          this.followTarget.set(this.qb.x, this.qb.y);
+        }
         this.yardLabel.setText(this.downDistanceLabel());
       } else if (this.phase === 'live-pass') {
         this.livePlayElapsedMs = (this.livePlayElapsedMs || 0) + dt;
@@ -2861,20 +3089,36 @@
         this.updateOffenseRoutes(dt);
         this.updateOffenseBlocking(dt);
         this.updateDefenseAssignments(dt);
-        this.followTarget.set(this.qb.x, this.qb.y);
+        if (this.offenseSide === 'away') {
+          this.updateControlledDefenderMovement(dt);
+        } else {
+          this.followTarget.set(this.qb.x, this.qb.y);
+        }
         this.yardLabel.setText(this.downDistanceLabel());
       } else if (this.phase === 'live-pass-air') {
         this.updateOffenseRoutes(dt);
         this.updateDefenseAssignments(dt);
-        this.followTarget.set(this.ball.x, this.ball.y);
+        if (this.offenseSide === 'away') {
+          this.updateControlledDefenderMovement(dt);
+        } else {
+          this.followTarget.set(this.ball.x, this.ball.y);
+        }
         this.yardLabel.setText(this.downDistanceLabel());
       } else if (this.phase === 'live-run') {
-        this.updateLiveCarrierMovement(this.liveCarrier, dt);
-        this.updateOffenseBlocking(dt);
-        this.updateChasePursuit(dt);
+        if (this.offenseSide === 'away') {
+          this.updateAIRunner(this.liveCarrier, dt);
+          this.updateOffenseBlocking(dt);
+          this.updateChasePursuit(dt);
+          this.updateControlledDefenderMovement(dt);
+        } else {
+          this.updateLiveCarrierMovement(this.liveCarrier, dt);
+          this.updateOffenseBlocking(dt);
+          this.updateChasePursuit(dt);
+        }
         this.yardLabel.setText(this.downDistanceLabel());
       }
 
+      this.updateDefenderAutoSwitch();
       this.updateTargetIndicators();
       this.updateReadReactCues();
 
