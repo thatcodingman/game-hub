@@ -113,6 +113,7 @@
     // own rotation carry it, rather than rotating each shape by hand.
     // rot is radians, 0 the rest of the time. ----
     const rot = anim.spinRot || 0;
+    const spinning = rot !== 0;
     g.setPosition(wx, wy);
     g.setRotation(rot);
     const cosR = Math.cos(rot), sinR = Math.sin(rot);
@@ -134,8 +135,11 @@
     g.fillStyle(0x000000, 0.32);
     g.fillEllipse(x, hipY + body.legLen * 0.85, shadowW, shadowW * 0.32);
 
-    // ---- legs — alternating stride, two line-limbs from the hip ----
-    const legSwing = Math.sin(legPhase) * gaitAmp * 0.55;
+    // ---- legs — alternating stride, two line-limbs from the hip. Frozen
+    // (legs together, no stride) during a spin so the ONLY motion reads as
+    // the rotation itself, instead of a run-cycle fighting the spin and
+    // looking like glitchy jumping. ----
+    const legSwing = spinning ? 0 : Math.sin(legPhase) * gaitAmp * 0.55;
     g.lineStyle(7, dark, 1);
     // back leg
     g.lineBetween(x - facing * 3, hipY, x - facing * 3 + Math.sin(legSwing) * body.legLen * facing, hipY + Math.cos(legSwing) * body.legLen);
@@ -149,7 +153,24 @@
     g.fillStyle(dark, 0.5);
     g.fillRect(x - body.torsoW / 2 + lean, y - 2, body.torsoW, 3);
 
-    if (blocking) {
+    if (spinning) {
+      // ---- spin move pose — both arms tucked in tight to the torso
+      // instead of running/throwing/blocking, so the rotation is the only
+      // thing moving; a normal run-swing layered on top of a 360 read as
+      // glitchy/jumpy rather than one clean circular motion. ----
+      g.lineStyle(6, dark, 1);
+      const tuckX = facing * body.armLen * 0.22, tuckY = shoulderY + body.armLen * 0.5;
+      g.lineBetween(x - facing * body.torsoW * 0.3, shoulderY, x - tuckX, tuckY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(x - tuckX, tuckY, 3.5);
+
+      g.lineStyle(6, dark, 1);
+      const handX = x + tuckX, handY = tuckY;
+      g.lineBetween(x + facing * body.torsoW * 0.3, shoulderY, handX, handY);
+      g.fillStyle(dark, 1);
+      g.fillCircle(handX, handY, 3.5);
+      anim.throwHand = toWorld(handX, handY);
+    } else if (blocking) {
       // ---- hands-up punch pose — both arms drive forward and up into the
       // block, pulsing on legPhase (which the block-struggle code feeds a
       // slow oscillation into) instead of a normal running arm swing, so an
@@ -1690,8 +1711,19 @@
         if (p === this.ball.passTarget) dist -= TARGET_BONUS;
         if (dist < offDist) { offDist = dist; nearestOff = p; }
       }
+      // ---- only defenders actually in coverage (man/zone) are eligible to
+      // pick a pass off — a rusher has no business intercepting just
+      // because the ball's flight path happens to pass near him on his way
+      // to sack the QB; before this fix ANY of the 10 defenders (including
+      // DL/rushers standing right in front of the QB) could trigger a pick
+      // the instant the ball's early flight segment came near them, which
+      // read as interceptions on throws that were nowhere near a defender
+      // in actual coverage. ----
+      const defAssignments = this.currentDefensePlay.assignments;
       let nearestDef = null, defDist = Infinity;
       for (const d of this.defenseFormation) {
+        const da = defAssignments[d.role];
+        if (!da || (da.type !== 'man' && da.type !== 'zone')) continue;
         const dist = distanceToSegment(d.x, d.y, this.ball.prevX, this.ball.prevY, this.ball.x, this.ball.y);
         if (dist < defDist) { defDist = dist; nearestDef = d; }
       }
@@ -1721,10 +1753,13 @@
         if (roll < intRisk) {
           let picker = null, pd = Infinity;
           for (const d of this.defenseFormation) {
+            const da = defAssignments[d.role];
+            if (!da || (da.type !== 'man' && da.type !== 'zone')) continue;
             const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < pd) { pd = dist; picker = d; }
           }
+          if (!picker) { this.completePass(nearestOff); return; }
           this.interceptedBy(picker);
         } else if (roll < intRisk + catchChance) {
           this.completePass(nearestOff);
@@ -1754,6 +1789,14 @@
       this.phase = 'dead-ball';
       this.clock.running = false;
       this.ball.inFlight = false; this.ball.vx = 0; this.ball.vy = 0; this.ball.heightVel = 0; this.ball.height = 0;
+      // snap the ball into the picking defender's hands — previously it
+      // just stayed wherever it was on the last in-flight frame, so it
+      // looked like it landed in empty grass instead of being caught
+      if (defender) {
+        this.ball.x = defender.x + (defender.facing || -1) * 10;
+        this.ball.y = defender.y;
+        this.ball.carriedBy = defender.role || 'defender';
+      }
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(150, 0.08); } catch (e) {}
       }
