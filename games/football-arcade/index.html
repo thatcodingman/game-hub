@@ -765,6 +765,13 @@
         else if (this.phase === 'kickoff-power') this.lockKickPower();
         else if (this.phase === 'kickoff-return') this.downReturner();
         else if (this.phase === 'playcall') this.confirmPlayCall();
+        // Manual Defense — during a CPU drive SPACE has no offensive action
+        // to take (that's the AI QB/RB's call, on its own timer); without
+        // this guard a leftover/held SPACE press from your last offensive
+        // snap forces an instant AI throw or downs the AI runner the moment
+        // the phase matches, blowing through the whole drive in a blur
+        // instead of leaving you time to actually play defense.
+        else if (this.offenseSide === 'away') { /* no-op */ }
         else if (this.phase === 'live-run') this.downCarrier();
         else this.tryThrow();
       });
@@ -976,7 +983,8 @@
     // A defender with blockTimer > 0 is engaged by a blocker and stands
     // his ground (struggling) instead of chasing. ----
     updateCoverage(dt) {
-      for (const d of this.coverage) {
+      for (let i = 0; i < this.coverage.length; i++) {
+        const d = this.coverage[i];
         if (d.blockTimer > 0) {
           d.blockTimer -= dt;
           d.gaitAmp = Math.max(0, d.gaitAmp - 0.1);
@@ -985,7 +993,14 @@
           continue;
         }
 
-        const dx = this.returner.x - d.x, dy = this.returner.y - d.y;
+        // aim for a small ring around the returner instead of his exact
+        // coordinates — 10 defenders all converging on one literal point
+        // used to pile them into a single overlapping stack once they
+        // closed in; each keeps its own angle so they arrive fanned out.
+        const angle = (i / this.coverage.length) * Math.PI * 2;
+        const aimX = this.returner.x + Math.cos(angle) * 16;
+        const aimY = this.returner.y + Math.sin(angle) * 16;
+        const dx = aimX - d.x, dy = aimY - d.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const moveX = (dx / dist) * COVERAGE_SPEED, moveY = (dy / dist) * COVERAGE_SPEED;
         d.x = Phaser.Math.Clamp(d.x + moveX, 20, WORLD_W - 20);
@@ -2262,7 +2277,8 @@
     updateChasePursuit(dt) {
       const carrier = this.liveCarrier;
       if (!carrier) return;
-      for (const d of this.defenseFormation) {
+      for (let i = 0; i < this.defenseFormation.length; i++) {
+        const d = this.defenseFormation[i];
         // Manual Defense — skip the human's own defender here too; his
         // tackle check is handled by updateControlledDefenderMovement
         if (this.offenseSide === 'away' && d === this.controlledDefender) continue;
@@ -2275,7 +2291,13 @@
           continue;
         }
 
-        const dx = carrier.x - d.x, dy = carrier.y - d.y;
+        // same fan-out fix as kickoff coverage — aim for a point on a
+        // small ring around the carrier instead of his literal coordinates
+        // so a full pursuit doesn't stack every defender on one pixel
+        const angle = (i / this.defenseFormation.length) * Math.PI * 2;
+        const aimX = carrier.x + Math.cos(angle) * 16;
+        const aimY = carrier.y + Math.sin(angle) * 16;
+        const dx = aimX - d.x, dy = aimY - d.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const moveX = (dx / dist) * COVERAGE_SPEED, moveY = (dy / dist) * COVERAGE_SPEED;
         d.x = Phaser.Math.Clamp(d.x + moveX, 20, WORLD_W - 20);
