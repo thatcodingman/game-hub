@@ -719,6 +719,12 @@
       // above, which stay purely "who can I pick." ----
       this.readReactGfx = this.add.graphics().setDepth(18);
 
+      // ---- Manual Defense — a marker over whichever defender you're
+      // currently controlling, so the auto-switch is always obvious at a
+      // glance instead of you having to guess which dot on the field is
+      // yours. Bright ring + a small downward arrow, both pulsing. ----
+      this.controlIndicatorGfx = this.add.graphics().setDepth(19);
+
       // ---- Break Meter feedback — a world-space ring that lights up
       // while a carrier's evasion window is active, and a floating popup
       // for "JUKE!"/"SPIN!"/"STIFF ARM!"/"BROKEN TACKLE!" call-outs ----
@@ -1672,6 +1678,27 @@
       });
     }
 
+    // ---- Manual Defense — draws the "this is you" marker over
+    // controlledDefender: a bright pulsing ring plus a small arrow
+    // pointing straight down at his helmet, so the auto-switch is always
+    // legible without having to track jersey colors. ----
+    updateControlIndicator() {
+      this.controlIndicatorGfx.clear();
+      if (this.offenseSide !== 'away' || !this.controlledDefender) return;
+      const d = this.controlledDefender;
+      const pulse = Math.sin((this.time && this.time.now || 0) * 0.006) * 2;
+      const g = this.controlIndicatorGfx;
+      g.lineStyle(2.5, 0x38bdf8, 0.95);
+      g.strokeCircle(d.x, d.y, 22 + pulse);
+      const arrowY = d.y - 34;
+      g.fillStyle(0x38bdf8, 1);
+      g.fillTriangle(
+        d.x - 6, arrowY,
+        d.x + 6, arrowY,
+        d.x, arrowY + 9
+      );
+    }
+
     // ---- walks a receiver's remaining route waypoints forward by a fixed
     // distance to predict where he'll actually be — following the real
     // path (including a route break partway through) instead of just the
@@ -1812,7 +1839,17 @@
         if (dist < defDist) { defDist = dist; nearestDef = d; }
       }
 
-      if (nearestDef && defDist < effRadius && defDist < offDist) {
+      // ---- this "the throw line brushed a defender" check used to be an
+      // automatic, guaranteed pick at the same generous radius as an actual
+      // catch, with no separation check at all — since a zone defender
+      // sitting in his own passing lane is exactly where he's SUPPOSED to
+      // be, that made a huge share of ordinary throws over the middle an
+      // instant interception, nowhere near the ~70% real defenses manage.
+      // Tightened to a much smaller "he's basically standing on the ball's
+      // path" radius, clearly closer than the intended receiver (not just
+      // marginally), and still only a chance to actually come away with it. ----
+      const PICK_OFF_RADIUS = CATCH_RADIUS * 0.55;
+      if (nearestDef && defDist < PICK_OFF_RADIUS && defDist < offDist - 10 && Math.random() < 0.35) {
         this.interceptedBy(nearestDef);
         return;
       }
@@ -1827,11 +1864,11 @@
         // throw isn't a guaranteed catch any more (95%), same as a real
         // route — receivers drop easy ones occasionally. ----
         let catchChance, intRisk;
-        if (sep < 15) { catchChance = 0.35; intRisk = 0.35; }
-        else if (sep < 25) { catchChance = 0.55; intRisk = 0.20; }
-        else if (sep < 40) { catchChance = 0.72; intRisk = 0.10; }
-        else if (sep < 60) { catchChance = 0.85; intRisk = 0.03; }
-        else { catchChance = 0.95; intRisk = 0; }
+        if (sep < 15) { catchChance = 0.45; intRisk = 0.22; }
+        else if (sep < 25) { catchChance = 0.62; intRisk = 0.12; }
+        else if (sep < 40) { catchChance = 0.78; intRisk = 0.06; }
+        else if (sep < 60) { catchChance = 0.88; intRisk = 0.02; }
+        else { catchChance = 0.96; intRisk = 0; }
 
         const roll = Math.random();
         if (roll < intRisk) {
@@ -3141,6 +3178,7 @@
       }
 
       this.updateDefenderAutoSwitch();
+      this.updateControlIndicator();
       this.updateTargetIndicators();
       this.updateReadReactCues();
 
