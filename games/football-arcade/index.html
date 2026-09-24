@@ -98,7 +98,7 @@
   const LB_BODY = makeBody(Object.assign({ headR: 11, torsoW: 21, torsoH: 23, armLen: 16, legLen: 16 }, AWAY));
   const DB_BODY = makeBody(Object.assign({ headR: 10, torsoW: 16, torsoH: 20, armLen: 16, legLen: 18 }, AWAY));
 
-  function drawFootballPlayer(g, x, y, facing, body, anim) {
+  function drawFootballPlayer(g, wx, wy, facing, body, anim) {
     anim = anim || {};
     const legPhase = anim.legPhase || 0;
     const gaitAmp = anim.gaitAmp || 0;       // 0 = standing still, 1 = full stride
@@ -106,6 +106,21 @@
     const blocking = !!anim.blocking;        // engaged in a run/pass block — hands-up punch pose
     const dark = Phaser.Display.Color.ValueToColor(body.jersey).darken(30).color;
     const helmetDark = Phaser.Display.Color.ValueToColor(body.helmet).darken(20).color;
+
+    // ---- Break Meter spin move — a genuine 360 rotation rather than a
+    // faked lean, done by drawing the whole rigid body in coordinates
+    // local to the player's own center and letting the Graphics object's
+    // own rotation carry it, rather than rotating each shape by hand.
+    // rot is radians, 0 the rest of the time. ----
+    const rot = anim.spinRot || 0;
+    g.setPosition(wx, wy);
+    g.setRotation(rot);
+    const cosR = Math.cos(rot), sinR = Math.sin(rot);
+    // convert a LOCAL point back to world space — only needed for the one
+    // thing other code reads back out of this draw call (the throw hand,
+    // used to place the ball while the QB is carrying it)
+    const toWorld = (lx, ly) => ({ x: wx + lx * cosR - ly * sinR, y: wy + lx * sinR + ly * cosR });
+    const x = 0, y = 0; // every draw call below is now in local (player-center) space
 
     const hipY = y + body.torsoH * 0.42;
     const shoulderY = y - body.torsoH * 0.32;
@@ -154,7 +169,7 @@
       g.lineBetween(x + facing * body.torsoW * 0.35, shoulderY, handX, handY);
       g.fillStyle(dark, 1);
       g.fillCircle(handX, handY, 3.5);
-      anim.throwHand = { x: handX, y: handY };
+      anim.throwHand = toWorld(handX, handY);
     } else {
       // ---- back arm (non-throwing side) — small run-swing only ----
       const backSwing = -legSwing * 0.8;
@@ -193,7 +208,7 @@
       g.lineBetween(fx, fy, handX, handY);
       g.fillStyle(dark, 1);
       g.fillCircle(handX, handY, 3.5);
-      anim.throwHand = { x: handX, y: handY };
+      anim.throwHand = toWorld(handX, handY);
     }
 
     // ---- head / helmet ----
@@ -676,6 +691,12 @@
       }).setOrigin(0.5).setDepth(20).setVisible(false));
       this.targetRing = this.add.graphics().setDepth(19);
       this.manualTarget = null;
+
+      // ---- Visual Read & React cues — world-space rings/arcs showing each
+      // eligible receiver's window state (opening soon / open / closing) and
+      // how contested he is. Separate layer from targetRing/targetLabels
+      // above, which stay purely "who can I pick." ----
+      this.readReactGfx = this.add.graphics().setDepth(18);
 
       // ---- Break Meter feedback — a world-space ring that lights up
       // while a carrier's evasion window is active, and a floating popup
@@ -1329,6 +1350,20 @@
       this.qb.throwState = { t: 0, duration: 420 };
     }
 
+    // ---- distance from a world point to the nearest live defender — the
+    // same "how contested is this" number the catch/drop/pick model uses,
+    // shared here so the Read & React cues stay honestly in sync with what
+    // actually determines the throw's odds. ----
+    nearestDefenderSeparation(x, y) {
+      let sep = Infinity;
+      for (const d of this.defenseFormation) {
+        const dx = x - d.x, dy = y - d.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < sep) sep = dist;
+      }
+      return sep;
+    }
+
     // ---- every eligible receiver in the current play, ranked by their own
     // route priority (1 = primary read) — the same ranking both the 1-4
     // target-select keys and the auto-throw fallback use, so "2" always
@@ -1426,6 +1461,110 @@
           this.targetRing.strokeCircle(picked.x, picked.y, 18 + pulse);
         }
       }
+    }
+
+    // ---- Visual Read & React cues — one world-space ring + countdown arc
+    // per eligible receiver, built entirely from geometry (never color
+    // alone) so it's legible without a key:
+    //   ring size/thickness  = how open he is (defender separation, same
+    //                          bands the catch/drop/pick model itself uses)
+    //   dashed vs solid ring = window not open yet vs. currently open
+    //   draining arc         = time left in the window — the "throw now or
+    //                          lose it" tell, this system's signature cue
+    //   pulse speed          = urgency as the window nears its close
+    //   small tick at 12:00  = this is the priority-1 read
+    // This only tells the player WHEN/HOW OPEN — it never touches who gets
+    // picked (that's still the 1-4 tags + manual/auto pickThrowTarget). A
+    // route with no window (a 'clear' decoy) draws nothing. ----
+    updateReadReactCues() {
+      this.readReactGfx.clear();
+      if (this.phase !== 'live-pass' || !this.currentOffensePlay) return;
+
+      const assignments = this.currentOffensePlay.assignments;
+      const elapsed = this.livePlayElapsedMs || 0;
+      const g = this.readReactGfx;
+
+      this.eligibleReceivers().forEach(p => {
+        const a = assignments[p.role];
+        const w = a.window;
+        if (!w) return; // decoy route — no timing data, no cue
+
+        const timeUntilOpen = w.open - elapsed;
+        const timeUntilClose = (w.open + w.duration) - elapsed;
+        const isPrimary = (a.priority || 9) === 1;
+
+        if (timeUntilOpen > 400) return;   // too early to telegraph yet
+        if (timeUntilClose < -200) return; // long closed — nothing left to show
+
+        // openness bands mirror the separation numbers resolveAirBall
+        // already uses for catch/drop/pick, so a wide-open ring really
+        // does mean a safer throw, not just a bigger circle
+        const sep = this.nearestDefenderSeparation(p.x, p.y);
+        let openness;
+        if (sep < 15) openness = 0.12;
+        else if (sep < 25) openness = 0.35;
+        else if (sep < 40) openness = 0.6;
+        else if (sep < 60) openness = 0.85;
+        else openness = 1;
+
+        const baseRadius = (isPrimary ? 20 : 16) + openness * 6;
+        const thickness = 1.5 + openness * 2.5;
+
+        if (timeUntilOpen > 0) {
+          // ---- OPENING SOON — faint dashed ring, no arc yet ----
+          const t = Phaser.Math.Clamp(1 - timeUntilOpen / 400, 0, 1);
+          g.lineStyle(1.5, 0x94a3b8, 0.15 + t * 0.15);
+          const dashes = 10;
+          for (let i = 0; i < dashes; i++) {
+            const a0 = (i / dashes) * Math.PI * 2;
+            const a1 = a0 + (Math.PI * 2 / dashes) * 0.6;
+            g.beginPath();
+            g.arc(p.x, p.y, baseRadius, a0, a1, false);
+            g.strokePath();
+          }
+          return;
+        }
+
+        if (timeUntilClose <= 0) {
+          // ---- JUST CLOSED — quick fade, no arc ----
+          const fadeT = Phaser.Math.Clamp(1 + timeUntilClose / 200, 0, 1);
+          g.lineStyle(1.5, 0x64748b, 0.25 * fadeT);
+          g.strokeCircle(p.x, p.y, baseRadius);
+          return;
+        }
+
+        // ---- OPEN — solid separation-weighted ring + draining arc ----
+        const windowFrac = Phaser.Math.Clamp(timeUntilClose / w.duration, 0, 1);
+        const urgent = timeUntilClose < 200 || windowFrac < 0.25;
+        const critical = timeUntilClose < 100 || windowFrac < 0.12;
+        const pulseHz = critical ? 6 : urgent ? 3.5 : 1.6;
+        const pulse = 0.85 + Math.sin(elapsed * 0.001 * pulseHz * Math.PI * 2) * (critical ? 0.15 : 0.08);
+        const ringAlpha = (0.55 + openness * 0.35) * pulse;
+        const ringRadius = baseRadius * pulse;
+
+        g.lineStyle(thickness, isPrimary ? 0x38bdf8 : 0x94a3b8, ringAlpha);
+        g.strokeCircle(p.x, p.y, ringRadius);
+
+        // the countdown arc — 12 o'clock, sweeps clockwise, drains to
+        // nothing right as the window shuts. The signature "throw now" cue.
+        const arcColor = critical ? 0xef4444 : urgent ? 0xfbbf24 : 0x38bdf8;
+        g.lineStyle(thickness + 1, arcColor, critical ? 0.95 : 0.75);
+        const start = -Math.PI / 2;
+        g.beginPath();
+        g.arc(p.x, p.y, ringRadius + 4, start, start + Math.PI * 2 * windowFrac, false);
+        g.strokePath();
+
+        // priority-1 tick — a small mark, not a new number/label (the 1-4
+        // tags already own "who")
+        if (isPrimary) {
+          g.fillStyle(0x38bdf8, 0.9);
+          g.fillTriangle(
+            p.x - 3, p.y - ringRadius - 6,
+            p.x + 3, p.y - ringRadius - 6,
+            p.x, p.y - ringRadius - 1
+          );
+        }
+      });
     }
 
     // ---- walks a receiver's remaining route waypoints forward by a fixed
@@ -1562,11 +1701,7 @@
         return;
       }
       if (nearestOff && offDist < effRadius) {
-        let sep = Infinity;
-        for (const d of this.defenseFormation) {
-          const dx = nearestOff.x - d.x, dy = nearestOff.y - d.y;
-          sep = Math.min(sep, Math.sqrt(dx * dx + dy * dy));
-        }
+        const sep = this.nearestDefenderSeparation(nearestOff.x, nearestOff.y);
         // ---- three-way outcome, all driven by that same separation
         // number: CATCH / DROP (contested — the ball got there, he just
         // couldn't bring it in) / INTERCEPTION. Before this, anything that
@@ -1753,7 +1888,7 @@
       }
 
       drawFootballPlayer(this.returner.gfx, this.returner.x, this.returner.y, this.returner.facing, this.returner.body, {
-        legPhase: this.returner.animPhase, gaitAmp: this.returner.gaitAmp
+        legPhase: this.returner.animPhase, gaitAmp: this.returner.gaitAmp, spinRot: this.returner.spinRot || 0
       });
       this.followTarget.set(this.returner.x, this.returner.y);
 
@@ -2062,6 +2197,8 @@
       carrier.moveCooldown = 0;
       carrier.evasionT = 0;
       carrier.brokenTackles = 0;
+      carrier.spinAnimMs = null;
+      carrier.spinRot = 0;
     }
 
     // ---- whoever currently "has the ball" in a juke-able sense: the RB/
@@ -2104,6 +2241,8 @@
         this.showBreakPopup(carrier, 'JUKE!', '#38bdf8');
       } else if (type === 'spin') {
         carrier.evasionT = 380;
+        carrier.spinAnimMs = 0;
+        carrier.spinAnimDur = 380;
         this.showBreakPopup(carrier, 'SPIN!', '#a78bfa');
       } else if (type === 'stiffarm') {
         carrier.evasionT = 160;
@@ -2146,6 +2285,18 @@
       carrier.moveCooldown = Math.max(0, (carrier.moveCooldown || 0) - dt);
       carrier.evasionT = Math.max(0, (carrier.evasionT || 0) - dt);
       carrier.breakMeter = Math.min(100, (carrier.breakMeter == null ? 100 : carrier.breakMeter) + dt * 0.015);
+
+      // ---- spin move's actual 360 — advances a rotation timer that the
+      // draw call turns into a real Graphics rotation, not a fake lean ----
+      if (carrier.spinAnimMs != null) {
+        carrier.spinAnimMs += dt;
+        if (carrier.spinAnimMs >= carrier.spinAnimDur) {
+          carrier.spinAnimMs = null;
+          carrier.spinRot = 0;
+        } else {
+          carrier.spinRot = (carrier.spinAnimMs / carrier.spinAnimDur) * Math.PI * 2;
+        }
+      }
 
       this.breakMeterLabel.setVisible(true);
       this.breakMeterBg.setVisible(true);
@@ -2190,7 +2341,7 @@
       }
 
       drawFootballPlayer(carrier.gfx, carrier.x, carrier.y, carrier.facing, carrier.body, {
-        legPhase: carrier.animPhase || 0, gaitAmp: carrier.gaitAmp || 0
+        legPhase: carrier.animPhase || 0, gaitAmp: carrier.gaitAmp || 0, spinRot: carrier.spinRot || 0
       });
       this.followTarget.set(carrier.x, carrier.y);
       this.ball.x = carrier.x + carrier.facing * 10;
@@ -2578,7 +2729,8 @@
       const anim = {
         legPhase: this.qb.animPhase,
         gaitAmp: this.qb.gaitAmp,
-        throwT: this.qb.throwState ? this.qb.throwState.t / this.qb.throwState.duration : undefined
+        throwT: this.qb.throwState ? this.qb.throwState.t / this.qb.throwState.duration : undefined,
+        spinRot: this.qb.spinRot || 0
       };
       drawFootballPlayer(this.qb.gfx, this.qb.x, this.qb.y, this.qb.facing, this.qb.body, anim);
       // world-space hand position for the ball to snap to / release from
@@ -2681,6 +2833,7 @@
       }
 
       this.updateTargetIndicators();
+      this.updateReadReactCues();
 
       // ---- ball flight physics (shared by kickoffs and throws) ----
       if (this.ball.inFlight) {
