@@ -725,6 +725,14 @@
       // yours. Bright ring + a small downward arrow, both pulsing. ----
       this.controlIndicatorGfx = this.add.graphics().setDepth(19);
 
+      // ---- Manual Defense — a small marker over every eligible receiver
+      // on a CPU drive, so you can tell a WR/TE/RB worth covering apart
+      // from the offensive linemen at a glance instead of having to know
+      // the roster by silhouette. Offense-only info (routes/targets) never
+      // shows here — see updateTargetIndicators/updateReadReactCues,
+      // which are hidden during an away drive for exactly that reason. ----
+      this.wrMarkerGfx = this.add.graphics().setDepth(18);
+
       // ---- Break Meter feedback — a world-space ring that lights up
       // while a carrier's evasion window is active, and a floating popup
       // for "JUKE!"/"SPIN!"/"STIFF ARM!"/"BROKEN TACKLE!" call-outs ----
@@ -1697,16 +1705,36 @@
       // from his own body proportions so the marker sits right at his feet
       // whether he's a lineman or a DB
       const feetY = d.y + d.body.torsoH * 0.42 + d.body.legLen * 0.85;
-      const pulse = Math.sin((this.time && this.time.now || 0) * 0.006) * 1.5;
+      const pulse = Math.sin((this.time && this.time.now || 0) * 0.006) * 2.5;
       const g = this.controlIndicatorGfx;
-      g.lineStyle(2, 0x38bdf8, 0.55);
-      g.strokeEllipse(d.x, feetY + 3, 22, 8);
+      g.lineStyle(3, 0x38bdf8, 0.65);
+      g.strokeEllipse(d.x, feetY + 4, 38 + pulse, 14 + pulse * 0.4);
       g.fillStyle(0x38bdf8, 0.95);
       g.fillTriangle(
-        d.x - 7, feetY + 14 + pulse,
-        d.x + 7, feetY + 14 + pulse,
-        d.x, feetY + 5 + pulse
+        d.x - 11, feetY + 20 + pulse,
+        d.x + 11, feetY + 20 + pulse,
+        d.x, feetY + 6 + pulse
       );
+    }
+
+    // ---- Manual Defense — a small tag over every eligible receiver
+    // (route/clear assignment — WRs, TEs, an RB on a checkdown) during a
+    // CPU drive, since on defense you have no other easy way to tell one
+    // of those from an offensive lineman at a glance. Uses the same
+    // eligibleReceivers() list the passer's own 1-4 targeting reads from,
+    // just a plain dot instead of a numbered tag (those numbers are the
+    // passer's read order, meaningless to the defense). ----
+    updateDefenseReceiverMarkers() {
+      this.wrMarkerGfx.clear();
+      if (this.offenseSide !== 'away' || !this.currentOffensePlay) return;
+      if (this.phase !== 'presnap' && this.phase !== 'live-pass' && this.phase !== 'live-pass-air') return;
+      const g = this.wrMarkerGfx;
+      this.eligibleReceivers().forEach(p => {
+        g.fillStyle(0xfbbf24, 1);
+        g.fillTriangle(p.x - 6, p.y - 32, p.x + 6, p.y - 32, p.x, p.y - 23);
+        g.lineStyle(1.5, 0x0b0f14, 0.85);
+        g.strokeTriangle(p.x - 6, p.y - 32, p.x + 6, p.y - 32, p.x, p.y - 23);
+      });
     }
 
     // ---- walks a receiver's remaining route waypoints forward by a fixed
@@ -3195,6 +3223,7 @@
       }
 
       this.updateControlIndicator();
+      this.updateDefenseReceiverMarkers();
       this.updateTargetIndicators();
       this.updateReadReactCues();
 
