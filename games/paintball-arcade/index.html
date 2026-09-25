@@ -471,6 +471,8 @@
       this.phase = 'menu'; // menu | countdown | live | round-over | match-over
       this.countdownText = null;
       this.difficulty = 'normal';
+      this.stats = { shotsFired: 0, hits: 0 };
+      this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
 
       // ---- HUD ----
       this.hudObjects = [];
@@ -495,6 +497,9 @@
       }).setOrigin(0.5).setDepth(60).setVisible(false);
       this.bannerSub = this.add.text(W / 2, H / 2 + 34, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.statsLabel = this.add.text(W / 2, H / 2 + 62, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#64748b', align: 'center'
       }).setOrigin(0.5).setDepth(60).setVisible(false);
 
       this.redrawPickups();
@@ -649,6 +654,11 @@
       this.bannerText.setText(matchWon ? (winner === 'player' ? 'MATCH WON!' : 'MATCH LOST') : label).setVisible(true);
       this.bannerSub.setText(matchWon ? 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai + (winner === 'player' ? '  ·  Click to play again' : '  ·  Click to try again') : 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai).setVisible(true);
 
+      if (matchWon) {
+        const acc = this.stats.shotsFired > 0 ? Math.round((this.stats.hits / this.stats.shotsFired) * 100) : 0;
+        this.statsLabel.setText('Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)').setVisible(true);
+      }
+
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(matchWon ? (winner === 'player' ? 880 : 140) : (winner === 'player' ? 600 : 220), matchWon ? 0.22 : 0.12); } catch (e) {}
       }
@@ -660,8 +670,9 @@
         this.input.once('pointerdown', () => {
           if (!this.matchOverClickArmed || this.phase !== 'match-over') return;
           this.roundWins = { player: 0, ai: 0 };
+          this.stats = { shotsFired: 0, hits: 0 };
           this.updateHUD();
-          this.bannerText.setVisible(false); this.bannerSub.setVisible(false);
+          this.bannerText.setVisible(false); this.bannerSub.setVisible(false); this.statsLabel.setVisible(false);
           this.resetRound();
           this.beginCountdown(300);
         }, this);
@@ -682,6 +693,7 @@
       if (this.player.fireCooldown > 0 || this.player.ammo <= 0) return;
       this.player.ammo -= 1;
       this.player.fireCooldown = FIRE_COOLDOWN;
+      this.stats.shotsFired += 1;
       const tipX = this.player.x + Math.cos(this.player.angle) * (PLAYER_R + 6);
       const tipY = this.player.y + Math.sin(this.player.angle) * (PLAYER_R + 6);
       this.spawnBall(tipX, tipY, this.player.angle, 'player');
@@ -1078,14 +1090,27 @@
     }
 
     resolveHit(target, shooterOwner) {
+      if (shooterOwner === 'player') this.stats.hits += 1;
+
+      // save the dramatic slow-motion for the shot that actually decides
+      // the match, not every elimination — per the design spec. Stretch
+      // the real-time hit-stun window too, otherwise the slow-mo tween
+      // barely gets a frame in before the round ends and the banner pops.
+      const wouldWinMatch = (this.roundWins[shooterOwner] + 1) >= ROUNDS_TO_WIN;
+      const stunMs = wouldWinMatch ? 900 : HIT_STUN_MS;
+      if (wouldWinMatch) {
+        this.hitStopFactor = 0.12;
+        this.tweens.add({ targets: this, hitStopFactor: 1, duration: 750, delay: 150, ease: 'Quad.easeIn' });
+      }
+
       const shooterColor = shooterOwner === 'player' ? PLAYER_COLOR : AI_COLOR;
       this.addSplat(target.x, target.y, shooterOwner, true);
-      target.frozen = HIT_STUN_MS;
-      this.addEffect('burst', target.x, target.y, shooterColor, 260);
+      target.frozen = stunMs;
+      this.addEffect('burst', target.x, target.y, shooterColor, wouldWinMatch ? 900 : 260);
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(180, 0.09); } catch (e) {}
       }
-      this.time.delayedCall(HIT_STUN_MS, () => {
+      this.time.delayedCall(stunMs, () => {
         target.alive = false;
         if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
           try { SFX.tone(130, 0.12); } catch (e) {}
@@ -1193,11 +1218,16 @@
     }
 
     update(time, dt) {
-      this.updatePlayer(dt);
-      this.updateAI(dt);
-      this.updateBalls(dt);
-      this.updateFogOfWar(dt);
-      this.updateEffects(dt);
+      // hitStopFactor drops below 1 for the shot that decides the match,
+      // stretching that moment out into slow motion without touching
+      // Phaser's own clock (so timers like the elimination delay still
+      // land on real-world time)
+      const dtScaled = dt * this.hitStopFactor;
+      this.updatePlayer(dtScaled);
+      this.updateAI(dtScaled);
+      this.updateBalls(dtScaled);
+      this.updateFogOfWar(dtScaled);
+      this.updateEffects(dtScaled);
       // re-draw the AI now that fog-of-war for THIS frame is known (drawAI
       // above ran before updateFogOfWar the first time through, so it used
       // last frame's visibility — one frame of lag is invisible at 60fps,
