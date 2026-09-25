@@ -57,6 +57,16 @@
   const PLAYER_COLOR = 0x38bdf8;   // player's paint — cyan
   const AI_COLOR = 0xf97316;       // AI's paint — orange
 
+  // AI difficulty — per the spec's reaction-time bands. Aim error also
+  // tightens on Hard so a fast reaction isn't undercut by sloppy aim,
+  // and loosens further on Easy than the base spec called for so the
+  // gap between tiers is actually felt, not just theoretical.
+  const DIFFICULTY_SPECS = {
+    easy:   { label: 'EASY',   reaction: [450, 650], aimError: 0.16 },
+    normal: { label: 'NORMAL', reaction: [300, 500], aimError: 0.09 },
+    hard:   { label: 'HARD',   reaction: [180, 350], aimError: 0.05 }
+  };
+
   // ---- Arena: 960x600 field below a 56px HUD strip. Bunker layout is
   // symmetric top-bottom (rows A/E and B/D mirror each other, row C is
   // the shared center line) so a bottom player spawn vs a top AI spawn
@@ -205,7 +215,14 @@
         upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT'
       });
       this.pointer = this.input.activePointer;
-      this.input.on('pointerdown', () => this.tryPlayerShot());
+      this.input.on('pointerdown', (pointer, currentlyOver) => {
+        // if the click landed on an interactive object (a difficulty
+        // button), let that object's own handler deal with it instead of
+        // also starting the match / firing a shot
+        if (currentlyOver && currentlyOver.length > 0) return;
+        if (this.phase === 'menu') { this.startFromMenu(); return; }
+        this.tryPlayerShot();
+      });
 
       // ---- field background: real grass, not a flat fill. A base color,
       // faint mowed-lane banding, a few worn dirt patches, then a couple
@@ -451,9 +468,9 @@
 
       // ---- match/round state ----
       this.roundWins = { player: 0, ai: 0 };
-      this.phase = 'countdown'; // countdown | live | round-over | match-over
+      this.phase = 'menu'; // menu | countdown | live | round-over | match-over
       this.countdownText = null;
-      this.beginCountdown(900);
+      this.difficulty = 'normal';
 
       // ---- HUD ----
       this.hudObjects = [];
@@ -482,6 +499,99 @@
 
       this.redrawPickups();
       this.updateHUD();
+      this.buildMenu();
+    }
+
+    // -----------------------------------------------------------------
+    // Start menu — shown once before the first round. A quick rules
+    // primer matters more here than in most of the hub's games since the
+    // whole point (one hit ends it, shots reveal your position, hold
+    // your ammo) isn't obvious just from looking at the field.
+    // -----------------------------------------------------------------
+    buildMenu() {
+      const cx = W / 2, cy = HUD_H + FIELD_H / 2;
+      this.menuObjects = [];
+
+      const overlay = this.add.rectangle(W / 2, H / 2, W, H, 0x05070a, 0.93).setDepth(65);
+      this.menuObjects.push(overlay);
+
+      const title = this.add.text(cx, cy - 168, 'PAINTBALL ARCADE', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(66);
+      this.menuObjects.push(title);
+
+      const tagline = this.add.text(cx, cy - 128, 'One hit ends it. Every shot gives you away.', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
+      }).setOrigin(0.5).setDepth(66);
+      this.menuObjects.push(tagline);
+
+      const rules = [
+        ['WASD', 'Move'],
+        ['Mouse', 'Aim'],
+        ['Click', 'Shoot'],
+        ['', ''],
+        ['No health bar', 'one hit eliminates you'],
+        ['Hopper holds 12', 'refill from field pickups'],
+        ['Best of 5', 'first to 3 round wins takes the match']
+      ];
+      let ry = cy - 68;
+      rules.forEach(([a, b]) => {
+        if (!a) { ry += 14; return; }
+        const row = this.add.text(cx, ry, b ? (a + '  —  ' + b) : a, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: b ? '#cbd5e1' : '#38bdf8', fontStyle: b ? 'normal' : 'bold', align: 'center'
+        }).setOrigin(0.5).setDepth(66);
+        this.menuObjects.push(row);
+        ry += 26;
+      });
+
+      const diffLabel = this.add.text(cx, cy + 118, 'AI DIFFICULTY', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(66);
+      this.menuObjects.push(diffLabel);
+
+      this.diffButtons = {};
+      const diffKeys = ['easy', 'normal', 'hard'];
+      const diffGap = 90;
+      diffKeys.forEach((key, i) => {
+        const bx = cx + (i - 1) * diffGap;
+        const btn = this.add.text(bx, cy + 144, DIFFICULTY_SPECS[key].label, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '16px', fontStyle: 'bold', align: 'center',
+          backgroundColor: '#11161d', padding: { left: 14, right: 14, top: 6, bottom: 6 }
+        }).setOrigin(0.5).setDepth(66).setInteractive({ useHandCursor: true });
+        btn.on('pointerdown', () => this.setDifficulty(key));
+        this.diffButtons[key] = btn;
+        this.menuObjects.push(btn);
+      });
+      this.refreshDifficultyButtons();
+
+      const prompt = this.add.text(cx, cy + 190, 'CLICK TO START', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#fbbf24', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(66);
+      this.menuObjects.push(prompt);
+      this.tweens.add({ targets: prompt, alpha: { from: 1, to: 0.35 }, duration: 700, yoyo: true, repeat: -1 });
+    }
+
+    setDifficulty(key) {
+      this.difficulty = key;
+      this.refreshDifficultyButtons();
+    }
+
+    refreshDifficultyButtons() {
+      if (!this.diffButtons) return;
+      Object.keys(this.diffButtons).forEach(key => {
+        const selected = key === this.difficulty;
+        this.diffButtons[key].setStyle({
+          color: selected ? '#0b0f14' : '#94a3b8',
+          backgroundColor: selected ? '#fbbf24' : '#11161d'
+        });
+      });
+    }
+
+    startFromMenu() {
+      if (this.phase !== 'menu') return;
+      this.menuObjects.forEach(o => o.destroy());
+      this.menuObjects = [];
+      this.beginCountdown(150);
     }
 
     // -----------------------------------------------------------------
@@ -696,6 +806,11 @@
       return best;
     }
 
+    rollReactionDelay() {
+      const [lo, hi] = DIFFICULTY_SPECS[this.difficulty].reaction;
+      return Phaser.Math.Between(lo, hi);
+    }
+
     enterState(state) {
       this.ai.state = state;
       this.ai.stateTimer = 0;
@@ -748,7 +863,7 @@
         case 'PEEK': {
           this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
           if (this.ai.canSeePlayer) {
-            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.ai.reactionDelay = this.rollReactionDelay();
             this.enterState('SHOOT');
             break;
           }
@@ -778,7 +893,7 @@
           this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
           if (this.ai.canSeePlayer && Math.random() < 0.03) {
             this.ai.repositionPicked = false;
-            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.ai.reactionDelay = this.rollReactionDelay();
             this.enterState('SHOOT');
             break;
           }
@@ -799,7 +914,7 @@
           this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
           if (this.ai.canSeePlayer) {
             this.ai.flankPicked = false;
-            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.ai.reactionDelay = this.rollReactionDelay();
             this.enterState('SHOOT');
             break;
           }
@@ -874,7 +989,7 @@
       this.ai.ammo -= 1;
       // bounded aim error so misses look human, not omniscient
       const trueAngle = Math.atan2(this.player.y - this.ai.y, this.player.x - this.ai.x);
-      const error = (Math.random() - 0.5) * 0.09;
+      const error = (Math.random() - 0.5) * DIFFICULTY_SPECS[this.difficulty].aimError;
       const angle = trueAngle + error;
       const tipX = this.ai.x + Math.cos(angle) * (AI_R + 6);
       const tipY = this.ai.y + Math.sin(angle) * (AI_R + 6);
