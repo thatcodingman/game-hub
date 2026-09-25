@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paintball Arcade</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0f14; overflow: hidden; }
+  #game-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+  canvas { image-rendering: pixelated; cursor: crosshair; }
+</style>
+</head>
+<body>
+<div id="game-root"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="../../assets/sfx.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // PAINTBALL ARCADE — MVP per the finalized design spec.
+  // Core identity: "a one-shot positioning duel where every shot gives
+  // away information." One-hit elimination, 1v1 vs an AI that actually
+  // uses cover (seek/hold/peek/shoot/reposition/flank), limited hopper
+  // ammo, persistent paint splatter, best-of-5 match. No health bar —
+  // the whole game is about not being seen when you don't have to be.
+  //
+  // Fog-of-war is the piece that makes the hook actually work: the AI
+  // is only DRAWN on screen while the player has line of sight to it
+  // (see playerHasLOS below) — otherwise you only get a fading "last
+  // seen" ghost marker. Without that, a top-down view with everything
+  // always visible would make cover meaningless. Symmetrically, the AI
+  // never reads the player's true live position either — only what its
+  // own line-of-sight check actually lets it see (plus a short-lived,
+  // approximate "heard that shot" ping when you fire nearby).
+  // ---------------------------------------------------------------------
+
+  const W = 960;
+  const HUD_H = 56;
+  const FIELD_H = 600;
+  const H = HUD_H + FIELD_H;
+  const WALL = 6;
+
+  const PLAYER_R = 13;
+  const AI_R = 13;
+  const PLAYER_SPEED = 3.3;
+  const AI_SPEED = 3.0;
+  const FIRE_COOLDOWN = 190;
+  const BALL_SPEED = 15;
+  const BALL_R = 3.5;
+  const HOPPER_MAX = 12;
+  const PICKUP_AMOUNT = 6;
+  const ROUNDS_TO_WIN = 3;
+  const HIT_STUN_MS = 90;
+
+  const PLAYER_COLOR = 0x38bdf8;   // player's paint — cyan
+  const AI_COLOR = 0xf97316;       // AI's paint — orange
+
+  // ---- Arena: 960x600 field below a 56px HUD strip. Bunker layout is
+  // symmetric top-bottom (rows A/E and B/D mirror each other, row C is
+  // the shared center line) so a bottom player spawn vs a top AI spawn
+  // is inherently fair. S/M/L sizing and the S-M-S / M-L-L-M alternating
+  // pattern follow the spec's ASCII layout — reskinned as real inflatable
+  // speedball props instead of plain boxes: 'can' (a squat cylinder),
+  // 'tower' (a taller/wider cylinder), and 'dorito' (the classic
+  // triangular wedge, with a facing angle). Collision and line-of-sight
+  // both treat every bunker as a circle of radius r — close enough to
+  // each prop's actual footprint that gameplay reads the same as the
+  // rectangle version did, while the art can be properly round/angular. ----
+  const BUNKER_SPECS = [
+    // row A
+    { x: 330, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 }, { x: 480, y: 110, r: 27, shape: 'can' }, { x: 630, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 },
+    // row B
+    { x: 190, y: 205, r: 27, shape: 'can' }, { x: 385, y: 205, r: 38, shape: 'tower' }, { x: 575, y: 205, r: 38, shape: 'tower' }, { x: 770, y: 205, r: 27, shape: 'can' },
+    // row C — center line
+    { x: 330, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 300, r: 27, shape: 'can' }, { x: 630, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 },
+    // row D
+    { x: 190, y: 395, r: 27, shape: 'can' }, { x: 385, y: 395, r: 38, shape: 'tower' }, { x: 575, y: 395, r: 38, shape: 'tower' }, { x: 770, y: 395, r: 27, shape: 'can' },
+    // row E
+    { x: 330, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 490, r: 27, shape: 'can' }, { x: 630, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
+  ];
+
+  const PICKUP_SPECS = [
+    { x: 140, y: 160 }, { x: 820, y: 160 },
+    { x: 140, y: 440 }, { x: 820, y: 440 }
+  ];
+
+  // Per-shape color pairs for the bunkers — real inflatable speedball props
+  // come in loud, distinct colors (not one brick-red for everything), and
+  // splitting left/right by color reads as "two teams' gear" rather than
+  // a uniform prop stamped out repeatedly.
+  const BUNKER_PALETTE = {
+    can:    [ { base: 0xb91c1c, hi: 0xf87171, rim: 0x450a0a }, { base: 0x1d4ed8, hi: 0x93c5fd, rim: 0x0c1f4d } ],
+    tower:  [ { base: 0xca8a04, hi: 0xfde047, rim: 0x422006 }, { base: 0x1f2937, hi: 0x6b7280, rim: 0x000000 } ],
+    dorito: [ { base: 0xea580c, hi: 0xfdba74, rim: 0x431407 }, { base: 0xe2e8f0, hi: 0xffffff, rim: 0x475569 } ]
+  };
+
+  // Purely cosmetic field dressing — none of these collide with anything,
+  // they just fill the dead space between bunkers so the field doesn't
+  // read as empty grass + props. Positions are hand-picked to clear every
+  // bunker, pickup and spawn by a healthy margin.
+  const DECOR_SPECS = [
+    { x: 55,  y: 92,  type: 'tirestack' },
+    { x: 905, y: 92,  type: 'crate', rot: 0.15 },
+    { x: 55,  y: 300, type: 'barrel' },
+    { x: 905, y: 300, type: 'tirestack' },
+    { x: 55,  y: 508, type: 'crate', rot: -0.2 },
+    { x: 905, y: 508, type: 'barrel' },
+    { x: 258, y: 108, type: 'hay', rot: 0.3 },
+    { x: 702, y: 108, type: 'tirestack' },
+    { x: 258, y: 492, type: 'tirestack' },
+    { x: 702, y: 492, type: 'hay', rot: -0.4 },
+    { x: 60,  y: 205, type: 'hay', rot: 0.6 },
+    { x: 900, y: 395, type: 'crate', rot: 0.5 }
+  ];
+
+  // mirrored about the field's vertical center (HUD_H + FIELD_H/2 = 356)
+  // so both spawns sit the same safe distance from their nearest wall
+  const PLAYER_SPAWN = { x: 480, y: 560 };
+  const AI_SPAWN = { x: 480, y: 152 };
+
+  // -----------------------------------------------------------------------
+  // Geometry helpers — everything AI perception, cover scoring and fog of
+  // war rests on. LOS is point-sampled along the segment rather than a
+  // true segment/rect intersection: simpler to get right, and cheap enough
+  // (a few hundred point-in-rect checks) at this scale.
+  // -----------------------------------------------------------------------
+  function pointInBunker(px, py, b) {
+    const dx = px - b.x, dy = py - b.y;
+    return dx * dx + dy * dy < b.r * b.r;
+  }
+
+  function hasLineOfSight(x1, y1, x2, y2, bunkers) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const dist = Math.hypot(dx, dy);
+    const steps = Math.max(1, Math.floor(dist / 8));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = x1 + dx * t, py = y1 + dy * t;
+      for (let b = 0; b < bunkers.length; b++) {
+        if (pointInBunker(px, py, bunkers[b])) return false;
+      }
+    }
+    return true;
+  }
+
+  function resolveBunkerCollision(actor, bunkers) {
+    for (const b of bunkers) {
+      const dx = actor.x - b.x, dy = actor.y - b.y;
+      const distSq = dx * dx + dy * dy;
+      const minDist = actor.radius + b.r;
+      if (distSq < minDist * minDist) {
+        const dist = Math.sqrt(distSq) || 0.001;
+        const nx = dx / dist, ny = dy / dist;
+        const push = minDist - dist;
+        actor.x += nx * push;
+        actor.y += ny * push;
+      }
+    }
+  }
+
+  function clampToField(actor) {
+    actor.x = Phaser.Math.Clamp(actor.x, WALL + actor.radius, W - WALL - actor.radius);
+    actor.y = Phaser.Math.Clamp(actor.y, HUD_H + WALL + actor.radius, H - WALL - actor.radius);
+  }
+
+  // "Stand point" for a bunker: a spot on the far side of the bunker from
+  // some reference point, so the bunker itself sits between the two —
+  // that's what cover actually means geometrically.
+  function coverStandPoint(bunker, awayX, awayY) {
+    const dx = bunker.x - awayX, dy = bunker.y - awayY;
+    const d = Math.hypot(dx, dy) || 1;
+    const nx = dx / d, ny = dy / d;
+    const standoff = bunker.r + 22;
+    return { x: bunker.x + nx * standoff, y: bunker.y + ny * standoff };
+  }
+
+  // left/right peek points — lateral offsets from the stand point, along
+  // the perpendicular of the bunker/reference axis.
+  function peekPoints(bunker, awayX, awayY) {
+    const dx = bunker.x - awayX, dy = bunker.y - awayY;
+    const d = Math.hypot(dx, dy) || 1;
+    const nx = dx / d, ny = dy / d;
+    const px = -ny, py = nx;
+    const lateral = bunker.r + 16;
+    const standoff = bunker.r + 8;
+    const baseX = bunker.x + nx * standoff, baseY = bunker.y + ny * standoff;
+    return [
+      { x: baseX + px * lateral, y: baseY + py * lateral, side: 1 },
+      { x: baseX - px * lateral, y: baseY - py * lateral, side: -1 }
+    ];
+  }
+
+  function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+  function nearWall(x, y) {
+    return x < WALL + 40 || x > W - WALL - 40 || y < HUD_H + WALL + 40 || y > H - WALL - 40;
+  }
+
+  class ArenaScene extends Phaser.Scene {
+    create() {
+      // ---- input ----
+      this.keys = this.input.keyboard.addKeys({
+        up: 'W', down: 'S', left: 'A', right: 'D',
+        upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT'
+      });
+      this.pointer = this.input.activePointer;
+      this.input.on('pointerdown', () => this.tryPlayerShot());
+
+      // ---- field background: real grass, not a flat fill. A base color,
+      // faint mowed-lane banding, a few worn dirt patches, then a couple
+      // thousand tiny blade strokes in three shades scattered over the
+      // top — all drawn once here, never redrawn, so the per-frame cost
+      // is zero regardless of how much detail goes into it. ----
+      const bg = this.add.graphics().setDepth(0);
+      bg.fillStyle(0x2e5230, 1);
+      bg.fillRect(0, HUD_H, W, FIELD_H);
+      for (let y = HUD_H, stripe = 0; y < H; y += 44, stripe++) {
+        bg.fillStyle(stripe % 2 === 0 ? 0x336038 : 0x2a4a2c, 0.5);
+        bg.fillRect(0, y, W, 44);
+      }
+      // worn/dirt patches — soft irregular blobs, mostly near likely foot
+      // traffic (cover points), for a field that looks actually played on
+      for (let i = 0; i < 16; i++) {
+        const px = Phaser.Math.Between(WALL + 30, W - WALL - 30);
+        const py = Phaser.Math.Between(HUD_H + WALL + 30, H - WALL - 30);
+        bg.fillStyle(0x4a3f2a, Phaser.Math.FloatBetween(0.08, 0.18));
+        bg.fillEllipse(px, py, Phaser.Math.Between(30, 70), Phaser.Math.Between(16, 34), Math.random() * Math.PI);
+      }
+      // grass blades
+      const bladeShades = [0x274a29, 0x3d6b3f, 0x224322, 0x477a49];
+      for (let i = 0; i < 2400; i++) {
+        const x = Phaser.Math.Between(WALL, W - WALL);
+        const y = Phaser.Math.Between(HUD_H + WALL, H - WALL);
+        const len = Phaser.Math.Between(3, 7);
+        const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.9;
+        bg.lineStyle(1, bladeShades[i % bladeShades.length], 0.55);
+        bg.lineBetween(x, y, x + Math.cos(angle) * len, y + Math.sin(angle) * len);
+      }
+      bg.lineStyle(WALL, 0x0b0f14, 1);
+      bg.strokeRect(WALL / 2, HUD_H + WALL / 2, W - WALL, FIELD_H - WALL);
+
+      // ---- perimeter netting + posts — real speedball fields are ringed
+      // by mesh fencing, not bare grass right up to the edge of the world.
+      // Drawn once, just inside the wall stroke, as a cheap diamond
+      // crosshatch band with support poles at intervals. ----
+      const fenceGfx = this.add.graphics().setDepth(1);
+      const FENCE_IN = WALL + 3, FENCE_BAND = 10;
+      fenceGfx.lineStyle(1, 0x0f2418, 0.35);
+      const drawMeshRun = (x0, y0, x1, y1, horizontal) => {
+        const len = horizontal ? (x1 - x0) : (y1 - y0);
+        const step = 14;
+        for (let d = 0; d <= len; d += step) {
+          if (horizontal) {
+            fenceGfx.lineBetween(x0 + d, y0, x0 + d + FENCE_BAND, y0 + FENCE_BAND);
+            fenceGfx.lineBetween(x0 + d, y0 + FENCE_BAND, x0 + d + FENCE_BAND, y0);
+          } else {
+            fenceGfx.lineBetween(x0, y0 + d, x0 + FENCE_BAND, y0 + d + FENCE_BAND);
+            fenceGfx.lineBetween(x0 + FENCE_BAND, y0 + d, x0, y0 + d + FENCE_BAND);
+          }
+        }
+      };
+      drawMeshRun(FENCE_IN, HUD_H + FENCE_IN, W - FENCE_IN, HUD_H + FENCE_IN, true);
+      drawMeshRun(FENCE_IN, H - FENCE_IN - FENCE_BAND, W - FENCE_IN, H - FENCE_IN - FENCE_BAND, true);
+      drawMeshRun(FENCE_IN, HUD_H + FENCE_IN, FENCE_IN, H - FENCE_IN, false);
+      drawMeshRun(W - FENCE_IN - FENCE_BAND, HUD_H + FENCE_IN, W - FENCE_IN - FENCE_BAND, H - FENCE_IN, false);
+      // support poles
+      fenceGfx.fillStyle(0x1c2b22, 0.6);
+      for (let x = 40; x < W; x += 130) {
+        fenceGfx.fillRect(x - 1.5, HUD_H + WALL, 3, 8);
+        fenceGfx.fillRect(x - 1.5, H - WALL - 8, 3, 8);
+      }
+      for (let y = HUD_H + 40; y < H; y += 130) {
+        fenceGfx.fillRect(WALL, y - 1.5, 8, 3);
+        fenceGfx.fillRect(W - WALL - 8, y - 1.5, 8, 3);
+      }
+
+      // ---- cosmetic field dressing (tire stacks, crates, barrels, hay) —
+      // fills the dead space between bunkers so the field reads as an
+      // actual played-on arena rather than props floating on empty grass.
+      // Drawn once, sits under the bunkers/players in depth order. ----
+      const decorGfx = this.add.graphics().setDepth(1);
+      DECOR_SPECS.forEach(d => {
+        decorGfx.fillStyle(0x0b0f14, 0.22);
+        decorGfx.fillEllipse(d.x + 2, d.y + 4, 34, 16);
+        if (d.type === 'tirestack') {
+          for (let i = 0; i < 3; i++) {
+            const ry = d.y - i * 6;
+            decorGfx.fillStyle(0x1a1a1a, 1);
+            decorGfx.fillEllipse(d.x, ry, 30 - i * 3, 16 - i * 1.6);
+            decorGfx.lineStyle(2, 0x000000, 1);
+            decorGfx.strokeEllipse(d.x, ry, 30 - i * 3, 16 - i * 1.6);
+            decorGfx.fillStyle(0x3a3a3a, 1);
+            decorGfx.fillEllipse(d.x, ry, 13 - i * 1.2, 6 - i * 0.6);
+          }
+        } else if (d.type === 'crate') {
+          const rot = d.rot || 0;
+          const s = 26;
+          const cos = Math.cos(rot), sin = Math.sin(rot);
+          const corner = (lx, ly) => ({ x: d.x + lx * cos - ly * sin, y: d.y + lx * sin + ly * cos });
+          const c1 = corner(-s / 2, -s / 2), c2 = corner(s / 2, -s / 2), c3 = corner(s / 2, s / 2), c4 = corner(-s / 2, s / 2);
+          decorGfx.fillStyle(0x8a5a2b, 1);
+          decorGfx.fillPoints([c1, c2, c3, c4], true);
+          decorGfx.lineStyle(2, 0x4a3013, 1);
+          decorGfx.strokePoints([c1, c2, c3, c4], true);
+          decorGfx.lineStyle(1.5, 0x6b4423, 0.9);
+          decorGfx.lineBetween(corner(-s / 2, 0).x, corner(-s / 2, 0).y, corner(s / 2, 0).x, corner(s / 2, 0).y);
+          decorGfx.lineBetween(corner(0, -s / 2).x, corner(0, -s / 2).y, corner(0, s / 2).x, corner(0, s / 2).y);
+          [c1, c2, c3, c4].forEach(pt => { decorGfx.fillStyle(0x2b1a08, 1); decorGfx.fillCircle(pt.x, pt.y, 1.6); });
+        } else if (d.type === 'barrel') {
+          decorGfx.fillStyle(0x334155, 1);
+          decorGfx.fillCircle(d.x, d.y, 15);
+          decorGfx.lineStyle(2, 0x0f172a, 1);
+          decorGfx.strokeCircle(d.x, d.y, 15);
+          decorGfx.lineStyle(1.5, 0x0f172a, 0.8);
+          decorGfx.strokeCircle(d.x, d.y, 10);
+          decorGfx.fillStyle(0xfbbf24, 0.85);
+          decorGfx.fillRect(d.x - 15, d.y - 3, 30, 3);
+          decorGfx.fillStyle(0x64748b, 0.6);
+          decorGfx.fillEllipse(d.x - 4, d.y - 4, 12, 8);
+        } else if (d.type === 'hay') {
+          const rot = d.rot || 0;
+          decorGfx.fillStyle(0xca9a3f, 1);
+          decorGfx.fillEllipse(d.x, d.y, 32, 20, rot);
+          decorGfx.lineStyle(2, 0x8a6a26, 0.9);
+          decorGfx.strokeEllipse(d.x, d.y, 32, 20, rot);
+          for (let i = -1; i <= 1; i++) {
+            const ox = Math.cos(rot + Math.PI / 2) * i * 8, oy = Math.sin(rot + Math.PI / 2) * i * 8;
+            decorGfx.lineStyle(1.5, 0x6b4f1a, 0.8);
+            decorGfx.lineBetween(d.x + ox - Math.cos(rot) * 14, d.y + oy - Math.sin(rot) * 14, d.x + ox + Math.cos(rot) * 14, d.y + oy + Math.sin(rot) * 14);
+          }
+        }
+      });
+
+      // ---- static bunkers (drawn once — they never move). Real inflatable
+      // speedball props instead of boxes: a shadow, a rounded/angular
+      // body with a highlight seam for a 3D-air-bladder look, and a darker
+      // base ring/rim. ----
+      this.bunkers = BUNKER_SPECS.map(spec => Object.assign({}, spec));
+      const bunkerGfx = this.add.graphics().setDepth(2);
+      this.bunkers.forEach((b, idx) => {
+        // color assignment: split left/right of field center so the
+        // bunkers read as two distinct sets of gear rather than one prop
+        // stamped out seventeen times; the center column alternates by
+        // row so it doesn't just default to one side.
+        const palette = BUNKER_PALETTE[b.shape];
+        const paletteIdx = b.x < W / 2 ? 0 : (b.x > W / 2 ? 1 : (idx % 2));
+        const pal = palette[paletteIdx];
+        b.color = pal.base;
+
+        // drop shadow
+        bunkerGfx.fillStyle(0x0b0f14, 0.32);
+        bunkerGfx.fillEllipse(b.x + 4, b.y + 6, b.r * 2 * 0.95, b.r * 2 * 0.62);
+
+        if (b.shape === 'dorito') {
+          const rot = b.rot || 0;
+          const tip = { x: b.x + Math.cos(rot) * b.r * 1.15, y: b.y + Math.sin(rot) * b.r * 1.15 };
+          const backA = { x: b.x + Math.cos(rot + 2.5) * b.r, y: b.y + Math.sin(rot + 2.5) * b.r };
+          const backB = { x: b.x + Math.cos(rot - 2.5) * b.r, y: b.y + Math.sin(rot - 2.5) * b.r };
+          bunkerGfx.fillStyle(pal.base, 1);
+          bunkerGfx.fillTriangle(tip.x, tip.y, backA.x, backA.y, backB.x, backB.y);
+          bunkerGfx.lineStyle(2.5, pal.rim, 1);
+          bunkerGfx.strokeTriangle(tip.x, tip.y, backA.x, backA.y, backB.x, backB.y);
+          // rounded corners — small filled circles at each vertex so the
+          // wedge doesn't read as a sharp cardboard triangle
+          [tip, backA, backB].forEach(pt => { bunkerGfx.fillStyle(pal.base, 1); bunkerGfx.fillCircle(pt.x, pt.y, 4); });
+          bunkerGfx.fillStyle(pal.hi, 0.5);
+          bunkerGfx.fillTriangle(
+            b.x + (tip.x - b.x) * 0.4, b.y + (tip.y - b.y) * 0.4,
+            b.x + (backA.x - b.x) * 0.25, b.y + (backA.y - b.y) * 0.25,
+            b.x, b.y
+          );
+          // brand-tape stripe near the tip — real doritos almost always
+          // carry a manufacturer stripe/logo band
+          bunkerGfx.lineStyle(3, pal.hi, 0.85);
+          bunkerGfx.lineBetween(
+            b.x + (tip.x - b.x) * 0.55 + (backA.x - backB.x) * 0.12,
+            b.y + (tip.y - b.y) * 0.55 + (backA.y - backB.y) * 0.12,
+            b.x + (tip.x - b.x) * 0.55 - (backA.x - backB.x) * 0.12,
+            b.y + (tip.y - b.y) * 0.55 - (backA.y - backB.y) * 0.12
+          );
+        } else {
+          // 'can' / 'tower' — an inflatable cylinder seen from above:
+          // solid round base, a brighter offset highlight ellipse for the
+          // curved-top look, two seam rings for that air-bladder look,
+          // and a valve cap nub — small details that read as "real prop"
+          // rather than a flat colored disc.
+          bunkerGfx.fillStyle(pal.base, 1);
+          bunkerGfx.fillCircle(b.x, b.y, b.r);
+          bunkerGfx.lineStyle(2.5, pal.rim, 1);
+          bunkerGfx.strokeCircle(b.x, b.y, b.r);
+          bunkerGfx.fillStyle(pal.hi, 0.55);
+          bunkerGfx.fillEllipse(b.x - b.r * 0.28, b.y - b.r * 0.32, b.r * 1.05, b.r * 0.8);
+          bunkerGfx.lineStyle(1.5, pal.rim, 0.55);
+          bunkerGfx.strokeCircle(b.x, b.y, b.r * 0.68);
+          bunkerGfx.lineStyle(1, pal.rim, 0.35);
+          bunkerGfx.strokeCircle(b.x, b.y, b.r * 0.4);
+          bunkerGfx.fillStyle(pal.rim, 0.9);
+          bunkerGfx.fillCircle(b.x + b.r * 0.3, b.y + b.r * 0.28, b.r * 0.14);
+          bunkerGfx.fillStyle(pal.hi, 0.7);
+          bunkerGfx.fillCircle(b.x + b.r * 0.3, b.y + b.r * 0.28, b.r * 0.07);
+        }
+      });
+
+      // ---- persistent paint layer (redrawn only when marks change) ----
+      this.splats = [];
+      this.splatGfx = this.add.graphics().setDepth(3);
+
+      // ---- transient effects layer (muzzle flash, tracers, bursts —
+      // cleared and redrawn every frame since there are only ever a
+      // handful active at once) ----
+      this.effects = [];
+      this.effectsGfx = this.add.graphics().setDepth(9);
+
+      // ---- last-seen ghost marker (fog of war — what the player knows
+      // about the AI when it's not currently in sight) ----
+      this.lastSeenGfx = this.add.graphics().setDepth(4);
+      this.aiLastSeenByPlayer = null; // {x,y,t}
+
+      // ---- pickups ----
+      this.pickups = PICKUP_SPECS.map(p => ({ x: p.x, y: p.y, active: true, gfx: this.add.graphics().setDepth(5) }));
+
+      // ---- player ----
+      this.player = {
+        x: PLAYER_SPAWN.x, y: PLAYER_SPAWN.y, radius: PLAYER_R, angle: -Math.PI / 2,
+        ammo: HOPPER_MAX, alive: true, frozen: 0, fireCooldown: 0,
+        gfx: this.add.graphics().setDepth(6)
+      };
+
+      // ---- AI ----
+      this.ai = {
+        x: AI_SPAWN.x, y: AI_SPAWN.y, radius: AI_R, angle: Math.PI / 2,
+        ammo: HOPPER_MAX, alive: true, frozen: 0,
+        state: 'SPAWN', stateTimer: 0, holdDuration: 0, peekSide: 1, aimTarget: null,
+        currentBunker: null, targetPoint: null,
+        canSeePlayer: false, lastSeenX: null, lastSeenY: null, timeSinceSeenPlayer: 99999,
+        perceptionTimer: 0, suspicion: null, stalled: 0,
+        gfx: this.add.graphics().setDepth(6)
+      };
+
+      // ---- projectiles ----
+      this.balls = [];
+
+      // ---- match/round state ----
+      this.roundWins = { player: 0, ai: 0 };
+      this.phase = 'countdown'; // countdown | live | round-over | match-over
+      this.countdownText = null;
+      this.beginCountdown(900);
+
+      // ---- HUD ----
+      this.hudObjects = [];
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, 0x11161d, 1).setScrollFactor(0).setDepth(50));
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
+      this.ammoLabel = this.add.text(16, HUD_H / 2, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#38bdf8', fontStyle: 'bold'
+      }).setOrigin(0, 0.5).setDepth(52);
+      this.scoreLabel = this.add.text(W / 2, 18, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(52);
+      this.hintLabel = this.add.text(W / 2, 40, 'WASD to move · Mouse to aim · Click to shoot', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#94a3b8'
+      }).setOrigin(0.5).setDepth(52);
+      this.aiAmmoLabel = this.add.text(W - 16, HUD_H / 2, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#f97316', fontStyle: 'bold'
+      }).setOrigin(1, 0.5).setDepth(52);
+
+      // ---- big centered message text (round/match banners) ----
+      this.bannerText = this.add.text(W / 2, H / 2, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '34px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.bannerSub = this.add.text(W / 2, H / 2 + 34, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+
+      this.redrawPickups();
+      this.updateHUD();
+    }
+
+    // -----------------------------------------------------------------
+    // Countdown / round / match flow
+    // -----------------------------------------------------------------
+    beginCountdown(firstDelay) {
+      this.phase = 'countdown';
+      const steps = ['3', '2', '1', 'GO!'];
+      let i = 0;
+      const showNext = () => {
+        if (i >= steps.length) {
+          this.bannerText.setVisible(false);
+          this.bannerSub.setVisible(false);
+          this.phase = 'live';
+          return;
+        }
+        this.bannerText.setText(steps[i]).setVisible(true);
+        this.bannerSub.setVisible(false);
+        if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+          try { SFX.tone(i < 3 ? 420 + i * 60 : 720, i < 3 ? 0.05 : 0.09); } catch (e) {}
+        }
+        i++;
+        this.time.delayedCall(550, showNext);
+      };
+      this.time.delayedCall(firstDelay || 0, showNext);
+    }
+
+    resetRound() {
+      this.player.x = PLAYER_SPAWN.x; this.player.y = PLAYER_SPAWN.y;
+      this.player.angle = -Math.PI / 2; this.player.ammo = HOPPER_MAX;
+      this.player.alive = true; this.player.frozen = 0; this.player.fireCooldown = 0;
+
+      this.ai.x = AI_SPAWN.x; this.ai.y = AI_SPAWN.y; this.ai.angle = Math.PI / 2;
+      this.ai.ammo = HOPPER_MAX; this.ai.alive = true; this.ai.frozen = 0;
+      this.ai.state = 'SPAWN'; this.ai.stateTimer = 0; this.ai.currentBunker = null;
+      this.ai.targetPoint = null; this.ai.canSeePlayer = false;
+      this.ai.lastSeenX = null; this.ai.lastSeenY = null; this.ai.timeSinceSeenPlayer = 99999;
+      this.ai.suspicion = null; this.ai.stalled = 0;
+
+      this.balls.forEach(b => b.gfx.destroy());
+      this.balls = [];
+      this.aiLastSeenByPlayer = null;
+      this.pickups.forEach(p => p.active = true);
+      this.redrawPickups();
+    }
+
+    endRound(winner) {
+      if (this.phase === 'round-over' || this.phase === 'match-over') return;
+      this.phase = 'round-over';
+      this.roundWins[winner] += 1;
+      this.updateHUD();
+
+      const matchWon = this.roundWins[winner] >= ROUNDS_TO_WIN;
+      const label = winner === 'player' ? 'YOU WIN THE ROUND' : 'BOT WINS THE ROUND';
+      this.bannerText.setText(matchWon ? (winner === 'player' ? 'MATCH WON!' : 'MATCH LOST') : label).setVisible(true);
+      this.bannerSub.setText(matchWon ? 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai + (winner === 'player' ? '  ·  Click to play again' : '  ·  Click to try again') : 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai).setVisible(true);
+
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(matchWon ? (winner === 'player' ? 880 : 140) : (winner === 'player' ? 600 : 220), matchWon ? 0.22 : 0.12); } catch (e) {}
+      }
+
+      if (matchWon) {
+        this.phase = 'match-over';
+        this.matchOverClickArmed = false;
+        this.time.delayedCall(600, () => { this.matchOverClickArmed = true; });
+        this.input.once('pointerdown', () => {
+          if (!this.matchOverClickArmed || this.phase !== 'match-over') return;
+          this.roundWins = { player: 0, ai: 0 };
+          this.updateHUD();
+          this.bannerText.setVisible(false); this.bannerSub.setVisible(false);
+          this.resetRound();
+          this.beginCountdown(300);
+        }, this);
+      } else {
+        this.time.delayedCall(1400, () => {
+          this.bannerText.setVisible(false); this.bannerSub.setVisible(false);
+          this.resetRound();
+          this.beginCountdown(300);
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------
+    // Player
+    // -----------------------------------------------------------------
+    tryPlayerShot() {
+      if (this.phase !== 'live' || !this.player.alive || this.player.frozen > 0) return;
+      if (this.player.fireCooldown > 0 || this.player.ammo <= 0) return;
+      this.player.ammo -= 1;
+      this.player.fireCooldown = FIRE_COOLDOWN;
+      const tipX = this.player.x + Math.cos(this.player.angle) * (PLAYER_R + 6);
+      const tipY = this.player.y + Math.sin(this.player.angle) * (PLAYER_R + 6);
+      this.spawnBall(tipX, tipY, this.player.angle, 'player');
+      this.addEffect('flash', tipX, tipY, PLAYER_COLOR, 90);
+      this.updateHUD();
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(900, 0.03); } catch (e) {}
+      }
+      // firing gives your position away — a nearby AI "hears" it even
+      // without a direct sightline
+      if (dist(this.player.x, this.player.y, this.ai.x, this.ai.y) < 550) {
+        this.ai.suspicion = { x: this.player.x, y: this.player.y, t: 0 };
+      }
+    }
+
+    updatePlayer(dt) {
+      if (this.player.fireCooldown > 0) this.player.fireCooldown -= dt;
+      if (this.player.frozen > 0) { this.player.frozen -= dt; this.drawPlayer(); return; }
+      if (!this.player.alive || this.phase !== 'live') { this.drawPlayer(); return; }
+
+      let vx = 0, vy = 0;
+      if (this.keys.left.isDown || this.keys.leftArrow.isDown) vx = -1;
+      else if (this.keys.right.isDown || this.keys.rightArrow.isDown) vx = 1;
+      if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
+      else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
+      if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+
+      this.player.x += vx * PLAYER_SPEED;
+      this.player.y += vy * PLAYER_SPEED;
+      resolveBunkerCollision(this.player, this.bunkers);
+      clampToField(this.player);
+
+      const p = this.input.activePointer;
+      this.player.angle = Math.atan2(p.worldY - this.player.y, p.worldX - this.player.x);
+
+      // pickups
+      this.pickups.forEach(pk => {
+        if (!pk.active) return;
+        if (dist(this.player.x, this.player.y, pk.x, pk.y) < PLAYER_R + 10) {
+          pk.active = false;
+          this.player.ammo = Math.min(HOPPER_MAX, this.player.ammo + PICKUP_AMOUNT);
+          this.updateHUD();
+          this.redrawPickups();
+          if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+            try { SFX.tone(520, 0.05); } catch (e) {}
+          }
+        }
+        if (this.ai.alive && dist(this.ai.x, this.ai.y, pk.x, pk.y) < AI_R + 10) {
+          pk.active = false;
+          this.ai.ammo = Math.min(HOPPER_MAX, this.ai.ammo + PICKUP_AMOUNT);
+          this.updateHUD();
+          this.redrawPickups();
+        }
+      });
+
+      this.drawPlayer();
+    }
+
+    drawPlayer() {
+      const g = this.player.gfx;
+      g.clear();
+      if (!this.player.alive) return;
+      const alpha = this.player.frozen > 0 ? 0.6 : 1;
+      // gun
+      g.lineStyle(4, 0x0b0f14, alpha);
+      g.lineBetween(this.player.x, this.player.y,
+        this.player.x + Math.cos(this.player.angle) * (PLAYER_R + 10),
+        this.player.y + Math.sin(this.player.angle) * (PLAYER_R + 10));
+      // body
+      g.fillStyle(PLAYER_COLOR, alpha);
+      g.fillCircle(this.player.x, this.player.y, PLAYER_R);
+      g.lineStyle(2, 0xe0f2fe, alpha);
+      g.strokeCircle(this.player.x, this.player.y, PLAYER_R);
+    }
+
+    // -----------------------------------------------------------------
+    // AI — perception, cover scoring, state machine
+    // -----------------------------------------------------------------
+    updateAIPerception(dt) {
+      this.ai.perceptionTimer -= dt;
+      if (this.ai.suspicion) {
+        this.ai.suspicion.t += dt;
+        if (this.ai.suspicion.t > 1500) this.ai.suspicion = null;
+      }
+      if (this.ai.perceptionTimer > 0) return;
+      this.ai.perceptionTimer = 100;
+      if (!this.player.alive) { this.ai.canSeePlayer = false; return; }
+      const see = hasLineOfSight(this.ai.x, this.ai.y, this.player.x, this.player.y, this.bunkers);
+      this.ai.canSeePlayer = see;
+      if (see) {
+        this.ai.lastSeenX = this.player.x; this.ai.lastSeenY = this.player.y;
+        this.ai.timeSinceSeenPlayer = 0;
+      } else {
+        this.ai.timeSinceSeenPlayer += 100;
+      }
+    }
+
+    // higher is a better bunker to stand at, given the AI is at (fromX,fromY)
+    // and wants cover from the player (or the player's last known spot)
+    scoreBunker(b, refX, refY) {
+      const stand = coverStandPoint(b, refX, refY);
+      let score = 0;
+      const blocked = !hasLineOfSight(stand.x, stand.y, refX, refY, this.bunkers);
+      score += blocked ? 30 : -20;
+      const d = dist(this.ai.x, this.ai.y, stand.x, stand.y);
+      score += Phaser.Math.Clamp(40 - d / 12, 0, 20);
+      score += 15; // two peek edges — true for every bunker at this scale
+      if (b.r >= 38) score += 10; // towers are harder to flank around
+      if (nearWall(stand.x, stand.y)) score -= 15;
+      const engageDist = dist(stand.x, stand.y, refX, refY);
+      score += Phaser.Math.Clamp(10 - Math.abs(engageDist - 260) / 26, -10, 10);
+      return { bunker: b, stand, score };
+    }
+
+    bestBunker(refX, refY, exclude) {
+      let best = null;
+      for (const b of this.bunkers) {
+        if (b === exclude) continue;
+        const s = this.scoreBunker(b, refX, refY);
+        if (!best || s.score > best.score) best = s;
+      }
+      return best;
+    }
+
+    enterState(state) {
+      this.ai.state = state;
+      this.ai.stateTimer = 0;
+      if (state === 'REPOSITION') this.ai.repositionPicked = false;
+      if (state === 'FLANK') this.ai.flankPicked = false;
+    }
+
+    updateAI(dt) {
+      if (this.ai.frozen > 0) { this.ai.frozen -= dt; this.drawAI(); return; }
+      if (!this.ai.alive || this.phase !== 'live') { this.drawAI(); return; }
+
+      this.updateAIPerception(dt);
+      this.ai.stateTimer += dt;
+
+      const refX = this.ai.lastSeenX != null ? this.ai.lastSeenX : (this.ai.suspicion ? this.ai.suspicion.x : this.player.x);
+      const refY = this.ai.lastSeenY != null ? this.ai.lastSeenY : (this.ai.suspicion ? this.ai.suspicion.y : this.player.y);
+
+      switch (this.ai.state) {
+        case 'SPAWN': {
+          const best = this.bestBunker(this.player.x, this.player.y, null);
+          this.ai.currentBunker = best.bunker;
+          this.ai.targetPoint = best.stand;
+          this.enterState('SEEK_COVER');
+          break;
+        }
+        case 'SEEK_COVER': {
+          this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
+          if (this.ai.canSeePlayer && Math.random() < 0.02) { this.enterState('PEEK'); break; }
+          if (dist(this.ai.x, this.ai.y, this.ai.targetPoint.x, this.ai.targetPoint.y) < 10) {
+            this.ai.holdDuration = Phaser.Math.Between(1000, 2200);
+            this.enterState('HOLD_COVER');
+          }
+          break;
+        }
+        case 'HOLD_COVER': {
+          if (this.ai.canSeePlayer) { this.enterState('PEEK'); break; }
+          // only flank hunting for a "lost" player — never seeing them at
+          // all yet (e.g. right at round start) isn't the same as losing
+          // track of them, and shouldn't send the AI marching straight at
+          // your spawn with zero actual information
+          if (this.ai.lastSeenX != null && this.ai.timeSinceSeenPlayer > 2500) { this.ai.stalled = 0; this.enterState('FLANK'); break; }
+          if (this.ai.stateTimer > this.ai.holdDuration) {
+            const pts = peekPoints(this.ai.currentBunker, this.player.x, this.player.y);
+            this.ai.peekSide = Math.random() < 0.5 ? 0 : 1;
+            this.ai.targetPoint = pts[this.ai.peekSide];
+            this.enterState('PEEK');
+          }
+          break;
+        }
+        case 'PEEK': {
+          this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
+          if (this.ai.canSeePlayer) {
+            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.enterState('SHOOT');
+            break;
+          }
+          if (this.ai.stateTimer > 1400) {
+            this.ai.stalled += 1;
+            this.enterState('HOLD_COVER');
+          }
+          break;
+        }
+        case 'SHOOT': {
+          // face the player while winding up so the aim reads clearly
+          this.ai.angle = Math.atan2(this.player.y - this.ai.y, this.player.x - this.ai.x);
+          if (!this.ai.canSeePlayer) { this.enterState('HOLD_COVER'); break; }
+          if (this.ai.stateTimer > this.ai.reactionDelay) {
+            if (this.ai.ammo > 0) this.fireAIShot();
+            this.ai.repositionDelay = Phaser.Math.Between(250, 500);
+            this.enterState('REPOSITION');
+          }
+          break;
+        }
+        case 'REPOSITION': {
+          if (this.ai.stateTimer < this.ai.repositionDelay) break;
+          if (!this.ai.repositionPicked) {
+            this.pickRepositionTarget(refX, refY);
+            this.ai.repositionPicked = true;
+          }
+          this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
+          if (this.ai.canSeePlayer && Math.random() < 0.03) {
+            this.ai.repositionPicked = false;
+            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.enterState('SHOOT');
+            break;
+          }
+          if (dist(this.ai.x, this.ai.y, this.ai.targetPoint.x, this.ai.targetPoint.y) < 10) {
+            this.ai.repositionPicked = false;
+            this.ai.holdDuration = Phaser.Math.Between(1000, 2200);
+            this.enterState('HOLD_COVER');
+          }
+          break;
+        }
+        case 'FLANK': {
+          if (!this.ai.targetPoint || this.ai.flankPicked !== true) {
+            const best = this.bestBunker(refX, refY, this.ai.currentBunker);
+            this.ai.currentBunker = best.bunker;
+            this.ai.targetPoint = best.stand;
+            this.ai.flankPicked = true;
+          }
+          this.moveToward(this.ai, this.ai.targetPoint, AI_SPEED);
+          if (this.ai.canSeePlayer) {
+            this.ai.flankPicked = false;
+            this.ai.reactionDelay = Phaser.Math.Between(300, 500);
+            this.enterState('SHOOT');
+            break;
+          }
+          if (dist(this.ai.x, this.ai.y, this.ai.targetPoint.x, this.ai.targetPoint.y) < 10) {
+            this.ai.flankPicked = false;
+            this.ai.holdDuration = Phaser.Math.Between(700, 1400);
+            this.enterState('HOLD_COVER');
+          }
+          break;
+        }
+      }
+
+      // The gun/facing only got updated as a byproduct of moveToward()
+      // pointing wherever the AI was walking. Once it arrived and stopped
+      // (HOLD_COVER, or PEEK after reaching its peek spot but before
+      // seeing anyone), the barrel just froze pointing at empty space —
+      // even as new information (a shot, a fresh last-seen spot) came in.
+      // Keep it tracking whatever the AI currently knows/suspects so a
+      // change in that information turns the gun right away instead of
+      // waiting for the next time it happens to move.
+      if (this.ai.state === 'HOLD_COVER' || this.ai.state === 'PEEK') {
+        const atRest = !this.ai.targetPoint || dist(this.ai.x, this.ai.y, this.ai.targetPoint.x, this.ai.targetPoint.y) < 8;
+        if (atRest) this.ai.angle = Math.atan2(refY - this.ai.y, refX - this.ai.x);
+      }
+
+      this.drawAI();
+    }
+
+    pickRepositionTarget(refX, refY) {
+      const roll = Math.random();
+      if (roll < 0.4 && this.ai.currentBunker) {
+        const pts = peekPoints(this.ai.currentBunker, refX, refY);
+        this.ai.targetPoint = pts[this.ai.peekSide === 0 ? 1 : 0];
+        this.ai.peekSide = this.ai.peekSide === 0 ? 1 : 0;
+      } else if (roll < 0.7) {
+        const best = this.bestBunker(refX, refY, this.ai.currentBunker);
+        this.ai.currentBunker = best.bunker; this.ai.targetPoint = best.stand;
+      } else if (roll < 0.9) {
+        let best = null;
+        for (const b of this.bunkers) {
+          if (b === this.ai.currentBunker) continue;
+          const d = dist(b.x, b.y, refX, refY);
+          if (!best || d < best.d) best = { b, d };
+        }
+        this.ai.currentBunker = best.b;
+        this.ai.targetPoint = coverStandPoint(best.b, refX, refY);
+      } else {
+        let best = null;
+        for (const b of this.bunkers) {
+          const d = dist(b.x, b.y, refX, refY);
+          if (!best || d > best.d) best = { b, d };
+        }
+        this.ai.currentBunker = best.b;
+        this.ai.targetPoint = coverStandPoint(best.b, refX, refY);
+      }
+    }
+
+    moveToward(actor, target, speed) {
+      if (!target) return;
+      const dx = target.x - actor.x, dy = target.y - actor.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 3) {
+        actor.x += (dx / d) * speed;
+        actor.y += (dy / d) * speed;
+        actor.angle = Math.atan2(dy, dx);
+      }
+      resolveBunkerCollision(actor, this.bunkers);
+      clampToField(actor);
+    }
+
+    fireAIShot() {
+      this.ai.ammo -= 1;
+      // bounded aim error so misses look human, not omniscient
+      const trueAngle = Math.atan2(this.player.y - this.ai.y, this.player.x - this.ai.x);
+      const error = (Math.random() - 0.5) * 0.09;
+      const angle = trueAngle + error;
+      const tipX = this.ai.x + Math.cos(angle) * (AI_R + 6);
+      const tipY = this.ai.y + Math.sin(angle) * (AI_R + 6);
+      this.spawnBall(tipX, tipY, angle, 'ai');
+      this.addEffect('flash', tipX, tipY, AI_COLOR, 90);
+      this.updateHUD();
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(760, 0.03); } catch (e) {}
+      }
+    }
+
+    drawAI() {
+      const g = this.ai.gfx;
+      g.clear();
+      if (!this.ai.alive) return;
+      // fog of war — only actually drawn while the player can currently
+      // see it; otherwise only the fading last-seen ghost shows
+      if (!this.playerHasLOS) return;
+      const alpha = this.ai.frozen > 0 ? 0.6 : 1;
+      g.lineStyle(4, 0x0b0f14, alpha);
+      g.lineBetween(this.ai.x, this.ai.y,
+        this.ai.x + Math.cos(this.ai.angle) * (AI_R + 10),
+        this.ai.y + Math.sin(this.ai.angle) * (AI_R + 10));
+      g.fillStyle(AI_COLOR, alpha);
+      g.fillCircle(this.ai.x, this.ai.y, AI_R);
+      g.lineStyle(2, 0xfed7aa, alpha);
+      g.strokeCircle(this.ai.x, this.ai.y, AI_R);
+    }
+
+    // -----------------------------------------------------------------
+    // Projectiles, splats, effects
+    // -----------------------------------------------------------------
+    spawnBall(x, y, angle, owner) {
+      this.balls.push({
+        x, y, prevX: x, prevY: y,
+        vx: Math.cos(angle) * BALL_SPEED, vy: Math.sin(angle) * BALL_SPEED,
+        owner, alive: true,
+        gfx: this.add.graphics().setDepth(8)
+      });
+    }
+
+    updateBalls(dt) {
+      const step = dt / 16.667;
+      for (let i = this.balls.length - 1; i >= 0; i--) {
+        const b = this.balls[i];
+        b.prevX = b.x; b.prevY = b.y;
+        // a few substeps so a fast-moving ball can't tunnel through a
+        // narrow bunker between two frames
+        const subSteps = 3;
+        let hit = false;
+        for (let s = 0; s < subSteps && !hit; s++) {
+          b.x += (b.vx * step) / subSteps;
+          b.y += (b.vy * step) / subSteps;
+
+          if (b.x < WALL || b.x > W - WALL || b.y < HUD_H + WALL || b.y > H - WALL) {
+            this.addSplat(b.x, b.y, b.owner, false);
+            hit = true; break;
+          }
+          for (const bk of this.bunkers) {
+            if (pointInBunker(b.x, b.y, bk)) {
+              this.addSplat(b.x, b.y, b.owner, false);
+              hit = true; break;
+            }
+          }
+          if (hit) break;
+
+          const target = b.owner === 'player' ? this.ai : this.player;
+          if (target.alive && target.frozen <= 0 && dist(b.x, b.y, target.x, target.y) < target.radius + BALL_R) {
+            this.resolveHit(target, b.owner);
+            hit = true; break;
+          }
+        }
+        if (hit) { b.gfx.destroy(); this.balls.splice(i, 1); continue; }
+        this.drawBall(b);
+      }
+    }
+
+    drawBall(b) {
+      const g = b.gfx;
+      g.clear();
+      const color = b.owner === 'player' ? PLAYER_COLOR : AI_COLOR;
+      g.lineStyle(2, color, 0.55);
+      g.lineBetween(b.prevX, b.prevY, b.x, b.y);
+      g.fillStyle(color, 1);
+      g.fillCircle(b.x, b.y, BALL_R);
+    }
+
+    resolveHit(target, shooterOwner) {
+      const shooterColor = shooterOwner === 'player' ? PLAYER_COLOR : AI_COLOR;
+      this.addSplat(target.x, target.y, shooterOwner, true);
+      target.frozen = HIT_STUN_MS;
+      this.addEffect('burst', target.x, target.y, shooterColor, 260);
+      if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+        try { SFX.tone(180, 0.09); } catch (e) {}
+      }
+      this.time.delayedCall(HIT_STUN_MS, () => {
+        target.alive = false;
+        if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+          try { SFX.tone(130, 0.12); } catch (e) {}
+        }
+        this.endRound(shooterOwner === 'player' ? 'player' : 'ai');
+      });
+    }
+
+    addSplat(x, y, owner, isHit) {
+      const color = owner === 'player' ? PLAYER_COLOR : AI_COLOR;
+      const count = isHit ? Phaser.Math.Between(3, 7) : Phaser.Math.Between(1, 3);
+      this.splats.push({ x, y, r: isHit ? Phaser.Math.Between(7, 11) : Phaser.Math.Between(3, 5), rot: Math.random() * Math.PI, color });
+      for (let i = 0; i < count; i++) {
+        this.splats.push({
+          x: x + (Math.random() - 0.5) * 22, y: y + (Math.random() - 0.5) * 22,
+          r: Phaser.Math.Between(1, 3), rot: Math.random() * Math.PI, color
+        });
+      }
+      if (isHit) {
+        for (let i = 0; i < Phaser.Math.Between(1, 2); i++) {
+          this.splats.push({
+            x: x + (Math.random() - 0.5) * 34, y: y + (Math.random() - 0.5) * 34,
+            r: Phaser.Math.Between(4, 6), rot: Math.random() * Math.PI, color
+          });
+        }
+      }
+      while (this.splats.length > 150) this.splats.shift();
+      this.redrawSplats();
+    }
+
+    redrawSplats() {
+      const g = this.splatGfx;
+      g.clear();
+      for (const s of this.splats) {
+        g.fillStyle(s.color, 0.8);
+        g.fillEllipse(s.x, s.y, s.r * 1.6, s.r, s.rot);
+      }
+    }
+
+    redrawPickups() {
+      this.pickups.forEach(p => {
+        p.gfx.clear();
+        if (!p.active) return;
+        p.gfx.fillStyle(0x0b0f14, 0.5);
+        p.gfx.fillCircle(p.x, p.y, 13);
+        p.gfx.fillStyle(0xfbbf24, 1);
+        p.gfx.fillRoundedRect(p.x - 6, p.y - 8, 12, 16, 3);
+        p.gfx.lineStyle(1.5, 0x0b0f14, 0.9);
+        p.gfx.strokeRoundedRect(p.x - 6, p.y - 8, 12, 16, 3);
+      });
+    }
+
+    addEffect(type, x, y, color, duration) {
+      this.effects.push({ type, x, y, color, t: 0, duration });
+    }
+
+    updateEffects(dt) {
+      const g = this.effectsGfx;
+      g.clear();
+      for (let i = this.effects.length - 1; i >= 0; i--) {
+        const e = this.effects[i];
+        e.t += dt;
+        const p = Phaser.Math.Clamp(e.t / e.duration, 0, 1);
+        if (p >= 1) { this.effects.splice(i, 1); continue; }
+        if (e.type === 'flash') {
+          g.fillStyle(e.color, (1 - p) * 0.9);
+          g.fillCircle(e.x, e.y, 10 * (1 - p * 0.5));
+        } else if (e.type === 'burst') {
+          g.fillStyle(e.color, (1 - p) * 0.85);
+          g.fillCircle(e.x, e.y, 6 + p * 16);
+          g.lineStyle(2, e.color, (1 - p) * 0.6);
+          g.strokeCircle(e.x, e.y, 6 + p * 22);
+        }
+      }
+    }
+
+    // "last seen" fog-of-war ghost marker — the player's only information
+    // about the AI once it steps out of sight
+    updateFogOfWar(dt) {
+      this.playerHasLOS = this.ai.alive && hasLineOfSight(this.player.x, this.player.y, this.ai.x, this.ai.y, this.bunkers);
+      if (this.playerHasLOS) {
+        this.aiLastSeenByPlayer = { x: this.ai.x, y: this.ai.y, t: 0 };
+      } else if (this.aiLastSeenByPlayer) {
+        this.aiLastSeenByPlayer.t += dt;
+        if (this.aiLastSeenByPlayer.t > 1600) this.aiLastSeenByPlayer = null;
+      }
+
+      const g = this.lastSeenGfx;
+      g.clear();
+      if (this.aiLastSeenByPlayer && !this.playerHasLOS) {
+        const p = Phaser.Math.Clamp(this.aiLastSeenByPlayer.t / 1600, 0, 1);
+        g.lineStyle(2, AI_COLOR, (1 - p) * 0.8);
+        g.strokeCircle(this.aiLastSeenByPlayer.x, this.aiLastSeenByPlayer.y, AI_R + 3 + p * 6);
+      }
+    }
+
+    updateHUD() {
+      this.ammoLabel.setText('AMMO ' + Math.max(0, this.player.ammo) + '/' + HOPPER_MAX);
+      this.aiAmmoLabel.setText('BOT ' + Math.max(0, this.ai.ammo) + '/' + HOPPER_MAX);
+      this.scoreLabel.setText('YOU ' + this.roundWins.player + '  —  ' + this.roundWins.ai + ' BOT');
+    }
+
+    update(time, dt) {
+      this.updatePlayer(dt);
+      this.updateAI(dt);
+      this.updateBalls(dt);
+      this.updateFogOfWar(dt);
+      this.updateEffects(dt);
+      // re-draw the AI now that fog-of-war for THIS frame is known (drawAI
+      // above ran before updateFogOfWar the first time through, so it used
+      // last frame's visibility — one frame of lag is invisible at 60fps,
+      // but redrawing here keeps it exact)
+      this.drawAI();
+    }
+  }
+
+  const config = {
+    type: Phaser.AUTO,
+    width: W,
+    height: H,
+    parent: 'game-root',
+    backgroundColor: '#0b0f14',
+    scene: [ArenaScene]
+  };
+
+  new Phaser.Game(config);
+})();
+</script>
+</body>
+</html>
