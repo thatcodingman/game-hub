@@ -564,15 +564,68 @@
     // -----------------------------------------------------------------
     buildMenu() {
       const cx = W / 2, cy = HUD_H + FIELD_H / 2;
+      const titleY = cy - 168;
       this.menuObjects = [];
 
       const overlay = this.add.rectangle(W / 2, H / 2, W, H, 0x05070a, 0.93).setDepth(65);
       this.menuObjects.push(overlay);
 
-      const title = this.add.text(cx, cy - 168, 'PAINTBALL ARCADE', {
+      // a faint glow wash behind the title instead of a flat dropped-in
+      // panel — three soft, oversized circles in the game's own player /
+      // gold / AI colors, low enough alpha to read as light, not shapes
+      const glow = this.add.graphics().setDepth(65).setPosition(cx, titleY);
+      [[150, PLAYER_COLOR, 0.05], [110, 0xfbbf24, 0.06], [70, AI_COLOR, 0.05]].forEach(([r, color, a]) => {
+        glow.fillStyle(color, a);
+        glow.fillCircle(0, 0, r);
+      });
+      this.menuObjects.push(glow);
+
+      // a slow-rotating crosshair ring behind the title — a quiet nod to
+      // the game's whole "aim before you're seen" hook rather than a
+      // stock arcade flourish. Alpha stays low so the title text on top
+      // stays the thing you actually read.
+      const crosshair = this.add.graphics().setDepth(65).setPosition(cx, titleY);
+      crosshair.lineStyle(1.5, 0x475569, 0.4);
+      crosshair.strokeCircle(0, 0, 74);
+      crosshair.strokeCircle(0, 0, 96);
+      [0, 90, 180, 270].forEach(deg => {
+        const rad = Phaser.Math.DegToRad(deg);
+        crosshair.lineBetween(Math.cos(rad) * 96, Math.sin(rad) * 96, Math.cos(rad) * 118, Math.sin(rad) * 118);
+      });
+      this.menuObjects.push(crosshair);
+      this.tweens.add({ targets: crosshair, angle: 360, duration: 42000, repeat: -1, ease: 'Linear' });
+
+      // two paint-blob flourishes flanking the title, breathing gently and
+      // out of phase with each other so the pair never looks mechanically
+      // synced — a small unpredictable detail rather than a static badge
+      const blobL = this.add.graphics().setDepth(65).setPosition(cx - 255, titleY);
+      blobL.fillStyle(PLAYER_COLOR, 0.55);
+      blobL.fillEllipse(0, 0, 20, 15);
+      this.menuObjects.push(blobL);
+      this.tweens.add({ targets: blobL, scaleX: 1.3, scaleY: 0.8, alpha: 0.3, duration: 1900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+      const blobR = this.add.graphics().setDepth(65).setPosition(cx + 255, titleY);
+      blobR.fillStyle(AI_COLOR, 0.55);
+      blobR.fillEllipse(0, 0, 20, 15);
+      this.menuObjects.push(blobR);
+      this.tweens.add({ targets: blobR, scaleX: 0.8, scaleY: 1.3, alpha: 0.3, duration: 2300, delay: 260, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+      const title = this.add.text(cx, titleY, 'PAINTBALL ARCADE', {
         fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(title);
+
+      // two-tone accent bar under the title, cyan into orange — the same
+      // pairing as the HUD pips, so the title itself reads as a "vs"
+      // before you've read a word of the rules. Sweeps in once on open.
+      const underline = this.add.graphics().setDepth(66).setPosition(cx, titleY + 26);
+      underline.fillStyle(PLAYER_COLOR, 0.9);
+      underline.fillRect(-64, 0, 64, 3);
+      underline.fillStyle(AI_COLOR, 0.9);
+      underline.fillRect(0, 0, 64, 3);
+      underline.setScale(0, 1);
+      this.menuObjects.push(underline);
+      this.tweens.add({ targets: underline, scaleX: 1, duration: 520, delay: 120, ease: 'Cubic.easeOut' });
 
       const tagline = this.add.text(cx, cy - 128, 'One hit ends it. Every shot gives you away.', {
         fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
@@ -616,6 +669,14 @@
           backgroundColor: '#11161d', padding: { left: 14, right: 14, top: 6, bottom: 6 }
         }).setOrigin(0.5).setDepth(66).setInteractive({ useHandCursor: true });
         btn.on('pointerdown', () => this.setDifficulty(key));
+        btn.on('pointerover', () => {
+          if (this.difficulty !== key) btn.setStyle({ backgroundColor: '#1b2330' });
+          this.tweens.add({ targets: btn, scale: 1.08, duration: 120, ease: 'Quad.easeOut' });
+        });
+        btn.on('pointerout', () => {
+          this.refreshDifficultyButtons();
+          this.tweens.add({ targets: btn, scale: 1, duration: 120, ease: 'Quad.easeOut' });
+        });
         this.diffButtons[key] = btn;
         this.menuObjects.push(btn);
       });
@@ -625,7 +686,10 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#fbbf24', fontStyle: 'bold', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(prompt);
-      this.tweens.add({ targets: prompt, alpha: { from: 1, to: 0.35 }, duration: 700, yoyo: true, repeat: -1 });
+      this.tweens.add({
+        targets: prompt, alpha: { from: 1, to: 0.4 }, scale: { from: 1, to: 1.06 },
+        duration: 750, yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
+      });
     }
 
     // Map picker — a small schematic of each layout's bunker rhythm (grey
@@ -639,7 +703,10 @@
       this.mapButtons = {};
       choices.forEach((name, i) => {
         const bx = cx + (i - 1) * gap;
-        const gfx = this.add.graphics().setDepth(66);
+        // gfx is positioned at the box's own center and drawn relative to
+        // (0,0) from here on, so a hover scale tween pivots in place
+        // instead of drifting toward the canvas origin
+        const gfx = this.add.graphics().setDepth(66).setPosition(bx, rowY);
         this.menuObjects.push(gfx);
 
         const label = this.add.text(bx, rowY + boxH / 2 + 15, name === 'random' ? 'RANDOM' : name.toUpperCase(), {
@@ -649,26 +716,38 @@
 
         const hitZone = this.add.rectangle(bx, rowY, boxW, boxH + 26, 0xffffff, 0.001)
           .setDepth(67).setInteractive({ useHandCursor: true });
-        hitZone.on('pointerdown', () => this.setSelectedMap(name));
         this.menuObjects.push(hitZone);
 
-        this.mapButtons[name] = { gfx, label, bx, rowY, boxW, boxH };
+        const entry = { gfx, label, hitZone, boxW, boxH, hovered: false };
+        this.mapButtons[name] = entry;
+
+        hitZone.on('pointerdown', () => this.setSelectedMap(name));
+        hitZone.on('pointerover', () => {
+          entry.hovered = true;
+          this.refreshMapButtons();
+          this.tweens.add({ targets: [gfx, label], scale: 1.07, duration: 140, ease: 'Quad.easeOut' });
+        });
+        hitZone.on('pointerout', () => {
+          entry.hovered = false;
+          this.refreshMapButtons();
+          this.tweens.add({ targets: [gfx, label], scale: 1, duration: 140, ease: 'Quad.easeOut' });
+        });
       });
       this.refreshMapButtons();
     }
 
-    drawMapThumbnail(gfx, bx, rowY, boxW, boxH, name, selected) {
+    drawMapThumbnail(gfx, boxW, boxH, name, selected, hovered) {
       gfx.clear();
-      const borderColor = selected ? 0xfbbf24 : 0x2a3140;
-      gfx.fillStyle(0x11161d, 1);
-      gfx.fillRoundedRect(bx - boxW / 2, rowY - boxH / 2, boxW, boxH, 8);
+      const borderColor = selected ? 0xfbbf24 : (hovered ? 0x64748b : 0x2a3140);
+      gfx.fillStyle(hovered && !selected ? 0x161d29 : 0x11161d, 1);
+      gfx.fillRoundedRect(-boxW / 2, -boxH / 2, boxW, boxH, 8);
 
       const layout = LAYOUTS.find(l => l.name === name);
       if (layout) {
         const pad = 7;
         const sx = (boxW - pad * 2) / W, sy = (boxH - pad * 2) / FIELD_H;
-        const toX = wx => bx - boxW / 2 + pad + wx * sx;
-        const toY = wy => rowY - boxH / 2 + pad + (wy - HUD_H) * sy;
+        const toX = wx => -boxW / 2 + pad + wx * sx;
+        const toY = wy => -boxH / 2 + pad + (wy - HUD_H) * sy;
         layout.bunkers.forEach(b => {
           gfx.fillStyle(0x64748b, 1);
           gfx.fillCircle(toX(b.x), toY(b.y), Math.max(1.5, b.r * sx * 0.85));
@@ -680,14 +759,13 @@
       } else {
         // "random" — a die face instead of a fixed layout
         gfx.fillStyle(0x64748b, 1);
-        const pipR = 3.4, ox = bx, oy = rowY;
         [[-14, -12], [14, -12], [-14, 12], [14, 12], [0, 0]].forEach(([dx, dy]) => {
-          gfx.fillCircle(ox + dx, oy + dy, pipR);
+          gfx.fillCircle(dx, dy, 3.4);
         });
       }
 
       gfx.lineStyle(selected ? 3 : 1.5, borderColor, 1);
-      gfx.strokeRoundedRect(bx - boxW / 2, rowY - boxH / 2, boxW, boxH, 8);
+      gfx.strokeRoundedRect(-boxW / 2, -boxH / 2, boxW, boxH, 8);
     }
 
     setSelectedMap(name) {
@@ -699,8 +777,8 @@
       if (!this.mapButtons) return;
       Object.entries(this.mapButtons).forEach(([name, btn]) => {
         const selected = name === this.selectedMap;
-        this.drawMapThumbnail(btn.gfx, btn.bx, btn.rowY, btn.boxW, btn.boxH, name, selected);
-        btn.label.setColor(selected ? '#fbbf24' : '#94a3b8');
+        this.drawMapThumbnail(btn.gfx, btn.boxW, btn.boxH, name, selected, btn.hovered);
+        btn.label.setColor(selected ? '#fbbf24' : (btn.hovered ? '#cbd5e1' : '#94a3b8'));
       });
     }
 
