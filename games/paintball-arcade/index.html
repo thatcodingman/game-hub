@@ -280,26 +280,36 @@
     let liveActive = false;
     let tickAcc = 0, pulseAcc = 0, tension = 0;
 
+    // Everything below is a nice-to-have layered on top of the game, never
+    // load-bearing — so ensureCtx (and every exported entry point, wrapped
+    // at the bottom via `safe()`) is written to fail silently on any
+    // unsupported/blocked/limited browser rather than ever throwing back
+    // into the game's own logic and breaking gameplay or the existing SFX.
     function ensureCtx() {
       if (ctx) return ctx;
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      ctx = new AC();
-      master = ctx.createGain();
-      master.gain.value = enabled ? 0.5 : 0;
-      master.connect(ctx.destination);
-      // one second of white noise, reused (filtered differently each time)
-      // for every tick/burst sound below — no sample assets needed
-      const len = Math.floor(ctx.sampleRate * 1);
-      noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
-      const data = noiseBuffer.getChannelData(0);
-      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-      return ctx;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        const c = new AC();
+        const m = c.createGain();
+        m.gain.value = enabled ? 0.5 : 0;
+        m.connect(c.destination);
+        // one second of white noise, reused (filtered differently each
+        // time) for every tick/burst sound below — no sample assets needed
+        const len = Math.floor(c.sampleRate * 1);
+        const buf = c.createBuffer(1, len, c.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+        ctx = c; master = m; noiseBuffer = buf;
+        return ctx;
+      } catch (e) {
+        return null;
+      }
     }
 
     function unlock() {
       const c = ensureCtx();
-      if (c && c.state === 'suspended') c.resume().catch(() => {});
+      if (c && c.state !== 'running') c.resume().catch(() => {});
     }
 
     function isEnabled() { return enabled; }
@@ -458,11 +468,22 @@
       }
     }
 
+    // every entry point the game code actually calls is wrapped here so a
+    // failure anywhere in the audio graph (unsupported API, a browser's
+    // context limit, anything) can never propagate out and interrupt the
+    // game's own state machine (round/match transitions, input handling)
+    function safe(fn) {
+      return function () {
+        try { return fn.apply(null, arguments); } catch (e) { return undefined; }
+      };
+    }
+
     return {
-      unlock, isEnabled, setEnabled,
-      startMenuAmbience, stopMenuAmbience,
-      startLiveLoop, stopLiveLoop, updateTension, matchPointDrone,
-      stinger
+      unlock: safe(unlock), isEnabled: safe(isEnabled), setEnabled: safe(setEnabled),
+      startMenuAmbience: safe(startMenuAmbience), stopMenuAmbience: safe(stopMenuAmbience),
+      startLiveLoop: safe(startLiveLoop), stopLiveLoop: safe(stopLiveLoop),
+      updateTension: safe(updateTension), matchPointDrone: safe(matchPointDrone),
+      stinger: safe(stinger)
     };
   })();
   window.__music = Music; // exposed for debugging/verification only
@@ -476,9 +497,17 @@
       });
       this.pointer = this.input.activePointer;
       this.input.on('pointerdown', (pointer, currentlyOver) => {
-        // browsers won't play audio until a user gesture — this is the
-        // earliest, most reliable one (fires on any click, anywhere)
+        // browsers won't play audio (or, on some mobile browsers, ever
+        // properly unlock an AudioContext created before a gesture) until
+        // a real user gesture — this is the earliest, most reliable one
+        // (fires on any click, anywhere), so both the unlock AND the very
+        // first creation of the menu ambience happen right here rather
+        // than at page load
         Music.unlock();
+        if (!this.musicMenuStarted && this.phase === 'menu') {
+          this.musicMenuStarted = true;
+          Music.startMenuAmbience();
+        }
         // if the click landed on an interactive object (a difficulty
         // button), let that object's own handler deal with it instead of
         // also starting the match / firing a shot
@@ -619,6 +648,7 @@
       this.stats = { shotsFired: 0, hits: 0 };
       this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
       this.matchPointActive = false; // true only during that same slow-mo window — feeds the music's tension
+      this.musicMenuStarted = false; // gates the one-time, gesture-triggered start of the menu ambience
 
       // ---- HUD ----
       this.hudObjects = [];
@@ -684,7 +714,6 @@
       this.redrawPickups();
       this.updateHUD();
       this.buildMenu();
-      Music.startMenuAmbience();
     }
 
     refreshMuteLabel() {
@@ -2052,6 +2081,19 @@
   } else {
     boot();
   }
+
+  // Belt-and-suspenders audio unlock: Phaser's own canvas pointerdown
+  // handler (inside ArenaScene) already calls Music.unlock() on the first
+  // click, but some browsers only count specific native gesture types as
+  // "trusted" for resuming an AudioContext. Listening at the document
+  // level for a broader set of gesture types costs nothing (Music.unlock
+  // is a cheap no-op once the context is already running) and makes sure
+  // one of them lands.
+  ['pointerdown', 'touchend', 'keydown'].forEach(function (evt) {
+    document.addEventListener(evt, function () {
+      if (window.__music) window.__music.unlock();
+    }, { passive: true });
+  });
 })();
 </script>
 </body>
