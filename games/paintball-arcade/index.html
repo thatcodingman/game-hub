@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Paintball Arcade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   html, body { margin: 0; padding: 0; background: #0b0f14; overflow: hidden; }
   #game-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -57,6 +60,11 @@
   const PLAYER_COLOR = 0x38bdf8;   // player's paint — cyan
   const AI_COLOR = 0xf97316;       // AI's paint — orange
 
+  // Condensed technical face for the start menu — reads like a tactical
+  // HUD legend instead of a generic system font. Falls back cleanly if
+  // the webfont hasn't loaded (see the boot gate at the bottom of the file).
+  const MENU_FONT = '"Chakra Petch", system-ui, sans-serif';
+
   // AI difficulty — per the spec's reaction-time bands. Aim error also
   // tightens on Hard so a fast reaction isn't undercut by sloppy aim,
   // and loosens further on Easy than the base spec called for so the
@@ -101,17 +109,39 @@
     { x: 380, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 }, { x: 530, y: 110, r: 27, shape: 'can' }, { x: 680, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 },
     // row B
     { x: 170, y: 205, r: 27, shape: 'can' }, { x: 365, y: 205, r: 38, shape: 'tower' }, { x: 555, y: 205, r: 38, shape: 'tower' }, { x: 750, y: 205, r: 27, shape: 'can' },
-    // row C — center line
-    { x: 370, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 520, y: 300, r: 27, shape: 'can' }, { x: 670, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 },
+    // row C — center line. Sits at x=480, dead on the player/AI spawn
+    // axis (both spawns are x=480) — every layout needs a bunker here or
+    // the round starts with a free bee-line shot the instant GO hits.
+    { x: 370, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 300, r: 27, shape: 'can' }, { x: 670, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 },
     // row D
     { x: 170, y: 395, r: 27, shape: 'can' }, { x: 365, y: 395, r: 38, shape: 'tower' }, { x: 555, y: 395, r: 38, shape: 'tower' }, { x: 750, y: 395, r: 27, shape: 'can' },
     // row E
     { x: 380, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 530, y: 490, r: 27, shape: 'can' }, { x: 680, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
   ];
 
+  // ---- Third arena layout — big center towers stack up the middle of
+  // every row instead of the other two layouts' open lattice, funneling
+  // fights out to the side lanes. A different tactical read (flank wide
+  // or die trying) rather than another shuffled version of the same
+  // crossing-lanes shape. ----
+  const BUNKER_SPECS_BOTTLENECK = [
+    // row A
+    { x: 300, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 }, { x: 480, y: 110, r: 27, shape: 'can' }, { x: 660, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 },
+    // row B
+    { x: 160, y: 205, r: 27, shape: 'can' }, { x: 400, y: 205, r: 38, shape: 'tower' }, { x: 560, y: 205, r: 38, shape: 'tower' }, { x: 800, y: 205, r: 27, shape: 'can' },
+    // row C — center line, a big tower instead of a can for a wider,
+    // more emphatic center block than the other two layouts
+    { x: 300, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 300, r: 38, shape: 'tower' }, { x: 660, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 },
+    // row D
+    { x: 160, y: 395, r: 27, shape: 'can' }, { x: 400, y: 395, r: 38, shape: 'tower' }, { x: 560, y: 395, r: 38, shape: 'tower' }, { x: 800, y: 395, r: 27, shape: 'can' },
+    // row E
+    { x: 300, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 490, r: 27, shape: 'can' }, { x: 660, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
+  ];
+
   const LAYOUTS = [
     { name: 'Crossroads', bunkers: BUNKER_SPECS },
-    { name: 'Crossfire', bunkers: BUNKER_SPECS_ALT }
+    { name: 'Crossfire', bunkers: BUNKER_SPECS_ALT },
+    { name: 'Bottleneck', bunkers: BUNKER_SPECS_BOTTLENECK }
   ];
 
   const PICKUP_SPECS = [
@@ -336,6 +366,16 @@
       this.lastSeenGfx = this.add.graphics().setDepth(4);
       this.aiLastSeenByPlayer = null; // {x,y,t}
 
+      // ---- spectator reveal: once you win the match, the fog of war
+      // that hid the bot all game lifts and its whole route traces
+      // itself in — a debrief, not just a stock replay overlay ----
+      this.aiTrail = [];
+      this.aiTrailTimer = 0;
+      this.aiTrailGfx = this.add.graphics().setDepth(10).setVisible(false);
+      this.aiTrailLabel = this.add.text(W / 2, HUD_H + 18, 'FOG LIFTED — BOT ROUTE REVEALED', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#94a3b8', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(57).setAlpha(0).setVisible(false);
+
       // ---- pickups ----
       this.pickups = PICKUP_SPECS.map(p => ({ x: p.x, y: p.y, active: true, gfx: this.add.graphics().setDepth(5) }));
 
@@ -423,6 +463,13 @@
       const layout = forced || Phaser.Utils.Array.GetRandom(LAYOUTS);
       this.currentLayoutName = layout.name;
       this.bunkers = layout.bunkers.map(spec => Object.assign({}, spec));
+
+      // fresh match, fresh route — the trail spans the whole match (the
+      // layout holds for all 5 rounds too), not just the final round
+      this.aiTrail = [];
+      this.aiTrailTimer = 0;
+      if (this.aiTrailGfx) { this.aiTrailGfx.clear().setVisible(false); }
+      if (this.aiTrailLabel) { this.aiTrailLabel.setVisible(false).setAlpha(0); }
 
       if (!this.bunkerGfx) this.bunkerGfx = this.add.graphics().setDepth(2);
       if (!this.decorGfx) this.decorGfx = this.add.graphics().setDepth(1);
@@ -611,7 +658,7 @@
       this.tweens.add({ targets: blobR, scaleX: 0.8, scaleY: 1.3, alpha: 0.3, duration: 2300, delay: 260, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
       const title = this.add.text(cx, titleY, 'PAINTBALL ARCADE', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '40px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+        fontFamily: MENU_FONT, fontSize: '42px', color: '#F2F4F7', fontStyle: '700', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(title);
 
@@ -628,34 +675,40 @@
       this.tweens.add({ targets: underline, scaleX: 1, duration: 520, delay: 120, ease: 'Cubic.easeOut' });
 
       const tagline = this.add.text(cx, cy - 128, 'One hit ends it. Every shot gives you away.', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
+        fontFamily: MENU_FONT, fontSize: '15px', fontStyle: '500', color: '#94a3b8', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(tagline);
 
+      // instructions as a two-column key/description legend (right-aligned
+      // key, left-aligned description around a shared centerline) instead
+      // of one run-on sentence — reads like an actual control legend
       const rules = [
-        ['WASD · Mouse · Click', 'Move · Aim · Shoot'],
-        ['No health bar', 'one hit eliminates you'],
-        ['Hopper holds 12', 'refill from field pickups'],
-        ['Best of 5', 'first to 3 round wins takes the match']
+        ['WASD · MOUSE · CLICK', 'Move · Aim · Shoot'],
+        ['NO HEALTH BAR', 'one hit eliminates you'],
+        ['HOPPER: 12', 'refill from field pickups'],
+        ['BEST OF 5', 'first to 3 round wins takes the match']
       ];
       let ry = cy - 96;
-      rules.forEach(([a, b]) => {
-        const row = this.add.text(cx, ry, a + '  —  ' + b, {
-          fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#cbd5e1', align: 'center'
-        }).setOrigin(0.5).setDepth(66);
-        this.menuObjects.push(row);
+      rules.forEach(([key, desc]) => {
+        const keyText = this.add.text(cx - 10, ry, key, {
+          fontFamily: MENU_FONT, fontSize: '14px', fontStyle: '600', color: '#7dd3fc', align: 'right'
+        }).setOrigin(1, 0.5).setDepth(66);
+        const descText = this.add.text(cx + 10, ry, desc, {
+          fontFamily: MENU_FONT, fontSize: '14px', fontStyle: '500', color: '#94a3b8', align: 'left'
+        }).setOrigin(0, 0.5).setDepth(66);
+        this.menuObjects.push(keyText, descText);
         ry += 24;
       });
 
       const mapLabel = this.add.text(cx, cy - 2, 'MAP', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
+        fontFamily: MENU_FONT, fontSize: '12px', color: '#64748b', fontStyle: '700'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(mapLabel);
 
       this.buildMapThumbnails(cx, cy + 56);
 
       const diffLabel = this.add.text(cx, cy + 138, 'AI DIFFICULTY', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
+        fontFamily: MENU_FONT, fontSize: '12px', color: '#64748b', fontStyle: '700'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(diffLabel);
 
@@ -665,7 +718,7 @@
       diffKeys.forEach((key, i) => {
         const bx = cx + (i - 1) * diffGap;
         const btn = this.add.text(bx, cy + 164, DIFFICULTY_SPECS[key].label, {
-          fontFamily: 'system-ui, sans-serif', fontSize: '16px', fontStyle: 'bold', align: 'center',
+          fontFamily: MENU_FONT, fontSize: '16px', fontStyle: '700', align: 'center',
           backgroundColor: '#11161d', padding: { left: 14, right: 14, top: 6, bottom: 6 }
         }).setOrigin(0.5).setDepth(66).setInteractive({ useHandCursor: true });
         btn.on('pointerdown', () => this.setDifficulty(key));
@@ -683,7 +736,7 @@
       this.refreshDifficultyButtons();
 
       const prompt = this.add.text(cx, cy + 206, 'CLICK TO START', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#fbbf24', fontStyle: 'bold', align: 'center'
+        fontFamily: MENU_FONT, fontSize: '18px', color: '#fbbf24', fontStyle: '700', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(prompt);
       this.tweens.add({
@@ -698,11 +751,12 @@
     // dashed box and a die instead of a diagram, since there's nothing
     // fixed to draw.
     buildMapThumbnails(cx, rowY) {
-      const boxW = 132, boxH = 66, gap = 150;
+      const boxW = 124, boxH = 66, gap = 138;
       const choices = [...LAYOUTS.map(l => l.name), 'random'];
+      const centerOffset = (choices.length - 1) / 2;
       this.mapButtons = {};
       choices.forEach((name, i) => {
-        const bx = cx + (i - 1) * gap;
+        const bx = cx + (i - centerOffset) * gap;
         // gfx is positioned at the box's own center and drawn relative to
         // (0,0) from here on, so a hover scale tween pivots in place
         // instead of drifting toward the canvas origin
@@ -710,7 +764,7 @@
         this.menuObjects.push(gfx);
 
         const label = this.add.text(bx, rowY + boxH / 2 + 15, name === 'random' ? 'RANDOM' : name.toUpperCase(), {
-          fontFamily: 'system-ui, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#94a3b8', align: 'center'
+          fontFamily: MENU_FONT, fontSize: '12px', fontStyle: '700', color: '#94a3b8', align: 'center'
         }).setOrigin(0.5).setDepth(66);
         this.menuObjects.push(label);
 
@@ -910,6 +964,7 @@
             stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)'
           }
         );
+        if (winner === 'player') this.revealAITrail();
       } else {
         this.showBanner(
           winner === 'player' ? 'YOU WIN THE ROUND' : 'BOT WINS THE ROUND',
@@ -1541,6 +1596,71 @@
       }
     }
 
+    // Breadcrumb the bot's position through the match at a fixed real-time
+    // cadence (not every frame — that would be thousands of points by the
+    // time the match ends). Kept even while the player has line of sight;
+    // the trail is never drawn until after the match anyway, so sampling
+    // doesn't leak any info during live play.
+    sampleAITrail(dt) {
+      if (this.phase !== 'live' || !this.ai.alive) return;
+      this.aiTrailTimer += dt;
+      if (this.aiTrailTimer < 180) return;
+      this.aiTrailTimer = 0;
+      this.aiTrail.push({ x: this.ai.x, y: this.ai.y });
+      if (this.aiTrail.length > 320) this.aiTrail.shift();
+    }
+
+    // Spectator flavor for a won match — the fog of war that hid the bot
+    // all game lifts, and its whole route traces itself onto the field
+    // like a recon debrief rather than a stock "replay" overlay. Reuses
+    // the same last-seen-ghost color language (AI_COLOR rings) the fog of
+    // war already speaks, so it reads as a continuation of that mechanic.
+    revealAITrail() {
+      if (!this.aiTrail || this.aiTrail.length < 2) return;
+      this.aiTrailGfx.setVisible(true).setAlpha(0).clear();
+      this.aiTrailLabel.setVisible(true).setAlpha(0);
+      this.tweens.add({ targets: this.aiTrailGfx, alpha: 1, duration: 260, ease: 'Sine.easeOut' });
+      this.tweens.add({ targets: this.aiTrailLabel, alpha: 1, duration: 400, delay: 200, ease: 'Sine.easeOut' });
+
+      const progress = { n: 0 };
+      this.tweens.add({
+        targets: progress, n: this.aiTrail.length - 1, duration: 1300, delay: 250, ease: 'Cubic.easeOut',
+        onUpdate: () => this.drawAITrail(Math.floor(progress.n))
+      });
+    }
+
+    drawAITrail(uptoIndex) {
+      const g = this.aiTrailGfx;
+      g.clear();
+      const trail = this.aiTrail;
+      const n = Math.min(uptoIndex, trail.length - 1);
+      if (n < 1) return;
+      for (let i = 1; i <= n; i++) {
+        const a = trail[i - 1], b = trail[i];
+        const age = i / n; // 0 = earliest in the match, 1 = just before it died
+        g.lineStyle(1.25 + age * 2.25, AI_COLOR, 0.12 + age * 0.4);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+        if (i % 7 === 0) {
+          g.fillStyle(AI_COLOR, 0.2 + age * 0.35);
+          g.fillCircle(b.x, b.y, 2.2);
+        }
+      }
+      // final-position reticle — the same "last seen" idea, but now it's
+      // the true last spot rather than a fading guess
+      const last = trail[n];
+      g.lineStyle(1.5, AI_COLOR, 0.85);
+      g.strokeCircle(last.x, last.y, 11);
+      g.lineBetween(last.x - 16, last.y, last.x - 7, last.y);
+      g.lineBetween(last.x + 7, last.y, last.x + 16, last.y);
+      g.lineBetween(last.x, last.y - 16, last.x, last.y - 7);
+      g.lineBetween(last.x, last.y + 7, last.x, last.y + 16);
+    }
+
+    hideAITrail() {
+      this.aiTrailGfx.setVisible(false).clear();
+      this.aiTrailLabel.setVisible(false).setAlpha(0);
+    }
+
     // Round-win pips — filled/outlined circles instead of a plain "YOU 0
     // — 0 BOT" text line, so the score reads at a glance and actually
     // has some color to it. Reused at HUD scale (top bar) and banner
@@ -1606,6 +1726,7 @@
       this.updateFogOfWar(dtScaled);
       this.updateEffects(dtScaled);
       this.updateAmmoRegen(dtScaled);
+      this.sampleAITrail(dt);
       // re-draw the AI now that fog-of-war for THIS frame is known (drawAI
       // above ran before updateFogOfWar the first time through, so it used
       // last frame's visibility — one frame of lag is invisible at 60fps,
@@ -1627,7 +1748,27 @@
     scene: [ArenaScene]
   };
 
-  new Phaser.Game(config);
+  // Wait for the menu's webfont to actually be loaded before booting —
+  // Phaser draws Text to a canvas, which doesn't repaint itself the way a
+  // DOM element would once a webfont finishes loading, so starting too
+  // early would freeze the menu in the fallback font forever. A short
+  // timeout keeps the game bootable even if the font CDN is blocked.
+  function boot() { window.__game = new Phaser.Game(config); }
+  if (window.document && document.fonts && document.fonts.load) {
+    const fontsReady = Promise.all([
+      document.fonts.load('700 42px "Chakra Petch"'),
+      document.fonts.load('700 18px "Chakra Petch"'),
+      document.fonts.load('700 16px "Chakra Petch"'),
+      document.fonts.load('700 14px "Chakra Petch"'),
+      document.fonts.load('700 12px "Chakra Petch"'),
+      document.fonts.load('600 14px "Chakra Petch"'),
+      document.fonts.load('500 15px "Chakra Petch"'),
+      document.fonts.load('500 14px "Chakra Petch"')
+    ]).catch(() => {});
+    Promise.race([fontsReady, new Promise(resolve => setTimeout(resolve, 1200))]).then(boot);
+  } else {
+    boot();
+  }
 })();
 </script>
 </body>
