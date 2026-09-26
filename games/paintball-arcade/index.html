@@ -260,6 +260,213 @@
     return x < WALL + 40 || x > W - WALL - 40 || y < HUD_H + WALL + 40 || y > H - WALL - 40;
   }
 
+  // =====================================================================
+  // MUSIC — a bespoke, reactive score, not a generic looping track. Built
+  // straight on the Web Audio API and fully self-contained here (it never
+  // touches the shared assets/sfx.js engine other hub games also rely on).
+  // The one rule driving every design choice below: the sound should come
+  // from the game's own mechanics, not sit on top of them. So the live
+  // layer is a sub-bass pulse plus a "geiger-tick" whose rate and pitch
+  // are wired straight to playerHasLOS — the exact fog-of-war flag the
+  // whole game is built around — and to ammo/match-point state. Lose
+  // sight of the bot and the score tightens; find it again and it eases.
+  // =====================================================================
+  const Music = (function () {
+    let ctx = null, master = null, noiseBuffer = null;
+    let enabled = true;
+    try { enabled = localStorage.getItem('pb_music_muted') !== '1'; } catch (e) {}
+
+    let menuNodes = null;      // { o1, o2, lfo, g, blipTimer }
+    let liveActive = false;
+    let tickAcc = 0, pulseAcc = 0, tension = 0;
+
+    function ensureCtx() {
+      if (ctx) return ctx;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = enabled ? 0.5 : 0;
+      master.connect(ctx.destination);
+      // one second of white noise, reused (filtered differently each time)
+      // for every tick/burst sound below — no sample assets needed
+      const len = Math.floor(ctx.sampleRate * 1);
+      noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      return ctx;
+    }
+
+    function unlock() {
+      const c = ensureCtx();
+      if (c && c.state === 'suspended') c.resume().catch(() => {});
+    }
+
+    function isEnabled() { return enabled; }
+    function setEnabled(on) {
+      enabled = on;
+      try { localStorage.setItem('pb_music_muted', on ? '0' : '1'); } catch (e) {}
+      if (master && ctx) master.gain.setTargetAtTime(on ? 0.5 : 0, ctx.currentTime, 0.08);
+    }
+
+    // ---- shared primitives ----
+    function tone(freq, dur, opts) {
+      if (!enabled) return;
+      const c = ensureCtx(); if (!c) return;
+      opts = opts || {};
+      const osc = c.createOscillator();
+      osc.type = opts.type || 'sine';
+      osc.frequency.setValueAtTime(freq, c.currentTime);
+      if (opts.slideTo) osc.frequency.linearRampToValueAtTime(opts.slideTo, c.currentTime + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0, c.currentTime);
+      g.gain.linearRampToValueAtTime(opts.vol != null ? opts.vol : 0.16, c.currentTime + (opts.attack || 0.012));
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+      osc.connect(g); g.connect(master);
+      osc.start(); osc.stop(c.currentTime + dur + 0.03);
+    }
+
+    function noiseBurst(dur, freq, q, vol) {
+      if (!enabled) return;
+      const c = ensureCtx(); if (!c || !noiseBuffer) return;
+      const src = c.createBufferSource();
+      src.buffer = noiseBuffer; src.loop = true;
+      const filt = c.createBiquadFilter();
+      filt.type = 'bandpass'; filt.frequency.value = freq; filt.Q.value = q;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0, c.currentTime);
+      g.gain.linearRampToValueAtTime(vol, c.currentTime + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+      src.connect(filt); filt.connect(g); g.connect(master);
+      src.start(); src.stop(c.currentTime + dur + 0.03);
+    }
+
+    function subThump(freq, dur, vol) {
+      if (!enabled) return;
+      const c = ensureCtx(); if (!c) return;
+      const osc = c.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, c.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq * 0.6), c.currentTime + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(vol, c.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+      osc.connect(g); g.connect(master);
+      osc.start(); osc.stop(c.currentTime + dur + 0.03);
+    }
+
+    // ---- menu ambience: a quiet open-fifth drone that slowly breathes,
+    // plus sparse high "recon blip" pings at random intervals — a field
+    // at rest before the match, not silence and not a jingle ----
+    function startMenuAmbience() {
+      stopMenuAmbience();
+      const c = ensureCtx(); if (!c) return;
+      const g = c.createGain(); g.gain.value = 0; g.connect(master);
+      const filt = c.createBiquadFilter();
+      filt.type = 'lowpass'; filt.frequency.value = 420; filt.connect(g);
+      const o1 = c.createOscillator(); o1.type = 'sine'; o1.frequency.value = 55;
+      const o2 = c.createOscillator(); o2.type = 'sine'; o2.frequency.value = 55 * 1.5; // fifth
+      o1.connect(filt); o2.connect(filt);
+      o1.start(); o2.start();
+      g.gain.linearRampToValueAtTime(0.16, c.currentTime + 1.4);
+      const lfo = c.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.09;
+      const lfoGain = c.createGain(); lfoGain.gain.value = 0.05;
+      lfo.connect(lfoGain); lfoGain.connect(g.gain);
+      lfo.start();
+
+      menuNodes = { o1, o2, lfo, g, blipTimer: null };
+      const scheduleBlip = () => {
+        if (!menuNodes) return;
+        noiseBurst(0.05, 1400 + Math.random() * 900, 9, enabled ? 0.05 : 0);
+        menuNodes.blipTimer = setTimeout(scheduleBlip, 1800 + Math.random() * 2600);
+      };
+      menuNodes.blipTimer = setTimeout(scheduleBlip, 1400);
+    }
+
+    function stopMenuAmbience() {
+      if (!menuNodes) return;
+      const n = menuNodes; menuNodes = null;
+      clearTimeout(n.blipTimer);
+      if (ctx) {
+        n.g.gain.setTargetAtTime(0, ctx.currentTime, 0.25);
+        setTimeout(() => { try { n.o1.stop(); n.o2.stop(); n.lfo.stop(); } catch (e) {} }, 500);
+      }
+    }
+
+    // ---- live tension loop: driven every frame from the game's own
+    // update(), fed the exact fog-of-war flag the whole game is built
+    // around plus ammo/match-point state. No fixed tempo — the sub-bass
+    // pulse and the geiger-tick's rate and pitch track how much danger
+    // you're actually in right now, moment to moment. ----
+    function startLiveLoop() { liveActive = true; tickAcc = 0; pulseAcc = 0; tension = 0; }
+    function stopLiveLoop() { liveActive = false; }
+
+    function updateTension(dt, params) {
+      if (!liveActive) return;
+      params = params || {};
+      let target = 0;
+      if (!params.hasLOS) target += 0.55;      // can't see the bot = the core threat
+      if (params.ammo != null && params.ammo <= 3) target += 0.3; // running dry
+      if (params.matchPoint) target = 1;       // the deciding shot overrides everything
+      target = Phaser.Math.Clamp(target, 0, 1);
+      tension += (target - tension) * Math.min(1, dt / 600);
+
+      tickAcc += dt;
+      const tickInterval = 950 - tension * 760; // 950ms calm -> ~190ms max tension
+      if (tickAcc >= tickInterval) {
+        tickAcc = 0;
+        noiseBurst(0.035, 1500 + tension * 1800 + Math.random() * 120, 14, 0.045 + tension * 0.05);
+      }
+
+      pulseAcc += dt;
+      const pulseInterval = 1500 - tension * 700;
+      if (pulseAcc >= pulseInterval) {
+        pulseAcc = 0;
+        subThump(58 + tension * 10, 0.28, 0.09 + tension * 0.08);
+      }
+    }
+
+    // a rising, tightening drone layered over the deciding shot's own
+    // slow-mo window (on top of the tick/pulse above, not instead of it)
+    function matchPointDrone() {
+      const c = ensureCtx(); if (!c) return;
+      const osc = c.createOscillator(); osc.type = 'sawtooth';
+      const filt = c.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 800;
+      const g = c.createGain(); g.gain.value = 0;
+      osc.connect(filt); filt.connect(g); g.connect(master);
+      osc.frequency.setValueAtTime(90, c.currentTime);
+      osc.frequency.linearRampToValueAtTime(260, c.currentTime + 0.9);
+      g.gain.linearRampToValueAtTime(enabled ? 0.09 : 0, c.currentTime + 0.15);
+      g.gain.linearRampToValueAtTime(0.0001, c.currentTime + 0.9);
+      osc.start(); osc.stop(c.currentTime + 0.95);
+    }
+
+    // short stingers layered on top of, never replacing, the existing
+    // SFX.tone() calls at these same round/match transitions
+    function stinger(kind) {
+      if (kind === 'matchWin') {
+        tone(392, 0.14, { vol: 0.16 });
+        setTimeout(() => tone(494, 0.14, { vol: 0.16 }), 90);
+        setTimeout(() => tone(587, 0.22, { vol: 0.18 }), 180);
+      } else if (kind === 'matchLoss') {
+        tone(220, 0.22, { vol: 0.14, type: 'triangle', slideTo: 140 });
+      } else if (kind === 'roundWin') {
+        tone(523, 0.12, { vol: 0.12 });
+        setTimeout(() => tone(659, 0.14, { vol: 0.12 }), 80);
+      } else if (kind === 'roundLoss') {
+        tone(196, 0.16, { vol: 0.1, type: 'triangle' });
+      }
+    }
+
+    return {
+      unlock, isEnabled, setEnabled,
+      startMenuAmbience, stopMenuAmbience,
+      startLiveLoop, stopLiveLoop, updateTension, matchPointDrone,
+      stinger
+    };
+  })();
+  window.__music = Music; // exposed for debugging/verification only
+
   class ArenaScene extends Phaser.Scene {
     create() {
       // ---- input ----
@@ -269,6 +476,9 @@
       });
       this.pointer = this.input.activePointer;
       this.input.on('pointerdown', (pointer, currentlyOver) => {
+        // browsers won't play audio until a user gesture — this is the
+        // earliest, most reliable one (fires on any click, anywhere)
+        Music.unlock();
         // if the click landed on an interactive object (a difficulty
         // button), let that object's own handler deal with it instead of
         // also starting the match / firing a shot
@@ -408,6 +618,7 @@
       this.selectedMap = 'random'; // 'random' or a LAYOUTS[].name
       this.stats = { shotsFired: 0, hits: 0 };
       this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
+      this.matchPointActive = false; // true only during that same slow-mo window — feeds the music's tension
 
       // ---- HUD ----
       this.hudObjects = [];
@@ -427,6 +638,20 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#f97316', fontStyle: 'bold'
       }).setOrigin(1, 0.5).setDepth(52);
 
+      // ---- music mute toggle — tucked into the top-right corner, above
+      // the BOT ammo readout, so it doesn't crowd anything already there ----
+      this.muteLabel = this.add.text(W - 16, 11, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(1, 0.5).setDepth(53).setInteractive({ useHandCursor: true });
+      this.refreshMuteLabel();
+      this.muteLabel.on('pointerover', () => this.muteLabel.setColor('#e2e8f0'));
+      this.muteLabel.on('pointerout', () => this.refreshMuteLabel());
+      this.muteLabel.on('pointerdown', () => {
+        Music.unlock();
+        Music.setEnabled(!Music.isEnabled());
+        this.refreshMuteLabel();
+      });
+
       // ---- big centered message text (round/match banners) — a colored
       // panel behind everything (gold for a match win, muted red for a
       // loss, cyan for a plain round win) plus a pip row echoing the
@@ -442,11 +667,29 @@
       this.statsLabel = this.add.text(W / 2, H / 2 + 54, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#64748b', align: 'center'
       }).setOrigin(0.5).setDepth(60).setVisible(false);
-      this.bannerGroup = [this.bannerPanel, this.bannerText, this.bannerPipsGfx, this.bannerSub, this.statsLabel];
+
+      // post-match round-by-round breakdown — small chips in win order,
+      // colored per winner, so "how" the match went reads at a glance
+      // instead of just the final 3-1 score
+      this.roundHistoryLabel = this.add.text(W / 2, H / 2 + 80, 'ROUND BY ROUND', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.roundHistoryGfx = this.add.graphics().setDepth(60).setVisible(false);
+
+      this.bannerGroup = [
+        this.bannerPanel, this.bannerText, this.bannerPipsGfx, this.bannerSub, this.statsLabel,
+        this.roundHistoryLabel, this.roundHistoryGfx
+      ];
 
       this.redrawPickups();
       this.updateHUD();
       this.buildMenu();
+      Music.startMenuAmbience();
+    }
+
+    refreshMuteLabel() {
+      const on = Music.isEnabled();
+      this.muteLabel.setText(on ? '♪ SOUND' : '♪ MUTED').setColor(on ? '#64748b' : '#c2703d');
     }
 
     // -----------------------------------------------------------------
@@ -470,6 +713,9 @@
       this.aiTrailTimer = 0;
       if (this.aiTrailGfx) { this.aiTrailGfx.clear().setVisible(false); }
       if (this.aiTrailLabel) { this.aiTrailLabel.setVisible(false).setAlpha(0); }
+
+      // fresh match, fresh round-by-round record
+      this.roundHistory = [];
 
       if (!this.bunkerGfx) this.bunkerGfx = this.add.graphics().setDepth(2);
       if (!this.decorGfx) this.decorGfx = this.add.graphics().setDepth(1);
@@ -856,6 +1102,8 @@
       if (this.phase !== 'menu') return;
       this.menuObjects.forEach(o => o.destroy());
       this.menuObjects = [];
+      Music.stopMenuAmbience();
+      Music.startLiveLoop();
       this.buildArena();
       this.resetRound();
       this.beginCountdown(150);
@@ -915,7 +1163,7 @@
     showBanner(title, sub, opts) {
       opts = opts || {};
       const accent = opts.accent || 0xF2F4F7;
-      const panelW = 460, panelH = opts.tall ? 210 : 168;
+      const panelW = 460, panelH = opts.tall ? 226 : 168;
       const cx = W / 2, cy = H / 2;
 
       this.bannerPanel.clear();
@@ -931,13 +1179,35 @@
       this.bannerPipsGfx.clear();
       if (opts.showPips) this.drawScorePips(this.bannerPipsGfx, cx, cy - 2, this.roundWins.player, this.roundWins.ai, 9);
       this.statsLabel.setText(opts.stats || '');
+      this.roundHistoryGfx.clear();
+      if (opts.roundHistory && opts.roundHistory.length) this.drawRoundHistory(this.roundHistoryGfx, cx, cy + 96, opts.roundHistory);
 
       this.bannerGroup.forEach(o => o.setVisible(true));
       this.bannerPipsGfx.setVisible(!!opts.showPips);
       this.statsLabel.setVisible(!!opts.stats);
+      this.roundHistoryLabel.setVisible(!!(opts.roundHistory && opts.roundHistory.length));
+      this.roundHistoryGfx.setVisible(!!(opts.roundHistory && opts.roundHistory.length));
 
       this.bannerGroup.forEach(o => { o.setScale(0.8); o.setAlpha(0); });
       this.tweens.add({ targets: this.bannerGroup, scale: 1, alpha: 1, duration: 260, ease: 'Back.Out' });
+    }
+
+    // Small win-order chips — cyan for a round you took, orange for one
+    // the bot took, left to right in the order they happened — so a
+    // 3-2 comeback reads differently at a glance than a 3-0 sweep, not
+    // just as the same final pip count.
+    drawRoundHistory(gfx, cx, y, history) {
+      const size = 16, gap = 6;
+      const totalW = history.length * size + (history.length - 1) * gap;
+      const startX = cx - totalW / 2;
+      history.forEach((winner, i) => {
+        const x = startX + i * (size + gap);
+        const color = winner === 'player' ? PLAYER_COLOR : AI_COLOR;
+        gfx.fillStyle(color, 0.9);
+        gfx.fillRoundedRect(x, y - size / 2, size, size, 4);
+        gfx.lineStyle(1.5, 0x0b0f14, 0.7);
+        gfx.strokeRoundedRect(x, y - size / 2, size, size, 4);
+      });
     }
 
     hideBanner() {
@@ -948,6 +1218,7 @@
       if (this.phase === 'round-over' || this.phase === 'match-over') return;
       this.phase = 'round-over';
       this.roundWins[winner] += 1;
+      this.roundHistory.push(winner);
       this.updateHUD();
 
       const matchWon = this.roundWins[winner] >= ROUNDS_TO_WIN;
@@ -961,7 +1232,8 @@
             accent: winner === 'player' ? 0xfbbf24 : 0xc2703d,
             tall: true,
             showPips: true,
-            stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)'
+            stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)',
+            roundHistory: this.roundHistory
           }
         );
         if (winner === 'player') this.revealAITrail();
@@ -976,6 +1248,7 @@
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(matchWon ? (winner === 'player' ? 880 : 140) : (winner === 'player' ? 600 : 220), matchWon ? 0.22 : 0.12); } catch (e) {}
       }
+      Music.stinger(matchWon ? (winner === 'player' ? 'matchWin' : 'matchLoss') : (winner === 'player' ? 'roundWin' : 'roundLoss'));
 
       if (matchWon) {
         this.phase = 'match-over';
@@ -1415,6 +1688,8 @@
       const stunMs = wouldWinMatch ? 900 : HIT_STUN_MS;
       if (wouldWinMatch) {
         this.hitStopFactor = 0.12;
+        this.matchPointActive = true;
+        Music.matchPointDrone();
         this.tweens.add({ targets: this, hitStopFactor: 1, duration: 750, delay: 150, ease: 'Quad.easeIn' });
       }
 
@@ -1430,6 +1705,7 @@
       }
       this.time.delayedCall(stunMs, () => {
         target.alive = false;
+        this.matchPointActive = false;
         if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
           try { SFX.tone(130, 0.12); } catch (e) {}
         }
@@ -1726,6 +2002,13 @@
       this.updateFogOfWar(dtScaled);
       this.updateEffects(dtScaled);
       this.updateAmmoRegen(dtScaled);
+      if (this.phase === 'live') {
+        Music.updateTension(dtScaled, {
+          hasLOS: this.playerHasLOS,
+          ammo: this.player.ammo,
+          matchPoint: this.matchPointActive
+        });
+      }
       this.sampleAITrail(dt);
       // re-draw the AI now that fog-of-war for THIS frame is known (drawAI
       // above ran before updateFogOfWar the first time through, so it used
