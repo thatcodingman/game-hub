@@ -91,6 +91,29 @@
     { x: 330, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 480, y: 490, r: 27, shape: 'can' }, { x: 630, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
   ];
 
+  // ---- Second arena layout — same spawn points, pickups and wall
+  // margins so nothing else about the ruleset has to change, but a
+  // different bunker rhythm (staggered rows, tighter can/tower cluster
+  // down the middle, doritos pushed wider) so a match doesn't always
+  // play out on the exact same sightlines. Picked at random per match. ----
+  const BUNKER_SPECS_ALT = [
+    // row A
+    { x: 380, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 }, { x: 530, y: 110, r: 27, shape: 'can' }, { x: 680, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 },
+    // row B
+    { x: 170, y: 205, r: 27, shape: 'can' }, { x: 365, y: 205, r: 38, shape: 'tower' }, { x: 555, y: 205, r: 38, shape: 'tower' }, { x: 750, y: 205, r: 27, shape: 'can' },
+    // row C — center line
+    { x: 370, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 520, y: 300, r: 27, shape: 'can' }, { x: 670, y: 300, r: 17, shape: 'dorito', rot: -Math.PI / 2 },
+    // row D
+    { x: 170, y: 395, r: 27, shape: 'can' }, { x: 365, y: 395, r: 38, shape: 'tower' }, { x: 555, y: 395, r: 38, shape: 'tower' }, { x: 750, y: 395, r: 27, shape: 'can' },
+    // row E
+    { x: 380, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 530, y: 490, r: 27, shape: 'can' }, { x: 680, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
+  ];
+
+  const LAYOUTS = [
+    { name: 'Crossroads', bunkers: BUNKER_SPECS },
+    { name: 'Crossfire', bunkers: BUNKER_SPECS_ALT }
+  ];
+
   const PICKUP_SPECS = [
     { x: 140, y: 160 }, { x: 820, y: 160 },
     { x: 140, y: 440 }, { x: 820, y: 440 }
@@ -296,12 +319,116 @@
         fenceGfx.fillRect(W - WALL - 8, y - 1.5, 8, 3);
       }
 
-      // ---- cosmetic field dressing (tire stacks, crates, barrels, hay) —
-      // fills the dead space between bunkers so the field reads as an
-      // actual played-on arena rather than props floating on empty grass.
-      // Drawn once, sits under the bunkers/players in depth order. ----
-      const decorGfx = this.add.graphics().setDepth(1);
-      DECOR_SPECS.forEach(d => {
+      this.buildArena();
+
+      // ---- persistent paint layer (redrawn only when marks change) ----
+      this.splats = [];
+      this.splatGfx = this.add.graphics().setDepth(3);
+
+      // ---- transient effects layer (muzzle flash, tracers, bursts —
+      // cleared and redrawn every frame since there are only ever a
+      // handful active at once) ----
+      this.effects = [];
+      this.effectsGfx = this.add.graphics().setDepth(9);
+
+      // ---- last-seen ghost marker (fog of war — what the player knows
+      // about the AI when it's not currently in sight) ----
+      this.lastSeenGfx = this.add.graphics().setDepth(4);
+      this.aiLastSeenByPlayer = null; // {x,y,t}
+
+      // ---- pickups ----
+      this.pickups = PICKUP_SPECS.map(p => ({ x: p.x, y: p.y, active: true, gfx: this.add.graphics().setDepth(5) }));
+
+      // ---- player ----
+      this.player = {
+        x: PLAYER_SPAWN.x, y: PLAYER_SPAWN.y, radius: PLAYER_R, angle: -Math.PI / 2,
+        ammo: HOPPER_MAX, alive: true, frozen: 0, fireCooldown: 0,
+        gfx: this.add.graphics().setDepth(6)
+      };
+
+      // ---- AI ----
+      this.ai = {
+        x: AI_SPAWN.x, y: AI_SPAWN.y, radius: AI_R, angle: Math.PI / 2,
+        ammo: HOPPER_MAX, alive: true, frozen: 0,
+        state: 'SPAWN', stateTimer: 0, holdDuration: 0, peekSide: 1, aimTarget: null,
+        currentBunker: null, targetPoint: null,
+        canSeePlayer: false, lastSeenX: null, lastSeenY: null, timeSinceSeenPlayer: 99999,
+        perceptionTimer: 0, suspicion: null, stalled: 0,
+        gfx: this.add.graphics().setDepth(6)
+      };
+
+      // ---- projectiles ----
+      this.balls = [];
+
+      // ---- match/round state ----
+      this.roundWins = { player: 0, ai: 0 };
+      this.phase = 'menu'; // menu | countdown | live | round-over | match-over
+      this.countdownText = null;
+      this.difficulty = 'normal';
+      this.stats = { shotsFired: 0, hits: 0 };
+      this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
+
+      // ---- HUD ----
+      this.hudObjects = [];
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, 0x11161d, 1).setScrollFactor(0).setDepth(50));
+      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
+      this.ammoLabel = this.add.text(16, HUD_H / 2, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#38bdf8', fontStyle: 'bold'
+      }).setOrigin(0, 0.5).setDepth(52);
+      this.scoreCaption = this.add.text(W / 2, 13, 'BEST OF 5', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(52);
+      this.pipsGfx = this.add.graphics().setDepth(52);
+      this.hintLabel = this.add.text(W / 2, 40, 'WASD to move · Mouse to aim · Click to shoot', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#94a3b8'
+      }).setOrigin(0.5).setDepth(52);
+      this.aiAmmoLabel = this.add.text(W - 16, HUD_H / 2, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#f97316', fontStyle: 'bold'
+      }).setOrigin(1, 0.5).setDepth(52);
+
+      // ---- big centered message text (round/match banners) — a colored
+      // panel behind everything (gold for a match win, muted red for a
+      // loss, cyan for a plain round win) plus a pip row echoing the
+      // score, instead of plain grey text floating on the field. ----
+      this.bannerPanel = this.add.graphics().setDepth(58).setVisible(false);
+      this.bannerText = this.add.text(W / 2, H / 2 - 46, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '32px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.bannerPipsGfx = this.add.graphics().setDepth(60).setVisible(false);
+      this.bannerSub = this.add.text(W / 2, H / 2 + 24, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.statsLabel = this.add.text(W / 2, H / 2 + 54, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#64748b', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+      this.bannerGroup = [this.bannerPanel, this.bannerText, this.bannerPipsGfx, this.bannerSub, this.statsLabel];
+
+      this.redrawPickups();
+      this.updateHUD();
+      this.buildMenu();
+    }
+
+    // -----------------------------------------------------------------
+    // Arena — picks a random bunker layout and (re)draws bunkers + the
+    // cosmetic dressing around them. Called once at boot and again at
+    // the start of every new match (not every round — the layout holds
+    // for all 5 rounds of a match) so replays don't always play out on
+    // the same sightlines.
+    // -----------------------------------------------------------------
+    buildArena() {
+      const layout = Phaser.Utils.Array.GetRandom(LAYOUTS);
+      this.currentLayoutName = layout.name;
+      this.bunkers = layout.bunkers.map(spec => Object.assign({}, spec));
+
+      if (!this.bunkerGfx) this.bunkerGfx = this.add.graphics().setDepth(2);
+      if (!this.decorGfx) this.decorGfx = this.add.graphics().setDepth(1);
+      const bunkerGfx = this.bunkerGfx, decorGfx = this.decorGfx;
+      bunkerGfx.clear();
+      decorGfx.clear();
+
+      // cosmetic field dressing — skip any piece that would land on top
+      // of (or too close to) a bunker in whichever layout got picked
+      DECOR_SPECS.filter(d => this.bunkers.every(b => dist(d.x, d.y, b.x, b.y) > b.r + 34)).forEach(d => {
         decorGfx.fillStyle(0x0b0f14, 0.22);
         decorGfx.fillEllipse(d.x + 2, d.y + 4, 34, 16);
         if (d.type === 'tirestack') {
@@ -357,12 +484,9 @@
         }
       });
 
-      // ---- static bunkers (drawn once — they never move). Real inflatable
-      // speedball props instead of boxes: a shadow, a rounded/angular
-      // body with a highlight seam for a 3D-air-bladder look, and a darker
-      // base ring/rim. ----
-      this.bunkers = BUNKER_SPECS.map(spec => Object.assign({}, spec));
-      const bunkerGfx = this.add.graphics().setDepth(2);
+      // static bunkers — real inflatable speedball props instead of
+      // boxes: a shadow, a rounded/angular body with a highlight seam
+      // for a 3D-air-bladder look, and a darker base ring/rim.
       this.bunkers.forEach((b, idx) => {
         // color assignment: split left/right of field center so the
         // bunkers read as two distinct sets of gear rather than one prop
@@ -426,85 +550,6 @@
           bunkerGfx.fillCircle(b.x + b.r * 0.3, b.y + b.r * 0.28, b.r * 0.07);
         }
       });
-
-      // ---- persistent paint layer (redrawn only when marks change) ----
-      this.splats = [];
-      this.splatGfx = this.add.graphics().setDepth(3);
-
-      // ---- transient effects layer (muzzle flash, tracers, bursts —
-      // cleared and redrawn every frame since there are only ever a
-      // handful active at once) ----
-      this.effects = [];
-      this.effectsGfx = this.add.graphics().setDepth(9);
-
-      // ---- last-seen ghost marker (fog of war — what the player knows
-      // about the AI when it's not currently in sight) ----
-      this.lastSeenGfx = this.add.graphics().setDepth(4);
-      this.aiLastSeenByPlayer = null; // {x,y,t}
-
-      // ---- pickups ----
-      this.pickups = PICKUP_SPECS.map(p => ({ x: p.x, y: p.y, active: true, gfx: this.add.graphics().setDepth(5) }));
-
-      // ---- player ----
-      this.player = {
-        x: PLAYER_SPAWN.x, y: PLAYER_SPAWN.y, radius: PLAYER_R, angle: -Math.PI / 2,
-        ammo: HOPPER_MAX, alive: true, frozen: 0, fireCooldown: 0,
-        gfx: this.add.graphics().setDepth(6)
-      };
-
-      // ---- AI ----
-      this.ai = {
-        x: AI_SPAWN.x, y: AI_SPAWN.y, radius: AI_R, angle: Math.PI / 2,
-        ammo: HOPPER_MAX, alive: true, frozen: 0,
-        state: 'SPAWN', stateTimer: 0, holdDuration: 0, peekSide: 1, aimTarget: null,
-        currentBunker: null, targetPoint: null,
-        canSeePlayer: false, lastSeenX: null, lastSeenY: null, timeSinceSeenPlayer: 99999,
-        perceptionTimer: 0, suspicion: null, stalled: 0,
-        gfx: this.add.graphics().setDepth(6)
-      };
-
-      // ---- projectiles ----
-      this.balls = [];
-
-      // ---- match/round state ----
-      this.roundWins = { player: 0, ai: 0 };
-      this.phase = 'menu'; // menu | countdown | live | round-over | match-over
-      this.countdownText = null;
-      this.difficulty = 'normal';
-      this.stats = { shotsFired: 0, hits: 0 };
-      this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
-
-      // ---- HUD ----
-      this.hudObjects = [];
-      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H / 2, W, HUD_H, 0x11161d, 1).setScrollFactor(0).setDepth(50));
-      this.hudObjects.push(this.add.rectangle(W / 2, HUD_H, W, 2, 0x2a3140, 1).setScrollFactor(0).setDepth(51));
-      this.ammoLabel = this.add.text(16, HUD_H / 2, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#38bdf8', fontStyle: 'bold'
-      }).setOrigin(0, 0.5).setDepth(52);
-      this.scoreLabel = this.add.text(W / 2, 18, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#F2F4F7', fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(52);
-      this.hintLabel = this.add.text(W / 2, 40, 'WASD to move · Mouse to aim · Click to shoot', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#94a3b8'
-      }).setOrigin(0.5).setDepth(52);
-      this.aiAmmoLabel = this.add.text(W - 16, HUD_H / 2, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#f97316', fontStyle: 'bold'
-      }).setOrigin(1, 0.5).setDepth(52);
-
-      // ---- big centered message text (round/match banners) ----
-      this.bannerText = this.add.text(W / 2, H / 2, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '34px', color: '#F2F4F7', fontStyle: 'bold', align: 'center'
-      }).setOrigin(0.5).setDepth(60).setVisible(false);
-      this.bannerSub = this.add.text(W / 2, H / 2 + 34, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#94a3b8', align: 'center'
-      }).setOrigin(0.5).setDepth(60).setVisible(false);
-      this.statsLabel = this.add.text(W / 2, H / 2 + 62, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#64748b', align: 'center'
-      }).setOrigin(0.5).setDepth(60).setVisible(false);
-
-      this.redrawPickups();
-      this.updateHUD();
-      this.buildMenu();
     }
 
     // -----------------------------------------------------------------
@@ -596,6 +641,8 @@
       if (this.phase !== 'menu') return;
       this.menuObjects.forEach(o => o.destroy());
       this.menuObjects = [];
+      this.buildArena();
+      this.resetRound();
       this.beginCountdown(150);
     }
 
@@ -613,8 +660,12 @@
           this.phase = 'live';
           return;
         }
-        this.bannerText.setText(steps[i]).setVisible(true);
-        this.bannerSub.setVisible(false);
+        this.bannerText.setText(steps[i]).setColor('#F2F4F7').setScale(1).setAlpha(1).setVisible(true);
+        if (i === 0 && this.currentLayoutName) {
+          this.bannerSub.setText('Map: ' + this.currentLayoutName).setScale(1).setAlpha(1).setColor('#94a3b8').setVisible(true);
+        } else {
+          this.bannerSub.setVisible(false);
+        }
         if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
           try { SFX.tone(i < 3 ? 420 + i * 60 : 720, i < 3 ? 0.05 : 0.09); } catch (e) {}
         }
@@ -643,6 +694,41 @@
       this.redrawPickups();
     }
 
+    // Colors match the winner: gold for a match win, a muted red for a
+    // loss, and each side's own paint color for a plain round win — so
+    // the panel itself tells you who's ahead before you even read it.
+    showBanner(title, sub, opts) {
+      opts = opts || {};
+      const accent = opts.accent || 0xF2F4F7;
+      const panelW = 460, panelH = opts.tall ? 210 : 168;
+      const cx = W / 2, cy = H / 2;
+
+      this.bannerPanel.clear();
+      this.bannerPanel.fillStyle(0x0b0f14, 0.88);
+      this.bannerPanel.fillRoundedRect(cx - panelW / 2, cy - panelH / 2, panelW, panelH, 18);
+      this.bannerPanel.lineStyle(3, accent, 0.95);
+      this.bannerPanel.strokeRoundedRect(cx - panelW / 2, cy - panelH / 2, panelW, panelH, 18);
+      this.bannerPanel.lineStyle(1, accent, 0.3);
+      this.bannerPanel.strokeRoundedRect(cx - panelW / 2 + 6, cy - panelH / 2 + 6, panelW - 12, panelH - 12, 14);
+
+      this.bannerText.setText(title).setColor('#' + accent.toString(16).padStart(6, '0'));
+      this.bannerSub.setText(sub || '');
+      this.bannerPipsGfx.clear();
+      if (opts.showPips) this.drawScorePips(this.bannerPipsGfx, cx, cy - 2, this.roundWins.player, this.roundWins.ai, 9);
+      this.statsLabel.setText(opts.stats || '');
+
+      this.bannerGroup.forEach(o => o.setVisible(true));
+      this.bannerPipsGfx.setVisible(!!opts.showPips);
+      this.statsLabel.setVisible(!!opts.stats);
+
+      this.bannerGroup.forEach(o => { o.setScale(0.8); o.setAlpha(0); });
+      this.tweens.add({ targets: this.bannerGroup, scale: 1, alpha: 1, duration: 260, ease: 'Back.Out' });
+    }
+
+    hideBanner() {
+      this.bannerGroup.forEach(o => o.setVisible(false));
+    }
+
     endRound(winner) {
       if (this.phase === 'round-over' || this.phase === 'match-over') return;
       this.phase = 'round-over';
@@ -650,13 +736,25 @@
       this.updateHUD();
 
       const matchWon = this.roundWins[winner] >= ROUNDS_TO_WIN;
-      const label = winner === 'player' ? 'YOU WIN THE ROUND' : 'BOT WINS THE ROUND';
-      this.bannerText.setText(matchWon ? (winner === 'player' ? 'MATCH WON!' : 'MATCH LOST') : label).setVisible(true);
-      this.bannerSub.setText(matchWon ? 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai + (winner === 'player' ? '  ·  Click to play again' : '  ·  Click to try again') : 'YOU ' + this.roundWins.player + ' — BOT ' + this.roundWins.ai).setVisible(true);
 
       if (matchWon) {
         const acc = this.stats.shotsFired > 0 ? Math.round((this.stats.hits / this.stats.shotsFired) * 100) : 0;
-        this.statsLabel.setText('Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)').setVisible(true);
+        this.showBanner(
+          winner === 'player' ? 'MATCH WON!' : 'MATCH LOST',
+          winner === 'player' ? 'Click to play again' : 'Click to try again',
+          {
+            accent: winner === 'player' ? 0xfbbf24 : 0xef4444,
+            tall: true,
+            showPips: true,
+            stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)'
+          }
+        );
+      } else {
+        this.showBanner(
+          winner === 'player' ? 'YOU WIN THE ROUND' : 'BOT WINS THE ROUND',
+          'Next round starting…',
+          { accent: winner === 'player' ? PLAYER_COLOR : AI_COLOR, showPips: true }
+        );
       }
 
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
@@ -672,13 +770,14 @@
           this.roundWins = { player: 0, ai: 0 };
           this.stats = { shotsFired: 0, hits: 0 };
           this.updateHUD();
-          this.bannerText.setVisible(false); this.bannerSub.setVisible(false); this.statsLabel.setVisible(false);
+          this.hideBanner();
+          this.buildArena();
           this.resetRound();
           this.beginCountdown(300);
         }, this);
       } else {
         this.time.delayedCall(1400, () => {
-          this.bannerText.setVisible(false); this.bannerSub.setVisible(false);
+          this.hideBanner();
           this.resetRound();
           this.beginCountdown(300);
         });
@@ -1211,10 +1310,33 @@
       }
     }
 
+    // Round-win pips — filled/outlined circles instead of a plain "YOU 0
+    // — 0 BOT" text line, so the score reads at a glance and actually
+    // has some color to it. Reused at HUD scale (top bar) and banner
+    // scale (round/match-over screen).
+    drawScorePips(gfx, cx, cy, playerWins, aiWins, r) {
+      const spacing = r * 2 + Math.max(4, r * 0.6);
+      for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+        const x = cx - 14 - spacing * (ROUNDS_TO_WIN - 1 - i);
+        const filled = i < playerWins;
+        gfx.lineStyle(Math.max(1.5, r * 0.22), PLAYER_COLOR, 1);
+        if (filled) { gfx.fillStyle(PLAYER_COLOR, 1); gfx.fillCircle(x, cy, r); }
+        gfx.strokeCircle(x, cy, r);
+      }
+      for (let i = 0; i < ROUNDS_TO_WIN; i++) {
+        const x = cx + 14 + spacing * i;
+        const filled = i < aiWins;
+        gfx.lineStyle(Math.max(1.5, r * 0.22), AI_COLOR, 1);
+        if (filled) { gfx.fillStyle(AI_COLOR, 1); gfx.fillCircle(x, cy, r); }
+        gfx.strokeCircle(x, cy, r);
+      }
+    }
+
     updateHUD() {
       this.ammoLabel.setText('AMMO ' + Math.max(0, this.player.ammo) + '/' + HOPPER_MAX);
       this.aiAmmoLabel.setText('BOT ' + Math.max(0, this.ai.ammo) + '/' + HOPPER_MAX);
-      this.scoreLabel.setText('YOU ' + this.roundWins.player + '  —  ' + this.roundWins.ai + ' BOT');
+      this.pipsGfx.clear();
+      this.drawScorePips(this.pipsGfx, W / 2, 28, this.roundWins.player, this.roundWins.ai, 5.5);
     }
 
     update(time, dt) {
@@ -1237,7 +1359,11 @@
   }
 
   const config = {
-    type: Phaser.AUTO,
+    // Canvas renderer: this game is all flat-shape Graphics + Text, so it
+    // gets nothing from WebGL, and Canvas sidesteps GPU-driver stalls that
+    // some machines (especially older/integrated graphics) hit under
+    // WebGL — smoother and more consistent across devices.
+    type: Phaser.CANVAS,
     width: W,
     height: H,
     parent: 'game-root',
