@@ -272,56 +272,68 @@
   // sight of the bot and the score tightens; find it again and it eases.
   // =====================================================================
   const Music = (function () {
-    let ctx = null, master = null, noiseBuffer = null;
-    let enabled = true;
-    try { enabled = localStorage.getItem('pb_music_muted') !== '1'; } catch (e) {}
-
+    // IMPORTANT: this does NOT create its own AudioContext or its own
+    // mute control. The hub's shared ArcadeSFX engine (assets/sfx.js)
+    // already owns exactly one AudioContext per page (window.SFX.ctx,
+    // lazily created/resumed by window.SFX.ensureContext()) and already
+    // mounts its own floating mute/volume panel — running a second,
+    // independent audio stack alongside it is what was breaking sound
+    // entirely. So every sound below is scheduled straight onto SFX's own
+    // context, through a gain node that continuously mirrors SFX.muted
+    // and SFX.volume — one shared context, one shared mute switch.
+    let localMaster = null, noiseBuffer = null;
     let menuNodes = null;      // { o1, o2, lfo, g, blipTimer }
     let liveActive = false;
     let tickAcc = 0, pulseAcc = 0, tension = 0;
 
+    function sfxReady() {
+      return typeof SFX !== 'undefined' && SFX && typeof SFX.ensureContext === 'function';
+    }
+
     // Everything below is a nice-to-have layered on top of the game, never
     // load-bearing — so ensureCtx (and every exported entry point, wrapped
     // at the bottom via `safe()`) is written to fail silently on any
-    // unsupported/blocked/limited browser rather than ever throwing back
-    // into the game's own logic and breaking gameplay or the existing SFX.
+    // unsupported/blocked/limited browser, or if SFX itself isn't present,
+    // rather than ever throwing back into the game's own logic.
     function ensureCtx() {
-      if (ctx) return ctx;
       try {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return null;
-        const c = new AC();
-        const m = c.createGain();
-        m.gain.value = enabled ? 0.5 : 0;
-        m.connect(c.destination);
-        // one second of white noise, reused (filtered differently each
-        // time) for every tick/burst sound below — no sample assets needed
-        const len = Math.floor(c.sampleRate * 1);
-        const buf = c.createBuffer(1, len, c.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-        ctx = c; master = m; noiseBuffer = buf;
-        return ctx;
+        if (!sfxReady()) return null;
+        SFX.ensureContext();
+        const c = SFX.ctx;
+        if (!c) return null;
+        if (!localMaster || localMaster.context !== c) {
+          localMaster = c.createGain();
+          localMaster.connect(c.destination);
+          // one second of white noise, reused (filtered differently each
+          // time) for every tick/burst sound below — no sample assets needed
+          const len = Math.floor(c.sampleRate * 1);
+          const buf = c.createBuffer(1, len, c.sampleRate);
+          const data = buf.getChannelData(0);
+          for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+          noiseBuffer = buf;
+        }
+        syncLevel(c);
+        return c;
       } catch (e) {
         return null;
       }
     }
 
-    function unlock() {
-      const c = ensureCtx();
-      if (c && c.state !== 'running') c.resume().catch(() => {});
+    // keeps our own gain glued to SFX's own mute button / volume slider —
+    // there is only ever one mute switch on the page, and this is it
+    function syncLevel(c) {
+      if (!localMaster) return;
+      const muted = !!(SFX && SFX.muted);
+      const vol = (SFX && typeof SFX.volume === 'number') ? SFX.volume : 1;
+      // 0.55 headroom so the music sits under SFX's own effects, never over them
+      const level = muted ? 0 : Math.max(0, Math.min(1, vol)) * 0.55;
+      localMaster.gain.setTargetAtTime(level, c.currentTime, 0.05);
     }
 
-    function isEnabled() { return enabled; }
-    function setEnabled(on) {
-      enabled = on;
-      try { localStorage.setItem('pb_music_muted', on ? '0' : '1'); } catch (e) {}
-      if (master && ctx) master.gain.setTargetAtTime(on ? 0.5 : 0, ctx.currentTime, 0.08);
-    }
+    function unlock() { ensureCtx(); }
 
     // ---- shared primitives ----
     function tone(freq, dur, opts) {
-      if (!enabled) return;
       const c = ensureCtx(); if (!c) return;
       opts = opts || {};
       const osc = c.createOscillator();
@@ -332,12 +344,11 @@
       g.gain.setValueAtTime(0, c.currentTime);
       g.gain.linearRampToValueAtTime(opts.vol != null ? opts.vol : 0.16, c.currentTime + (opts.attack || 0.012));
       g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
-      osc.connect(g); g.connect(master);
+      osc.connect(g); g.connect(localMaster);
       osc.start(); osc.stop(c.currentTime + dur + 0.03);
     }
 
     function noiseBurst(dur, freq, q, vol) {
-      if (!enabled) return;
       const c = ensureCtx(); if (!c || !noiseBuffer) return;
       const src = c.createBufferSource();
       src.buffer = noiseBuffer; src.loop = true;
@@ -347,12 +358,11 @@
       g.gain.setValueAtTime(0, c.currentTime);
       g.gain.linearRampToValueAtTime(vol, c.currentTime + 0.004);
       g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
-      src.connect(filt); filt.connect(g); g.connect(master);
+      src.connect(filt); filt.connect(g); g.connect(localMaster);
       src.start(); src.stop(c.currentTime + dur + 0.03);
     }
 
     function subThump(freq, dur, vol) {
-      if (!enabled) return;
       const c = ensureCtx(); if (!c) return;
       const osc = c.createOscillator();
       osc.type = 'sine';
@@ -361,7 +371,7 @@
       const g = c.createGain();
       g.gain.setValueAtTime(vol, c.currentTime);
       g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
-      osc.connect(g); g.connect(master);
+      osc.connect(g); g.connect(localMaster);
       osc.start(); osc.stop(c.currentTime + dur + 0.03);
     }
 
@@ -371,7 +381,7 @@
     function startMenuAmbience() {
       stopMenuAmbience();
       const c = ensureCtx(); if (!c) return;
-      const g = c.createGain(); g.gain.value = 0; g.connect(master);
+      const g = c.createGain(); g.gain.value = 0; g.connect(localMaster);
       const filt = c.createBiquadFilter();
       filt.type = 'lowpass'; filt.frequency.value = 420; filt.connect(g);
       const o1 = c.createOscillator(); o1.type = 'sine'; o1.frequency.value = 55;
@@ -387,7 +397,8 @@
       menuNodes = { o1, o2, lfo, g, blipTimer: null };
       const scheduleBlip = () => {
         if (!menuNodes) return;
-        noiseBurst(0.05, 1400 + Math.random() * 900, 9, enabled ? 0.05 : 0);
+        ensureCtx(); // keeps volume/mute synced even during idle menu time
+        noiseBurst(0.05, 1400 + Math.random() * 900, 9, 0.05);
         menuNodes.blipTimer = setTimeout(scheduleBlip, 1800 + Math.random() * 2600);
       };
       menuNodes.blipTimer = setTimeout(scheduleBlip, 1400);
@@ -397,8 +408,9 @@
       if (!menuNodes) return;
       const n = menuNodes; menuNodes = null;
       clearTimeout(n.blipTimer);
-      if (ctx) {
-        n.g.gain.setTargetAtTime(0, ctx.currentTime, 0.25);
+      const c = SFX && SFX.ctx;
+      if (c) {
+        n.g.gain.setTargetAtTime(0, c.currentTime, 0.25);
         setTimeout(() => { try { n.o1.stop(); n.o2.stop(); n.lfo.stop(); } catch (e) {} }, 500);
       }
     }
@@ -413,6 +425,7 @@
 
     function updateTension(dt, params) {
       if (!liveActive) return;
+      ensureCtx(); // cheap; keeps volume/mute synced live during play
       params = params || {};
       let target = 0;
       if (!params.hasLOS) target += 0.55;      // can't see the bot = the core threat
@@ -443,10 +456,10 @@
       const osc = c.createOscillator(); osc.type = 'sawtooth';
       const filt = c.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 800;
       const g = c.createGain(); g.gain.value = 0;
-      osc.connect(filt); filt.connect(g); g.connect(master);
+      osc.connect(filt); filt.connect(g); g.connect(localMaster);
       osc.frequency.setValueAtTime(90, c.currentTime);
       osc.frequency.linearRampToValueAtTime(260, c.currentTime + 0.9);
-      g.gain.linearRampToValueAtTime(enabled ? 0.09 : 0, c.currentTime + 0.15);
+      g.gain.linearRampToValueAtTime(0.09, c.currentTime + 0.15);
       g.gain.linearRampToValueAtTime(0.0001, c.currentTime + 0.9);
       osc.start(); osc.stop(c.currentTime + 0.95);
     }
@@ -469,9 +482,9 @@
     }
 
     // every entry point the game code actually calls is wrapped here so a
-    // failure anywhere in the audio graph (unsupported API, a browser's
-    // context limit, anything) can never propagate out and interrupt the
-    // game's own state machine (round/match transitions, input handling)
+    // failure anywhere in the audio graph (unsupported API, SFX missing,
+    // anything) can never propagate out and interrupt the game's own
+    // state machine (round/match transitions, input handling)
     function safe(fn) {
       return function () {
         try { return fn.apply(null, arguments); } catch (e) { return undefined; }
@@ -479,7 +492,7 @@
     }
 
     return {
-      unlock: safe(unlock), isEnabled: safe(isEnabled), setEnabled: safe(setEnabled),
+      unlock: safe(unlock),
       startMenuAmbience: safe(startMenuAmbience), stopMenuAmbience: safe(stopMenuAmbience),
       startLiveLoop: safe(startLiveLoop), stopLiveLoop: safe(stopLiveLoop),
       updateTension: safe(updateTension), matchPointDrone: safe(matchPointDrone),
@@ -667,20 +680,9 @@
       this.aiAmmoLabel = this.add.text(W - 16, HUD_H / 2, '', {
         fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#f97316', fontStyle: 'bold'
       }).setOrigin(1, 0.5).setDepth(52);
-
-      // ---- music mute toggle — tucked into the top-right corner, above
-      // the BOT ammo readout, so it doesn't crowd anything already there ----
-      this.muteLabel = this.add.text(W - 16, 11, '', {
-        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold'
-      }).setOrigin(1, 0.5).setDepth(53).setInteractive({ useHandCursor: true });
-      this.refreshMuteLabel();
-      this.muteLabel.on('pointerover', () => this.muteLabel.setColor('#e2e8f0'));
-      this.muteLabel.on('pointerout', () => this.refreshMuteLabel());
-      this.muteLabel.on('pointerdown', () => {
-        Music.unlock();
-        Music.setEnabled(!Music.isEnabled());
-        this.refreshMuteLabel();
-      });
+      // no separate mute control here — ArcadeSFX (assets/sfx.js) already
+      // mounts its own floating mute/volume panel for the whole page, and
+      // this game's music routes through that same shared switch
 
       // ---- big centered message text (round/match banners) — a colored
       // panel behind everything (gold for a match win, muted red for a
@@ -714,11 +716,6 @@
       this.redrawPickups();
       this.updateHUD();
       this.buildMenu();
-    }
-
-    refreshMuteLabel() {
-      const on = Music.isEnabled();
-      this.muteLabel.setText(on ? '♪ SOUND' : '♪ MUTED').setColor(on ? '#64748b' : '#c2703d');
     }
 
     // -----------------------------------------------------------------
