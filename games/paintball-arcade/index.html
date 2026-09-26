@@ -365,6 +365,7 @@
       this.phase = 'menu'; // menu | countdown | live | round-over | match-over
       this.countdownText = null;
       this.difficulty = 'normal';
+      this.selectedMap = 'random'; // 'random' or a LAYOUTS[].name
       this.stats = { shotsFired: 0, hits: 0 };
       this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
 
@@ -409,14 +410,17 @@
     }
 
     // -----------------------------------------------------------------
-    // Arena — picks a random bunker layout and (re)draws bunkers + the
-    // cosmetic dressing around them. Called once at boot and again at
-    // the start of every new match (not every round — the layout holds
-    // for all 5 rounds of a match) so replays don't always play out on
-    // the same sightlines.
+    // Arena — picks a bunker layout (the player's menu choice, or a random
+    // one if they left it on "Random") and (re)draws bunkers + the cosmetic
+    // dressing around them. Called once at boot and again at the start of
+    // every new match (not every round — the layout holds for all 5 rounds
+    // of a match) so replays don't always play out on the same sightlines.
     // -----------------------------------------------------------------
     buildArena() {
-      const layout = Phaser.Utils.Array.GetRandom(LAYOUTS);
+      const forced = this.selectedMap && this.selectedMap !== 'random'
+        ? LAYOUTS.find(l => l.name === this.selectedMap)
+        : null;
+      const layout = forced || Phaser.Utils.Array.GetRandom(LAYOUTS);
       this.currentLayoutName = layout.name;
       this.bunkers = layout.bunkers.map(spec => Object.assign({}, spec));
 
@@ -576,25 +580,28 @@
       this.menuObjects.push(tagline);
 
       const rules = [
-        ['WASD', 'Move'],
-        ['Mouse', 'Aim'],
-        ['Click', 'Shoot'],
-        ['', ''],
+        ['WASD · Mouse · Click', 'Move · Aim · Shoot'],
         ['No health bar', 'one hit eliminates you'],
         ['Hopper holds 12', 'refill from field pickups'],
         ['Best of 5', 'first to 3 round wins takes the match']
       ];
-      let ry = cy - 68;
+      let ry = cy - 96;
       rules.forEach(([a, b]) => {
-        if (!a) { ry += 14; return; }
-        const row = this.add.text(cx, ry, b ? (a + '  —  ' + b) : a, {
-          fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: b ? '#cbd5e1' : '#38bdf8', fontStyle: b ? 'normal' : 'bold', align: 'center'
+        const row = this.add.text(cx, ry, a + '  —  ' + b, {
+          fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#cbd5e1', align: 'center'
         }).setOrigin(0.5).setDepth(66);
         this.menuObjects.push(row);
-        ry += 26;
+        ry += 24;
       });
 
-      const diffLabel = this.add.text(cx, cy + 118, 'AI DIFFICULTY', {
+      const mapLabel = this.add.text(cx, cy - 2, 'MAP', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(66);
+      this.menuObjects.push(mapLabel);
+
+      this.buildMapThumbnails(cx, cy + 56);
+
+      const diffLabel = this.add.text(cx, cy + 138, 'AI DIFFICULTY', {
         fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#64748b', fontStyle: 'bold'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(diffLabel);
@@ -604,7 +611,7 @@
       const diffGap = 90;
       diffKeys.forEach((key, i) => {
         const bx = cx + (i - 1) * diffGap;
-        const btn = this.add.text(bx, cy + 144, DIFFICULTY_SPECS[key].label, {
+        const btn = this.add.text(bx, cy + 164, DIFFICULTY_SPECS[key].label, {
           fontFamily: 'system-ui, sans-serif', fontSize: '16px', fontStyle: 'bold', align: 'center',
           backgroundColor: '#11161d', padding: { left: 14, right: 14, top: 6, bottom: 6 }
         }).setOrigin(0.5).setDepth(66).setInteractive({ useHandCursor: true });
@@ -614,11 +621,87 @@
       });
       this.refreshDifficultyButtons();
 
-      const prompt = this.add.text(cx, cy + 190, 'CLICK TO START', {
+      const prompt = this.add.text(cx, cy + 206, 'CLICK TO START', {
         fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#fbbf24', fontStyle: 'bold', align: 'center'
       }).setOrigin(0.5).setDepth(66);
       this.menuObjects.push(prompt);
       this.tweens.add({ targets: prompt, alpha: { from: 1, to: 0.35 }, duration: 700, yoyo: true, repeat: -1 });
+    }
+
+    // Map picker — a small schematic of each layout's bunker rhythm (grey
+    // dots) plus the two spawn points (cyan/orange), so the choice reads
+    // at a glance instead of just naming the layout. "Random" gets a
+    // dashed box and a die instead of a diagram, since there's nothing
+    // fixed to draw.
+    buildMapThumbnails(cx, rowY) {
+      const boxW = 132, boxH = 66, gap = 150;
+      const choices = [...LAYOUTS.map(l => l.name), 'random'];
+      this.mapButtons = {};
+      choices.forEach((name, i) => {
+        const bx = cx + (i - 1) * gap;
+        const gfx = this.add.graphics().setDepth(66);
+        this.menuObjects.push(gfx);
+
+        const label = this.add.text(bx, rowY + boxH / 2 + 15, name === 'random' ? 'RANDOM' : name.toUpperCase(), {
+          fontFamily: 'system-ui, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#94a3b8', align: 'center'
+        }).setOrigin(0.5).setDepth(66);
+        this.menuObjects.push(label);
+
+        const hitZone = this.add.rectangle(bx, rowY, boxW, boxH + 26, 0xffffff, 0.001)
+          .setDepth(67).setInteractive({ useHandCursor: true });
+        hitZone.on('pointerdown', () => this.setSelectedMap(name));
+        this.menuObjects.push(hitZone);
+
+        this.mapButtons[name] = { gfx, label, bx, rowY, boxW, boxH };
+      });
+      this.refreshMapButtons();
+    }
+
+    drawMapThumbnail(gfx, bx, rowY, boxW, boxH, name, selected) {
+      gfx.clear();
+      const borderColor = selected ? 0xfbbf24 : 0x2a3140;
+      gfx.fillStyle(0x11161d, 1);
+      gfx.fillRoundedRect(bx - boxW / 2, rowY - boxH / 2, boxW, boxH, 8);
+
+      const layout = LAYOUTS.find(l => l.name === name);
+      if (layout) {
+        const pad = 7;
+        const sx = (boxW - pad * 2) / W, sy = (boxH - pad * 2) / FIELD_H;
+        const toX = wx => bx - boxW / 2 + pad + wx * sx;
+        const toY = wy => rowY - boxH / 2 + pad + (wy - HUD_H) * sy;
+        layout.bunkers.forEach(b => {
+          gfx.fillStyle(0x64748b, 1);
+          gfx.fillCircle(toX(b.x), toY(b.y), Math.max(1.5, b.r * sx * 0.85));
+        });
+        gfx.fillStyle(PLAYER_COLOR, 1);
+        gfx.fillCircle(toX(PLAYER_SPAWN.x), toY(PLAYER_SPAWN.y), 3);
+        gfx.fillStyle(AI_COLOR, 1);
+        gfx.fillCircle(toX(AI_SPAWN.x), toY(AI_SPAWN.y), 3);
+      } else {
+        // "random" — a die face instead of a fixed layout
+        gfx.fillStyle(0x64748b, 1);
+        const pipR = 3.4, ox = bx, oy = rowY;
+        [[-14, -12], [14, -12], [-14, 12], [14, 12], [0, 0]].forEach(([dx, dy]) => {
+          gfx.fillCircle(ox + dx, oy + dy, pipR);
+        });
+      }
+
+      gfx.lineStyle(selected ? 3 : 1.5, borderColor, 1);
+      gfx.strokeRoundedRect(bx - boxW / 2, rowY - boxH / 2, boxW, boxH, 8);
+    }
+
+    setSelectedMap(name) {
+      this.selectedMap = name;
+      this.refreshMapButtons();
+    }
+
+    refreshMapButtons() {
+      if (!this.mapButtons) return;
+      Object.entries(this.mapButtons).forEach(([name, btn]) => {
+        const selected = name === this.selectedMap;
+        this.drawMapThumbnail(btn.gfx, btn.bx, btn.rowY, btn.boxW, btn.boxH, name, selected);
+        btn.label.setColor(selected ? '#fbbf24' : '#94a3b8');
+      });
     }
 
     setDifficulty(key) {
@@ -678,10 +761,10 @@
     resetRound() {
       this.player.x = PLAYER_SPAWN.x; this.player.y = PLAYER_SPAWN.y;
       this.player.angle = -Math.PI / 2; this.player.ammo = HOPPER_MAX;
-      this.player.alive = true; this.player.frozen = 0; this.player.fireCooldown = 0;
+      this.player.alive = true; this.player.frozen = 0; this.player.fireCooldown = 0; this.player.ammoEmptyTimer = 0;
 
       this.ai.x = AI_SPAWN.x; this.ai.y = AI_SPAWN.y; this.ai.angle = Math.PI / 2;
-      this.ai.ammo = HOPPER_MAX; this.ai.alive = true; this.ai.frozen = 0;
+      this.ai.ammo = HOPPER_MAX; this.ai.alive = true; this.ai.frozen = 0; this.ai.ammoEmptyTimer = 0;
       this.ai.state = 'SPAWN'; this.ai.stateTimer = 0; this.ai.currentBunker = null;
       this.ai.targetPoint = null; this.ai.canSeePlayer = false;
       this.ai.lastSeenX = null; this.ai.lastSeenY = null; this.ai.timeSinceSeenPlayer = 99999;
@@ -743,7 +826,7 @@
           winner === 'player' ? 'MATCH WON!' : 'MATCH LOST',
           winner === 'player' ? 'Click to play again' : 'Click to try again',
           {
-            accent: winner === 'player' ? 0xfbbf24 : 0xef4444,
+            accent: winner === 'player' ? 0xfbbf24 : 0xc2703d,
             tall: true,
             showPips: true,
             stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)'
@@ -1203,9 +1286,12 @@
       }
 
       const shooterColor = shooterOwner === 'player' ? PLAYER_COLOR : AI_COLOR;
+      const shooter = shooterOwner === 'player' ? this.player : this.ai;
+      const shotDist = dist(shooter.x, shooter.y, target.x, target.y);
       this.addSplat(target.x, target.y, shooterOwner, true);
       target.frozen = stunMs;
       this.addEffect('burst', target.x, target.y, shooterColor, wouldWinMatch ? 900 : 260);
+      this.triggerEliminationImpact(target, shooterColor, wouldWinMatch, shotDist);
       if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
         try { SFX.tone(180, 0.09); } catch (e) {}
       }
@@ -1216,6 +1302,55 @@
         }
         this.endRound(shooterOwner === 'player' ? 'player' : 'ai');
       });
+    }
+
+    // Elimination feedback — camera shake, a color flash, a punch-zoom, an
+    // expanding shockwave ring and a scatter of flying paint-chip shards,
+    // stacked instead of one generic screen-shake. Every parameter is
+    // jittered per hit, and the shot's range feeds the scale (a long-range
+    // pick lands bigger than a point-blank panic-shot), so no two
+    // eliminations look or feel quite the same.
+    triggerEliminationImpact(target, shooterColor, isMatchPoint, shotDist) {
+      const rangeFactor = Phaser.Math.Clamp(shotDist / 520, 0.4, 1.3);
+      const scale = (isMatchPoint ? 1.7 : 1) * rangeFactor;
+
+      const shakeMs = Phaser.Math.Between(120, 200) * scale;
+      const shakeIntensity = Phaser.Math.FloatBetween(0.005, 0.011) * scale;
+      this.cameras.main.shake(shakeMs, shakeIntensity);
+
+      const flashMs = Phaser.Math.Between(50, 90) * (isMatchPoint ? 1.8 : 1);
+      const c = Phaser.Display.Color.IntegerToColor(shooterColor);
+      this.cameras.main.flash(flashMs, c.red, c.green, c.blue, false);
+
+      const zoomAmt = 1 + Phaser.Math.FloatBetween(0.012, 0.03) * scale;
+      this.tweens.add({
+        targets: this.cameras.main, zoom: zoomAmt, duration: Phaser.Math.Between(70, 110),
+        yoyo: true, ease: 'Quad.easeOut'
+      });
+
+      this.addEffect('ring', target.x, target.y, shooterColor, isMatchPoint ? 520 : Phaser.Math.Between(260, 360),
+        { maxR: Phaser.Math.Between(34, 56) * (isMatchPoint ? 1.4 : 1) });
+
+      const shardCount = Phaser.Math.Between(7, 12) + (isMatchPoint ? 6 : 0);
+      for (let i = 0; i < shardCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Phaser.Math.FloatBetween(1.3, 3.4) * (isMatchPoint ? 1.4 : 1);
+        this.effects.push({
+          type: 'shard', x: target.x, y: target.y,
+          vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+          rot: Math.random() * Math.PI, spin: (Math.random() - 0.5) * 0.35,
+          size: Phaser.Math.FloatBetween(2.5, 5.5),
+          color: shooterColor, t: 0, duration: Phaser.Math.Between(360, 640)
+        });
+      }
+
+      // a small hit-stop punch on every elimination; the match-winning shot
+      // already gets its own bigger dramatic slow-mo (set above in
+      // resolveHit), so don't stack a second hitStopFactor tween on it
+      if (!isMatchPoint) {
+        this.hitStopFactor = Phaser.Math.FloatBetween(0.3, 0.45);
+        this.tweens.add({ targets: this, hitStopFactor: 1, duration: Phaser.Math.Between(180, 260), delay: 30, ease: 'Quad.easeOut' });
+      }
     }
 
     addSplat(x, y, owner, isHit) {
@@ -1266,8 +1401,8 @@
       });
     }
 
-    addEffect(type, x, y, color, duration) {
-      this.effects.push({ type, x, y, color, t: 0, duration });
+    addEffect(type, x, y, color, duration, extra) {
+      this.effects.push(Object.assign({ type, x, y, color, t: 0, duration }, extra));
     }
 
     updateEffects(dt) {
@@ -1286,6 +1421,24 @@
           g.fillCircle(e.x, e.y, 6 + p * 16);
           g.lineStyle(2, e.color, (1 - p) * 0.6);
           g.strokeCircle(e.x, e.y, 6 + p * 22);
+        } else if (e.type === 'ring') {
+          // expanding shockwave — its own max radius per instance so a
+          // string of eliminations doesn't all draw the identical ring
+          g.lineStyle(4 * (1 - p) + 1, e.color, (1 - p) * 0.75);
+          g.strokeCircle(e.x, e.y, 8 + p * e.maxR);
+        } else if (e.type === 'shard') {
+          // a flying paint-chip: drifts on its own velocity with drag and
+          // tumbles as it fades, so debris scatters differently every hit
+          e.x += e.vx * (dt / 16.667);
+          e.y += e.vy * (dt / 16.667);
+          e.vx *= 0.93; e.vy *= 0.93;
+          e.rot += e.spin;
+          g.fillStyle(e.color, (1 - p) * 0.95);
+          g.save();
+          g.translateCanvas(e.x, e.y);
+          g.rotateCanvas(e.rot);
+          g.fillRect(-e.size / 2, -e.size / 2, e.size, e.size * 0.6);
+          g.restore();
         }
       }
     }
@@ -1339,6 +1492,30 @@
       this.drawScorePips(this.pipsGfx, W / 2, 28, this.roundWins.player, this.roundWins.ai, 5.5);
     }
 
+    // Failsafe: if both hoppers run dry with no pickups left in reach, the
+    // round would otherwise stall forever with neither side able to fire.
+    // Empty for 3s straight -> a small "emergency reload" so play resumes.
+    updateAmmoRegen(dt) {
+      if (this.phase !== 'live') return;
+      ['player', 'ai'].forEach(who => {
+        const actor = this[who];
+        if (!actor.alive) return;
+        if (actor.ammo <= 0) {
+          actor.ammoEmptyTimer = (actor.ammoEmptyTimer || 0) + dt;
+          if (actor.ammoEmptyTimer >= 3000) {
+            actor.ammo = 4;
+            actor.ammoEmptyTimer = 0;
+            this.updateHUD();
+            if (typeof SFX !== 'undefined' && SFX && typeof SFX.tone === 'function') {
+              try { SFX.tone(360, 0.06); } catch (e) {}
+            }
+          }
+        } else {
+          actor.ammoEmptyTimer = 0;
+        }
+      });
+    }
+
     update(time, dt) {
       // hitStopFactor drops below 1 for the shot that decides the match,
       // stretching that moment out into slow motion without touching
@@ -1350,6 +1527,7 @@
       this.updateBalls(dtScaled);
       this.updateFogOfWar(dtScaled);
       this.updateEffects(dtScaled);
+      this.updateAmmoRegen(dtScaled);
       // re-draw the AI now that fog-of-war for THIS frame is known (drawAI
       // above ran before updateFogOfWar the first time through, so it used
       // last frame's visibility — one frame of lag is invisible at 60fps,
