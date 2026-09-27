@@ -2,19 +2,58 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Paintball Arcade</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  html, body { margin: 0; padding: 0; background: #0b0f14; overflow: hidden; }
-  #game-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
-  canvas { image-rendering: pixelated; cursor: crosshair; }
+  html, body { margin: 0; padding: 0; background: #0b0f14; overflow: hidden; height: 100%; overscroll-behavior: none; }
+  #game-root {
+    width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  canvas { image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+  /* The field is a landscape 960x656 layout with a fixed aspect ratio --
+     portrait shrinks it to a thin, hard-to-aim strip across the middle
+     of the screen, so touch devices get a plain rotate-prompt instead
+     of trying to play that way. Hidden entirely on non-touch/desktop. */
+  #rotate-hint {
+    display: none; position: fixed; inset: 0; z-index: 9999;
+    background: #05070a; color: #F2F4F7;
+    flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; box-sizing: border-box;
+    font-family: 'Chakra Petch', system-ui, sans-serif;
+  }
+  #rotate-hint .icon { font-size: 42px; margin-bottom: 14px; }
+  #rotate-hint .title { font-size: 19px; font-weight: 700; letter-spacing: 0.02em; }
+  #rotate-hint .sub { font-size: 13px; color: #94a3b8; margin-top: 8px; max-width: 280px; }
 </style>
 </head>
 <body>
 <div id="game-root"></div>
+<div id="rotate-hint">
+  <div class="icon">⟳</div>
+  <div class="title">ROTATE YOUR DEVICE</div>
+  <div class="sub">Paintball Arcade plays in landscape — turn your phone sideways to jump in.</div>
+</div>
+<script>
+// Touch devices only, and only while genuinely cramped (portrait) --
+// this never runs on desktop and never blocks a tablet/laptop that's
+// already wide enough to play comfortably in either orientation.
+(function () {
+  var isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  if (!isTouch) return;
+  var hint = document.getElementById('rotate-hint');
+  function refresh() {
+    var portrait = window.innerHeight > window.innerWidth;
+    hint.style.display = portrait ? 'flex' : 'none';
+  }
+  window.addEventListener('resize', refresh);
+  window.addEventListener('orientationchange', refresh);
+  refresh();
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 <script src="../../assets/sfx.js"></script>
 <script>
@@ -236,19 +275,61 @@
     { x: 480, y: 395, type: 'champagne', rot: -0.15 }
   ];
 
+  // ---- Sixth arena layout — the third swagger map (matching Boulevard
+  // and Penthouse's budget: its own full color set + two bespoke cosmetic
+  // pieces), a different flavor again: old-Hollywood premiere instead of
+  // lowrider gold or nightclub neon. Also a different rhythm than either:
+  // rather than symmetric left/right rows, each row's cover leans a
+  // different way than the row above it, so the path down the field
+  // zigzags instead of running in straight lanes -- a paparazzi gauntlet
+  // to walk through rather than an open boulevard or a tight VIP knot. ----
+  const BUNKER_SPECS_REDCARPET = [
+    // row A -- a standee on the left, the spawn-axis can dead center,
+    // a wedge on the right
+    { x: 260, y: 110, r: 38, shape: 'tower' }, { x: 480, y: 110, r: 27, shape: 'can' }, { x: 680, y: 110, r: 17, shape: 'dorito', rot: Math.PI / 2 },
+    // row B -- leans the opposite way from row A (wedge left, standee
+    // right), which is what makes the path zigzag
+    { x: 380, y: 205, r: 17, shape: 'dorito', rot: Math.PI / 2 }, { x: 620, y: 205, r: 38, shape: 'tower' },
+    // row C -- center line, one big standee dead on the spawn axis
+    { x: 340, y: 300, r: 27, shape: 'can' }, { x: 480, y: 300, r: 38, shape: 'tower' }, { x: 620, y: 300, r: 27, shape: 'can' },
+    // row D -- mirrors row B
+    { x: 380, y: 395, r: 17, shape: 'dorito', rot: -Math.PI / 2 }, { x: 620, y: 395, r: 38, shape: 'tower' },
+    // row E -- mirrors row A
+    { x: 260, y: 490, r: 38, shape: 'tower' }, { x: 480, y: 490, r: 27, shape: 'can' }, { x: 680, y: 490, r: 17, shape: 'dorito', rot: -Math.PI / 2 }
+  ];
+
+  // old-Hollywood red-carpet color set, used only by Red Carpet -- red
+  // and chrome/silver instead of Boulevard's gold/purple or Penthouse's
+  // pink/cyan
+  const BUNKER_PALETTE_REDCARPET = {
+    can:    [ { base: 0xdc2626, hi: 0xfca5a5, rim: 0x7f1d1d }, { base: 0xcbd5e1, hi: 0xf8fafc, rim: 0x475569 } ],
+    tower:  [ { base: 0xef4444, hi: 0xfecaca, rim: 0x991b1b }, { base: 0x94a3b8, hi: 0xe2e8f0, rim: 0x334155 } ],
+    dorito: [ { base: 0xf87171, hi: 0xfee2e2, rim: 0xb91c1c }, { base: 0xe2e8f0, hi: 0xffffff, rim: 0x64748b } ]
+  };
+
+  // Red-Carpet-only cosmetic flair -- a paparazzi camera catching a
+  // starburst flash, and a velvet-rope-and-brass-stanchion barrier, sat
+  // in the open gaps the zigzag leaves on either side of center.
+  const DECOR_SPECS_REDCARPET = [
+    { x: 480, y: 205, type: 'flashbulb' },
+    { x: 480, y: 395, type: 'velvetrope' }
+  ];
+
   const LAYOUTS = [
     { name: 'Crossroads', bunkers: BUNKER_SPECS },
     { name: 'Crossfire', bunkers: BUNKER_SPECS_ALT },
     { name: 'Bottleneck', bunkers: BUNKER_SPECS_BOTTLENECK },
     { name: 'Boulevard', bunkers: BUNKER_SPECS_BOULEVARD, palette: BUNKER_PALETTE_BOULEVARD, accent: 0xeab308 },
-    { name: 'Penthouse', bunkers: BUNKER_SPECS_PENTHOUSE, palette: BUNKER_PALETTE_PENTHOUSE, accent: 0xf472b6 }
+    { name: 'Penthouse', bunkers: BUNKER_SPECS_PENTHOUSE, palette: BUNKER_PALETTE_PENTHOUSE, accent: 0xf472b6 },
+    { name: 'Red Carpet', bunkers: BUNKER_SPECS_REDCARPET, palette: BUNKER_PALETTE_REDCARPET, accent: 0xef4444 }
   ];
 
   // extra cosmetic-only decor per swagger map, layered on top of the
   // universal DECOR_SPECS above rather than replacing it
   const LAYOUT_DECOR_EXTRAS = {
     Boulevard: DECOR_SPECS_BOULEVARD,
-    Penthouse: DECOR_SPECS_PENTHOUSE
+    Penthouse: DECOR_SPECS_PENTHOUSE,
+    'Red Carpet': DECOR_SPECS_REDCARPET
   };
 
   const PICKUP_SPECS = [
@@ -616,6 +697,25 @@
         upArrow: 'UP', downArrow: 'DOWN', leftArrow: 'LEFT', rightArrow: 'RIGHT'
       });
       this.pointer = this.input.activePointer;
+
+      // ---- touch controls — a floating move-stick on the left half of
+      // the screen and a floating aim-stick (drag to aim, release to
+      // fire, like drawing a bow) on the right half, both only live
+      // during an actual round. Detected once up front so desktop mouse
+      // play is completely unchanged; both control paths stay wired up
+      // simultaneously (see updatePlayer) so a touch-screen laptop with a
+      // keyboard still works either way. ----
+      this.touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+      this.stickRadius = 52;
+      this.stickKnobRadius = 24;
+      this.touchDefaultMoveBase = { x: 96, y: H - 96 };
+      this.touchDefaultAimBase = { x: W - 96, y: H - 96 };
+      this.touchMove = { active: false, pointerId: null, base: null, knob: null, vec: { x: 0, y: 0 } };
+      this.touchAim = { active: false, pointerId: null, base: null, knob: null, angle: -Math.PI / 2 };
+      if (this.touchControlsEnabled) {
+        this.touchUI = this.add.graphics().setDepth(120);
+      }
+
       this.input.on('pointerdown', (pointer, currentlyOver) => {
         // browsers won't play audio (or, on some mobile browsers, ever
         // properly unlock an AudioContext created before a gesture) until
@@ -633,7 +733,25 @@
         // also starting the match / firing a shot
         if (currentlyOver && currentlyOver.length > 0) return;
         if (this.phase === 'menu') { this.startFromMenu(); return; }
+
+        // during a live round, a touch device routes the tap to whichever
+        // stick claims that half of the screen instead of firing
+        // immediately — each stick's own release handles the actual shot
+        // (the aim-stick) or just drives movement (the move-stick)
+        if (this.touchControlsEnabled && this.phase === 'live') {
+          if (pointer.x < W / 2) { if (!this.touchMove.active) this.beginTouchMove(pointer); }
+          else { if (!this.touchAim.active) this.beginTouchAim(pointer); }
+          return;
+        }
         this.tryPlayerShot();
+      });
+      this.input.on('pointermove', (pointer) => {
+        if (this.touchMove.active && pointer.id === this.touchMove.pointerId) this.updateTouchMove(pointer);
+        if (this.touchAim.active && pointer.id === this.touchAim.pointerId) this.updateTouchAim(pointer);
+      });
+      this.input.on('pointerup', (pointer) => {
+        if (this.touchMove.active && pointer.id === this.touchMove.pointerId) this.endTouchMove();
+        if (this.touchAim.active && pointer.id === this.touchAim.pointerId) this.endTouchAim();
       });
 
       // ---- field background: real grass, not a flat fill. A base color,
@@ -782,7 +900,9 @@
         fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#64748b', fontStyle: 'bold'
       }).setOrigin(0.5).setDepth(52);
       this.pipsGfx = this.add.graphics().setDepth(52);
-      this.hintLabel = this.add.text(W / 2, 40, 'WASD to move · Mouse to aim · Click to shoot', {
+      this.hintLabel = this.add.text(W / 2, 40, this.touchControlsEnabled
+        ? 'Left stick to move · right stick to aim & fire'
+        : 'WASD to move · Mouse to aim · Click to shoot', {
         fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#94a3b8'
       }).setOrigin(0.5).setDepth(52);
       this.aiAmmoLabel = this.add.text(W - 16, HUD_H / 2, '', {
@@ -1008,6 +1128,47 @@
             decorGfx.fillStyle(0xffffff, 0.8);
             decorGfx.fillCircle(gx + ox, gy + oy, 0.8);
           });
+        } else if (d.type === 'flashbulb') {
+          // a paparazzi camera catching the shot -- dark body, a lens,
+          // and a starburst flash going off above it
+          const bw = 20, bh = 13;
+          decorGfx.fillStyle(0x18181b, 1);
+          decorGfx.fillRoundedRect(d.x - bw / 2, d.y - bh / 2, bw, bh, 3);
+          decorGfx.fillStyle(0x3f3f46, 1);
+          decorGfx.fillCircle(d.x + 3, d.y, 6);
+          decorGfx.fillStyle(0x0b0f14, 1);
+          decorGfx.fillCircle(d.x + 3, d.y, 3.5);
+          decorGfx.fillStyle(0x94a3b8, 0.8);
+          decorGfx.fillCircle(d.x + 1.5, d.y - 1.5, 1.2);
+          const fx = d.x + 3, fy = d.y - 16;
+          for (let i = 0; i < 8; i++) {
+            const ang = (i / 8) * Math.PI * 2;
+            decorGfx.lineStyle(1.5, 0xfef08a, 0.7);
+            decorGfx.lineBetween(fx, fy, fx + Math.cos(ang) * 10, fy + Math.sin(ang) * 10);
+          }
+          decorGfx.fillStyle(0xfef9c3, 0.9);
+          decorGfx.fillCircle(fx, fy, 4);
+        } else if (d.type === 'velvetrope') {
+          // twin brass stanchions with a sagging red velvet rope between
+          // them -- the classic red-carpet barrier
+          [-18, 18].forEach(ox => {
+            decorGfx.fillStyle(0x0b0f14, 0.25);
+            decorGfx.fillEllipse(d.x + ox, d.y + 12, 12, 5);
+            decorGfx.fillStyle(0x854d0e, 1);
+            decorGfx.fillRect(d.x + ox - 2, d.y - 10, 4, 20);
+            decorGfx.fillStyle(0xfacc15, 1);
+            decorGfx.fillCircle(d.x + ox, d.y - 11, 4);
+            decorGfx.fillStyle(0xfff9c4, 0.6);
+            decorGfx.fillCircle(d.x + ox - 1, d.y - 12, 1.5);
+          });
+          const n = 10;
+          for (let i = 0; i < n; i++) {
+            const t = i / (n - 1);
+            const rx = d.x - 18 + t * 36;
+            const ry = d.y - 6 + Math.sin(t * Math.PI) * 9;
+            decorGfx.fillStyle(0x991b1b, 1);
+            decorGfx.fillCircle(rx, ry, 2.6);
+          }
         }
       });
 
@@ -1170,7 +1331,9 @@
       // key, left-aligned description around a shared centerline) instead
       // of one run-on sentence — reads like an actual control legend
       const rules = [
-        ['WASD · MOUSE · CLICK', 'Move · Aim · Shoot'],
+        this.touchControlsEnabled
+          ? ['LEFT STICK · RIGHT STICK', 'Move · Aim & shoot']
+          : ['WASD · MOUSE · CLICK', 'Move · Aim · Shoot'],
         ['NO HEALTH BAR', 'one hit eliminates you'],
         ['HOPPER: 12', 'refill from field pickups'],
         ['BEST OF 5', 'first to 3 round wins takes the match']
@@ -1383,6 +1546,7 @@
       this.player.x = PLAYER_SPAWN.x; this.player.y = PLAYER_SPAWN.y;
       this.player.angle = -Math.PI / 2; this.player.ammo = HOPPER_MAX;
       this.player.alive = true; this.player.frozen = 0; this.player.fireCooldown = 0; this.player.ammoEmptyTimer = 0;
+      this.resetTouchSticks();
 
       this.ai.x = AI_SPAWN.x; this.ai.y = AI_SPAWN.y; this.ai.angle = Math.PI / 2;
       this.ai.ammo = HOPPER_MAX; this.ai.alive = true; this.ai.frozen = 0; this.ai.ammoEmptyTimer = 0;
@@ -1566,14 +1730,24 @@
       if (this.keys.up.isDown || this.keys.upArrow.isDown) vy = -1;
       else if (this.keys.down.isDown || this.keys.downArrow.isDown) vy = 1;
       if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+      // keyboard takes priority (so a touch-screen laptop with a keyboard
+      // still works exactly like desktop); the move-stick only kicks in
+      // when no key is held
+      if (vx === 0 && vy === 0 && this.touchMove.active) {
+        vx = this.touchMove.vec.x; vy = this.touchMove.vec.y;
+      }
 
       this.player.x += vx * PLAYER_SPEED;
       this.player.y += vy * PLAYER_SPEED;
       resolveBunkerCollision(this.player, this.bunkers);
       clampToField(this.player);
 
-      const p = this.input.activePointer;
-      this.player.angle = Math.atan2(p.worldY - this.player.y, p.worldX - this.player.x);
+      if (this.touchAim.active) {
+        this.player.angle = this.touchAim.angle;
+      } else {
+        const p = this.input.activePointer;
+        this.player.angle = Math.atan2(p.worldY - this.player.y, p.worldX - this.player.x);
+      }
 
       // pickups
       this.pickups.forEach(pk => {
@@ -1613,6 +1787,103 @@
       g.fillCircle(this.player.x, this.player.y, PLAYER_R);
       g.lineStyle(2, 0xe0f2fe, alpha);
       g.strokeCircle(this.player.x, this.player.y, PLAYER_R);
+    }
+
+    // -----------------------------------------------------------------
+    // Touch controls — a floating move-stick (left half of screen) and a
+    // floating aim-stick (right half, drag to aim / release to fire, like
+    // drawing a bow). Both are "floating": the base appears wherever the
+    // player's thumb first lands rather than a fixed spot, which is far
+    // more forgiving than requiring a precise tap on a small fixed target.
+    // -----------------------------------------------------------------
+    beginTouchMove(pointer) {
+      this.touchMove.active = true;
+      this.touchMove.pointerId = pointer.id;
+      this.touchMove.base = { x: pointer.x, y: pointer.y };
+      this.touchMove.knob = { x: pointer.x, y: pointer.y };
+      this.touchMove.vec = { x: 0, y: 0 };
+    }
+
+    updateTouchMove(pointer) {
+      const base = this.touchMove.base;
+      let dx = pointer.x - base.x, dy = pointer.y - base.y;
+      const d = Math.hypot(dx, dy);
+      const max = this.stickRadius;
+      if (d > max) { dx = dx / d * max; dy = dy / d * max; }
+      this.touchMove.knob = { x: base.x + dx, y: base.y + dy };
+      const deadzone = 10;
+      if (d < deadzone) { this.touchMove.vec = { x: 0, y: 0 }; }
+      else {
+        const nd = Math.hypot(dx, dy) || 1;
+        this.touchMove.vec = { x: dx / nd, y: dy / nd };
+      }
+    }
+
+    endTouchMove() {
+      this.touchMove.active = false;
+      this.touchMove.pointerId = null;
+      this.touchMove.vec = { x: 0, y: 0 };
+    }
+
+    beginTouchAim(pointer) {
+      this.touchAim.active = true;
+      this.touchAim.pointerId = pointer.id;
+      this.touchAim.base = { x: pointer.x, y: pointer.y };
+      this.touchAim.knob = { x: pointer.x, y: pointer.y };
+      // keep facing whatever direction the player was already aimed until
+      // they actually drag, so a plain tap-and-release fires straight
+      // ahead instead of snapping to some arbitrary angle
+      this.touchAim.angle = this.player.angle;
+    }
+
+    updateTouchAim(pointer) {
+      const base = this.touchAim.base;
+      let dx = pointer.x - base.x, dy = pointer.y - base.y;
+      const d = Math.hypot(dx, dy);
+      const max = this.stickRadius;
+      if (d > max) { dx = dx / d * max; dy = dy / d * max; }
+      this.touchAim.knob = { x: base.x + dx, y: base.y + dy };
+      // small deadzone so a barely-trembling tap doesn't snap the aim to
+      // a near-random angle right before firing
+      if (d > 6) this.touchAim.angle = Math.atan2(dy, dx);
+    }
+
+    endTouchAim() {
+      this.touchAim.active = false;
+      this.touchAim.pointerId = null;
+      // release the drawn-back "bow" -- fire in whatever direction was
+      // last aimed, mirroring the desktop click-to-shoot-at-the-cursor
+      this.tryPlayerShot();
+    }
+
+    resetTouchSticks() {
+      this.touchMove.active = false; this.touchMove.pointerId = null; this.touchMove.vec = { x: 0, y: 0 };
+      this.touchAim.active = false; this.touchAim.pointerId = null;
+    }
+
+    drawTouchUI() {
+      if (!this.touchUI) return;
+      const gfx = this.touchUI;
+      gfx.clear();
+      const show = this.phase === 'live';
+      gfx.setVisible(show);
+      if (!show) return;
+
+      const mBase = this.touchMove.active ? this.touchMove.base : this.touchDefaultMoveBase;
+      const mKnob = this.touchMove.active ? this.touchMove.knob : mBase;
+      const mAlpha = this.touchMove.active ? 0.4 : 0.16;
+      gfx.lineStyle(3, 0xe2e8f0, mAlpha);
+      gfx.strokeCircle(mBase.x, mBase.y, this.stickRadius);
+      gfx.fillStyle(0xe2e8f0, mAlpha);
+      gfx.fillCircle(mKnob.x, mKnob.y, this.stickKnobRadius);
+
+      const aBase = this.touchAim.active ? this.touchAim.base : this.touchDefaultAimBase;
+      const aKnob = this.touchAim.active ? this.touchAim.knob : aBase;
+      const aAlpha = this.touchAim.active ? 0.4 : 0.16;
+      gfx.lineStyle(3, PLAYER_COLOR, aAlpha);
+      gfx.strokeCircle(aBase.x, aBase.y, this.stickRadius);
+      gfx.fillStyle(PLAYER_COLOR, aAlpha);
+      gfx.fillCircle(aKnob.x, aKnob.y, this.stickKnobRadius);
     }
 
     // -----------------------------------------------------------------
@@ -2273,6 +2544,7 @@
       // last frame's visibility — one frame of lag is invisible at 60fps,
       // but redrawing here keeps it exact)
       this.drawAI();
+      this.drawTouchUI();
     }
   }
 
@@ -2292,6 +2564,22 @@
     height: H,
     parent: 'game-root',
     backgroundColor: '#0b0f14',
+    // Scale.FIT shrinks/grows the whole 960x656 canvas to fit whatever
+    // viewport it's dropped into (a phone screen, a narrow browser
+    // window) while keeping the aspect ratio and letterboxing rather
+    // than cropping -- without this the canvas just renders at a fixed
+    // 960x656 and overflows a phone's viewport entirely. CENTER_BOTH
+    // keeps it centered in the flex #game-root wrapper either way.
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+      width: W,
+      height: H
+    },
+    // two simultaneous touches (move stick + aim stick) plus a spare —
+    // Phaser only tracks one extra pointer beyond the primary by default,
+    // which would silently drop the second finger on mobile
+    input: { activePointers: 3 },
     scene: [ArenaScene]
   };
 
