@@ -91,13 +91,13 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; Q switch &middot; 1 crossover &middot; 2 hesi</div>
+  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; Q switch &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="menu-overlay" class="overlay">
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
-  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; Q switch player &middot; 1 crossover &middot; 2 hesitation</div>
+  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; Q switch player &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -385,16 +385,16 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
   // in space instead of an actual person. Hands cap each arm; shoe-shaped
   // feet cap each shin, nudged forward so they plant naturally under the
   // body instead of hanging straight down.
-  const HAND_R = 0.17;
+  const HAND_R = 0.26;
   function makeHand() {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(HAND_R, 8, 6), new THREE.MeshStandardMaterial({ color: SKIN_TONE }));
+    const m = new THREE.Mesh(new THREE.SphereGeometry(HAND_R, 10, 8), new THREE.MeshStandardMaterial({ color: SKIN_TONE }));
     m.castShadow = true;
     return m;
   }
   const handL = makeHand(); handL.position.set(0, -ARM_LEN, 0); armLP.add(handL);
   const handR = makeHand(); handR.position.set(0, -ARM_LEN, 0); armRP.add(handR);
 
-  const SHOE_LEN = 0.62, SHOE_WID = 0.34, SHOE_H = 0.2;
+  const SHOE_LEN = 0.86, SHOE_WID = 0.44, SHOE_H = 0.26;
   const shoeColor = 0x1c1c1c;
   function makeShoe() {
     const m = new THREE.Mesh(new THREE.BoxGeometry(SHOE_WID, SHOE_H, SHOE_LEN), new THREE.MeshStandardMaterial({ color: shoeColor }));
@@ -465,7 +465,7 @@ function makePlayer(team, posLabel) {
     // hesitation (shot-fake stutter then burst) share one cooldown so they
     // can't be spammed back to back, but track their own effect state.
     moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, hesitateFakeAmt: 0,
-    handSide: 1, handAnimFrom: 1, handAnimTo: 1, handAnimT: 1, handAnimDur: 260,
+    handSide: 1, handAnimFrom: 1, handAnimTo: 1, handAnimT: 1, handAnimDur: 260, handSwitchKind: 'front',
   };
 }
 
@@ -489,10 +489,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot / steal'
-  : 'WASD move · SPACE shoot or steal · SHIFT pass · Q switch player · 1 crossover · 2 hesitation';
+  : 'WASD move · SPACE shoot or steal · SHIFT pass · Q switch player · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot/steal'
-  : 'WASD move · SPACE shoot/steal · SHIFT pass · Q switch · 1 crossover · 2 hesi';
+  : 'WASD move · SPACE shoot/steal · SHIFT pass · Q switch · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -503,7 +503,7 @@ function resetPositions(possessionTeam) {
   const resetMoveState = (p) => {
     p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0;
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
-    p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1;
+    p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1; p.handSwitchKind = 'front';
   };
   game.teamA.forEach((p, i) => { p.x = homeXA; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = Math.PI / 2; resetMoveState(p); });
   game.teamB.forEach((p, i) => { p.x = homeXB; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = -Math.PI / 2; resetMoveState(p); });
@@ -629,7 +629,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
-  if (e.code === 'Digit2' || e.code === 'Numpad2') onHesitationPressed();
+  if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
+  if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
 });
 window.addEventListener('keyup', (e) => keysDown.delete(e.code));
 
@@ -652,36 +653,60 @@ function onPassPressed() {
 }
 
 // -------------------------------------------------------------------------
-// Dribble moves: crossover (1) and hesitation (2). Ball-carrier only, and
-// gated by a shared cooldown so they can't be chained back to back.
+// Dribble moves: crossover (1), behind-the-back (2), hesitation (3).
+// Ball-carrier only, and gated by a shared cooldown so they can't be
+// chained back to back.
 // -------------------------------------------------------------------------
 const MOVE_COOLDOWN_MS = 650;
 const CROSSOVER_STEAL_RESIST_MS = 420;
 const CROSSOVER_KICK_MULT = 0.5;
+const CROSSOVER_HAND_SWITCH_MS = 320;
+const BEHIND_STEAL_RESIST_MS = 480;
+const BEHIND_KICK_MULT = 0.3;
+const BEHIND_HAND_SWITCH_MS = 380;
 const HESITATE_STUTTER_MS = 150, HESITATE_BURST_MS = 400;
 const HESITATE_TOTAL_MS = HESITATE_STUTTER_MS + HESITATE_BURST_MS;
 
-const CROSSOVER_HAND_SWITCH_MS = 320;
+// Switches the ball hand-to-hand (see updateBall for the actual sweep path),
+// shared by both crossover and behind-the-back — they differ in how the
+// sweep travels (in front of the body vs. behind it), set via `kind`.
+function triggerHandSwitch(p, kind, durMs) {
+  const newSide = -(p.handSide || 1);
+  p.handAnimFrom = p.handSide; p.handAnimTo = newSide; p.handAnimT = 0;
+  p.handAnimDur = durMs;
+  p.handSwitchKind = kind;
+  p.handSide = newSide;
+  return newSide;
+}
+
+function applyMoveKick(p, mult, side) {
+  // A lateral kick (relative to the camera, like the WASD strafe axis) that
+  // eases back into whatever direction the player is holding — the "snap"
+  // of the move — rather than a clean instant sidestep.
+  const fwd = camForward.clone().setY(0).normalize();
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const kick = p.stats.speed * mult * side;
+  p.vx += right.x * kick; p.vz += right.z * kick;
+}
+
 function onCrossoverPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.moveCooldown > 0) return;
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
-  // Actually switch the ball hand-to-hand (see updateBall) instead of just
-  // mirroring the carry offset in place.
-  const newSide = -(p.handSide || 1);
-  p.handAnimFrom = p.handSide; p.handAnimTo = newSide; p.handAnimT = 0;
-  p.handAnimDur = CROSSOVER_HAND_SWITCH_MS;
-  p.handSide = newSide;
-  // A sharp lateral kick (relative to the camera, like the WASD strafe axis)
-  // toward the new hand's side, that eases back into whatever direction the
-  // player is holding — the "snap" of the move — rather than a clean
-  // instant sidestep.
-  const fwd = camForward.clone().setY(0).normalize();
-  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  const kick = p.stats.speed * CROSSOVER_KICK_MULT * newSide;
-  p.vx += right.x * kick; p.vz += right.z * kick;
+  const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
+  applyMoveKick(p, CROSSOVER_KICK_MULT, newSide);
   playTone(520, 0.05);
+}
+
+function onBehindBackPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  p.moveCooldown = MOVE_COOLDOWN_MS;
+  p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
+  const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS);
+  applyMoveKick(p, BEHIND_KICK_MULT, newSide);
+  playTone(460, 0.05);
 }
 
 function onHesitationPressed() {
@@ -958,18 +983,31 @@ function updateBall(dtMs) {
     // of just mirroring in place.
     const CROSSOVER_SWEEP_REACH = 2.0; // well past the ~0.75-1.1 normal reach
     const CROSSOVER_SWEEP_Y = 1.0;     // low hard dribble, but still clearly visible
+    // Behind-the-back: the ball still switches hands, but wraps around
+    // BEHIND the body (negative forward offset) instead of sweeping across
+    // the front — a visibly different path from the crossover.
+    const BEHIND_SWEEP_REACH = 1.5;
+    const BEHIND_SWEEP_Y = 1.5;
+    const BEHIND_FORWARD_OFFSET = -1.0;
     let handSide = c.handSide;
+    let forwardOffset = 0.5;
     if (c.handAnimT < 1) {
       c.handAnimT = Math.min(1, c.handAnimT + dtMs / c.handAnimDur);
       const e = c.handAnimT * c.handAnimT * (3 - 2 * c.handAnimT);
       handSide = lerp(c.handAnimFrom, c.handAnimTo, e);
       const dip = Math.sin(c.handAnimT * Math.PI); // 0 -> 1 -> 0 across the sweep
-      dribbleY = lerp(dribbleY, CROSSOVER_SWEEP_Y, dip);
-      reach = lerp(reach, CROSSOVER_SWEEP_REACH, dip);
+      if (c.handSwitchKind === 'behind') {
+        dribbleY = lerp(dribbleY, BEHIND_SWEEP_Y, dip);
+        reach = lerp(reach, BEHIND_SWEEP_REACH, dip);
+        forwardOffset = lerp(forwardOffset, BEHIND_FORWARD_OFFSET, dip);
+      } else {
+        dribbleY = lerp(dribbleY, CROSSOVER_SWEEP_Y, dip);
+        reach = lerp(reach, CROSSOVER_SWEEP_REACH, dip);
+      }
     }
 
-    let bx = c.x + fx * 0.5 + rx * reach * handSide;
-    let bz = c.z + fz * 0.5 + rz * reach * handSide;
+    let bx = c.x + fx * forwardOffset + rx * reach * handSide;
+    let bz = c.z + fz * forwardOffset + rz * reach * handSide;
     let by = dribbleY;
 
     // Hesitation shot-fake: ball rises toward the shot pocket like the
