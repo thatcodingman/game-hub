@@ -91,13 +91,13 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; Q switch</div>
+  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; Q switch &middot; 1 crossover &middot; 2 hesi</div>
 </div>
 
 <div id="menu-overlay" class="overlay">
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
-  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; Q switch player</div>
+  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; Q switch player &middot; 1 crossover &middot; 2 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -437,6 +437,10 @@ function makePlayer(team, posLabel) {
     x: 0, z: 0, vx: 0, vz: 0, facing: team === 'A' ? Math.PI / 2 : -Math.PI / 2,
     actionCooldown: 0, mesh,
     dribblePhase: Math.random() * Math.PI * 2,
+    // Dribble-move state: crossover (steal-resistant juke) and hesitation
+    // (stutter then burst) share one cooldown so they can't be spammed back
+    // to back, but track their own effect timers.
+    moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, crossoverSide: 1,
   };
 }
 
@@ -460,10 +464,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot / steal'
-  : 'WASD move · SPACE shoot or steal · SHIFT pass · Q switch player';
+  : 'WASD move · SPACE shoot or steal · SHIFT pass · Q switch player · 1 crossover · 2 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot/steal'
-  : 'WASD move · SPACE shoot/steal · SHIFT pass · Q switch';
+  : 'WASD move · SPACE shoot/steal · SHIFT pass · Q switch · 1 crossover · 2 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -471,8 +475,8 @@ function controlledPlayer() { return game.teamA[game.controlledIndex]; }
 
 function resetPositions(possessionTeam) {
   const homeXA = -30, homeXB = 30;
-  game.teamA.forEach((p, i) => { p.x = homeXA; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = Math.PI / 2; p.actionCooldown = 0; });
-  game.teamB.forEach((p, i) => { p.x = homeXB; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = -Math.PI / 2; p.actionCooldown = 0; });
+  game.teamA.forEach((p, i) => { p.x = homeXA; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = Math.PI / 2; p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0; p.hesitateTimer = 0; });
+  game.teamB.forEach((p, i) => { p.x = homeXB; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = -Math.PI / 2; p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0; p.hesitateTimer = 0; });
   const carrierTeam = possessionTeam === 'A' ? game.teamA : game.teamB;
   const carrier = carrierTeam[0];
   const b = game.ball;
@@ -516,7 +520,10 @@ function attemptSteal(defender) {
   defender.actionCooldown = 260;
   const carrier = game.ball.carrier;
   if (!carrier) return;
-  const chance = defender.stats.steal * 0.55;
+  // A recent crossover makes the carrier much harder to strip for a short
+  // window — that's the whole point of the move.
+  const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
+  const chance = defender.stats.steal * 0.55 * evadeMult;
   if (Math.random() < chance) {
     playTone(300, 0.05);
     game.ball.carrier = null; game.ball.inFlight = false;
@@ -591,6 +598,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ') onSwitchPressed();
   if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
+  if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
+  if (e.code === 'Digit2' || e.code === 'Numpad2') onHesitationPressed();
 });
 window.addEventListener('keyup', (e) => keysDown.delete(e.code));
 
@@ -610,6 +619,40 @@ function onActionPressed() {
 function onPassPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier === p) attemptPass(p);
+}
+
+// -------------------------------------------------------------------------
+// Dribble moves: crossover (1) and hesitation (2). Ball-carrier only, and
+// gated by a shared cooldown so they can't be chained back to back.
+// -------------------------------------------------------------------------
+const MOVE_COOLDOWN_MS = 650;
+const CROSSOVER_STEAL_RESIST_MS = 420;
+const CROSSOVER_KICK_MULT = 1.15;
+const HESITATE_STUTTER_MS = 150, HESITATE_BURST_MS = 400;
+const HESITATE_TOTAL_MS = HESITATE_STUTTER_MS + HESITATE_BURST_MS;
+
+function onCrossoverPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  p.moveCooldown = MOVE_COOLDOWN_MS;
+  p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
+  p.crossoverSide = -(p.crossoverSide || 1);
+  // A sharp lateral kick (relative to the camera, like the WASD strafe axis)
+  // that eases back into whatever direction the player is holding — the
+  // "snap" of the move — rather than a clean instant sidestep.
+  const fwd = camForward.clone().setY(0).normalize();
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const kick = p.stats.speed * CROSSOVER_KICK_MULT * p.crossoverSide;
+  p.vx += right.x * kick; p.vz += right.z * kick;
+  playTone(520, 0.05);
+}
+
+function onHesitationPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  p.moveCooldown = MOVE_COOLDOWN_MS;
+  p.hesitateTimer = HESITATE_TOTAL_MS;
+  playTone(320, 0.05);
 }
 
 const touchMove = { active: false, pointerId: null, base: null, vec: { x: 0, y: 0 } };
@@ -740,6 +783,13 @@ function updateHumanMovement(dtMs) {
     if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) iz -= 1;
   }
   const mag = Math.hypot(ix, iz);
+  // Hesitation move: a brief near-stop (selling the fake) followed by a
+  // speed burst past whoever bit on it.
+  let speedMult = 1;
+  if (human.hesitateTimer > 0) {
+    const elapsed = HESITATE_TOTAL_MS - human.hesitateTimer;
+    speedMult = elapsed < HESITATE_STUTTER_MS ? 0.2 : 1.45;
+  }
   let targetVx = 0, targetVz = 0;
   if (mag >= 0.05) {
     const nx = ix / (mag || 1), nz = iz / (mag || 1);
@@ -747,7 +797,7 @@ function updateHumanMovement(dtMs) {
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const worldX = right.x * nx + fwd.x * nz;
     const worldZ = right.z * nx + fwd.z * nz;
-    const speed = human.stats.speed;
+    const speed = human.stats.speed * speedMult;
     targetVx = worldX * speed * Math.min(mag, 1);
     targetVz = worldZ * speed * Math.min(mag, 1);
   }
@@ -929,7 +979,12 @@ function frame(now) {
     if (game.matchClock <= 0) { game.matchClock = 0; showMatchOver(); }
     updateHUD();
 
-    game.players.forEach((p) => { if (p.actionCooldown > 0) p.actionCooldown -= dtMs; });
+    game.players.forEach((p) => {
+      if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
+      if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
+      if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
+      if (p.hesitateTimer > 0) p.hesitateTimer -= dtMs;
+    });
 
     const human = controlledPlayer();
     updateHumanMovement(dtMs);
@@ -964,6 +1019,8 @@ function frame(now) {
     ballShadow.scale.setScalar(clamp(1.4 - game.ball.y * 0.08, 0.4, 1.4));
 
     controlRing.position.set(human.x, 0.05, human.z);
+    const moveActive = human.stealResistTimer > 0 || human.hesitateTimer > 0;
+    controlRing.material.color.setHex(moveActive ? 0xffd23f : 0xffffff);
 
     updateCamera(dtMs);
   }
