@@ -60,6 +60,27 @@
   const PLAYER_COLOR = 0x38bdf8;   // player's paint — cyan
   const AI_COLOR = 0xf97316;       // AI's paint — orange
 
+  // Career stats — persisted across sessions in localStorage, same pattern
+  // the hub's other games use for their own "Best" readouts. Nothing here
+  // resets on a page reload or a fresh match; it only ever grows.
+  const CAREER_KEY = 'paintball_career';
+  function loadCareer() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CAREER_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        return {
+          wins: raw.wins | 0, matchesPlayed: raw.matchesPlayed | 0,
+          streak: raw.streak | 0, bestStreak: raw.bestStreak | 0,
+          bestAccuracy: raw.bestAccuracy | 0
+        };
+      }
+    } catch (e) {}
+    return { wins: 0, matchesPlayed: 0, streak: 0, bestStreak: 0, bestAccuracy: 0 };
+  }
+  function saveCareer(career) {
+    try { localStorage.setItem(CAREER_KEY, JSON.stringify(career)); } catch (e) {}
+  }
+
   // Condensed technical face for the start menu — reads like a tactical
   // HUD legend instead of a generic system font. Falls back cleanly if
   // the webfont hasn't loaded (see the boot gate at the bottom of the file).
@@ -659,6 +680,7 @@
       this.difficulty = 'normal';
       this.selectedMap = 'random'; // 'random' or a LAYOUTS[].name
       this.stats = { shotsFired: 0, hits: 0 };
+      this.career = loadCareer(); // persists across sessions — see CAREER_KEY
       this.hitStopFactor = 1; // <1 while the match-deciding shot plays out in slow motion
       this.matchPointActive = false; // true only during that same slow-mo window — feeds the music's tension
       this.musicMenuStarted = false; // gates the one-time, gesture-triggered start of the menu ambience
@@ -708,9 +730,16 @@
       }).setOrigin(0.5).setDepth(60).setVisible(false);
       this.roundHistoryGfx = this.add.graphics().setDepth(60).setVisible(false);
 
+      // career line — sits just below the (tall) match-over panel rather
+      // than inside it, so it never has to fight the panel's own spacing;
+      // only populated/shown on a match-over banner (see endRound)
+      this.careerLabel = this.add.text(W / 2, H / 2 + 122, '', {
+        fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#64748b', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5).setDepth(60).setVisible(false);
+
       this.bannerGroup = [
         this.bannerPanel, this.bannerText, this.bannerPipsGfx, this.bannerSub, this.statsLabel,
-        this.roundHistoryLabel, this.roundHistoryGfx
+        this.roundHistoryLabel, this.roundHistoryGfx, this.careerLabel
       ];
 
       this.redrawPickups();
@@ -888,6 +917,17 @@
 
       const overlay = this.add.rectangle(W / 2, H / 2, W, H, 0x05070a, 0.93).setDepth(65);
       this.menuObjects.push(overlay);
+
+      // career readout — tucked in the corner rather than competing with
+      // the title stack, and only shown once there's actually a career to
+      // show (a first-ever visitor doesn't need to see "0 wins")
+      if (this.career.matchesPlayed > 0) {
+        const careerText = this.add.text(W - 20, HUD_H + 18,
+          this.career.wins + ' WINS  ·  BEST STREAK ' + this.career.bestStreak + '  ·  BEST ACC ' + this.career.bestAccuracy + '%',
+          { fontFamily: MENU_FONT, fontSize: '11px', fontStyle: '600', color: '#64748b', align: 'right' }
+        ).setOrigin(1, 0).setDepth(66);
+        this.menuObjects.push(careerText);
+      }
 
       // a faint glow wash behind the title instead of a flat dropped-in
       // panel — three soft, oversized circles in the game's own player /
@@ -1207,12 +1247,14 @@
       this.statsLabel.setText(opts.stats || '');
       this.roundHistoryGfx.clear();
       if (opts.roundHistory && opts.roundHistory.length) this.drawRoundHistory(this.roundHistoryGfx, cx, cy + 96, opts.roundHistory);
+      this.careerLabel.setText(opts.career || '');
 
       this.bannerGroup.forEach(o => o.setVisible(true));
       this.bannerPipsGfx.setVisible(!!opts.showPips);
       this.statsLabel.setVisible(!!opts.stats);
       this.roundHistoryLabel.setVisible(!!(opts.roundHistory && opts.roundHistory.length));
       this.roundHistoryGfx.setVisible(!!(opts.roundHistory && opts.roundHistory.length));
+      this.careerLabel.setVisible(!!opts.career);
 
       this.bannerGroup.forEach(o => { o.setScale(0.8); o.setAlpha(0); });
       this.tweens.add({ targets: this.bannerGroup, scale: 1, alpha: 1, duration: 260, ease: 'Back.Out' });
@@ -1251,6 +1293,20 @@
 
       if (matchWon) {
         const acc = this.stats.shotsFired > 0 ? Math.round((this.stats.hits / this.stats.shotsFired) * 100) : 0;
+
+        // career stats persist across sessions regardless of who won —
+        // accuracy is the player's own shooting for the whole match either way
+        this.career.matchesPlayed += 1;
+        if (winner === 'player') {
+          this.career.wins += 1;
+          this.career.streak += 1;
+          if (this.career.streak > this.career.bestStreak) this.career.bestStreak = this.career.streak;
+        } else {
+          this.career.streak = 0;
+        }
+        if (acc > this.career.bestAccuracy) this.career.bestAccuracy = acc;
+        saveCareer(this.career);
+
         this.showBanner(
           winner === 'player' ? 'MATCH WON!' : 'MATCH LOST',
           winner === 'player' ? 'Click to play again' : 'Click to try again',
@@ -1259,7 +1315,8 @@
             tall: true,
             showPips: true,
             stats: 'Your accuracy: ' + acc + '% (' + this.stats.hits + '/' + this.stats.shotsFired + ' shots)',
-            roundHistory: this.roundHistory
+            roundHistory: this.roundHistory,
+            career: 'CAREER  ·  ' + this.career.wins + ' WINS  ·  BEST STREAK ' + this.career.bestStreak + '  ·  BEST ACC ' + this.career.bestAccuracy + '%'
           }
         );
         if (winner === 'player') this.revealAITrail();
