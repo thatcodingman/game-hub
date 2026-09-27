@@ -47,6 +47,14 @@
   }
   #stamina-wrap.exhausted #stamina-tag { animation: pulse 0.5s ease-in-out infinite; color: #ef4444; }
 
+  #screen-callout {
+    position: fixed; top: 90px; left: 50%; transform: translateX(-50%);
+    z-index: 42; pointer-events: none; font-size: 15px; font-weight: 700;
+    letter-spacing: 0.04em; color: #ff8c1a; text-shadow: 0 1px 4px #000;
+    opacity: 0; transition: opacity 0.15s linear;
+  }
+  #screen-callout.show { opacity: 1; }
+
   .overlay {
     position: fixed; inset: 0; z-index: 60;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -116,6 +124,8 @@
   <div id="stamina-tag">TURBO</div>
   <div id="stamina-bar"><div id="stamina-fill"></div></div>
 </div>
+
+<div id="screen-callout"></div>
 
 <div id="menu-overlay" class="overlay">
   <h1>BASKETBALL ARCADE</h1>
@@ -459,6 +469,10 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
 
   group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP };
   group.userData.animPhase = Math.random() * Math.PI * 2;
+  // Kept so a screen (or anything else) can flash the jersey a different
+  // color and reliably reset it back to the real team color afterward.
+  group.userData.torso = torso;
+  group.userData.baseTeamColor = teamColor;
   scene.add(group);
   return group;
 }
@@ -471,6 +485,18 @@ const controlRing = new THREE.Mesh(
 controlRing.rotation.x = -Math.PI / 2;
 controlRing.position.y = 0.05;
 scene.add(controlRing);
+
+// Screener indicator ring — shown under whoever's currently running over to
+// set a called screen, so it's visible that something is actually happening
+// rather than a silent, invisible effect.
+const screenRing = new THREE.Mesh(
+  new THREE.RingGeometry(PLAYER_R + 0.3, PLAYER_R + 0.9, 24),
+  new THREE.MeshBasicMaterial({ color: 0xff8c1a, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+);
+screenRing.rotation.x = -Math.PI / 2;
+screenRing.position.y = 0.06;
+screenRing.visible = false;
+scene.add(screenRing);
 
 // Ball
 function buildBallTexture() {
@@ -763,6 +789,14 @@ const SCREEN_CALL_TIMEOUT_MS = 5000; // the screener gives up if it can't get th
 const SCREEN_HUSTLE_MULT = 1.7; // sprint over regardless of the screener's own (often slow) top speed
 const SCREEN_CONTACT_RANGE = PLAYER_R * 2 + 0.8;
 const SCREEN_FREEZE_MS = 750;
+let screenCalloutHideAt = 0;
+function showScreenCallout(text, ms) {
+  const el = document.getElementById('screen-callout');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add('show');
+  screenCalloutHideAt = performance.now() + ms;
+}
 function onScreenPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.screenCallCooldown > 0) return;
@@ -778,6 +812,7 @@ function onScreenPressed() {
   screener.screenAssignment = { target, timer: SCREEN_CALL_TIMEOUT_MS };
   p.screenCallCooldown = SCREEN_CALL_COOLDOWN_MS;
   playTone(260, 0.06);
+  showScreenCallout('CALLING SCREEN…', 1400);
 }
 function onActionPressed() {
   const p = controlledPlayer();
@@ -971,6 +1006,7 @@ function updateAI(p, dtMs) {
         target.screenedTimer = SCREEN_FREEZE_MS;
         playTone(220, 0.05);
         p.screenAssignment = null;
+        showScreenCallout('SCREEN SET!', 1000);
       }
       return;
     }
@@ -1402,6 +1438,24 @@ function frame(now) {
     controlRing.position.set(human.x, 0.05, human.z);
     const moveActive = human.stealResistTimer > 0 || human.hesitateTimer > 0;
     controlRing.material.color.setHex(human.turboActive ? 0x38bdf8 : (moveActive ? 0xffd23f : 0xffffff));
+
+    // Show a marker under whoever's currently running over to set a called
+    // screen, and flash a screened defender's jersey white while they're
+    // frozen — otherwise the whole mechanic is invisible even when it's
+    // working correctly.
+    const screener = game.players.find((p) => p.screenAssignment);
+    screenRing.visible = !!screener;
+    if (screener) screenRing.position.set(screener.x, 0.06, screener.z);
+    game.players.forEach((p) => {
+      const torso = p.mesh.userData.torso;
+      if (!torso) return;
+      torso.material.color.setHex(p.screenedTimer > 0 ? 0xffffff : p.mesh.userData.baseTeamColor);
+    });
+    if (screenCalloutHideAt && performance.now() >= screenCalloutHideAt) {
+      const calloutEl = document.getElementById('screen-callout');
+      if (calloutEl) calloutEl.classList.remove('show');
+      screenCalloutHideAt = 0;
+    }
 
     updateCamera(dtMs);
   }
