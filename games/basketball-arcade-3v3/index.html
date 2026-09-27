@@ -346,10 +346,22 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
 
   const group = new THREE.Group();
 
-  const legL = limbMesh(0.32, 0.28, legLen, shortsColor);
+  // Two-segment legs (thigh + shin) with a knee pivot in between, so the
+  // gait can actually bend the leg mid-stride instead of swinging a single
+  // rigid rod from the hip like a pendulum.
+  const thighLen = legLen * 0.55, shinLen = legLen - thighLen;
+
+  const legL = limbMesh(0.32, 0.29, thighLen, shortsColor);
   const legLP = new THREE.Group(); legLP.position.set(-0.34, hipY, 0); legLP.add(legL); group.add(legLP);
-  const legR = limbMesh(0.32, 0.28, legLen, shortsColor);
+  const kneeLP = new THREE.Group(); kneeLP.position.set(0, -thighLen, 0); legLP.add(kneeLP);
+  const shinL = limbMesh(0.27, 0.22, shinLen, shortsColor);
+  kneeLP.add(shinL);
+
+  const legR = limbMesh(0.32, 0.29, thighLen, shortsColor);
   const legRP = new THREE.Group(); legRP.position.set(0.34, hipY, 0); legRP.add(legR); group.add(legRP);
+  const kneeRP = new THREE.Group(); kneeRP.position.set(0, -thighLen, 0); legRP.add(kneeRP);
+  const shinR = limbMesh(0.27, 0.22, shinLen, shortsColor);
+  kneeRP.add(shinR);
 
   const torso = new THREE.Mesh(new THREE.BoxGeometry(1.7, torsoLen, 0.95),
     new THREE.MeshStandardMaterial({ color: teamColor }));
@@ -372,7 +384,7 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
   tag.position.set(0, hipY + torsoLen + headR * 2 + 1.1, 0);
   group.add(tag);
 
-  group.userData.limbs = { legLP, legRP, armLP, armRP };
+  group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP };
   group.userData.animPhase = Math.random() * Math.PI * 2;
   scene.add(group);
   return group;
@@ -645,15 +657,30 @@ window.addEventListener('pointerup', (e) => {
 // -------------------------------------------------------------------------
 // AI (role derived fresh every frame from live ball-possession state)
 // -------------------------------------------------------------------------
-function moveToward(p, tx, tz) {
-  const dx = tx - p.x, dz = tz - p.z;
-  const d = Math.hypot(dx, dz);
-  if (d < 0.6) { p.vx = 0; p.vz = 0; return; }
-  const speed = p.stats.speed;
-  p.vx = dx / d * speed; p.vz = dz / d * speed;
+// Eases a player's velocity toward a target instead of snapping to it, so
+// starts/stops/turns have real inertia (accelerate briskly, decelerate a
+// little more gently, like a real athlete planting) instead of teleporting
+// to full speed or a dead stop every frame.
+const ACCEL_TAU_MS = 90, DECEL_TAU_MS = 150;
+function approachVelocity(p, targetVx, targetVz, dtMs) {
+  const targetSpeed = Math.hypot(targetVx, targetVz);
+  const curSpeed = Math.hypot(p.vx, p.vz);
+  const tau = targetSpeed > curSpeed + 0.001 ? ACCEL_TAU_MS : DECEL_TAU_MS;
+  const alpha = 1 - Math.exp(-dtMs / tau);
+  p.vx += (targetVx - p.vx) * alpha;
+  p.vz += (targetVz - p.vz) * alpha;
 }
 
-function updateAI(p) {
+function moveToward(p, tx, tz, dtMs) {
+  const dx = tx - p.x, dz = tz - p.z;
+  const d = Math.hypot(dx, dz);
+  const speed = p.stats.speed;
+  let targetVx = 0, targetVz = 0;
+  if (d >= 0.6) { targetVx = dx / d * speed; targetVz = dz / d * speed; }
+  approachVelocity(p, targetVx, targetVz, dtMs);
+}
+
+function updateAI(p, dtMs) {
   const isCarrier = game.ball.carrier === p;
   const teamHasBall = game.ball.carrier && game.ball.carrier.team === p.team;
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
@@ -665,23 +692,23 @@ function updateAI(p) {
     if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { attemptShot(p); return; }
     if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { attemptShot(p); return; }
     if (Math.random() < 0.01) { attemptPass(p); return; }
-    moveToward(p, oppHoop.x, oppHoop.z + (game.players.indexOf(p) % 2 === 0 ? -6 : 6));
+    moveToward(p, oppHoop.x, oppHoop.z + (game.players.indexOf(p) % 2 === 0 ? -6 : 6), dtMs);
   } else if (teamHasBall) {
     const teammates = getTeammates(p.team);
     const slot = teammates.indexOf(p);
     const spreadZ = myHoop === HOOP_B ? [-16, 0, 16][slot] : [16, 0, -16][slot];
-    moveToward(p, oppHoop.x - (oppHoop === HOOP_A ? 20 : -20), oppHoop.z + spreadZ);
+    moveToward(p, oppHoop.x - (oppHoop === HOOP_A ? 20 : -20), oppHoop.z + spreadZ, dtMs);
   } else if (ballLoose) {
     const teammates = getTeammates(p.team);
     let closest = teammates[0], bestD = Infinity;
     teammates.forEach((t) => { const dd = dist2(t, game.ball); if (dd < bestD) { bestD = dd; closest = t; } });
     if (p === closest) {
-      moveToward(p, game.ball.x, game.ball.z);
+      moveToward(p, game.ball.x, game.ball.z, dtMs);
     } else {
       const slot = teammates.indexOf(p);
       const spreadZ = myHoop === HOOP_B ? [-14, 0, 14][slot] : [14, 0, -14][slot];
       const holdX = myHoop.x + (myHoop === HOOP_B ? 16 : -16);
-      moveToward(p, holdX, spreadZ);
+      moveToward(p, holdX, spreadZ, dtMs);
     }
   } else {
     const opponents = getOpponents(p.team);
@@ -689,7 +716,7 @@ function updateAI(p) {
     const mark = opponents[teammates.indexOf(p)] || opponents[0];
     if (mark) {
       const towardHoopX = mark.x + (myHoop.x < mark.x ? -4 : 4);
-      moveToward(p, towardHoopX, mark.z);
+      moveToward(p, towardHoopX, mark.z, dtMs);
       if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.012) {
         attemptSteal(p);
       }
@@ -701,7 +728,7 @@ function updateAI(p) {
 // Camera-relative human input
 // -------------------------------------------------------------------------
 const camForward = new THREE.Vector3(1, 0, 0);
-function updateHumanMovement() {
+function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
   let ix = 0, iz = 0; // input in camera-relative space: ix=strafe, iz=forward
   if (touchControlsEnabled) {
@@ -713,33 +740,68 @@ function updateHumanMovement() {
     if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) iz -= 1;
   }
   const mag = Math.hypot(ix, iz);
-  if (mag < 0.05) { human.vx = 0; human.vz = 0; return; }
-  const nx = ix / (mag || 1), nz = iz / (mag || 1);
-  const fwd = camForward.clone().setY(0).normalize();
-  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  const worldX = right.x * nx + fwd.x * nz;
-  const worldZ = right.z * nx + fwd.z * nz;
-  const speed = human.stats.speed;
-  human.vx = worldX * speed * Math.min(mag, 1);
-  human.vz = worldZ * speed * Math.min(mag, 1);
+  let targetVx = 0, targetVz = 0;
+  if (mag >= 0.05) {
+    const nx = ix / (mag || 1), nz = iz / (mag || 1);
+    const fwd = camForward.clone().setY(0).normalize();
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const worldX = right.x * nx + fwd.x * nz;
+    const worldZ = right.z * nx + fwd.z * nz;
+    const speed = human.stats.speed;
+    targetVx = worldX * speed * Math.min(mag, 1);
+    targetVz = worldZ * speed * Math.min(mag, 1);
+  }
+  approachVelocity(human, targetVx, targetVz, dtMs);
 }
 
 // -------------------------------------------------------------------------
 // Main loop
 // -------------------------------------------------------------------------
+const TURN_RATE = 0.012; // rad/ms — shortest-angle turn speed, not an instant snap
 function updateHumanoidPose(p, dt) {
   const speed = Math.hypot(p.vx, p.vz);
   const g = p.mesh;
-  if (speed > 0.01) {
-    p.facing = Math.atan2(p.vx, p.vz);
+  if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
+
+  if (speed > 0.02) {
+    // Turn toward the movement direction at a limited rate (shortest-angle),
+    // instead of snapping the whole body to face it instantly.
+    const targetFacing = Math.atan2(p.vx, p.vz);
+    let diff = targetFacing - p.facing;
+    diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const maxTurn = TURN_RATE * dt;
+    p.facing += clamp(diff, -maxTurn, maxTurn);
     g.userData.animPhase += dt * 0.012 * (1 + speed * 3);
   }
-  g.position.set(p.x, 0, p.z);
   g.rotation.y = p.facing;
-  const swing = Math.sin(g.userData.animPhase) * Math.min(0.55, 0.15 + speed * 2.2) * (speed > 0.01 ? 1 : 0);
-  const { legLP, legRP, armLP, armRP } = g.userData.limbs;
-  legLP.rotation.x = swing; legRP.rotation.x = -swing;
-  armLP.rotation.x = -swing; armRP.rotation.x = swing;
+
+  // Ease the stride amplitude toward its target instead of hard-cutting it
+  // to 0 the instant speed drops below a threshold, so stopping mid-stride
+  // settles the legs smoothly rather than popping straight.
+  const targetSwingAmt = speed > 0.01 ? Math.min(0.55, 0.15 + speed * 2.2) : 0;
+  const swingAlpha = 1 - Math.exp(-dt / 110);
+  g.userData.swingAmt += (targetSwingAmt - g.userData.swingAmt) * swingAlpha;
+  const amt = g.userData.swingAmt;
+
+  const phaseL = g.userData.animPhase;
+  const swingL = Math.sin(phaseL) * amt;
+  const swingR = -swingL;
+  // Knee bend: whichever leg is mid-swing (foot off the ground) flexes at
+  // the knee, and straightens again as it plants — so each leg alternates
+  // between a bent recovery and a straight stance instead of both legs
+  // staying rigid rods throughout.
+  const kneeL = Math.max(0, Math.cos(phaseL)) * amt * 1.7;
+  const kneeR = Math.max(0, -Math.cos(phaseL)) * amt * 1.7;
+
+  const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
+  legLP.rotation.x = swingL; legRP.rotation.x = swingR;
+  kneeLP.rotation.x = kneeL; kneeRP.rotation.x = kneeR;
+  armLP.rotation.x = -swingL; armRP.rotation.x = -swingR;
+
+  // Subtle torso bob synced to the stride, fading out with swingAmt so it
+  // settles to flat when the player stops rather than cutting off abruptly.
+  const bob = Math.abs(Math.sin(phaseL)) * 0.1 * (amt / 0.55);
+  g.position.set(p.x, bob, p.z);
 }
 
 function updateBall(dtMs) {
@@ -870,8 +932,8 @@ function frame(now) {
     game.players.forEach((p) => { if (p.actionCooldown > 0) p.actionCooldown -= dtMs; });
 
     const human = controlledPlayer();
-    updateHumanMovement();
-    game.players.forEach((p) => { if (p !== human) updateAI(p); });
+    updateHumanMovement(dtMs);
+    game.players.forEach((p) => { if (p !== human) updateAI(p, dtMs); });
 
     game.players.forEach((p) => {
       p.x += p.vx; p.z += p.vz;
