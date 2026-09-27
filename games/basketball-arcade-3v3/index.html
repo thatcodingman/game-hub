@@ -516,7 +516,7 @@ function makePlayer(team, posLabel) {
     moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, hesitateFakeAmt: 0,
     handSide: 1, handAnimFrom: 1, handAnimTo: 1, handAnimT: 1, handAnimDur: 260, handSwitchKind: 'front',
     stamina: STAMINA_MAX, exhausted: false, turboActive: false,
-    screenedTimer: 0,
+    screenedTimer: 0, inboundImmuneTimer: 0, screenAssignment: null, screenCallCooldown: 0,
   };
 }
 
@@ -556,6 +556,7 @@ function controlledPlayer() { return game.teamA[game.controlledIndex]; }
 // ~14-20 unit gaps between teammates on the floor), this always ends by
 // handing the ball straight to the named receiver, so it stays reliable
 // at the much shorter distances a checkup or inbound needs.
+const INBOUND_IMMUNE_MS = 1200;
 function startInboundPass(passer, receiver, durMs) {
   game.ball.carrier = null; game.ball.inFlight = true;
   game.ball.justReleasedBy = null; game.ball.releaseLockTimer = 0;
@@ -574,7 +575,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
     p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1; p.handSwitchKind = 'front';
     p.stamina = STAMINA_MAX; p.exhausted = false; p.turboActive = false;
-    p.screenedTimer = 0;
+    p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0;
   };
   const b = game.ball;
 
@@ -652,13 +653,16 @@ function attemptPass(player) {
 
 function attemptSteal(defender) {
   if (defender.actionCooldown > 0) return;
-  defender.actionCooldown = 260;
+  defender.actionCooldown = 420;
   const carrier = game.ball.carrier;
   if (!carrier) return;
+  // Fresh off an inbound/checkup, the carrier can't be stripped at all — no
+  // cheap steal the instant they catch it to start a possession.
+  if (carrier.inboundImmuneTimer > 0) return;
   // A recent crossover makes the carrier much harder to strip for a short
   // window — that's the whole point of the move.
   const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
-  const chance = defender.stats.steal * 0.55 * evadeMult;
+  const chance = defender.stats.steal * 0.34 * evadeMult;
   if (Math.random() < chance) {
     playTone(300, 0.05);
     game.ball.carrier = null; game.ball.inFlight = false;
@@ -748,23 +752,31 @@ function onSwitchPressed() {
 }
 
 // -------------------------------------------------------------------------
-// Screen (Q): set a pick on the nearest defender — only meaningful when
-// you're off the ball (the ball handler should be juking, not screening).
-// Freezes that defender in place for a short window, the way a real screen
-// gives the ball handler a free look by taking a defender out of the play.
+// Screen (Q): the ball carrier calls the biggest body on the floor over to
+// set a real pick — that teammate breaks off whatever they were doing,
+// physically walks over to your defender, and plants there, freezing that
+// defender in place once they actually make body contact — instead of some
+// remote effect with no one visibly moving to set it.
 // -------------------------------------------------------------------------
-const SCREEN_RANGE = PLAYER_R * 2 + 2.0;
-const SCREEN_DURATION_MS = 600;
-const SCREEN_COOLDOWN_MS = 900;
+const SCREEN_CALL_COOLDOWN_MS = 1400;
+const SCREEN_CALL_TIMEOUT_MS = 5000; // the screener gives up if it can't get there
+const SCREEN_HUSTLE_MULT = 1.7; // sprint over regardless of the screener's own (often slow) top speed
+const SCREEN_CONTACT_RANGE = PLAYER_R * 2 + 0.8;
+const SCREEN_FREEZE_MS = 750;
 function onScreenPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier === p || p.actionCooldown > 0) return;
+  if (game.ball.carrier !== p || p.screenCallCooldown > 0) return;
+  const teammates = getTeammates(p.team).filter((t) => t !== p);
+  if (!teammates.length) return;
+  // The biggest body on the floor sets the pick — a center, not a guard.
+  let screener = teammates[0];
+  teammates.forEach((t) => { if (t.stats.scale > screener.stats.scale) screener = t; });
+  if (screener.screenAssignment) return; // already on their way to set one
   const opponents = getOpponents(p.team);
-  let target = null, bestD = SCREEN_RANGE;
+  let target = opponents[0], bestD = Infinity;
   opponents.forEach((o) => { const d = dist2(p, o); if (d < bestD) { bestD = d; target = o; } });
-  if (!target) return;
-  target.screenedTimer = SCREEN_DURATION_MS;
-  p.actionCooldown = SCREEN_COOLDOWN_MS;
+  screener.screenAssignment = { target, timer: SCREEN_CALL_TIMEOUT_MS };
+  p.screenCallCooldown = SCREEN_CALL_COOLDOWN_MS;
   playTone(260, 0.06);
 }
 function onActionPressed() {
@@ -929,6 +941,40 @@ function updateAI(p, dtMs) {
     approachVelocity(p, 0, 0, dtMs);
     return;
   }
+  if (p.screenAssignment) {
+    // Called over to set a pick: break off the normal AI role and physically
+    // walk to a spot just past the target defender (on the far side from the
+    // carrier), so arriving there plants the screener's body between the two —
+    // then freeze the defender the instant real contact is made.
+    const asg = p.screenAssignment;
+    asg.timer -= dtMs;
+    const carrier = game.ball.carrier;
+    const target = asg.target;
+    if (!carrier || !target || asg.timer <= 0) {
+      p.screenAssignment = null;
+    } else {
+      const dx = target.x - carrier.x, dz = target.z - carrier.z;
+      const dd = Math.hypot(dx, dz) || 1;
+      const spotX = target.x + (dx / dd) * 1.4, spotZ = target.z + (dz / dd) * 1.4;
+      // Hustles over at a flat boosted pace (not the screener's own often-slow
+      // top speed) — otherwise a center routinely can't cross realistic
+      // court distances before the call times out.
+      const hdx = spotX - p.x, hdz = spotZ - p.z;
+      const hd = Math.hypot(hdx, hdz);
+      let targetVx = 0, targetVz = 0;
+      if (hd >= 0.6) {
+        const hustleSpeed = p.stats.speed * SCREEN_HUSTLE_MULT;
+        targetVx = hdx / hd * hustleSpeed; targetVz = hdz / hd * hustleSpeed;
+      }
+      approachVelocity(p, targetVx, targetVz, dtMs);
+      if (dist2(p, target) < SCREEN_CONTACT_RANGE) {
+        target.screenedTimer = SCREEN_FREEZE_MS;
+        playTone(220, 0.05);
+        p.screenAssignment = null;
+      }
+      return;
+    }
+  }
   const isCarrier = game.ball.carrier === p;
   const teamHasBall = game.ball.carrier && game.ball.carrier.team === p.team;
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
@@ -965,7 +1011,7 @@ function updateAI(p, dtMs) {
     if (mark) {
       const towardHoopX = mark.x + (myHoop.x < mark.x ? -4 : 4);
       moveToward(p, towardHoopX, mark.z, dtMs);
-      if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.012) {
+      if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0045) {
         attemptSteal(p);
       }
     }
@@ -1117,6 +1163,10 @@ function updateBall(dtMs) {
     if (t >= 1) {
       game.activeInbound = null;
       setCarrier(inb.receiver);
+      // A brief total steal-immunity window right as a possession starts —
+      // no cheap strip the instant the ball lands, on top of the normal
+      // partial steal resistance a crossover/behind-the-back gives.
+      inb.receiver.inboundImmuneTimer = INBOUND_IMMUNE_MS;
     }
     return;
   }
@@ -1298,6 +1348,8 @@ function frame(now) {
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
       if (p.screenedTimer > 0) p.screenedTimer -= dtMs;
+      if (p.inboundImmuneTimer > 0) p.inboundImmuneTimer -= dtMs;
+      if (p.screenCallCooldown > 0) p.screenCallCooldown -= dtMs;
       if (p.hesitateTimer > 0) {
         p.hesitateTimer -= dtMs;
         // Shot-fake "sell" window: ramps up fast, holds briefly, eases back
