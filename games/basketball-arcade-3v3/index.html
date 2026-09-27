@@ -109,7 +109,7 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; Q switch &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -120,7 +120,7 @@
 <div id="menu-overlay" class="overlay">
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
-  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; Q switch player &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -516,6 +516,7 @@ function makePlayer(team, posLabel) {
     moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, hesitateFakeAmt: 0,
     handSide: 1, handAnimFrom: 1, handAnimTo: 1, handAnimT: 1, handAnimDur: 260, handSwitchKind: 'front',
     stamina: STAMINA_MAX, exhausted: false, turboActive: false,
+    screenedTimer: 0,
   };
 }
 
@@ -539,10 +540,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot / steal'
-  : 'WASD move · SPACE shoot or steal · SHIFT pass · hold TAB to turbo · Q switch player · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'WASD move · SPACE shoot or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot/steal'
-  : 'WASD move · SPACE shoot/steal · SHIFT pass · TAB turbo · Q switch · 1 crossover · 2 behind-back · 3 hesi';
+  : 'WASD move · SPACE shoot/steal · SHIFT pass · TAB turbo · E switch · Q screen · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -573,6 +574,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
     p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1; p.handSwitchKind = 'front';
     p.stamina = STAMINA_MAX; p.exhausted = false; p.turboActive = false;
+    p.screenedTimer = 0;
   };
   const b = game.ball;
 
@@ -731,7 +733,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab') e.preventDefault();
   keysDown.add(e.code);
   if (game.phase !== 'live') return;
-  if (e.code === 'KeyQ') onSwitchPressed();
+  if (e.code === 'KeyE') onSwitchPressed();
+  if (e.code === 'KeyQ') onScreenPressed();
   if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
@@ -742,6 +745,27 @@ window.addEventListener('keyup', (e) => keysDown.delete(e.code));
 
 function onSwitchPressed() {
   game.controlledIndex = (game.controlledIndex + 1) % game.teamA.length;
+}
+
+// -------------------------------------------------------------------------
+// Screen (Q): set a pick on the nearest defender — only meaningful when
+// you're off the ball (the ball handler should be juking, not screening).
+// Freezes that defender in place for a short window, the way a real screen
+// gives the ball handler a free look by taking a defender out of the play.
+// -------------------------------------------------------------------------
+const SCREEN_RANGE = PLAYER_R * 2 + 2.0;
+const SCREEN_DURATION_MS = 600;
+const SCREEN_COOLDOWN_MS = 900;
+function onScreenPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier === p || p.actionCooldown > 0) return;
+  const opponents = getOpponents(p.team);
+  let target = null, bestD = SCREEN_RANGE;
+  opponents.forEach((o) => { const d = dist2(p, o); if (d < bestD) { bestD = d; target = o; } });
+  if (!target) return;
+  target.screenedTimer = SCREEN_DURATION_MS;
+  p.actionCooldown = SCREEN_COOLDOWN_MS;
+  playTone(260, 0.06);
 }
 function onActionPressed() {
   const p = controlledPlayer();
@@ -900,6 +924,11 @@ function moveToward(p, tx, tz, dtMs) {
 }
 
 function updateAI(p, dtMs) {
+  if (p.screenedTimer > 0) {
+    // Picked — held in place for the screen's duration instead of reacting.
+    approachVelocity(p, 0, 0, dtMs);
+    return;
+  }
   const isCarrier = game.ball.carrier === p;
   const teamHasBall = game.ball.carrier && game.ball.carrier.team === p.team;
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
@@ -949,6 +978,13 @@ function updateAI(p, dtMs) {
 const camForward = new THREE.Vector3(1, 0, 0);
 function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
+  if (game.activeInbound) {
+    // Locked in place while the ball is being checked/inbounded in — you
+    // can't just walk off before it actually arrives.
+    approachVelocity(human, 0, 0, dtMs);
+    human.turboActive = false;
+    return;
+  }
   let ix = 0, iz = 0; // input in camera-relative space: ix=strafe, iz=forward
   if (touchControlsEnabled) {
     ix = touchMove.vec.x; iz = -touchMove.vec.y;
@@ -1261,6 +1297,7 @@ function frame(now) {
       if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
+      if (p.screenedTimer > 0) p.screenedTimer -= dtMs;
       if (p.hesitateTimer > 0) {
         p.hesitateTimer -= dtMs;
         // Shot-fake "sell" window: ramps up fast, holds briefly, eases back
