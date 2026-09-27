@@ -424,6 +424,7 @@ function makePlayer(team, posLabel) {
     team, name: posLabel, stats: POS_STATS[posLabel],
     x: 0, z: 0, vx: 0, vz: 0, facing: team === 'A' ? Math.PI / 2 : -Math.PI / 2,
     actionCooldown: 0, mesh,
+    dribblePhase: Math.random() * Math.PI * 2,
   };
 }
 
@@ -761,9 +762,24 @@ function updateBall(dtMs) {
     const c = b.carrier;
     const fx = Math.sin(c.facing), fz = Math.cos(c.facing);
     const rx = fz, rz = -fx;
-    b.x = c.x + fx * 0.7 + rx * 1.1;
-    b.z = c.z + fz * 0.7 + rz * 1.1;
-    b.y = 2.5;
+
+    // Dribble bounce: oscillate the carry height between a low floor
+    // contact and hand height. Faster movement quickens the cadence, and
+    // a standing player still keeps a slow idle dribble going rather than
+    // freezing the ball in the hand.
+    const speed = Math.hypot(c.vx, c.vz);
+    const dribbleRate = 0.0034 + speed * 0.05;
+    c.dribblePhase += dtMs * dribbleRate;
+    const bounce = Math.pow(Math.abs(Math.sin(c.dribblePhase)), 0.45);
+    const DRIBBLE_LOW = 0.55, DRIBBLE_HIGH = 2.6;
+    const dribbleY = DRIBBLE_LOW + (DRIBBLE_HIGH - DRIBBLE_LOW) * bounce;
+    // Ball sits a touch further from the body at the top of the bounce
+    // (in the hand) and closer/lower at the bottom (floor contact).
+    const reach = 0.75 + 0.35 * bounce;
+
+    b.x = c.x + fx * 0.5 + rx * reach;
+    b.z = c.z + fz * 0.5 + rz * reach;
+    b.y = dribbleY;
     b.vx = 0; b.vy = 0; b.vz = 0;
     return;
   }
