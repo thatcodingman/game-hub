@@ -633,11 +633,11 @@ function onPassPressed() {
 // -------------------------------------------------------------------------
 const MOVE_COOLDOWN_MS = 650;
 const CROSSOVER_STEAL_RESIST_MS = 420;
-const CROSSOVER_KICK_MULT = 1.15;
+const CROSSOVER_KICK_MULT = 0.5;
 const HESITATE_STUTTER_MS = 150, HESITATE_BURST_MS = 400;
 const HESITATE_TOTAL_MS = HESITATE_STUTTER_MS + HESITATE_BURST_MS;
 
-const CROSSOVER_HAND_SWITCH_MS = 260;
+const CROSSOVER_HAND_SWITCH_MS = 320;
 function onCrossoverPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.moveCooldown > 0) return;
@@ -826,7 +826,13 @@ function updateHumanoidPose(p, dt) {
   const g = p.mesh;
   if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
 
-  if (speed > 0.02) {
+  // While a crossover hand-switch is playing, keep the body facing put —
+  // a real crossover keeps you squared up downcourt while the ball crosses
+  // in front of you. Without this, the lateral kick's own velocity would
+  // spin the body to face sideways mid-sweep, which rotates the ball's
+  // whole left/right reference frame and makes the crossover unreadable.
+  const facingLocked = p.handAnimT < 1;
+  if (speed > 0.02 && !facingLocked) {
     // Turn toward the movement direction at a limited rate (shortest-angle),
     // instead of snapping the whole body to face it instantly.
     const targetFacing = Math.atan2(p.vx, p.vz);
@@ -834,6 +840,8 @@ function updateHumanoidPose(p, dt) {
     diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     const maxTurn = TURN_RATE * dt;
     p.facing += clamp(diff, -maxTurn, maxTurn);
+  }
+  if (speed > 0.02) {
     g.userData.animPhase += dt * 0.012 * (1 + speed * 3);
   }
   g.rotation.y = p.facing;
@@ -920,17 +928,20 @@ function updateBall(dtMs) {
     let reach = 0.75 + 0.35 * bounce;
 
     // Crossover: the ball actually crosses from one hand to the other — a
-    // quick, hard, low sweep across the body (dipping down and reaching
-    // wider mid-sweep) — before settling back into the normal dribble
-    // rhythm on the new hand, instead of just mirroring in place.
+    // quick, hard, LOW-BUT-VISIBLE sweep that reaches noticeably wider than
+    // a normal dribble so the side-to-side travel is unmistakable — before
+    // settling back into the normal dribble rhythm on the new hand, instead
+    // of just mirroring in place.
+    const CROSSOVER_SWEEP_REACH = 2.0; // well past the ~0.75-1.1 normal reach
+    const CROSSOVER_SWEEP_Y = 1.0;     // low hard dribble, but still clearly visible
     let handSide = c.handSide;
     if (c.handAnimT < 1) {
       c.handAnimT = Math.min(1, c.handAnimT + dtMs / c.handAnimDur);
       const e = c.handAnimT * c.handAnimT * (3 - 2 * c.handAnimT);
       handSide = lerp(c.handAnimFrom, c.handAnimTo, e);
       const dip = Math.sin(c.handAnimT * Math.PI); // 0 -> 1 -> 0 across the sweep
-      dribbleY = lerp(dribbleY, DRIBBLE_LOW * 0.55, dip * 0.85);
-      reach = lerp(reach, reach * 1.35, dip);
+      dribbleY = lerp(dribbleY, CROSSOVER_SWEEP_Y, dip);
+      reach = lerp(reach, CROSSOVER_SWEEP_REACH, dip);
     }
 
     let bx = c.x + fx * 0.5 + rx * reach * handSide;
