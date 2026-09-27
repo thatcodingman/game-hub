@@ -437,10 +437,11 @@ function makePlayer(team, posLabel) {
     x: 0, z: 0, vx: 0, vz: 0, facing: team === 'A' ? Math.PI / 2 : -Math.PI / 2,
     actionCooldown: 0, mesh,
     dribblePhase: Math.random() * Math.PI * 2,
-    // Dribble-move state: crossover (steal-resistant juke) and hesitation
-    // (stutter then burst) share one cooldown so they can't be spammed back
-    // to back, but track their own effect timers.
-    moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, crossoverSide: 1,
+    // Dribble-move state: crossover (steal-resistant hand-to-hand juke) and
+    // hesitation (shot-fake stutter then burst) share one cooldown so they
+    // can't be spammed back to back, but track their own effect state.
+    moveCooldown: 0, stealResistTimer: 0, hesitateTimer: 0, hesitateFakeAmt: 0,
+    handSide: 1, handAnimFrom: 1, handAnimTo: 1, handAnimT: 1, handAnimDur: 260,
   };
 }
 
@@ -475,8 +476,13 @@ function controlledPlayer() { return game.teamA[game.controlledIndex]; }
 
 function resetPositions(possessionTeam) {
   const homeXA = -30, homeXB = 30;
-  game.teamA.forEach((p, i) => { p.x = homeXA; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = Math.PI / 2; p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0; p.hesitateTimer = 0; });
-  game.teamB.forEach((p, i) => { p.x = homeXB; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = -Math.PI / 2; p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0; p.hesitateTimer = 0; });
+  const resetMoveState = (p) => {
+    p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0;
+    p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
+    p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1;
+  };
+  game.teamA.forEach((p, i) => { p.x = homeXA; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = Math.PI / 2; resetMoveState(p); });
+  game.teamB.forEach((p, i) => { p.x = homeXB; p.z = (i - 1) * 14; p.vx = 0; p.vz = 0; p.facing = -Math.PI / 2; resetMoveState(p); });
   const carrierTeam = possessionTeam === 'A' ? game.teamA : game.teamB;
   const carrier = carrierTeam[0];
   const b = game.ball;
@@ -631,18 +637,25 @@ const CROSSOVER_KICK_MULT = 1.15;
 const HESITATE_STUTTER_MS = 150, HESITATE_BURST_MS = 400;
 const HESITATE_TOTAL_MS = HESITATE_STUTTER_MS + HESITATE_BURST_MS;
 
+const CROSSOVER_HAND_SWITCH_MS = 260;
 function onCrossoverPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.moveCooldown > 0) return;
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
-  p.crossoverSide = -(p.crossoverSide || 1);
+  // Actually switch the ball hand-to-hand (see updateBall) instead of just
+  // mirroring the carry offset in place.
+  const newSide = -(p.handSide || 1);
+  p.handAnimFrom = p.handSide; p.handAnimTo = newSide; p.handAnimT = 0;
+  p.handAnimDur = CROSSOVER_HAND_SWITCH_MS;
+  p.handSide = newSide;
   // A sharp lateral kick (relative to the camera, like the WASD strafe axis)
-  // that eases back into whatever direction the player is holding — the
-  // "snap" of the move — rather than a clean instant sidestep.
+  // toward the new hand's side, that eases back into whatever direction the
+  // player is holding — the "snap" of the move — rather than a clean
+  // instant sidestep.
   const fwd = camForward.clone().setY(0).normalize();
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  const kick = p.stats.speed * CROSSOVER_KICK_MULT * p.crossoverSide;
+  const kick = p.stats.speed * CROSSOVER_KICK_MULT * newSide;
   p.vx += right.x * kick; p.vz += right.z * kick;
   playTone(520, 0.05);
 }
@@ -846,7 +859,18 @@ function updateHumanoidPose(p, dt) {
   const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
   legLP.rotation.x = swingL; legRP.rotation.x = swingR;
   kneeLP.rotation.x = kneeL; kneeRP.rotation.x = kneeR;
-  armLP.rotation.x = -swingL; armRP.rotation.x = -swingR;
+
+  // Hesitation shot-fake: the shooting arm (and ball) cocks up as if about
+  // to go up for a shot, then relaxes back into the normal running arm
+  // swing as the burst kicks in, so the fake actually reads as a fake.
+  const fakeAmt = p.hesitateFakeAmt || 0;
+  if (fakeAmt > 0) {
+    armLP.rotation.x = lerp(-swingL, -0.6, fakeAmt);
+    armRP.rotation.x = lerp(-swingR, -2.0, fakeAmt);
+    armRP.rotation.z = lerp(0, -0.35, fakeAmt);
+  } else {
+    armLP.rotation.x = -swingL; armRP.rotation.x = -swingR; armRP.rotation.z = 0;
+  }
 
   // Subtle torso bob synced to the stride, fading out with swingAmt so it
   // settles to flat when the player stops rather than cutting off abruptly.
@@ -890,14 +914,40 @@ function updateBall(dtMs) {
     c.dribblePhase += dtMs * dribbleRate;
     const bounce = Math.pow(Math.abs(Math.sin(c.dribblePhase)), 0.45);
     const DRIBBLE_LOW = 0.55, DRIBBLE_HIGH = 2.6;
-    const dribbleY = DRIBBLE_LOW + (DRIBBLE_HIGH - DRIBBLE_LOW) * bounce;
+    let dribbleY = DRIBBLE_LOW + (DRIBBLE_HIGH - DRIBBLE_LOW) * bounce;
     // Ball sits a touch further from the body at the top of the bounce
     // (in the hand) and closer/lower at the bottom (floor contact).
-    const reach = 0.75 + 0.35 * bounce;
+    let reach = 0.75 + 0.35 * bounce;
 
-    b.x = c.x + fx * 0.5 + rx * reach;
-    b.z = c.z + fz * 0.5 + rz * reach;
-    b.y = dribbleY;
+    // Crossover: the ball actually crosses from one hand to the other — a
+    // quick, hard, low sweep across the body (dipping down and reaching
+    // wider mid-sweep) — before settling back into the normal dribble
+    // rhythm on the new hand, instead of just mirroring in place.
+    let handSide = c.handSide;
+    if (c.handAnimT < 1) {
+      c.handAnimT = Math.min(1, c.handAnimT + dtMs / c.handAnimDur);
+      const e = c.handAnimT * c.handAnimT * (3 - 2 * c.handAnimT);
+      handSide = lerp(c.handAnimFrom, c.handAnimTo, e);
+      const dip = Math.sin(c.handAnimT * Math.PI); // 0 -> 1 -> 0 across the sweep
+      dribbleY = lerp(dribbleY, DRIBBLE_LOW * 0.55, dip * 0.85);
+      reach = lerp(reach, reach * 1.35, dip);
+    }
+
+    let bx = c.x + fx * 0.5 + rx * reach * handSide;
+    let bz = c.z + fz * 0.5 + rz * reach * handSide;
+    let by = dribbleY;
+
+    // Hesitation shot-fake: ball rises toward the shot pocket like the
+    // carrier is about to go up for a shot, then drops back into the
+    // dribble as the burst kicks in — the "sell" that makes the fake work.
+    if (c.hesitateFakeAmt > 0) {
+      const fakeX = c.x + fx * 0.9, fakeZ = c.z + fz * 0.9, fakeY = 5.8;
+      bx = lerp(bx, fakeX, c.hesitateFakeAmt);
+      bz = lerp(bz, fakeZ, c.hesitateFakeAmt);
+      by = lerp(by, fakeY, c.hesitateFakeAmt);
+    }
+
+    b.x = bx; b.z = bz; b.y = by;
     b.vx = 0; b.vy = 0; b.vz = 0;
     return;
   }
@@ -983,7 +1033,21 @@ function frame(now) {
       if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
-      if (p.hesitateTimer > 0) p.hesitateTimer -= dtMs;
+      if (p.hesitateTimer > 0) {
+        p.hesitateTimer -= dtMs;
+        // Shot-fake "sell" window: ramps up fast, holds briefly, eases back
+        // down well into the burst phase so the arm/ball settle back into a
+        // normal running carry rather than snapping out of the fake pose.
+        const elapsed = HESITATE_TOTAL_MS - Math.max(p.hesitateTimer, 0);
+        const FAKE_PEAK = 90, FAKE_END = 320;
+        let amt = 0;
+        if (elapsed < FAKE_END) {
+          amt = elapsed < FAKE_PEAK ? elapsed / FAKE_PEAK : 1 - (elapsed - FAKE_PEAK) / (FAKE_END - FAKE_PEAK);
+        }
+        p.hesitateFakeAmt = clamp(amt, 0, 1);
+      } else {
+        p.hesitateFakeAmt = 0;
+      }
     });
 
     const human = controlledPlayer();
