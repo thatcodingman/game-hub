@@ -841,7 +841,7 @@ window.addEventListener('keydown', (e) => {
   keysDown.add(e.code);
   if (game.phase !== 'live') return;
   if (e.code === 'KeyE') onSwitchPressed();
-  if (e.code === 'KeyQ') onScreenPressed();
+  if (e.code === 'KeyQ') onScreenKeyDown();
   if (e.code === 'KeyR') onCallForBallPressed();
   if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
@@ -849,7 +849,10 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
 });
-window.addEventListener('keyup', (e) => keysDown.delete(e.code));
+window.addEventListener('keyup', (e) => {
+  keysDown.delete(e.code);
+  if (e.code === 'KeyQ') onScreenKeyUp();
+});
 
 function onSwitchPressed() {
   game.controlledIndex = (game.controlledIndex + 1) % game.teamA.length;
@@ -866,7 +869,9 @@ const SCREEN_CALL_COOLDOWN_MS = 1400;
 const SCREEN_CALL_TIMEOUT_MS = 5000; // the screener gives up if it can't get there
 const SCREEN_HUSTLE_MULT = 1.7; // sprint over regardless of the screener's own (often slow) top speed
 const SCREEN_CONTACT_RANGE = PLAYER_R * 2 + 0.8;
-const SCREEN_FREEZE_MS = 1300; // how long the screener plants and holds his ground
+const SCREEN_FREEZE_MIN_MS = 400; // a quick tap of Q still sets a short screen
+const SCREEN_FREEZE_MS = 1000; // max screen hold — reached by holding Q down (this is the cap)
+const SCREEN_HOLD_CHARGE_MS = 1500; // how long you need to hold Q to reach the max hold duration
 const SCREEN_CONTACT_FLASH_MS = 350; // defender's jersey-flash/callout duration only — not a freeze
 let screenCalloutHideAt = 0;
 function showScreenCallout(text, ms) {
@@ -876,7 +881,32 @@ function showScreenCallout(text, ms) {
   el.classList.add('show');
   screenCalloutHideAt = performance.now() + ms;
 }
-function onScreenPressed() {
+// Q is now a press-AND-HOLD: charging starts the instant it's pressed, and
+// releasing it is what actually sends the screener over — the longer you
+// held it (up to SCREEN_HOLD_CHARGE_MS), the longer the resulting screen
+// hold lasts once contact is made, capped at SCREEN_FREEZE_MS (the old,
+// pre-hold max).
+let screenChargeStartAt = 0;
+let screenCharging = false;
+function onScreenKeyDown() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || p.screenCallCooldown > 0 || screenCharging) return;
+  const teammates = getTeammates(p.team).filter((t) => t !== p);
+  if (!teammates.length) return;
+  let screener = teammates[0];
+  teammates.forEach((t) => { if (t.stats.scale > screener.stats.scale) screener = t; });
+  if (screener.screenAssignment) return; // already on their way to set one
+  screenCharging = true;
+  screenChargeStartAt = performance.now();
+  showScreenCallout('HOLD TO SET SCREEN…', SCREEN_HOLD_CHARGE_MS + 500);
+}
+function onScreenKeyUp() {
+  if (!screenCharging) return;
+  screenCharging = false;
+  const heldMs = clamp(performance.now() - screenChargeStartAt, 0, SCREEN_HOLD_CHARGE_MS);
+  onScreenPressed(heldMs);
+}
+function onScreenPressed(heldMs) {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.screenCallCooldown > 0) return;
   const teammates = getTeammates(p.team).filter((t) => t !== p);
@@ -888,7 +918,11 @@ function onScreenPressed() {
   const opponents = getOpponents(p.team);
   let target = opponents[0], bestD = Infinity;
   opponents.forEach((o) => { const d = dist2(p, o); if (d < bestD) { bestD = d; target = o; } });
-  screener.screenAssignment = { target, timer: SCREEN_CALL_TIMEOUT_MS };
+  // holdMs was locked in the instant Q was released (how long it was held,
+  // up to SCREEN_HOLD_CHARGE_MS) and decides how long the resulting screen
+  // hold lasts once the screener makes contact — a quick tap gives a short
+  // screen, holding it the full charge time gives the max, SCREEN_FREEZE_MS.
+  screener.screenAssignment = { target, timer: SCREEN_CALL_TIMEOUT_MS, holdMs: heldMs || 0 };
   p.screenCallCooldown = SCREEN_CALL_COOLDOWN_MS;
   playTone(260, 0.06);
   showScreenCallout('CALLING SCREEN…', 1400);
@@ -1134,6 +1168,9 @@ function updateAI(p, dtMs) {
     // standing adjacent to it, then plants and holds on real contact.
     const asg = p.screenAssignment;
     asg.timer -= dtMs;
+    // asg.holdMs was already locked in when Q was released (see
+    // onScreenKeyUp) — how long it was charged decides how long the freeze
+    // lasts once contact happens, computed below.
     const carrier = game.ball.carrier;
     const target = asg.target;
     if (!carrier || !target || asg.timer <= 0) {
@@ -1157,7 +1194,8 @@ function updateAI(p, dtMs) {
         // (screenHoldTimer, handled in the collision loop) is what actually
         // gets in his way, the same way a real screen works.
         target.screenedTimer = SCREEN_CONTACT_FLASH_MS;
-        p.screenHoldTimer = SCREEN_FREEZE_MS;
+        const chargeFrac = clamp((asg.holdMs || 0) / SCREEN_HOLD_CHARGE_MS, 0, 1);
+        p.screenHoldTimer = SCREEN_FREEZE_MIN_MS + (SCREEN_FREEZE_MS - SCREEN_FREEZE_MIN_MS) * chargeFrac;
         playTone(220, 0.05);
         p.screenAssignment = null;
         showScreenCallout('SCREEN SET!', 1000);
@@ -1515,7 +1553,11 @@ function updateCamera(dt) {
   const human = controlledPlayer();
   const iAmOnOffense = game.possessionTeam === human.team;
   const relevantHoop = iAmOnOffense ? (human.team === 'A' ? HOOP_A : HOOP_B) : (human.team === 'A' ? HOOP_B : HOOP_A);
-  const dirSign = Math.sign(relevantHoop.x - human.x) || (human.team === 'A' ? 1 : -1);
+  // Which side of the court the camera sits on depends only on which hoop is
+  // relevant (i.e. only on offense/defense possession), never on the human's
+  // own live position — otherwise running out of bounds behind a hoop flips
+  // the sign of (relevantHoop.x - human.x) instantly and snaps the camera.
+  const dirSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
 
   const desiredPos = new THREE.Vector3(human.x - dirSign * 15, 8.5, human.z);
   const desiredLook = new THREE.Vector3(human.x + dirSign * 10, 3.5, human.z);
