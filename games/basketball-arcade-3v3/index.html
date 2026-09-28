@@ -337,7 +337,14 @@ function buildCourtTexture() {
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p4.x, p4.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     ctx.beginPath(); ctx.arc(ft.x, ft.y, px(6), 0, Math.PI * 2); ctx.stroke();
     const rc = toCanvas(hoop.x, 0);
+    // the three-point arc gets its own bold, high-contrast color (instead of
+    // blending into the same faint white as every other court line) so it
+    // actually reads as a distinct line from a normal in-game camera angle
+    ctx.save();
+    ctx.strokeStyle = '#ff5a1f';
+    ctx.lineWidth = 5;
     ctx.beginPath(); ctx.arc(rc.x, rc.y, px(THREE_PT_R), Math.PI * 0.5 * (dir), Math.PI * 1.5 * (dir), dir > 0); ctx.stroke();
+    ctx.restore();
   });
 
   const tex = new THREE.CanvasTexture(cvs);
@@ -352,6 +359,30 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 scene.add(floor);
 
+// Backboard face texture: tinted glass + a painted orange frame + the classic
+// white "shooter's square" — instead of a flat blank rectangle.
+function buildBackboardTexture() {
+  const W = 256, H = 160;
+  const cvs = document.createElement('canvas');
+  cvs.width = W; cvs.height = H;
+  const ctx = cvs.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#eef2f7';
+  ctx.fillRect(0, 0, W, H);
+  // outer frame
+  ctx.strokeStyle = '#ff5a1f';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(5, 5, W - 10, H - 10);
+  // shooter's square, sitting just above the rim mount point (bottom-center)
+  const sqW = 76, sqH = 56, sqX = (W - sqW) / 2, sqY = H - sqH - 14;
+  ctx.strokeStyle = '#f2f4f7';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(sqX, sqY, sqW, sqH);
+  const tex = new THREE.CanvasTexture(cvs);
+  return tex;
+}
+const backboardTexture = buildBackboardTexture();
+
 function buildHoop(hoop, facingSign) {
   const g = new THREE.Group();
   const poleX = hoop.x + facingSign * 3.2;
@@ -361,35 +392,112 @@ function buildHoop(hoop, facingSign) {
   pole.castShadow = true;
   g.add(pole);
 
+  // a padded pole guard — a bright wrap near the base, standard arena detail
+  const polePad = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 2.2, 12),
+    new THREE.MeshStandardMaterial({ color: 0xff5a1f }));
+  polePad.position.set(poleX, 1.3, 0);
+  polePad.castShadow = true;
+  g.add(polePad);
+
+  // the arm connecting the pole to the backboard, angled slightly for a
+  // real gooseneck-mount look instead of the board floating in mid-air
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(Math.abs(poleX - (hoop.x + facingSign * 1.7)) + 0.3, 0.4, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x1e293b }));
+  arm.position.set((poleX + hoop.x + facingSign * 1.7) / 2, HOOP_HEIGHT + 2.6, 0);
+  arm.castShadow = true;
+  g.add(arm);
+
+  // a slim dark mounting frame sits BEHIND the board face (further from the
+  // court than the board itself) so it only peeks out around the edges as a
+  // border, instead of a solid slab that would cover the board's texture
+  const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(0.1, 3.36, 5.76),
+    new THREE.MeshStandardMaterial({ color: 0x0f172a }));
+  boardFrame.position.set(hoop.x + facingSign * 1.66, HOOP_HEIGHT + 1.4, 0);
+  g.add(boardFrame);
+
   const backboard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3.2, 5.6),
-    new THREE.MeshStandardMaterial({ color: 0xf2f4f7, transparent: true, opacity: 0.85 }));
+    new THREE.MeshStandardMaterial({ color: 0xdfe6ee, transparent: true, opacity: 0.55 }));
   backboard.position.set(hoop.x + facingSign * 1.6, HOOP_HEIGHT + 1.4, 0);
   backboard.castShadow = true;
   g.add(backboard);
 
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.08, 8, 20),
-    new THREE.MeshStandardMaterial({ color: 0xff5a1f }));
+  // the frame + shooter's-square graphic, as a flat unlit plane sitting just
+  // in front of the glass box — a plain box face washed out to grey under
+  // scene lighting, so the graphic gets its own unlit material to stay crisp
+  // and correctly colored regardless of the court's directional light/fog
+  const boardGraphic = new THREE.Mesh(new THREE.PlaneGeometry(5.6, 3.2),
+    new THREE.MeshBasicMaterial({ map: backboardTexture, transparent: true }));
+  // sits just off the box's court-facing side (the "-facingSign" direction)
+  // so the graphic isn't z-fighting with the glass box behind it
+  boardGraphic.position.set(hoop.x + facingSign * 1.49, HOOP_HEIGHT + 1.4, 0);
+  boardGraphic.rotation.y = -facingSign * Math.PI / 2;
+  g.add(boardGraphic);
+
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.09, 10, 24),
+    new THREE.MeshStandardMaterial({ color: 0xff5a1f, emissive: 0x7a2200, emissiveIntensity: 0.25, roughness: 0.35, metalness: 0.4 }));
   rim.rotation.x = Math.PI / 2;
   rim.position.set(hoop.x, HOOP_HEIGHT, 0);
   rim.castShadow = true;
   g.add(rim);
 
-  // simple net suggestion — a few sagging vertical lines
-  const netMat = new THREE.LineBasicMaterial({ color: 0xe5e7eb, transparent: true, opacity: 0.7 });
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2;
-    const x0 = hoop.x + Math.cos(a) * 0.85, z0 = Math.sin(a) * 0.85;
-    const x1 = hoop.x + Math.cos(a) * 0.35, z1 = Math.sin(a) * 0.35;
-    const pts = [
-      new THREE.Vector3(x0, HOOP_HEIGHT, z0),
-      new THREE.Vector3(x1, HOOP_HEIGHT - 1.4, z1),
-    ];
-    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), netMat));
+  // small brackets tying the rim to the backboard face, closing the gap
+  // that used to leave the rim looking like it floats in front of the board
+  const bracketMat = new THREE.MeshStandardMaterial({ color: 0x334155 });
+  [-0.55, 0.55].forEach((dz) => {
+    const bracket = new THREE.Mesh(new THREE.BoxGeometry(Math.abs(facingSign * 0.5), 0.12, 0.12), bracketMat);
+    bracket.position.set(hoop.x + facingSign * 0.35, HOOP_HEIGHT + 0.05, dz);
+    g.add(bracket);
+  });
+
+  // net: more strands, plus two horizontal rings so it reads as a woven net
+  // instead of loose sagging threads
+  const netMat = new THREE.LineBasicMaterial({ color: 0xf2f4f7, transparent: true, opacity: 0.85 });
+  const NET_STRANDS = 14;
+  const netTopR = 0.85, netBotR = 0.32, netDrop = 1.6;
+  const strandPts = [];
+  for (let i = 0; i < NET_STRANDS; i++) {
+    const a = (i / NET_STRANDS) * Math.PI * 2;
+    const x0 = hoop.x + Math.cos(a) * netTopR, z0 = Math.sin(a) * netTopR;
+    const x1 = hoop.x + Math.cos(a) * netBotR, z1 = Math.sin(a) * netBotR;
+    strandPts.push([new THREE.Vector3(x0, HOOP_HEIGHT, z0), new THREE.Vector3(x1, HOOP_HEIGHT - netDrop, z1)]);
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(strandPts[i]), netMat));
   }
+  [0.4, 0.75].forEach((frac) => {
+    const ringPts = [];
+    for (let i = 0; i <= NET_STRANDS; i++) {
+      const s = strandPts[i % NET_STRANDS];
+      ringPts.push(new THREE.Vector3().lerpVectors(s[0], s[1], frac));
+    }
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts), netMat));
+  });
+
   scene.add(g);
 }
 buildHoop(HOOP_A, 1);
 buildHoop(HOOP_B, -1);
+
+// a real raised 3D arc for the three-point line (not just a texture stroke)
+// so it stays crisp and clearly visible from any in-game camera angle,
+// instead of relying purely on the flat floor texture.
+function buildThreePointArc(hoop) {
+  const dir = hoop.x > 0 ? -1 : 1;
+  const pts = [];
+  const SEGMENTS = 40;
+  for (let i = 0; i <= SEGMENTS; i++) {
+    const t = -Math.PI / 2 + (Math.PI * i) / SEGMENTS;
+    const x = hoop.x + dir * THREE_PT_R * Math.cos(t);
+    const z = THREE_PT_R * Math.sin(t);
+    pts.push(new THREE.Vector3(x, 0.05, z));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const tubeGeo = new THREE.TubeGeometry(curve, SEGMENTS, 0.09, 6, false);
+  const tubeMat = new THREE.MeshStandardMaterial({ color: 0xff5a1f, emissive: 0x6b1f00, emissiveIntensity: 0.3, roughness: 0.5 });
+  const tube = new THREE.Mesh(tubeGeo, tubeMat);
+  tube.receiveShadow = true;
+  scene.add(tube);
+}
+buildThreePointArc(HOOP_A);
+buildThreePointArc(HOOP_B);
 
 // -------------------------------------------------------------------------
 // Humanoid player factory
