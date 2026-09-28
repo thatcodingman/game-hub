@@ -409,6 +409,39 @@ function getJerseyTexture(number) {
   return tex;
 }
 
+// Small shorts emblem — a round patch with the team letter, sized and
+// styled like a little action-figure costume badge rather than a full
+// logo: simple, small, high-contrast, and legible at a glance.
+const emblemTextureCache = new Map();
+function getEmblemTexture(teamColor, teamLetter) {
+  if (emblemTextureCache.has(teamLetter)) return emblemTextureCache.get(teamLetter);
+  const S = 96;
+  const cvs = document.createElement('canvas');
+  cvs.width = S; cvs.height = S;
+  const ctx = cvs.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+  const cx = S / 2, cy = S / 2, r = S / 2 - 4;
+  // dark outer ring, cream patch face — reads like a stitched-on badge
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#f8fafc';
+  ctx.fill();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(15,23,42,0.85)';
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, r - 6, 0, Math.PI * 2);
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#' + new THREE.Color(teamColor).getHexString();
+  ctx.stroke();
+  ctx.font = '900 46px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#' + new THREE.Color(teamColor).getHexString();
+  ctx.fillText(teamLetter, cx, cy + 3);
+  const tex = new THREE.CanvasTexture(cvs);
+  emblemTextureCache.set(teamLetter, tex);
+  return tex;
+}
+
 function buildHoop(hoop, facingSign) {
   const g = new THREE.Group();
   const poleX = hoop.x + facingSign * 3.2;
@@ -553,7 +586,7 @@ function makeNameSprite(text, color) {
   return sprite;
 }
 
-function createHumanoid(teamColor, posLabel, teamLabelColor) {
+function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const legLen = 3.0, torsoLen = 2.3, headR = 0.55;
   const hipY = legLen, shoulderY = hipY + torsoLen - 0.25;
   const shortsColor = new THREE.Color(teamColor).multiplyScalar(0.55).getHex();
@@ -618,6 +651,41 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
   numBack.position.set(0, hipY + torsoLen / 2 + 0.08, -0.481);
   numBack.rotation.y = Math.PI;
   body.add(numBack);
+
+  // Actual baggy shorts — a garment silhouette wrapping both thighs at the
+  // hip, wider than the bare leg cylinders underneath, instead of the
+  // thighs' own dark tint being the only thing implying "shorts".
+  const shortsLen = thighLen * 0.72;
+  const shorts = new THREE.Mesh(new THREE.BoxGeometry(1.56, shortsLen, 1.0),
+    new THREE.MeshStandardMaterial({ color: shortsColor }));
+  shorts.position.set(0, hipY - shortsLen / 2 + 0.04, 0);
+  shorts.castShadow = true;
+  body.add(shorts);
+
+  // matching side piping so the shorts read as part of the same uniform as
+  // the jersey, not a separate unrelated garment
+  const shortsTrimL = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsLen, 1.02), trimMat);
+  shortsTrimL.position.set(-0.76, hipY - shortsLen / 2 + 0.04, 0);
+  body.add(shortsTrimL);
+  const shortsTrimR = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsLen, 1.02), trimMat);
+  shortsTrimR.position.set(0.76, hipY - shortsLen / 2 + 0.04, 0);
+  body.add(shortsTrimR);
+
+  // small action-figure-style team emblem patch on the shorts — one leg,
+  // front and back, like a real uniform's hip logo — unlit so it stays
+  // crisp the same way the jersey number does
+  if (teamLetter) {
+    const emblemTex = getEmblemTexture(teamColor, teamLetter);
+    const emblemMat = new THREE.MeshBasicMaterial({ map: emblemTex, transparent: true });
+    const emblemY = hipY - shortsLen * 0.42;
+    const emblemFront = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), emblemMat);
+    emblemFront.position.set(0.42, emblemY, 0.51);
+    body.add(emblemFront);
+    const emblemBack = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), emblemMat);
+    emblemBack.position.set(0.42, emblemY, -0.51);
+    emblemBack.rotation.y = Math.PI;
+    body.add(emblemBack);
+  }
 
   const ARM_LEN = 2.15;
   const armL = limbMesh(0.24, 0.20, ARM_LEN, SKIN_TONE);
@@ -734,7 +802,7 @@ scene.add(ballShadow);
 // -------------------------------------------------------------------------
 function makePlayer(team, posLabel) {
   const teamColor = team === 'A' ? TEAM_A_COLOR : TEAM_B_COLOR;
-  const mesh = createHumanoid(teamColor, posLabel, team === 'A' ? '#7dd3fc' : '#fdba74');
+  const mesh = createHumanoid(teamColor, posLabel, team === 'A' ? '#7dd3fc' : '#fdba74', team);
   return {
     team, name: posLabel, stats: POS_STATS[posLabel],
     x: 0, z: 0, vx: 0, vz: 0, facing: team === 'A' ? Math.PI / 2 : -Math.PI / 2,
