@@ -244,6 +244,7 @@ const POS_STATS = {
   SF: { speed: 0.38, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0 },
   C:  { speed: 0.28, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16 },
 };
+const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
@@ -382,6 +383,31 @@ function buildBackboardTexture() {
   return tex;
 }
 const backboardTexture = buildBackboardTexture();
+
+// Jersey number graphic — white numeral with a dark outline so it reads
+// clearly against either team's jersey color, cached per (team, number) pair
+// since there are only a handful of distinct combos on the floor.
+const jerseyTextureCache = new Map();
+function getJerseyTexture(number) {
+  if (jerseyTextureCache.has(number)) return jerseyTextureCache.get(number);
+  const S = 128;
+  const cvs = document.createElement('canvas');
+  cvs.width = S; cvs.height = S;
+  const ctx = cvs.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+  ctx.font = '900 88px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(15,23,42,0.85)';
+  ctx.lineWidth = 10;
+  ctx.strokeText(number, S / 2, S / 2 + 4);
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillText(number, S / 2, S / 2 + 4);
+  const tex = new THREE.CanvasTexture(cvs);
+  jerseyTextureCache.set(number, tex);
+  return tex;
+}
 
 function buildHoop(hoop, facingSign) {
   const g = new THREE.Group();
@@ -566,6 +592,32 @@ function createHumanoid(teamColor, posLabel, teamLabelColor) {
   torso.position.set(0, hipY + torsoLen / 2, 0);
   torso.castShadow = true;
   body.add(torso);
+
+  // White side piping down the jersey — the flat team-color block reads as
+  // a plain shirt without some kind of trim breaking it up, same as a real
+  // uniform's side stripe.
+  const trimColor = 0xf8fafc;
+  const trimMat = new THREE.MeshStandardMaterial({ color: trimColor });
+  const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoLen, 0.97), trimMat);
+  trimL.position.set(-0.83, hipY + torsoLen / 2, 0);
+  body.add(trimL);
+  const trimR = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoLen, 0.97), trimMat);
+  trimR.position.set(0.83, hipY + torsoLen / 2, 0);
+  body.add(trimR);
+
+  // Jersey number, front and back — unlit planes (not part of the torso's
+  // lit material) so the numeral stays crisp and correctly colored under
+  // the court's directional lighting instead of washing out grey.
+  const jerseyNumber = JERSEY_NUMBERS[posLabel] || '0';
+  const numberTex = getJerseyTexture(jerseyNumber);
+  const numberMat = new THREE.MeshBasicMaterial({ map: numberTex, transparent: true });
+  const numFront = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.05), numberMat);
+  numFront.position.set(0, hipY + torsoLen / 2 + 0.08, 0.481);
+  body.add(numFront);
+  const numBack = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.05), numberMat);
+  numBack.position.set(0, hipY + torsoLen / 2 + 0.08, -0.481);
+  numBack.rotation.y = Math.PI;
+  body.add(numBack);
 
   const ARM_LEN = 2.15;
   const armL = limbMesh(0.24, 0.20, ARM_LEN, SKIN_TONE);
