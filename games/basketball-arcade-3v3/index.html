@@ -442,6 +442,41 @@ function getEmblemTexture(teamColor, teamLetter) {
   return tex;
 }
 
+// A second, smaller companion patch — a simple star — so the shorts carry a
+// little matched SET of badges instead of a single logo sitting alone.
+const starEmblemTextureCache = new Map();
+function getStarEmblemTexture(teamColor) {
+  const key = teamColor;
+  if (starEmblemTextureCache.has(key)) return starEmblemTextureCache.get(key);
+  const S = 96;
+  const cvs = document.createElement('canvas');
+  cvs.width = S; cvs.height = S;
+  const ctx = cvs.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+  const cx = S / 2, cy = S / 2, r = S / 2 - 4;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#f8fafc';
+  ctx.fill();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(15,23,42,0.85)';
+  ctx.stroke();
+  // five-point star, drawn in the team color
+  const spikes = 5, outerR = r * 0.62, innerR = outerR * 0.45;
+  ctx.beginPath();
+  for (let i = 0; i < spikes * 2; i++) {
+    const rad = i % 2 === 0 ? outerR : innerR;
+    const ang = (Math.PI / spikes) * i - Math.PI / 2;
+    const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = '#' + new THREE.Color(teamColor).getHexString();
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(cvs);
+  starEmblemTextureCache.set(key, tex);
+  return tex;
+}
+
 function buildHoop(hoop, facingSign) {
   const g = new THREE.Group();
   const poleX = hoop.x + facingSign * 3.2;
@@ -671,20 +706,28 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   shortsTrimR.position.set(0.76, hipY - shortsLen / 2 + 0.04, 0);
   body.add(shortsTrimR);
 
-  // small action-figure-style team emblem patch on the shorts — one leg,
-  // front and back, like a real uniform's hip logo — unlit so it stays
-  // crisp the same way the jersey number does
+  // small action-figure-style emblem patches on the shorts — a little set
+  // of badges on BOTH legs, front and back, instead of just one, like the
+  // little decal clusters molded onto an actual action figure's costume
   if (teamLetter) {
-    const emblemTex = getEmblemTexture(teamColor, teamLetter);
-    const emblemMat = new THREE.MeshBasicMaterial({ map: emblemTex, transparent: true });
+    const emblemMat = new THREE.MeshBasicMaterial({ map: getEmblemTexture(teamColor, teamLetter), transparent: true });
+    const starMat = new THREE.MeshBasicMaterial({ map: getStarEmblemTexture(teamColor), transparent: true });
     const emblemY = hipY - shortsLen * 0.42;
-    const emblemFront = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), emblemMat);
-    emblemFront.position.set(0.42, emblemY, 0.51);
-    body.add(emblemFront);
-    const emblemBack = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), emblemMat);
-    emblemBack.position.set(0.42, emblemY, -0.51);
-    emblemBack.rotation.y = Math.PI;
-    body.add(emblemBack);
+    // right leg: team-letter patch (the "main" badge)
+    [0.51, -0.51].forEach((z) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), emblemMat);
+      m.position.set(0.42, emblemY, z);
+      if (z < 0) m.rotation.y = Math.PI;
+      body.add(m);
+    });
+    // left leg: a smaller companion star patch, so the two legs form a set
+    // rather than a single badge floating alone on one side
+    [0.51, -0.51].forEach((z) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.32), starMat);
+      m.position.set(-0.42, emblemY, z);
+      if (z < 0) m.rotation.y = Math.PI;
+      body.add(m);
+    });
   }
 
   const ARM_LEN = 2.15;
