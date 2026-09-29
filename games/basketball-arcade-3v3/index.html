@@ -917,6 +917,7 @@ function makePlayer(team, posLabel) {
     screenedTimer: 0, inboundImmuneTimer: 0, screenAssignment: null, screenCallCooldown: 0, screenHoldTimer: 0,
     checkupLocked: false, ballCallTimer: 0, ballCallCooldown: 0,
     postUpActive: false,
+    postDefenseFacing: false, postDefenseFacingAngle: 0,
   };
 }
 
@@ -1543,6 +1544,7 @@ function updateAI(p, dtMs) {
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
   const myHoop = p.team === 'A' ? HOOP_B : HOOP_A;
   const oppHoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  p.postDefenseFacing = false; // only re-armed below, in the post-defense branch
 
   if (isCarrier) {
     if (p.checkupLocked) {
@@ -1598,6 +1600,14 @@ function updateAI(p, dtMs) {
         const contactX = mark.x + (hpx / hpd) * contactD;
         const contactZ = mark.z + (hpz / hpd) * contactD;
         moveToward(p, contactX, contactZ, dtMs);
+        // Square up on him head-on instead of the usual travel-direction
+        // facing (which leaves the defender looking turned off to whatever
+        // angle they're approaching from). This snaps straight at the
+        // poster every frame rather than easing toward it, on purpose —
+        // it reads as a blunt, uncoordinated close instead of a smooth
+        // defensive-slide pivot.
+        p.postDefenseFacing = true;
+        p.postDefenseFacingAngle = Math.atan2(mark.x - p.x, mark.z - p.z);
       } else {
         const towardHoopX = mark.x + (myHoop.x < mark.x ? -4 : 4);
         moveToward(p, towardHoopX, mark.z, dtMs);
@@ -1814,7 +1824,14 @@ function updateHumanoidPose(p, dt) {
   // spin the body to face sideways mid-sweep, which rotates the ball's
   // whole left/right reference frame and makes the crossover unreadable.
   const facingLocked = p.handAnimT < 1;
-  if (speed > 0.02 && !facingLocked) {
+  if (p.postDefenseFacing) {
+    // A defender closing in on a posting-up ball carrier squares up on him
+    // directly instead of facing whatever angle he happens to be
+    // approaching from — snapped instantly each frame, not eased in like
+    // the normal turn below, so it reads as a blunt, straight-on close
+    // rather than a smooth defensive-slide pivot.
+    p.facing = p.postDefenseFacingAngle;
+  } else if (speed > 0.02 && !facingLocked) {
     // Turn toward the movement direction at a limited rate (shortest-angle),
     // instead of snapping the whole body to face it instantly.
     const targetFacing = Math.atan2(p.vx, p.vz);
