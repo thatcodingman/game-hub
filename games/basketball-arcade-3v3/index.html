@@ -1644,16 +1644,21 @@ function updateHumanMovement(dtMs) {
     if (keysDown.has('ArrowUp')) piz += 1;
     if (keysDown.has('ArrowDown')) piz -= 1;
     const pmag = Math.hypot(pix, piz);
+    // The default straight-to-the-hoop backdown (no arrows held) stays slow
+    // and deliberate, but actively steering with the arrows is much closer
+    // to full speed — it's a deliberate move, not a crawl, once you're
+    // driving it yourself.
     const BACKDOWN_SPEED = human.stats.speed * 0.42;
+    const POST_STEER_SPEED = human.stats.speed * 0.85;
     let targetVx, targetVz;
     if (pmag >= 0.05) {
       // Steering with the arrows: same camera-relative mapping normal
-      // movement uses, just capped to the slower backdown speed.
+      // movement uses, just at the (faster) post-steer speed.
       const nx = pix / pmag, nz = piz / pmag;
       const fwd = camForward.clone().setY(0).normalize();
       const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-      targetVx = (right.x * nx + fwd.x * nz) * BACKDOWN_SPEED;
-      targetVz = (right.z * nx + fwd.z * nz) * BACKDOWN_SPEED;
+      targetVx = (right.x * nx + fwd.x * nz) * POST_STEER_SPEED;
+      targetVz = (right.z * nx + fwd.z * nz) * POST_STEER_SPEED;
     } else {
       // No arrows held: default to backing straight toward the hoop.
       targetVx = (dx / d) * BACKDOWN_SPEED;
@@ -1824,7 +1829,13 @@ function updateHumanoidPose(p, dt) {
   const kneeR = Math.max(0, -Math.cos(phaseL)) * amt * 1.7;
 
   const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
-  legLP.rotation.x = swingL; legRP.rotation.x = swingR;
+  // Full .set() (not just .rotation.x = ...) so every axis is explicitly
+  // owned by the normal running pose every frame — the screen and post-up
+  // poses both set a nonzero z-rotation (a wide stance / a barred-out arm),
+  // and only ever touching .x here left that z rotation stuck forever once
+  // you left either of those poses, so a leg or arm could stay splayed out
+  // to the side while otherwise running normally.
+  legLP.rotation.set(swingL, 0, 0); legRP.rotation.set(swingR, 0, 0);
   kneeLP.rotation.x = kneeL; kneeRP.rotation.x = kneeR;
 
   // Hesitation shot-fake: the shooting arm (and ball) cocks up as if about
@@ -1832,11 +1843,10 @@ function updateHumanoidPose(p, dt) {
   // swing as the burst kicks in, so the fake actually reads as a fake.
   const fakeAmt = p.hesitateFakeAmt || 0;
   if (fakeAmt > 0) {
-    armLP.rotation.x = lerp(-swingL, -0.6, fakeAmt);
-    armRP.rotation.x = lerp(-swingR, -2.0, fakeAmt);
-    armRP.rotation.z = lerp(0, -0.35, fakeAmt);
+    armLP.rotation.set(lerp(-swingL, -0.6, fakeAmt), 0, lerp(armLP.rotation.z, 0, fakeAmt));
+    armRP.rotation.set(lerp(-swingR, -2.0, fakeAmt), 0, lerp(0, -0.35, fakeAmt));
   } else {
-    armLP.rotation.x = -swingL; armRP.rotation.x = -swingR; armRP.rotation.z = 0;
+    armLP.rotation.set(-swingL, 0, 0); armRP.rotation.set(-swingR, 0, 0);
   }
 
   // Subtle torso bob synced to the stride, fading out with swingAmt so it
