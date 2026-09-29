@@ -918,6 +918,7 @@ function makePlayer(team, posLabel) {
     checkupLocked: false, ballCallTimer: 0, ballCallCooldown: 0,
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
+    postContestTimer: 0,
   };
 }
 
@@ -1623,6 +1624,15 @@ function updateAI(p, dtMs) {
 // Camera-relative human input
 // -------------------------------------------------------------------------
 const camForward = new THREE.Vector3(1, 0, 0);
+// Post-up contact contest: while the assigned defender is actually pressed
+// up against the poster's back, backing down stops being a free glide and
+// becomes a give-and-take — speed rises and falls on a slow beat (grinding
+// for a step, easing off, grinding again) and every so often the defender
+// wins a beat outright and jars the poster back toward where they came
+// from, the way two grown men actually fight for position in the post.
+const POST_CONTEST_MIN_MULT = 0.32;
+const POST_CONTEST_PERIOD_MS = 900;
+const POST_CONTEST_PUSHBACK_FACTOR = 0.4; // relative to the player's own speed stat
 function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
   if (game.activeInbound) {
@@ -1666,6 +1676,31 @@ function updateHumanMovement(dtMs) {
     const d = Math.hypot(dx, dz) || 1;
     human.facing = Math.atan2(-dx, -dz); // back to the basket, facing the defender away from it
 
+    // Only a free backdown if nobody's actually attached to your back yet.
+    // Once the assigned defender is in real contact, find out and start the
+    // give-and-take contest below.
+    const myOpponents = getOpponents(human.team);
+    const myTeammates = getTeammates(human.team);
+    const myDefender = myOpponents[myTeammates.indexOf(human)] || myOpponents[0];
+    const contactD = PLAYER_R * 2 * 0.9;
+    const inPostContact = !!myDefender && dist2(human, myDefender) < contactD + 1.0;
+    human.postContestTimer = inPostContact ? (human.postContestTimer || 0) + dtMs : 0;
+    let contestMult = 1, contestPushX = 0, contestPushZ = 0;
+    if (inPostContact) {
+      const wave = Math.sin(human.postContestTimer * (2 * Math.PI / POST_CONTEST_PERIOD_MS));
+      // Speed rides the wave between a real grind and a near-full stride —
+      // never a flat, unopposed glide.
+      contestMult = POST_CONTEST_MIN_MULT + (1 - POST_CONTEST_MIN_MULT) * (0.5 + 0.5 * wave);
+      if (wave < -0.35) {
+        // The defender wins this beat outright and jars the poster back
+        // toward where they came from.
+        const jar = (-wave - 0.35) / 0.65; // 0..1
+        const pushSpeed = human.stats.speed * POST_CONTEST_PUSHBACK_FACTOR * jar;
+        contestPushX = -(dx / d) * pushSpeed;
+        contestPushZ = -(dz / d) * pushSpeed;
+      }
+    }
+
     let pix = 0, piz = 0;
     if (keysDown.has('ArrowLeft')) pix -= 1;
     if (keysDown.has('ArrowRight')) pix += 1;
@@ -1692,6 +1727,8 @@ function updateHumanMovement(dtMs) {
       targetVx = (dx / d) * BACKDOWN_SPEED;
       targetVz = (dz / d) * BACKDOWN_SPEED;
     }
+    targetVx = targetVx * contestMult + contestPushX;
+    targetVz = targetVz * contestMult + contestPushZ;
     approachVelocity(human, targetVx, targetVz, dtMs);
     human.turboActive = false;
     human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
