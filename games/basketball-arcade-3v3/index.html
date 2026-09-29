@@ -152,7 +152,7 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; A+D or W+S post up &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -174,7 +174,7 @@
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
   <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS</div>
-  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D or W+S to post up &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -941,10 +941,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot (tap again to release!) or steal'
-  : 'WASD move · SPACE to shoot (tap again to release!) or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D or W+S to post up · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot (tap again!) /steal'
-  : 'WASD move · SPACE shoot (tap again!) /steal · SHIFT pass · TAB turbo · E switch · Q screen · A+D/W+S post up · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · SPACE shoot (tap again!) /steal · SHIFT pass · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1622,33 +1622,47 @@ function updateHumanMovement(dtMs) {
     return;
   }
 
-  // Post up: hold two OPPOSING movement keys at once (A+D, or W+S — and
-  // their arrow-key equivalents). Ordinary diagonal running always pairs
-  // ADJACENT keys (W+D, W+A, S+D, S+A), which never cancel out, so an
-  // opposing pair is otherwise a dead, unused input — a natural hook for a
-  // deliberate second action instead of colliding with normal movement.
-  // While held (and only with the ball), the carrier backs down toward
-  // their own hoop with their back to the defender, planted firmly enough
-  // that whoever's behind them gets walked backward instead of the other
-  // way around (see the postUpActive check in the collision pass below).
-  if (!touchControlsEnabled) {
-    const leftHeld = keysDown.has('KeyA') || keysDown.has('ArrowLeft');
-    const rightHeld = keysDown.has('KeyD') || keysDown.has('ArrowRight');
-    const upHeld = keysDown.has('KeyW') || keysDown.has('ArrowUp');
-    const downHeld = keysDown.has('KeyS') || keysDown.has('ArrowDown');
-    const postUpCombo = (leftHeld && rightHeld) || (upHeld && downHeld);
-    if (postUpCombo && game.ball.carrier === human) {
-      human.postUpActive = true;
-      const hoop = human.team === 'A' ? HOOP_A : HOOP_B;
-      const dx = hoop.x - human.x, dz = hoop.z - human.z;
-      const d = Math.hypot(dx, dz) || 1;
-      const BACKDOWN_SPEED = human.stats.speed * 0.42;
-      approachVelocity(human, (dx / d) * BACKDOWN_SPEED, (dz / d) * BACKDOWN_SPEED, dtMs);
-      human.facing = Math.atan2(-dx, -dz); // back to the basket, facing the defender away from it
-      human.turboActive = false;
-      human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
-      return;
+  // Post up: hold A+D — movement itself now lives entirely on the arrow
+  // keys (see below), which frees A/D to be a dedicated hold-to-post
+  // modifier instead of overloading the movement keys. While held (and
+  // only with the ball), the carrier turns to back down toward their own
+  // hoop with their back to the defender, planted firmly enough that
+  // whoever's behind them gets walked backward instead of the other way
+  // around (see the postUpActive check in the collision pass below). The
+  // arrow keys still work at the same time, steering the backdown left/
+  // right/in/out instead of only being able to walk straight into the hoop.
+  if (!touchControlsEnabled && keysDown.has('KeyA') && keysDown.has('KeyD') && game.ball.carrier === human) {
+    human.postUpActive = true;
+    const hoop = human.team === 'A' ? HOOP_A : HOOP_B;
+    const dx = hoop.x - human.x, dz = hoop.z - human.z;
+    const d = Math.hypot(dx, dz) || 1;
+    human.facing = Math.atan2(-dx, -dz); // back to the basket, facing the defender away from it
+
+    let pix = 0, piz = 0;
+    if (keysDown.has('ArrowLeft')) pix -= 1;
+    if (keysDown.has('ArrowRight')) pix += 1;
+    if (keysDown.has('ArrowUp')) piz += 1;
+    if (keysDown.has('ArrowDown')) piz -= 1;
+    const pmag = Math.hypot(pix, piz);
+    const BACKDOWN_SPEED = human.stats.speed * 0.42;
+    let targetVx, targetVz;
+    if (pmag >= 0.05) {
+      // Steering with the arrows: same camera-relative mapping normal
+      // movement uses, just capped to the slower backdown speed.
+      const nx = pix / pmag, nz = piz / pmag;
+      const fwd = camForward.clone().setY(0).normalize();
+      const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+      targetVx = (right.x * nx + fwd.x * nz) * BACKDOWN_SPEED;
+      targetVz = (right.z * nx + fwd.z * nz) * BACKDOWN_SPEED;
+    } else {
+      // No arrows held: default to backing straight toward the hoop.
+      targetVx = (dx / d) * BACKDOWN_SPEED;
+      targetVz = (dz / d) * BACKDOWN_SPEED;
     }
+    approachVelocity(human, targetVx, targetVz, dtMs);
+    human.turboActive = false;
+    human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
+    return;
   }
   human.postUpActive = false;
 
@@ -1656,10 +1670,12 @@ function updateHumanMovement(dtMs) {
   if (touchControlsEnabled) {
     ix = touchMove.vec.x; iz = -touchMove.vec.y;
   } else {
-    if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) ix -= 1;
-    if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) ix += 1;
-    if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) iz += 1;
-    if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) iz -= 1;
+    // Movement lives on the arrow keys only — A/D/W/S are reserved for the
+    // post-up hold above and no longer move the player.
+    if (keysDown.has('ArrowLeft')) ix -= 1;
+    if (keysDown.has('ArrowRight')) ix += 1;
+    if (keysDown.has('ArrowUp')) iz += 1;
+    if (keysDown.has('ArrowDown')) iz -= 1;
   }
   const mag = Math.hypot(ix, iz);
   // Hesitation move: a brief near-stop (selling the fake) followed by a
