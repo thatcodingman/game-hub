@@ -152,7 +152,7 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">WASD move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; A+D or W+S post up &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -174,7 +174,7 @@
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
   <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS</div>
-  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="rules" id="menu-rules">WASD move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D or W+S to post up &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -629,9 +629,26 @@ buildScoreboard();
 // Humanoid player factory
 // -------------------------------------------------------------------------
 function limbMesh(rTop, rBot, len, color) {
-  const geo = new THREE.CylinderGeometry(rTop, rBot, len, 8);
+  // 12 radial segments (not 8) so limbs read as rounded, not faceted rods —
+  // one of the easiest tells of a low-poly "blocky" figure.
+  const geo = new THREE.CylinderGeometry(rTop, rBot, len, 12);
   geo.translate(0, -len / 2, 0);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.04 }));
+  mesh.castShadow = true;
+  return mesh;
+}
+
+// A rounded-capsule torso/shorts piece, stretched non-uniformly into an oval
+// cross-section — gives a soft, human silhouette instead of a sharp-edged
+// box, which is the single biggest thing that reads as "blocky figure".
+// width/depth/height are the final outer dimensions; the capsule itself is
+// built with a small radius and then scaled up to those proportions.
+function roundedTorsoMesh(width, height, depth, color, extraProps) {
+  const r = Math.min(width, depth) * 0.42;
+  const bodyLen = Math.max(0.05, height - r * 2);
+  const geo = new THREE.CapsuleGeometry(r, bodyLen, 6, 12);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.04, ...extraProps }));
+  mesh.scale.set(width / (r * 2), 1, depth / (r * 2));
   mesh.castShadow = true;
   return mesh;
 }
@@ -687,22 +704,26 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const shinR = limbMesh(0.27, 0.22, shinLen, shortsColor);
   kneeRP.add(shinR);
 
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(1.7, torsoLen, 0.95),
-    new THREE.MeshStandardMaterial({ color: teamColor }));
+  // A rounded capsule torso (not a box) reads as an actual ribcage/chest
+  // shape instead of a flat-sided slab — the single biggest fix for the
+  // low-poly "blocky Roblox figure" look.
+  const torso = roundedTorsoMesh(1.7, torsoLen, 0.95, teamColor);
   torso.position.set(0, hipY + torsoLen / 2, 0);
-  torso.castShadow = true;
   body.add(torso);
 
   // White side piping down the jersey — the flat team-color block reads as
   // a plain shirt without some kind of trim breaking it up, same as a real
-  // uniform's side stripe.
+  // uniform's side stripe. Kept shorter than the full torso height and
+  // pulled in slightly so it hugs the capsule's straight midsection instead
+  // of poking through the rounded shoulder/hip caps.
   const trimColor = 0xf8fafc;
-  const trimMat = new THREE.MeshStandardMaterial({ color: trimColor });
-  const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoLen, 0.97), trimMat);
-  trimL.position.set(-0.83, hipY + torsoLen / 2, 0);
+  const trimMat = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.7 });
+  const torsoTrimH = torsoLen * 0.62;
+  const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoTrimH, 0.9), trimMat);
+  trimL.position.set(-0.8, hipY + torsoLen / 2, 0);
   body.add(trimL);
-  const trimR = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoLen, 0.97), trimMat);
-  trimR.position.set(0.83, hipY + torsoLen / 2, 0);
+  const trimR = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoTrimH, 0.9), trimMat);
+  trimR.position.set(0.8, hipY + torsoLen / 2, 0);
   body.add(trimR);
 
   // Jersey number, front and back — unlit planes (not part of the torso's
@@ -723,19 +744,19 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   // hip, wider than the bare leg cylinders underneath, instead of the
   // thighs' own dark tint being the only thing implying "shorts".
   const shortsLen = thighLen * 0.72;
-  const shorts = new THREE.Mesh(new THREE.BoxGeometry(1.56, shortsLen, 1.0),
-    new THREE.MeshStandardMaterial({ color: shortsColor }));
+  const shorts = roundedTorsoMesh(1.56, shortsLen, 1.0, shortsColor);
   shorts.position.set(0, hipY - shortsLen / 2 + 0.04, 0);
-  shorts.castShadow = true;
   body.add(shorts);
 
   // matching side piping so the shorts read as part of the same uniform as
-  // the jersey, not a separate unrelated garment
-  const shortsTrimL = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsLen, 1.02), trimMat);
-  shortsTrimL.position.set(-0.76, hipY - shortsLen / 2 + 0.04, 0);
+  // the jersey, not a separate unrelated garment; shortened the same way as
+  // the jersey trim so it stays clear of the rounded top/bottom of the leg.
+  const shortsTrimH = shortsLen * 0.62;
+  const shortsTrimL = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsTrimH, 0.95), trimMat);
+  shortsTrimL.position.set(-0.74, hipY - shortsLen / 2 + 0.04, 0);
   body.add(shortsTrimL);
-  const shortsTrimR = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsLen, 1.02), trimMat);
-  shortsTrimR.position.set(0.76, hipY - shortsLen / 2 + 0.04, 0);
+  const shortsTrimR = new THREE.Mesh(new THREE.BoxGeometry(0.07, shortsTrimH, 0.95), trimMat);
+  shortsTrimR.position.set(0.74, hipY - shortsLen / 2 + 0.04, 0);
   body.add(shortsTrimR);
 
   const ARM_LEN = 2.15;
@@ -744,8 +765,11 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const armR = limbMesh(0.24, 0.20, ARM_LEN, SKIN_TONE);
   const armRP = new THREE.Group(); armRP.position.set(1.0, shoulderY, 0); armRP.add(armR); body.add(armRP);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 12, 10),
-    new THREE.MeshStandardMaterial({ color: SKIN_TONE }));
+  // Higher segment counts (20/16, up from 12/10) so the head reads as a
+  // smooth skull instead of a faceted low-poly ball, plus a touch of
+  // roughness/sheen instead of a flat matte-plastic look.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 20, 16),
+    new THREE.MeshStandardMaterial({ color: SKIN_TONE, roughness: 0.65, metalness: 0.03 }));
   head.position.set(0, hipY + torsoLen + headR + 0.05, 0);
   head.castShadow = true;
   body.add(head);
@@ -756,19 +780,30 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   // body instead of hanging straight down.
   const HAND_R = 0.26;
   function makeHand() {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(HAND_R, 10, 8), new THREE.MeshStandardMaterial({ color: SKIN_TONE }));
+    const m = new THREE.Mesh(new THREE.SphereGeometry(HAND_R, 12, 10), new THREE.MeshStandardMaterial({ color: SKIN_TONE, roughness: 0.65, metalness: 0.03 }));
     m.castShadow = true;
     return m;
   }
   const handL = makeHand(); handL.position.set(0, -ARM_LEN, 0); armLP.add(handL);
   const handR = makeHand(); handR.position.set(0, -ARM_LEN, 0); armRP.add(handR);
 
+  // Sneakers: a low rounded-capsule sole/upper (not a flat shoebox) laid on
+  // its side, with a small separate toe cap so the front reads as a curved
+  // toe box instead of a squared-off corner.
   const SHOE_LEN = 0.86, SHOE_WID = 0.44, SHOE_H = 0.26;
   const shoeColor = 0x1c1c1c;
+  const shoeMat = new THREE.MeshStandardMaterial({ color: shoeColor, roughness: 0.55, metalness: 0.08 });
   function makeShoe() {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(SHOE_WID, SHOE_H, SHOE_LEN), new THREE.MeshStandardMaterial({ color: shoeColor }));
+    const group = new THREE.Group();
+    const r = SHOE_H / 2;
+    const bodyLen = Math.max(0.05, SHOE_LEN - r * 2);
+    const geo = new THREE.CapsuleGeometry(r, bodyLen, 4, 10);
+    geo.rotateX(Math.PI / 2); // capsule's long axis runs along Z (toe-to-heel) instead of Y
+    const m = new THREE.Mesh(geo, shoeMat);
+    m.scale.set(SHOE_WID / SHOE_H, 0.85, 1);
     m.castShadow = true;
-    return m;
+    group.add(m);
+    return group;
   }
   const shoeL = makeShoe(); shoeL.position.set(0, -shinLen + SHOE_H * 0.4, SHOE_LEN * 0.28); kneeLP.add(shoeL);
   const shoeR = makeShoe(); shoeR.position.set(0, -shinLen + SHOE_H * 0.4, SHOE_LEN * 0.28); kneeRP.add(shoeR);
@@ -867,6 +902,7 @@ function makePlayer(team, posLabel) {
     stamina: STAMINA_MAX, exhausted: false, turboActive: false,
     screenedTimer: 0, inboundImmuneTimer: 0, screenAssignment: null, screenCallCooldown: 0, screenHoldTimer: 0,
     checkupLocked: false, ballCallTimer: 0, ballCallCooldown: 0,
+    postUpActive: false,
   };
 }
 
@@ -891,10 +927,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot (tap again to release!) or steal'
-  : 'WASD move · SPACE to shoot (tap again to release!) or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'WASD move · SPACE to shoot (tap again to release!) or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D or W+S to post up · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot (tap again!) /steal'
-  : 'WASD move · SPACE shoot (tap again!) /steal · SHIFT pass · TAB turbo · E switch · Q screen · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'WASD move · SPACE shoot (tap again!) /steal · SHIFT pass · TAB turbo · E switch · Q screen · A+D/W+S post up · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1552,6 +1588,7 @@ function updateHumanMovement(dtMs) {
     // can't just walk off before it actually arrives.
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false;
+    human.postUpActive = false;
     return;
   }
   if (human.checkupLocked) {
@@ -1559,6 +1596,7 @@ function updateHumanMovement(dtMs) {
     // actually passed off. SHIFT still works; that's the only way to unlock.
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false;
+    human.postUpActive = false;
     return;
   }
   if (game.shotMeter && game.shotMeter.player === human) {
@@ -1566,8 +1604,40 @@ function updateHumanMovement(dtMs) {
     // again) or it times out on its own.
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false;
+    human.postUpActive = false;
     return;
   }
+
+  // Post up: hold two OPPOSING movement keys at once (A+D, or W+S — and
+  // their arrow-key equivalents). Ordinary diagonal running always pairs
+  // ADJACENT keys (W+D, W+A, S+D, S+A), which never cancel out, so an
+  // opposing pair is otherwise a dead, unused input — a natural hook for a
+  // deliberate second action instead of colliding with normal movement.
+  // While held (and only with the ball), the carrier backs down toward
+  // their own hoop with their back to the defender, planted firmly enough
+  // that whoever's behind them gets walked backward instead of the other
+  // way around (see the postUpActive check in the collision pass below).
+  if (!touchControlsEnabled) {
+    const leftHeld = keysDown.has('KeyA') || keysDown.has('ArrowLeft');
+    const rightHeld = keysDown.has('KeyD') || keysDown.has('ArrowRight');
+    const upHeld = keysDown.has('KeyW') || keysDown.has('ArrowUp');
+    const downHeld = keysDown.has('KeyS') || keysDown.has('ArrowDown');
+    const postUpCombo = (leftHeld && rightHeld) || (upHeld && downHeld);
+    if (postUpCombo && game.ball.carrier === human) {
+      human.postUpActive = true;
+      const hoop = human.team === 'A' ? HOOP_A : HOOP_B;
+      const dx = hoop.x - human.x, dz = hoop.z - human.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const BACKDOWN_SPEED = human.stats.speed * 0.42;
+      approachVelocity(human, (dx / d) * BACKDOWN_SPEED, (dz / d) * BACKDOWN_SPEED, dtMs);
+      human.facing = Math.atan2(-dx, -dz); // back to the basket, facing the defender away from it
+      human.turboActive = false;
+      human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
+      return;
+    }
+  }
+  human.postUpActive = false;
+
   let ix = 0, iz = 0; // input in camera-relative space: ix=strafe, iz=forward
   if (touchControlsEnabled) {
     ix = touchMove.vec.x; iz = -touchMove.vec.y;
@@ -1635,6 +1705,24 @@ function updateHumanoidPose(p, dt) {
     armRP.rotation.set(-1.3, 0, -0.5);
     g.rotation.y = p.facing;
     g.position.set(p.x, -0.08, p.z);
+    return;
+  }
+
+  // Posting up: a wide, low, backed-down stance with the free arm out to
+  // guard the ball, shuffling slightly instead of running normally — reads
+  // as "backing an opponent down" rather than a normal stride.
+  if (p.postUpActive) {
+    const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
+    g.userData.animPhase += dt * 0.006;
+    const shuffle = Math.sin(g.userData.animPhase) * 0.15;
+    legLP.rotation.set(0.12, 0, -0.24 + shuffle);
+    legRP.rotation.set(0.12, 0, 0.24 - shuffle);
+    kneeLP.rotation.x = 0.32;
+    kneeRP.rotation.x = 0.32;
+    armLP.rotation.set(-0.85, 0, 0.65);
+    armRP.rotation.set(-0.85, 0, -0.65);
+    g.rotation.y = p.facing;
+    g.position.set(p.x, -0.06, p.z);
     return;
   }
 
@@ -1980,9 +2068,12 @@ function frame(now) {
           // doesn't get shoved around by whoever runs into him, they do.
           // Whichever side is walled up eats none of the push; the other
           // side eats all of it, so the screener genuinely gets in the way
-          // instead of both bodies politely splitting the difference.
-          const aWalled = a.screenHoldTimer > 0;
-          const bWalled = b.screenHoldTimer > 0;
+          // instead of both bodies politely splitting the difference. A
+          // player backing down in the post gets the same treatment, so
+          // closing the gap while posting up actually walks the defender
+          // backward instead of the two of them splitting the overlap.
+          const aWalled = a.screenHoldTimer > 0 || a.postUpActive;
+          const bWalled = b.screenHoldTimer > 0 || b.postUpActive;
           if (aWalled && !bWalled) {
             const push = minD - d;
             b.x += nx * push; b.z += nz * push;
