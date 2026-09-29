@@ -233,6 +233,10 @@ const HOOP_X = 41;
 const HOOP_A = { x: HOOP_X, y: HOOP_HEIGHT, z: 0 };   // team A attacks +X
 const HOOP_B = { x: -HOOP_X, y: HOOP_HEIGHT, z: 0 };  // team B attacks -X
 const PLAYER_R = 1.5;
+// Tighter than the normal body-to-body collision gap (PLAYER_R * 2 * 0.9) —
+// a defender pressed onto a poster's back should be genuinely close, not
+// just as far off as two players jostling anywhere else on the floor.
+const POST_CONTACT_D = PLAYER_R * 2 * 0.72;
 const BALL_R = 0.45;
 const PICKUP_RANGE = PLAYER_R + BALL_R + 1.2;
 const STEAL_RANGE = PLAYER_R * 2 + 1.5;
@@ -251,10 +255,14 @@ const ORDER = ['PG', 'SF', 'C'];
 // (a big man who takes real time to get going and to plant/stop) — so the
 // size difference is felt in how they move, not just their top speed.
 // scale sets each position's on-court model size (see createHumanoid).
+// strength drives the post-up contest (see updateHumanMovement): who's
+// backing down on whom decides how much of a fight it is, not just who's
+// involved — a center shoving a point guard around is a different contest
+// than the other way around.
 const POS_STATS = {
-  PG: { speed: 0.48, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86 },
-  SF: { speed: 0.38, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0 },
-  C:  { speed: 0.28, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16 },
+  PG: { speed: 0.48, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
+  SF: { speed: 0.38, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
+  C:  { speed: 0.28, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
@@ -1595,7 +1603,7 @@ function updateAI(p, dtMs) {
         // itself uses, so the defender's seek target and its final resting
         // spot are the same point: pressed right against the poster's back,
         // on the side they're backing into.
-        const contactD = PLAYER_R * 2 * 0.9;
+        const contactD = POST_CONTACT_D;
         const hpx = myHoop.x - mark.x, hpz = myHoop.z - mark.z;
         const hpd = Math.hypot(hpx, hpz) || 1;
         const contactX = mark.x + (hpx / hpd) * contactD;
@@ -1682,20 +1690,30 @@ function updateHumanMovement(dtMs) {
     const myOpponents = getOpponents(human.team);
     const myTeammates = getTeammates(human.team);
     const myDefender = myOpponents[myTeammates.indexOf(human)] || myOpponents[0];
-    const contactD = PLAYER_R * 2 * 0.9;
-    const inPostContact = !!myDefender && dist2(human, myDefender) < contactD + 1.0;
+    const inPostContact = !!myDefender && dist2(human, myDefender) < POST_CONTACT_D + 1.0;
     human.postContestTimer = inPostContact ? (human.postContestTimer || 0) + dtMs : 0;
     let contestMult = 1, contestPushX = 0, contestPushZ = 0;
     if (inPostContact) {
+      // Strength decides who's actually winning this fight, not just that
+      // there is one — a big backing down a guard should barely feel the
+      // contest, and a guard backing down a big should feel like he's
+      // barely moving him. Ratio > 1 means the poster is the stronger one.
+      const strengthRatio = clamp((human.stats.strength || 1) / ((myDefender.stats && myDefender.stats.strength) || 1), 0.4, 2.2);
+      const effectiveMinMult = clamp(POST_CONTEST_MIN_MULT * strengthRatio, 0.12, 0.88);
+      const pushThreshold = clamp(0.35 * strengthRatio, 0.15, 0.65);
+      const pushFactor = clamp(POST_CONTEST_PUSHBACK_FACTOR / strengthRatio, 0.15, 0.9);
+
       const wave = Math.sin(human.postContestTimer * (2 * Math.PI / POST_CONTEST_PERIOD_MS));
       // Speed rides the wave between a real grind and a near-full stride —
-      // never a flat, unopposed glide.
-      contestMult = POST_CONTEST_MIN_MULT + (1 - POST_CONTEST_MIN_MULT) * (0.5 + 0.5 * wave);
-      if (wave < -0.35) {
+      // never a flat, unopposed glide — with how deep the grind gets set
+      // by the strength matchup above.
+      contestMult = effectiveMinMult + (1 - effectiveMinMult) * (0.5 + 0.5 * wave);
+      if (wave < -pushThreshold) {
         // The defender wins this beat outright and jars the poster back
-        // toward where they came from.
-        const jar = (-wave - 0.35) / 0.65; // 0..1
-        const pushSpeed = human.stats.speed * POST_CONTEST_PUSHBACK_FACTOR * jar;
+        // toward where they came from — how often and how hard depends on
+        // who's actually stronger.
+        const jar = (-wave - pushThreshold) / (1 - pushThreshold);
+        const pushSpeed = human.stats.speed * pushFactor * jar;
         contestPushX = -(dx / d) * pushSpeed;
         contestPushZ = -(dz / d) * pushSpeed;
       }
@@ -2200,7 +2218,7 @@ function frame(now) {
         const a = game.players[i], b = game.players[j];
         const dx = b.x - a.x, dz = b.z - a.z;
         const d = Math.hypot(dx, dz) || 0.001;
-        const minD = PLAYER_R * 2 * 0.9;
+        const minD = (a.postUpActive || b.postUpActive) ? POST_CONTACT_D : PLAYER_R * 2 * 0.9;
         if (d < minD) {
           const nx = dx / d, nz = dz / d;
           // A player holding a set screen plants like a real pick — he
