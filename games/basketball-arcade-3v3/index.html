@@ -1722,19 +1722,46 @@ function updateHumanoidPose(p, dt) {
     return;
   }
 
-  // Posting up: a wide, low, backed-down stance with the free arm out to
-  // guard the ball, shuffling slightly instead of running normally — reads
-  // as "backing an opponent down" rather than a normal stride.
+  // Posting up: a wide, low, backed-down stance that actually steps backward
+  // (a real alternating walk cycle, just slower and wider than the normal
+  // gait) instead of standing planted, with one arm doing a real low dribble
+  // on the ball's actual hand side and the other barred out and up to feel
+  // for/hold off the defender — not both arms clutching the ball at once.
   if (p.postUpActive) {
     const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
-    g.userData.animPhase += dt * 0.006;
-    const shuffle = Math.sin(g.userData.animPhase) * 0.15;
-    legLP.rotation.set(0.12, 0, -0.24 + shuffle);
-    legRP.rotation.set(0.12, 0, 0.24 - shuffle);
-    kneeLP.rotation.x = 0.32;
-    kneeRP.rotation.x = 0.32;
-    armLP.rotation.set(-0.85, 0, 0.65);
-    armRP.rotation.set(-0.85, 0, -0.65);
+    const postSpeed = Math.hypot(p.vx, p.vz);
+    const targetPostSwing = postSpeed > 0.005 ? Math.min(0.42, 0.16 + postSpeed * 2.2) : 0.1;
+    const postSwingAlpha = 1 - Math.exp(-dt / 110);
+    g.userData.swingAmt += (targetPostSwing - g.userData.swingAmt) * postSwingAlpha;
+    const postAmt = g.userData.swingAmt;
+    g.userData.animPhase += dt * 0.009 * (1 + postSpeed * 2.5);
+    const postPhase = g.userData.animPhase;
+    const stepL = Math.sin(postPhase) * postAmt;
+    const stepR = -stepL;
+    const postKneeL = Math.max(0, Math.cos(postPhase)) * postAmt * 1.5;
+    const postKneeR = Math.max(0, -Math.cos(postPhase)) * postAmt * 1.5;
+    // a wide, low, backed-down base (splayed outward at the hip) with the
+    // stepping motion layered on top of it, instead of replacing it
+    legLP.rotation.set(stepL, 0, -0.26);
+    legRP.rotation.set(stepR, 0, 0.26);
+    kneeLP.rotation.x = 0.42 + postKneeL;
+    kneeRP.rotation.x = 0.42 + postKneeR;
+
+    // Dribble arm matches the ball's actual hand side (same handSide sign
+    // the ball's own world position uses) and stays low and out to that
+    // side, away from the defender — a real low protective dribble, not a
+    // running swing. The other arm bars out roughly chest-height into the
+    // defender (a stiff, mostly-horizontal extension, not raised overhead)
+    // — the classic Kobe-post-up "feel for the defender with the off arm"
+    // posture, rather than both hands on the ball.
+    const ballOnLeft = (p.handSide || 1) < 0;
+    const side = ballOnLeft ? -1 : 1; // matches the dribble arm's local +/-x position
+    const dribbleArm = ballOnLeft ? armLP : armRP;
+    const offArm = ballOnLeft ? armRP : armLP;
+    const dribbleBounce = Math.abs(Math.sin(p.dribblePhase || 0)) * 0.22;
+    dribbleArm.rotation.set(-0.12 - dribbleBounce, 0, side * 0.4);
+    offArm.rotation.set(-0.7, 0, -side * 1.15);
+
     g.rotation.y = p.facing;
     g.position.set(p.x, -0.06, p.z);
     return;
