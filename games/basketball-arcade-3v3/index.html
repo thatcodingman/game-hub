@@ -926,7 +926,7 @@ function makePlayer(team, posLabel) {
     checkupLocked: false, ballCallTimer: 0, ballCallCooldown: 0,
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
-    postContestTimer: 0,
+    postContestTimer: 0, postPrevWave: 0,
   };
 }
 
@@ -1641,6 +1641,13 @@ const camForward = new THREE.Vector3(1, 0, 0);
 const POST_CONTEST_MIN_MULT = 0.32;
 const POST_CONTEST_PERIOD_MS = 900;
 const POST_CONTEST_PUSHBACK_FACTOR = 0.4; // relative to the player's own speed stat
+// On the flip side of that same beat, the poster doesn't just glide forward
+// faster — he drives his body into the defender. Since the defender isn't
+// walled (only the poster is), that's a real position shove: it knocks the
+// defender's body straight back on contact instead of just easing the gap
+// shut, which is what actually reads as a bump instead of a speed change.
+const POST_BUMP_THRESHOLD = 0.55; // wave level that triggers a bump (rising edge)
+const POST_BUMP_DISTANCE = 0.3; // units shoved forward on a bump, before strength scaling
 function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
   if (game.activeInbound) {
@@ -1717,6 +1724,18 @@ function updateHumanMovement(dtMs) {
         contestPushX = -(dx / d) * pushSpeed;
         contestPushZ = -(dz / d) * pushSpeed;
       }
+      // On the way up, the poster fires back — a real forward bump into the
+      // defender's body, not just faster movement. Edge-triggered so it's
+      // one discrete shove per beat, not a continuous shove for as long as
+      // the wave stays above the threshold. A stronger poster bumps harder.
+      if (wave > POST_BUMP_THRESHOLD && (human.postPrevWave || 0) <= POST_BUMP_THRESHOLD) {
+        const bumpDist = POST_BUMP_DISTANCE * clamp(strengthRatio, 0.6, 1.6);
+        human.x += (dx / d) * bumpDist;
+        human.z += (dz / d) * bumpDist;
+      }
+      human.postPrevWave = wave;
+    } else {
+      human.postPrevWave = 0;
     }
 
     let pix = 0, piz = 0;
