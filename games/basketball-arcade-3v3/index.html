@@ -712,12 +712,21 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const shinR = limbMesh(0.27, 0.22, shinLen, shortsColor);
   kneeRP.add(shinR);
 
+  // Everything above the waist hangs off a single "spine" pivot at hip
+  // height, so the whole upper body can actually hinge — lean into a
+  // defender, rock back from a bump, twist — instead of the torso being
+  // welded rigidly upright onto the legs. Children below are positioned
+  // relative to the hip (y - hipY), which leaves the rest pose identical.
+  const spine = new THREE.Group();
+  spine.position.set(0, hipY, 0);
+  body.add(spine);
+
   // A rounded capsule torso (not a box) reads as an actual ribcage/chest
   // shape instead of a flat-sided slab — the single biggest fix for the
   // low-poly "blocky Roblox figure" look.
   const torso = roundedTorsoMesh(1.7, torsoLen, 0.95, teamColor);
-  torso.position.set(0, hipY + torsoLen / 2, 0);
-  body.add(torso);
+  torso.position.set(0, torsoLen / 2, 0);
+  spine.add(torso);
 
   // White side piping down the jersey — the flat team-color block reads as
   // a plain shirt without some kind of trim breaking it up, same as a real
@@ -728,11 +737,11 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const trimMat = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.7 });
   const torsoTrimH = torsoLen * 0.62;
   const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoTrimH, 0.9), trimMat);
-  trimL.position.set(-0.8, hipY + torsoLen / 2, 0);
-  body.add(trimL);
+  trimL.position.set(-0.8, torsoLen / 2, 0);
+  spine.add(trimL);
   const trimR = new THREE.Mesh(new THREE.BoxGeometry(0.08, torsoTrimH, 0.9), trimMat);
-  trimR.position.set(0.8, hipY + torsoLen / 2, 0);
-  body.add(trimR);
+  trimR.position.set(0.8, torsoLen / 2, 0);
+  spine.add(trimR);
 
   // Jersey number, front and back — unlit planes (not part of the torso's
   // lit material) so the numeral stays crisp and correctly colored under
@@ -741,12 +750,12 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   const numberTex = getJerseyTexture(jerseyNumber);
   const numberMat = new THREE.MeshBasicMaterial({ map: numberTex, transparent: true });
   const numFront = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.05), numberMat);
-  numFront.position.set(0, hipY + torsoLen / 2 + 0.08, 0.481);
-  body.add(numFront);
+  numFront.position.set(0, torsoLen / 2 + 0.08, 0.481);
+  spine.add(numFront);
   const numBack = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.05), numberMat);
-  numBack.position.set(0, hipY + torsoLen / 2 + 0.08, -0.481);
+  numBack.position.set(0, torsoLen / 2 + 0.08, -0.481);
   numBack.rotation.y = Math.PI;
-  body.add(numBack);
+  spine.add(numBack);
 
   // Actual baggy shorts — a garment silhouette wrapping both thighs at the
   // hip, wider than the bare leg cylinders underneath, instead of the
@@ -767,20 +776,40 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   shortsTrimR.position.set(0.74, hipY - shortsLen / 2 + 0.04, 0);
   body.add(shortsTrimR);
 
+  // Two-segment arms (upper arm + forearm) with a real elbow pivot, the same
+  // way the legs got knees — a single rigid rod can't put a forearm into
+  // someone's back or bend to absorb a hit. At elbow rotation 0 the two
+  // segments line up straight, so every existing arm pose looks the same.
   const ARM_LEN = 2.15;
-  const armL = limbMesh(0.24, 0.20, ARM_LEN, SKIN_TONE);
-  const armLP = new THREE.Group(); armLP.position.set(-1.0, shoulderY, 0); armLP.add(armL); body.add(armLP);
-  const armR = limbMesh(0.24, 0.20, ARM_LEN, SKIN_TONE);
-  const armRP = new THREE.Group(); armRP.position.set(1.0, shoulderY, 0); armRP.add(armR); body.add(armRP);
+  const UPPER_ARM_LEN = ARM_LEN * 0.5, FOREARM_LEN = ARM_LEN - UPPER_ARM_LEN;
+  const skinMat = new THREE.MeshStandardMaterial({ color: SKIN_TONE, roughness: 0.65, metalness: 0.03 });
+  function makeArm(x) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(x, shoulderY - hipY, 0);
+    shoulder.add(limbMesh(0.24, 0.22, UPPER_ARM_LEN, SKIN_TONE));
+    const elbow = new THREE.Group();
+    elbow.position.set(0, -UPPER_ARM_LEN, 0);
+    shoulder.add(elbow);
+    // small joint cap so a bent elbow reads as a joint, not two tubes
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.225, 12, 10), skinMat);
+    cap.castShadow = true;
+    elbow.add(cap);
+    elbow.add(limbMesh(0.22, 0.20, FOREARM_LEN, SKIN_TONE));
+    spine.add(shoulder);
+    return { shoulder, elbow };
+  }
+  const armLeft = makeArm(-1.0), armRight = makeArm(1.0);
+  const armLP = armLeft.shoulder, armRP = armRight.shoulder;
+  const elbowLP = armLeft.elbow, elbowRP = armRight.elbow;
 
   // Higher segment counts (20/16, up from 12/10) so the head reads as a
   // smooth skull instead of a faceted low-poly ball, plus a touch of
   // roughness/sheen instead of a flat matte-plastic look.
   const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 20, 16),
     new THREE.MeshStandardMaterial({ color: SKIN_TONE, roughness: 0.65, metalness: 0.03 }));
-  head.position.set(0, hipY + torsoLen + headR + 0.05, 0);
+  head.position.set(0, torsoLen + headR + 0.05, 0);
   head.castShadow = true;
-  body.add(head);
+  spine.add(head);
 
   // Simple eyes on the front of the head. The body is otherwise front/back
   // symmetric (same jersey number printed on both sides, same silhouette),
@@ -789,11 +818,11 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   // 180° to back into the defender. Two dark dots are enough to read as a
   // face and make that turn (and facing in general) visible at a glance.
   const eyeMat = new THREE.MeshStandardMaterial({ color: 0x201508, roughness: 0.4 });
-  const eyeY = hipY + torsoLen + headR + 0.05 + headR * 0.12;
+  const eyeY = torsoLen + headR + 0.05 + headR * 0.12;
   [-0.19, 0.19].forEach((ex) => {
     const eye = new THREE.Mesh(new THREE.SphereGeometry(headR * 0.13, 8, 8), eyeMat);
     eye.position.set(ex, eyeY, headR * 0.94);
-    body.add(eye);
+    spine.add(eye);
   });
 
   // Hands and feet — without these the figures read as bare rods swinging
@@ -806,8 +835,8 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
     m.castShadow = true;
     return m;
   }
-  const handL = makeHand(); handL.position.set(0, -ARM_LEN, 0); armLP.add(handL);
-  const handR = makeHand(); handR.position.set(0, -ARM_LEN, 0); armRP.add(handR);
+  const handL = makeHand(); handL.position.set(0, -FOREARM_LEN, 0); elbowLP.add(handL);
+  const handR = makeHand(); handR.position.set(0, -FOREARM_LEN, 0); elbowRP.add(handR);
 
   // Sneakers: a low rounded-capsule sole/upper (not a flat shoebox) laid on
   // its side, with a small separate toe cap so the front reads as a curved
@@ -836,7 +865,8 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   tag.position.set(0, (hipY + torsoLen + headR * 2 + 1.1) * bodyScale, 0);
   group.add(tag);
 
-  group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP };
+  group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP, elbowLP, elbowRP, spine };
+  group.userData.rig = { thighLen, shinLen, legLen, bodyScale };
   group.userData.animPhase = Math.random() * Math.PI * 2;
   // Kept so a screen (or anything else) can flash the jersey a different
   // color and reliably reset it back to the real team color afterward.
@@ -927,6 +957,7 @@ function makePlayer(team, posLabel) {
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
     postContestTimer: 0, postPrevWave: 0,
+    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200,
   };
 }
 
@@ -1617,6 +1648,7 @@ function updateAI(p, dtMs) {
         // defensive-slide pivot.
         p.postDefenseFacing = true;
         p.postDefenseFacingAngle = Math.atan2(mark.x - p.x, mark.z - p.z);
+        p.postDefenseMark = mark; // the pose layer reads his skeleton to put hands on him
       } else {
         const towardHoopX = mark.x + (myHoop.x < mark.x ? -4 : 4);
         moveToward(p, towardHoopX, mark.z, dtMs);
@@ -1715,6 +1747,12 @@ function updateHumanMovement(dtMs) {
       // never a flat, unopposed glide — with how deep the grind gets set
       // by the strength matchup above.
       contestMult = effectiveMinMult + (1 - effectiveMinMult) * (0.5 + 0.5 * wave);
+      if (wave <= -pushThreshold && (human.postPrevWave || 0) > -pushThreshold) {
+        // The moment the defender takes the beat: he drives up through the
+        // poster's back and the poster's upper body gets pitched forward.
+        myDefender.rockVel += 0.0048 / clamp(strengthRatio, 0.7, 1.6);
+        human.rockVel += 0.0034 / clamp(strengthRatio, 0.7, 1.6);
+      }
       if (wave < -pushThreshold) {
         // The defender wins this beat outright and jars the poster back
         // toward where they came from — how often and how hard depends on
@@ -1732,6 +1770,12 @@ function updateHumanMovement(dtMs) {
         const bumpDist = POST_BUMP_DISTANCE * clamp(strengthRatio, 0.6, 1.6);
         human.x += (dx / d) * bumpDist;
         human.z += (dz / d) * bumpDist;
+        // Body reaction on impact: the poster snaps his hips/back into the
+        // defender, and the defender's upper body absorbs it and rocks back
+        // (harder the more the poster outweighs him) before recovering.
+        human.rockVel -= 0.0036;
+        myDefender.rockVel -= 0.0055 * clamp(strengthRatio, 0.6, 1.6);
+        playBodyThud(0.22 * clamp(strengthRatio, 0.7, 1.3));
       }
       human.postPrevWave = wave;
     } else {
@@ -1825,9 +1869,172 @@ function updateHumanMovement(dtMs) {
 // Main loop
 // -------------------------------------------------------------------------
 const TURN_RATE = 0.012; // rad/ms — shortest-angle turn speed, not an instant snap
+
+// --- Body-contact animation helpers ---------------------------------------
+// Upper-body "rock": a damped spring on the spine's forward/back lean. Hits
+// (a post-up bump, a defender driving back) kick its velocity, and the
+// spring carries it through a real absorb-and-recover motion instead of a
+// pose snapping from one angle to another.
+const ROCK_K = 0.00026, ROCK_C = 0.0145; // per ms^2 / per ms (~0.4s, underdamped)
+function stepBodyRock(p, dt) {
+  let t = dt;
+  while (t > 0) {
+    const h = Math.min(t, 8);
+    p.rockVel += (-ROCK_K * p.rock - ROCK_C * p.rockVel) * h;
+    p.rock += p.rockVel * h;
+    t -= h;
+  }
+  p.rock = clamp(p.rock, -0.5, 0.5);
+}
+
+// Knee angle that puts the foot exactly `H` below the hip for a given thigh
+// pitch `a` and hip splay `s` — lets a crouched stance keep both feet
+// planted on the floor at any hip height, instead of guessing angles and
+// having one foot float or sink through the court.
+function solveKnee(a, s, H, thigh, shin) {
+  const c1 = Math.cos(s) * Math.cos(a), c2 = -Math.sin(a);
+  const R = Math.hypot(c1, c2), phi = Math.atan2(c2, c1);
+  const k = clamp((H - thigh * c1) / (shin * R), -1, 1);
+  return Math.max(0, phi + Math.acos(k));
+}
+
+// Two-bone arm IK (shoulder -> elbow -> hand) solved in the spine's local
+// space, so a hand can be placed on an exact point — the small of another
+// player's back, his hip, the ball — at any body size or distance. `pole`
+// says which way the elbow should point. Blends in by `w` from whatever
+// pose the arm already has.
+const IK_UPPER = 2.15 * 0.5, IK_FORE = 2.15 * 0.5;
+const _ikV = new THREE.Vector3(), _ikU = new THREE.Vector3(), _ikF = new THREE.Vector3();
+const _ikW = new THREE.Vector3(), _ikX = new THREE.Vector3(), _ikY = new THREE.Vector3();
+const _ikP = new THREE.Vector3(), _ikM = new THREE.Matrix4(), _ikQ = new THREE.Quaternion();
+function solveArmIK(shoulder, elbow, target, pole, w) {
+  _ikV.copy(target).sub(shoulder.position);
+  const U = IK_UPPER, F = IK_FORE;
+  const d = clamp(_ikV.length(), 0.3, (U + F) * 0.995);
+  _ikV.normalize();
+  const alpha = Math.acos(clamp((U * U + d * d - F * F) / (2 * U * d), -1, 1));
+  const bend = Math.PI - Math.acos(clamp((U * U + F * F - d * d) / (2 * U * F), -1, 1));
+  _ikP.copy(pole).addScaledVector(_ikV, -pole.dot(_ikV));
+  if (_ikP.lengthSq() < 1e-6) _ikP.set(0, -1, 0);
+  _ikP.normalize();
+  _ikU.copy(_ikV).multiplyScalar(Math.cos(alpha)).addScaledVector(_ikP, Math.sin(alpha));
+  _ikF.copy(_ikV).multiplyScalar(d).addScaledVector(_ikU, -U).normalize();
+  _ikW.copy(_ikF).addScaledVector(_ikU, -_ikF.dot(_ikU));
+  if (_ikW.lengthSq() < 1e-6) _ikW.set(0, 0, 1);
+  _ikW.normalize();
+  _ikY.copy(_ikU).negate(); // the arm hangs along its local -y
+  _ikX.crossVectors(_ikY, _ikW);
+  _ikM.makeBasis(_ikX, _ikY, _ikW);
+  _ikQ.setFromRotationMatrix(_ikM);
+  shoulder.quaternion.slerp(_ikQ, w);
+  elbow.rotation.x = lerp(elbow.rotation.x, -bend, w); // forearm bends toward local +z
+}
+
+function playBodyThud(vol) {
+  if (typeof SFX === 'undefined' || !SFX || typeof SFX.tone !== 'function') return;
+  try {
+    SFX.tone(72, 0.07, 'sine', vol, null, 0);
+    SFX.tone(46, 0.11, 'triangle', vol * 0.7, null, 0.004);
+  } catch (e) {}
+}
+
+// Post defense: the defender gets his whole body onto the poster instead of
+// just standing behind him — low staggered stance with both feet planted,
+// chest leaned into the back, one forearm driven into the small of the
+// back, the other hand riding the ball-side hip and periodically swiping
+// down at the dribble. Reacts to the contest: rocks back and absorbs on a
+// bump, drives up and through when he's winning the beat, and chops his
+// feet to hold ground while being backed down. Layered over the normal
+// pose with weight `w` so it blends in and out instead of popping.
+const _pdA = new THREE.Vector3(), _pdB = new THREE.Vector3(), _pdBall = new THREE.Vector3();
+const _pdPoleA = new THREE.Vector3(), _pdPoleB = new THREE.Vector3();
+function applyPostDefenseOverlay(p, g, L, dt, w) {
+  const mark = p.postDefenseMark;
+  const rig = g.userData.rig;
+  const ud = g.userData;
+  const wave = mark.postPrevWave || 0;
+  const drive = Math.max(0, -wave); // defender winning this beat
+  const give = Math.max(0, wave);   // poster winning this beat
+  const speed = Math.hypot(p.vx, p.vz);
+  ud.defPhase = (ud.defPhase || 0) + dt * 0.017 * (0.35 + speed * 6);
+  const ph = ud.defPhase;
+  const chop = Math.min(0.16, speed * 1.3);
+
+  const ballSide = (mark.handSide || 1) < 0 ? -1 : 1; // both face the same way, so sides line up
+  const barSide = -ballSide;
+
+  // Swipe timing — a quick reach down at the dribble every couple seconds.
+  if (p.swipeT < 1) {
+    p.swipeT = Math.min(1, p.swipeT + dt / 380);
+  } else {
+    p.swipeCooldown -= dt;
+    if (p.swipeCooldown <= 0 && w > 0.8) { p.swipeT = 0; p.swipeCooldown = 1500 + Math.random() * 1400; }
+  }
+  const swipe = p.swipeT < 1 ? Math.sin(Math.PI * p.swipeT) : 0;
+
+  // Legs: staggered, low, both feet planted (knees solved per leg), with
+  // short choppy steps layered in while he's being moved.
+  const Dbody = 0.62 - drive * 0.16 + give * 0.05 + swipe * 0.06;
+  const H = rig.legLen - Dbody;
+  const leadIsLeft = barSide < 0; // forearm-side foot leads
+  const leadA = -0.68 - drive * 0.1, braceA = 0.12 + drive * 0.12;
+  const stepOff = Math.sin(ph) * chop;
+  const aL = (leadIsLeft ? leadA : braceA) + stepOff;
+  const aR = (leadIsLeft ? braceA : leadA) - stepOff;
+  const sL = -0.3, sR = 0.3;
+  const bL = solveKnee(aL, sL, H - Math.max(0, Math.sin(ph)) * chop * 0.9, rig.thighLen, rig.shinLen);
+  const bR = solveKnee(aR, sR, H - Math.max(0, -Math.sin(ph)) * chop * 0.9, rig.thighLen, rig.shinLen);
+  L.legLP.rotation.set(lerp(L.legLP.rotation.x, aL, w), 0, lerp(L.legLP.rotation.z, sL, w));
+  L.legRP.rotation.set(lerp(L.legRP.rotation.x, aR, w), 0, lerp(L.legRP.rotation.z, sR, w));
+  L.kneeLP.rotation.x = lerp(L.kneeLP.rotation.x, bL, w);
+  L.kneeRP.rotation.x = lerp(L.kneeRP.rotation.x, bR, w);
+
+  // Spine: chest into the back, forearm shoulder turned in, hips battling
+  // side to side, dipping toward the ball on a swipe. p.rock carries the
+  // spring-driven absorb/recover from hits.
+  const lean = 0.3 + drive * 0.16 - give * 0.05 + swipe * 0.1 + p.rock;
+  const twist = -barSide * 0.2 + ballSide * swipe * 0.12;
+  const roll = Math.sin(ph * 0.5) * 0.04 - ballSide * swipe * 0.14;
+  L.spine.rotation.set(lean * w, twist * w, roll * w);
+  g.position.y = lerp(g.position.y, -Dbody * rig.bodyScale, w);
+
+  // Arms: IK onto the poster's actual body, read off his live (rocking,
+  // stepping) skeleton each frame so contact stays glued through motion.
+  g.updateMatrixWorld(true);
+  const mSpine = mark.mesh.userData.limbs.spine;
+  mSpine.updateWorldMatrix(true, false);
+  // forearm into the small of the back, hand just past his spine
+  _pdA.set(-barSide * 0.08, 0.6, -0.5);
+  mSpine.localToWorld(_pdA);
+  L.spine.worldToLocal(_pdA);
+  const barShoulder = barSide > 0 ? L.armRP : L.armLP;
+  const barElbow = barSide > 0 ? L.elbowRP : L.elbowLP;
+  solveArmIK(barShoulder, barElbow, _pdA, _pdPoleA.set(barSide, -0.6, -0.35), w);
+  // other hand on the ball-side hip, swiping down at the ball now and then
+  _pdB.set(ballSide * 0.85, 0.3, -0.25);
+  mSpine.localToWorld(_pdB);
+  if (swipe > 0) {
+    _pdBall.set(game.ball.x, game.ball.y, game.ball.z);
+    _pdB.lerp(_pdBall, swipe * 0.85);
+  }
+  L.spine.worldToLocal(_pdB);
+  const offShoulder = ballSide > 0 ? L.armRP : L.armLP;
+  const offElbow = ballSide > 0 ? L.elbowRP : L.elbowLP;
+  solveArmIK(offShoulder, offElbow, _pdB, _pdPoleB.set(ballSide, -0.5, -0.45), w);
+}
+
 function updateHumanoidPose(p, dt) {
   const g = p.mesh;
   if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
+  const L = g.userData.limbs;
+  // Every pose starts from a neutral upper body and straight elbows, so no
+  // pose can leave a lean or a bent elbow stuck on after it ends (the same
+  // stale-axis trap the limb z-rotations fell into before).
+  L.spine.rotation.set(0, 0, 0);
+  L.elbowLP.rotation.set(0, 0, 0);
+  L.elbowRP.rotation.set(0, 0, 0);
+  stepBodyRock(p, dt);
+  if (g.userData.postDefBlend === undefined) g.userData.postDefBlend = 0;
 
   // Setting a screen: plant a wide, low stance and clasp both hands together
   // in front of the body — the universal "I'm a wall" pose real players use
@@ -1840,6 +2047,7 @@ function updateHumanoidPose(p, dt) {
     kneeRP.rotation.x = 0.22;
     armLP.rotation.set(-1.3, 0, 0.5);
     armRP.rotation.set(-1.3, 0, -0.5);
+    g.userData.postDefBlend = 0;
     g.rotation.y = p.facing;
     g.position.set(p.x, -0.08, p.z);
     return;
@@ -1884,7 +2092,18 @@ function updateHumanoidPose(p, dt) {
     const dribbleBounce = Math.abs(Math.sin(p.dribblePhase || 0)) * 0.22;
     dribbleArm.rotation.set(-0.12 - dribbleBounce, 0, side * 0.4);
     offArm.rotation.set(-0.7, 0, -side * 1.15);
+    // Elbows: a relaxed bend on the dribble arm, and the off-arm's forearm
+    // hooked back toward the defender behind him, feeling for his body.
+    const dribbleElbow = ballOnLeft ? L.elbowLP : L.elbowRP;
+    const offElbow = ballOnLeft ? L.elbowRP : L.elbowLP;
+    dribbleElbow.rotation.x = -0.35 - dribbleBounce * 0.6;
+    offElbow.rotation.x = 0.6;
+    // Sit back into the defender (upper body leaned back toward him), with
+    // the contest spring rocking it: snapping further back on a bump,
+    // getting pitched forward when the defender wins a beat.
+    L.spine.rotation.set(-0.12 + p.rock, 0, Math.sin(postPhase * 0.5) * 0.035);
 
+    g.userData.postDefBlend = 0;
     g.rotation.y = p.facing;
     g.position.set(p.x, -0.06, p.z);
     return;
@@ -1962,6 +2181,14 @@ function updateHumanoidPose(p, dt) {
   // settles to flat when the player stops rather than cutting off abruptly.
   const bob = Math.abs(Math.sin(phaseL)) * 0.1 * (amt / 0.55);
   g.position.set(p.x, bob, p.z);
+
+  // Post-defense body contact, blended in once he's actually on the poster
+  // (not while still closing — the blunt straight-on run-in stays as is).
+  const mark = p.postDefenseMark;
+  const engaged = p.postDefenseFacing && mark && mark.mesh && dist2(p, mark) < POST_CONTACT_D + 1.4;
+  g.userData.postDefBlend += ((engaged ? 1 : 0) - g.userData.postDefBlend) * (1 - Math.exp(-dt / 140));
+  const w = g.userData.postDefBlend;
+  if (w > 0.002 && mark && mark.mesh) applyPostDefenseOverlay(p, g, L, dt, w);
 }
 
 function updateBall(dtMs) {
@@ -2122,6 +2349,21 @@ function updateCamera(dt) {
   const desiredPos = new THREE.Vector3(human.x - dirSign * 15, 8.5, human.z);
   const desiredLook = new THREE.Vector3(human.x + dirSign * 10, 3.5, human.z);
 
+  // Post-up camera: straight behind the poster, the defender battling on
+  // his back is completely hidden behind his body. Like a broadcast post
+  // angle, glide out to a 3/4 view off to the side (latched to one side for
+  // the whole post so it never whips across mid-possession) so both bodies
+  // and the contact between them are actually visible, then glide back.
+  if (game.postCamBlend === undefined) { game.postCamBlend = 0; game.postCamSide = 1; }
+  if (human.postUpActive && game.postCamBlend < 0.02) game.postCamSide = human.z >= 0 ? 1 : -1;
+  game.postCamBlend += ((human.postUpActive ? 1 : 0) - game.postCamBlend) * (1 - Math.exp(-dt / 170));
+  const pc = game.postCamBlend * game.postCamBlend * (3 - 2 * game.postCamBlend); // smoothstep
+  if (pc > 0.001) {
+    const side = game.postCamSide;
+    desiredPos.lerp(new THREE.Vector3(human.x - dirSign * 9.5, 6.6, human.z + side * 9.5), pc);
+    desiredLook.lerp(new THREE.Vector3(human.x + dirSign * 2.5, 3.2, human.z), pc);
+  }
+
   const alpha = 1 - Math.pow(0.001, dt / 1000);
   game.camPos.lerp(desiredPos, alpha);
   game.camLookAt.lerp(desiredLook, alpha);
@@ -2129,6 +2371,10 @@ function updateCamera(dt) {
   camera.position.copy(game.camPos);
   camera.lookAt(game.camLookAt);
   camForward.copy(game.camLookAt).sub(camera.position).setY(0).normalize();
+  // Debug-only viewpoint override (unset in normal play); controls keep
+  // using the real follow-cam direction computed above.
+  const ov = window.__camOverride;
+  if (ov) { camera.position.set(ov.x, ov.y, ov.z); camera.lookAt(ov.lx, ov.ly, ov.lz); }
 }
 
 let hudLastScoreA = 0, hudLastScoreB = 0;
