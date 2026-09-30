@@ -958,6 +958,7 @@ function makePlayer(team, posLabel) {
     postDefenseFacing: false, postDefenseFacingAngle: 0,
     postContestTimer: 0, postPrevWave: 0,
     postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200,
+    markOverride: null, lateSwitchCheck: null, screenHangTimer: 0, screenHangDur: 1,
   };
 }
 
@@ -1021,6 +1022,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.stamina = STAMINA_MAX; p.exhausted = false; p.turboActive = false;
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
+    p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
   };
   const b = game.ball;
 
@@ -1245,6 +1247,104 @@ const SCREEN_CALL_COOLDOWN_MS = 1400;
 const SCREEN_CALL_TIMEOUT_MS = 5000; // the screener gives up if it can't get there
 const SCREEN_HUSTLE_MULT = 1.7; // sprint over regardless of the screener's own (often slow) top speed
 const SCREEN_CONTACT_RANGE = PLAYER_R * 2 + 0.8;
+
+// --- Defensive assignments & screen switching -----------------------------
+// Each defender guards a default man by position slot, but assignments are
+// live: a screen can force a switch, and the switch sticks for the rest of
+// the possession (so the offense can go hunt the mismatch it created).
+//
+// When a pick lands, the screened defender either fights through (stays
+// with his man, chases over the screener's planted body) or the defense
+// switches (the screener's defender takes his man, he takes the screener).
+// Defenses read it on the spot: a harder, longer-held screen makes a switch
+// likelier; a switch that would hand a small defender a big man makes it
+// less likely. And when they try to fight through but he's still stuck way
+// behind the play a beat later, the helper bails him out with a late
+// scramble switch — exactly how a screen makes you late on an assignment.
+const SWITCH_BASE = 0.35;
+const SWITCH_PER_CHARGE = 0.3;       // a full-strength (fully held) screen adds this
+const SWITCH_MISMATCH_PENALTY = 0.6; // per unit of body-size gap the switch would create
+const SWITCH_LATE_WATCH_FROM_MS = 250;  // helper starts reading the play this long after the pick
+const SWITCH_LATE_WATCH_TO_MS = 1500;   // ...and stops (too late to rotate after this)
+const SWITCH_LATE_GAP = 7;           // screened defender this far from his man = beaten regardless
+const SWITCH_LATE_CHANCE = 0.75;     // how often the helper actually rotates when he's beaten
+const SCREEN_HANG_MIN_MS = 350;      // fighting through a quick-tap screen
+const SCREEN_HANG_EXTRA_MS = 550;    // added for a fully held screen
+const SCREEN_HANG_SLOW = 0.65;       // speed lost at the moment of contact (recovers linearly)
+
+function defaultMark(p) {
+  const opp = getOpponents(p.team), mates = getTeammates(p.team);
+  return opp[mates.indexOf(p)] || opp[0];
+}
+function getMark(p) {
+  const m = p.markOverride;
+  return (m && m.team !== p.team) ? m : defaultMark(p);
+}
+// Which defender is currently responsible for a given offensive player.
+function defenderOf(off) {
+  return getOpponents(off.team).find((d) => getMark(d) === off) || null;
+}
+// Swap two defenders' assignments (keeps it a clean one-man-each mapping).
+function swapAssignments(a, b, label) {
+  const ma = getMark(a), mb = getMark(b);
+  a.markOverride = mb;
+  b.markOverride = ma;
+  showScreenCallout(label, 1100);
+  playTone(label === 'SWITCH!' ? 420 : 340, 0.05);
+}
+// Decide switch vs fight-through at the moment a screen connects.
+function resolveScreenSwitch(screened, screener, chargeFrac) {
+  const helper = defenderOf(screener);
+  if (!helper || helper === screened || helper === controlledPlayer()) return;
+  const screenedMan = getMark(screened);
+  // size each defender would give up after the switch
+  const gapHelper = Math.max(0, screenedMan.stats.scale - helper.stats.scale);
+  const gapScreened = Math.max(0, screener.stats.scale - screened.stats.scale);
+  const prob = clamp(SWITCH_BASE + SWITCH_PER_CHARGE * chargeFrac
+    - SWITCH_MISMATCH_PENALTY * (gapHelper + gapScreened), 0.1, 0.85);
+  if (Math.random() < prob) {
+    swapAssignments(screened, helper, 'SWITCH!');
+  } else {
+    // Fighting through costs him: he's hung up on the screener's body and
+    // knocked off his line — slowed hard at contact, recovering over a
+    // window that's longer the harder the screen was. Not a freeze; he's
+    // still chasing, just late. That's what makes the late read matter.
+    screened.screenHangDur = screened.screenHangTimer = SCREEN_HANG_MIN_MS + SCREEN_HANG_EXTRA_MS * chargeFrac;
+    screened.lateSwitchCheck = { t: 0, screener };
+  }
+}
+// The follow-up read after choosing to fight through.
+// The helper watches the play develop for a window after the pick rather
+// than taking one snapshot — the moment the handler turns the corner and
+// his teammate is beaten, he reads it (one read: rotate or stay home).
+function updateLateSwitch(p, dtMs) {
+  const chk = p.lateSwitchCheck;
+  if (!chk) return;
+  chk.t += dtMs;
+  if (chk.t < SWITCH_LATE_WATCH_FROM_MS) return;
+  if (chk.t > SWITCH_LATE_WATCH_TO_MS) { p.lateSwitchCheck = null; return; }
+  const man = getMark(p);
+  const helper = defenderOf(chk.screener);
+  if (!man || !helper || helper === p || helper === controlledPlayer()) return;
+  // Beaten = his man got past him (he's no longer between his man and the
+  // rim, trailing the play) or he's simply been left way off the ball —
+  // and the helper is actually in a better spot to take over.
+  const rim = man.team === 'A' ? HOOP_A : HOOP_B;
+  const rx = rim.x - man.x, rz = rim.z - man.z, rd = Math.hypot(rx, rz) || 1;
+  const goalSide = ((p.x - man.x) * rx + (p.z - man.z) * rz) / rd; // > 0 = still between man and rim
+  const gap = dist2(p, man);
+  const beaten = (goalSide < 0.6 && gap > 3.2) || gap > SWITCH_LATE_GAP;
+  if (!beaten || dist2(helper, man) >= gap * 1.15) return; // not beaten yet — keep watching
+  p.lateSwitchCheck = null; // this is the read
+  if (Math.random() < SWITCH_LATE_CHANCE) swapAssignments(p, helper, 'LATE SWITCH!');
+}
+// Switches only last for the possession they happened in.
+let marksPossession = null;
+function refreshAssignmentsForPossession() {
+  if (game.possessionTeam === marksPossession) return;
+  marksPossession = game.possessionTeam;
+  game.players.forEach((p) => { p.markOverride = null; p.lateSwitchCheck = null; });
+}
 const SCREEN_FREEZE_MIN_MS = 400; // a quick tap of Q still sets a short screen
 const SCREEN_FREEZE_MS = 1000; // max screen hold — reached by holding Q down (this is the cap)
 const SCREEN_HOLD_CHARGE_MS = 1500; // how long you need to hold Q to reach the max hold duration
@@ -1517,7 +1617,8 @@ function approachVelocity(p, targetVx, targetVz, dtMs) {
 function moveToward(p, tx, tz, dtMs) {
   const dx = tx - p.x, dz = tz - p.z;
   const d = Math.hypot(dx, dz);
-  const speed = p.stats.speed;
+  let speed = p.stats.speed;
+  if (p.screenHangTimer > 0) speed *= 1 - SCREEN_HANG_SLOW * (p.screenHangTimer / p.screenHangDur);
   let targetVx = 0, targetVz = 0;
   if (d >= 0.6) { targetVx = dx / d * speed; targetVz = dz / d * speed; }
   approachVelocity(p, targetVx, targetVz, dtMs);
@@ -1575,6 +1676,9 @@ function updateAI(p, dtMs) {
         playTone(220, 0.05);
         p.screenAssignment = null;
         showScreenCallout('SCREEN SET!', 1000);
+        // The defense reads the pick: switch it, or fight through (with a
+        // late scramble switch if he ends up beaten anyway).
+        resolveScreenSwitch(target, p, chargeFrac);
       }
       return;
     }
@@ -1620,9 +1724,7 @@ function updateAI(p, dtMs) {
       moveToward(p, holdX, spreadZ, dtMs);
     }
   } else {
-    const opponents = getOpponents(p.team);
-    const teammates = getTeammates(p.team);
-    const mark = opponents[teammates.indexOf(p)] || opponents[0];
+    const mark = getMark(p); // live assignment — reflects any switch off a screen
     if (mark) {
       if (game.ball.carrier === mark && mark.postUpActive) {
         // Post defense: seek the exact contact point on the hoop side of the
@@ -1672,14 +1774,16 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // from, the way two grown men actually fight for position in the post.
 const POST_CONTEST_MIN_MULT = 0.32;
 const POST_CONTEST_PERIOD_MS = 900;
-const POST_CONTEST_PUSHBACK_FACTOR = 0.4; // relative to the player's own speed stat
+const POST_CONTEST_PUSHBACK_FACTOR = 0.55; // relative to the player's own speed stat
+const POST_DEF_BEAT_THRESHOLD = 0.22; // lower = defender wins beats more often (before strength scaling)
+const POST_DEF_ANCHOR = 0.45; // share of the poster's drive that gets through in an even matchup
 // On the flip side of that same beat, the poster doesn't just glide forward
 // faster — he drives his body into the defender. Since the defender isn't
 // walled (only the poster is), that's a real position shove: it knocks the
 // defender's body straight back on contact instead of just easing the gap
 // shut, which is what actually reads as a bump instead of a speed change.
 const POST_BUMP_THRESHOLD = 0.55; // wave level that triggers a bump (rising edge)
-const POST_BUMP_DISTANCE = 0.3; // units shoved forward on a bump, before strength scaling
+const POST_BUMP_DISTANCE = 0.2; // units shoved forward on a bump, before strength scaling
 function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
   if (game.activeInbound) {
@@ -1726,9 +1830,7 @@ function updateHumanMovement(dtMs) {
     // Only a free backdown if nobody's actually attached to your back yet.
     // Once the assigned defender is in real contact, find out and start the
     // give-and-take contest below.
-    const myOpponents = getOpponents(human.team);
-    const myTeammates = getTeammates(human.team);
-    const myDefender = myOpponents[myTeammates.indexOf(human)] || myOpponents[0];
+    const myDefender = defenderOf(human) || getOpponents(human.team)[0];
     const inPostContact = !!myDefender && dist2(human, myDefender) < POST_CONTACT_D + 1.0;
     human.postContestTimer = inPostContact ? (human.postContestTimer || 0) + dtMs : 0;
     let contestMult = 1, contestPushX = 0, contestPushZ = 0;
@@ -1739,14 +1841,18 @@ function updateHumanMovement(dtMs) {
       // barely moving him. Ratio > 1 means the poster is the stronger one.
       const strengthRatio = clamp((human.stats.strength || 1) / ((myDefender.stats && myDefender.stats.strength) || 1), 0.4, 2.2);
       const effectiveMinMult = clamp(POST_CONTEST_MIN_MULT * strengthRatio, 0.12, 0.88);
-      const pushThreshold = clamp(0.35 * strengthRatio, 0.15, 0.65);
-      const pushFactor = clamp(POST_CONTEST_PUSHBACK_FACTOR / strengthRatio, 0.15, 0.9);
+      const pushThreshold = clamp(POST_DEF_BEAT_THRESHOLD * strengthRatio, 0.12, 0.65);
+      const pushFactor = clamp(POST_CONTEST_PUSHBACK_FACTOR / strengthRatio, 0.2, 1.1);
+      // The defender's anchor: a planted defender resists every inch, not
+      // just on the beats he wins. Scales with the matchup so a big man can
+      // still move a guard, but an even matchup is a real fight.
+      const anchor = clamp(POST_DEF_ANCHOR * Math.pow(strengthRatio, 1.2), 0.2, 0.95);
 
       const wave = Math.sin(human.postContestTimer * (2 * Math.PI / POST_CONTEST_PERIOD_MS));
       // Speed rides the wave between a real grind and a near-full stride —
       // never a flat, unopposed glide — with how deep the grind gets set
       // by the strength matchup above.
-      contestMult = effectiveMinMult + (1 - effectiveMinMult) * (0.5 + 0.5 * wave);
+      contestMult = (effectiveMinMult + (1 - effectiveMinMult) * (0.5 + 0.5 * wave)) * anchor;
       if (wave <= -pushThreshold && (human.postPrevWave || 0) > -pushThreshold) {
         // The moment the defender takes the beat: he drives up through the
         // poster's back and the poster's upper body gets pitched forward.
@@ -2445,6 +2551,7 @@ function frame(now) {
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
       if (p.screenedTimer > 0) p.screenedTimer -= dtMs;
+      if (p.screenHangTimer > 0) p.screenHangTimer -= dtMs;
       if (p.inboundImmuneTimer > 0) p.inboundImmuneTimer -= dtMs;
       if (p.screenCallCooldown > 0) p.screenCallCooldown -= dtMs;
       if (p.screenHoldTimer > 0) p.screenHoldTimer -= dtMs;
@@ -2470,7 +2577,8 @@ function frame(now) {
     const human = controlledPlayer();
     updateHumanMovement(dtMs);
     updateShotMeter(dtMs);
-    game.players.forEach((p) => { if (p !== human) updateAI(p, dtMs); });
+    refreshAssignmentsForPossession();
+    game.players.forEach((p) => { if (p !== human) { updateLateSwitch(p, dtMs); updateAI(p, dtMs); } });
 
     game.players.forEach((p) => {
       p.x += p.vx; p.z += p.vz;
@@ -2559,6 +2667,8 @@ window.__game_controlledPlayer = controlledPlayer;
 game.controlledPlayer = controlledPlayer;
 game.getTeammates = getTeammates;
 game.getOpponents = getOpponents;
+game.getMark = getMark;
+game.defenderOf = defenderOf;
 game.startMatch = startMatch;
 </script>
 </body>
