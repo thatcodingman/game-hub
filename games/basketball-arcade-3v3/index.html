@@ -260,11 +260,11 @@ const ORDER = ['PG', 'SF', 'C'];
 // involved — a center shoving a point guard around is a different contest
 // than the other way around.
 const POS_STATS = {
-  // Sped back up from the last (too sluggish) pass -- faster than the
-  // original baseline now, same ratios between positions.
-  PG: { speed: 0.44, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
-  SF: { speed: 0.35, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
-  C:  { speed: 0.26, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
+  // Another speed pass per request -- noticeably faster across the board,
+  // same ratios between positions kept intact.
+  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
+  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
+  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
@@ -966,6 +966,7 @@ function makePlayer(team, posLabel) {
     // immediately overrides) -- see applyMoveKick/tickMoveBurst.
     moveBurstT: 1, moveBurstDur: 1, moveBurstDirX: 0, moveBurstDirZ: 0, moveBurstPeak: 0,
     moveBoostTimer: 0, autoSwitchCooldown: 0,
+    ankleStunTimer: 0, ankleDownTimer: 0, ankleGetUpTimer: 0, ankleImmuneTimer: 0, ankleFallSide: 1, ankleFallAmt: 0,
   };
 }
 
@@ -1031,6 +1032,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
     p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0; p.autoSwitchCooldown = 0;
+    p.ankleStunTimer = 0; p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleImmuneTimer = 0; p.ankleFallAmt = 0;
   };
   const b = game.ball;
 
@@ -1470,6 +1472,7 @@ document.getElementById('shot-meter-zone').style.width = ((SHOT_METER_SWEET_END 
 
 function onActionPressed() {
   const p = controlledPlayer();
+  if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return;
   if (game.ball.carrier === p) {
     if (game.shotMeter && game.shotMeter.player === p) { releaseShotMeter(); return; }
     const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
@@ -1522,6 +1525,24 @@ const MOVE_BOOST_MULT = 1.18;
 const AUTO_HAND_SWITCH_LATERAL_THRESHOLD = 0.05;
 const AUTO_HAND_SWITCH_MS = 280;
 const AUTO_HAND_SWITCH_COOLDOWN_MS = 450;
+// Ankle breakers: a well-sold dribble move against a defender who's right
+// on top of it can leave him frozen for a beat (stun) or flat on the floor
+// (knockdown). How "good" the dribbling has to be to earn one: the ball
+// handler's own quick-hands (his steal stat, reused as a handle-quickness
+// proxy) against the defender's own reaction quickness (his steal stat)
+// decide whether anything happens at all; the defender's strength (anchor/
+// balance) then decides, among the ones that do land, how many of those
+// are a full knockdown instead of just a stumble. A quick PG has a real
+// shot at putting a slow C on the floor; a C rarely breaks anyone's ankles
+// and a quick defender rarely gets dropped by one. Each move type has its
+// own base flash rating -- behind-the-back is the showiest, hesitation the
+// most dependent on the defender actually biting.
+const ANKLE_BREAKER_RANGE = 3.4;
+const ANKLE_MOVE_BASE = { front: 0.4, behind: 0.52, hesitate: 0.44 };
+const ANKLE_STUN_MS = 700;
+const ANKLE_DOWN_MS = 1150;
+const ANKLE_GETUP_MS = 500;
+const ANKLE_IMMUNE_MS = 1400;
 // Behind-the-back gets its own short cooldown (~= its own switch time) instead
 // of sharing the longer universal MOVE_COOLDOWN_MS, so it can be chained back
 // to back like a real behind-the-back combo instead of one-and-done.
@@ -1532,12 +1553,16 @@ const HESITATE_TOTAL_MS = HESITATE_STUTTER_MS + HESITATE_BURST_MS;
 // Switches the ball hand-to-hand (see updateBall for the actual sweep path),
 // shared by both crossover and behind-the-back — they differ in how the
 // sweep travels (in front of the body vs. behind it), set via `kind`.
-function triggerHandSwitch(p, kind, durMs) {
+function triggerHandSwitch(p, kind, durMs, isMove) {
   const newSide = -(p.handSide || 1);
   p.handAnimFrom = p.handSide; p.handAnimTo = newSide; p.handAnimT = 0;
   p.handAnimDur = durMs;
   p.handSwitchKind = kind;
   p.handSide = newSide;
+  // Only a deliberate crossover/behind-the-back (not the automatic
+  // direction-matching switch) is eligible to roll for an ankle breaker
+  // when it finishes.
+  p.handSwitchIsMove = !!isMove;
   return newSide;
 }
 
@@ -1572,15 +1597,57 @@ function tickMoveBurst(p, dtMs) {
   return { x: p.moveBurstDirX * p.moveBurstPeak * fade, z: p.moveBurstDirZ * p.moveBurstPeak * fade };
 }
 
+// Rolls for an ankle breaker the instant a dribble move actually sells --
+// the hand-switch finishing, or the hesitation's fake committing the
+// defender. Only live defenders already close enough to have bitten on it
+// are eligible, and a defender who's already stunned/down/just-recovered
+// can't be chained into another one immediately.
+function attemptAnkleBreaker(handler, moveKind) {
+  const defender = defenderOf(handler) || getOpponents(handler.team)[0];
+  if (!defender) return;
+  if (defender.ankleStunTimer > 0 || defender.ankleDownTimer > 0 || defender.ankleGetUpTimer > 0 || defender.ankleImmuneTimer > 0) return;
+  if (dist2(handler, defender) > ANKLE_BREAKER_RANGE) return;
+
+  const handlerSkill = (handler.stats && handler.stats.steal) || 0.5;
+  const defSkill = (defender.stats && defender.stats.steal) || 0.5;
+  const defAnchor = (defender.stats && defender.stats.strength) || 1;
+  const skillDiff = clamp(handlerSkill - defSkill, -0.3, 0.3);
+
+  const baseP = ANKLE_MOVE_BASE[moveKind] || 0.45;
+  const triggerChance = clamp(baseP + skillDiff * 0.9, 0.05, 0.92);
+  if (Math.random() >= triggerChance) return;
+
+  // Among the ones that land, how many are a full knockdown vs just a
+  // stumble: a bigger skill edge and a weaker-anchored defender both push
+  // toward knockdown.
+  const knockdownChance = clamp(0.22 + skillDiff * 0.85 - (defAnchor - 1) * 0.3, 0.05, 0.75);
+  defender.ankleFallSide = Math.random() < 0.5 ? -1 : 1;
+  defender.vx = 0; defender.vz = 0;
+  if (Math.random() < knockdownChance) {
+    defender.ankleDownTimer = ANKLE_DOWN_MS;
+    showScreenCallout('ANKLE BREAKER!', 1300);
+    playBodyThud(0.55);
+    playTone(170, 0.1);
+  } else {
+    defender.ankleStunTimer = ANKLE_STUN_MS;
+    showScreenCallout('CROSSED UP!', 950);
+    playTone(300, 0.06);
+  }
+}
+
 function onCrossoverPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.moveCooldown > 0) return;
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
-  const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
+  const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS, true);
   applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 200);
   // Short burst of extra speed right after the move itself -- the blow-by.
   p.moveBoostTimer = CROSSOVER_HAND_SWITCH_MS + MOVE_BOOST_MS;
+  // Roll for an ankle breaker right as the move is thrown -- the defender
+  // is still at the distance they bit from here, before they have a chance
+  // to recover/reposition during the sweep animation.
+  attemptAnkleBreaker(p, 'front');
   playTone(520, 0.05);
 }
 
@@ -1589,10 +1656,11 @@ function onBehindBackPressed() {
   if (game.ball.carrier !== p || p.moveCooldown > 0) return;
   p.moveCooldown = BEHIND_COOLDOWN_MS;
   p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
-  const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS);
+  const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS, true);
   applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 200);
   // Behind-the-back gets the same post-move blow-by as the crossover.
   p.moveBoostTimer = BEHIND_HAND_SWITCH_MS + MOVE_BOOST_MS;
+  attemptAnkleBreaker(p, 'behind');
   playTone(460, 0.05);
 }
 
@@ -1678,6 +1746,13 @@ function moveToward(p, tx, tz, dtMs) {
 }
 
 function updateAI(p, dtMs) {
+  // Ankle-broken: down, getting up, or stumbling from a stun -- out of the
+  // play entirely (no defense, no steal attempts) until he's back on his
+  // feet. Takes priority over everything else below.
+  if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) {
+    approachVelocity(p, 0, 0, dtMs);
+    return;
+  }
   // Note: getting screened does NOT freeze this player's own AI anymore —
   // screenedTimer is now just a brief contact flash (jersey flash + callout).
   // The actual obstruction comes entirely from physically colliding with the
@@ -1842,6 +1917,14 @@ function updateHumanMovement(dtMs) {
   // Always tick the dribble-move momentum burst so it decays smoothly no
   // matter which movement branch is active below.
   const moveBurst = tickMoveBurst(human, dtMs);
+  if (human.ankleDownTimer > 0 || human.ankleGetUpTimer > 0 || human.ankleStunTimer > 0) {
+    // Covers the edge case of switching control (E) onto a teammate who
+    // just got ankle-broken while he's still down/stunned.
+    approachVelocity(human, 0, 0, dtMs);
+    human.turboActive = false;
+    human.postUpActive = false;
+    return;
+  }
   if (game.activeInbound) {
     // Locked in place while the ball is being checked/inbounded in — you
     // can't just walk off before it actually arrives.
@@ -2301,6 +2384,58 @@ function applyPostDefenseOverlay(p, g, L, dt, w) {
   solveArmIK(offShoulder, offElbow, _pdB, _pdPoleB.set(ballSide, -0.5, -0.45), w);
 }
 
+// Ankle-breaker knockdown: a quick crash to the floor (tipping over
+// sideways, legs kicking out, arms flailing for balance that doesn't come)
+// and a slower, deliberate climb back up. p.ankleFallAmt (0=standing,
+// 1=flat) eases toward 1 fast while actually falling and back toward 0
+// over the whole getUp window, so the rise reads as a real scramble back
+// to his feet rather than an instant pop-up.
+function applyAnkleDownPose(p, g, L, dt) {
+  const falling = p.ankleDownTimer > 0;
+  const target = falling ? 1 : 0;
+  const tau = falling ? 110 : 420;
+  const alpha = 1 - Math.exp(-dt / tau);
+  p.ankleFallAmt += (target - p.ankleFallAmt) * alpha;
+  const f = clamp(p.ankleFallAmt, 0, 1);
+  const side = p.ankleFallSide || 1;
+
+  const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = L;
+  g.rotation.y = p.facing;
+  g.rotation.z = f * 1.25 * side;
+  g.rotation.x = f * 0.22;
+  g.position.set(p.x + side * f * 0.5, -f * 1.05, p.z);
+
+  legLP.rotation.set(0.35 * f, 0, -0.55 * f * side);
+  legRP.rotation.set(-0.25 * f, 0, 0.65 * f * side);
+  kneeLP.rotation.x = 0.5 * f;
+  kneeRP.rotation.x = 0.35 * f;
+  armLP.rotation.set(-0.3 * f, 0, 1.0 * f);
+  armRP.rotation.set(-0.2 * f, 0, -1.1 * f);
+  L.spine.rotation.set(-0.15 * f, 0.2 * f * side, 0);
+}
+
+// Ankle-breaker stun: catches himself before actually going down -- a wide,
+// off-balance stagger with a decaying side-to-side wobble, arms thrown out
+// for balance, instead of either freezing solid or falling.
+function applyAnkleStunPose(p, g, L, dt) {
+  g.userData.stunPhase = (g.userData.stunPhase || 0) + dt * 0.02;
+  const ph = g.userData.stunPhase;
+  const lifeFrac = clamp(p.ankleStunTimer / ANKLE_STUN_MS, 0, 1);
+  const wobble = Math.sin(ph) * lifeFrac;
+
+  const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = L;
+  g.rotation.y = p.facing;
+  g.position.set(p.x, 0, p.z);
+
+  legLP.rotation.set(0.1 * wobble, 0, -0.45 - 0.1 * wobble);
+  legRP.rotation.set(-0.1 * wobble, 0, 0.45 + 0.1 * wobble);
+  kneeLP.rotation.x = 0.3 + 0.15 * Math.max(0, wobble);
+  kneeRP.rotation.x = 0.3 + 0.15 * Math.max(0, -wobble);
+  armLP.rotation.set(-0.3, 0, 0.9 + 0.3 * wobble);
+  armRP.rotation.set(-0.3, 0, -0.9 - 0.3 * wobble);
+  L.spine.rotation.set(-0.08, 0, 0.18 * wobble);
+}
+
 function updateHumanoidPose(p, dt) {
   const g = p.mesh;
   if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
@@ -2313,6 +2448,18 @@ function updateHumanoidPose(p, dt) {
   L.elbowRP.rotation.set(0, 0, 0);
   stepBodyRock(p, dt);
   if (g.userData.postDefBlend === undefined) g.userData.postDefBlend = 0;
+
+  // Ankle-broken: down on the floor (or getting back up), or stumbling
+  // through a stun. Takes priority over every other pose -- he's out of
+  // the play, not screening, posting, or running.
+  if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0) {
+    applyAnkleDownPose(p, g, L, dt);
+    return;
+  }
+  if (p.ankleStunTimer > 0) {
+    applyAnkleStunPose(p, g, L, dt);
+    return;
+  }
 
   // Setting a screen: plant a wide, low stance and clasp both hands together
   // in front of the body — the universal "I'm a wall" pose real players use
@@ -2772,12 +2919,34 @@ function frame(now) {
       if (p.screenHoldTimer > 0) p.screenHoldTimer -= dtMs;
       if (p.ballCallTimer > 0) p.ballCallTimer -= dtMs;
       if (p.ballCallCooldown > 0) p.ballCallCooldown -= dtMs;
+      // Ankle-breaker state machine: down -> getting up -> a brief immune
+      // window before he's eligible to be dropped again. A stun on its own
+      // (no knockdown) goes straight to the immune window once it ends.
+      if (p.ankleDownTimer > 0) {
+        p.ankleDownTimer -= dtMs;
+        if (p.ankleDownTimer <= 0) { p.ankleDownTimer = 0; p.ankleGetUpTimer = ANKLE_GETUP_MS; }
+      } else if (p.ankleGetUpTimer > 0) {
+        p.ankleGetUpTimer -= dtMs;
+        if (p.ankleGetUpTimer <= 0) { p.ankleGetUpTimer = 0; p.ankleImmuneTimer = ANKLE_IMMUNE_MS; }
+      } else if (p.ankleStunTimer > 0) {
+        p.ankleStunTimer -= dtMs;
+        if (p.ankleStunTimer <= 0) { p.ankleStunTimer = 0; p.ankleImmuneTimer = ANKLE_IMMUNE_MS; }
+      } else if (p.ankleImmuneTimer > 0) {
+        p.ankleImmuneTimer -= dtMs;
+      }
       if (p.hesitateTimer > 0) {
+        const prevElapsed = HESITATE_TOTAL_MS - p.hesitateTimer;
         p.hesitateTimer -= dtMs;
         // Shot-fake "sell" window: ramps up fast, holds briefly, eases back
         // down well into the burst phase so the arm/ball settle back into a
         // normal running carry rather than snapping out of the fake pose.
         const elapsed = HESITATE_TOTAL_MS - Math.max(p.hesitateTimer, 0);
+        // The ankle-breaker moment for a hesitation is the instant the
+        // burst actually kicks in -- the defender bit on the stutter and
+        // now has to recover against a player already exploding past him.
+        if (prevElapsed < HESITATE_STUTTER_MS && elapsed >= HESITATE_STUTTER_MS && game.ball.carrier === p) {
+          attemptAnkleBreaker(p, 'hesitate');
+        }
         const FAKE_PEAK = 90, FAKE_END = 320;
         let amt = 0;
         if (elapsed < FAKE_END) {
@@ -2884,6 +3053,7 @@ game.getTeammates = getTeammates;
 game.getOpponents = getOpponents;
 game.getMark = getMark;
 game.defenderOf = defenderOf;
+game.attemptAnkleBreaker = attemptAnkleBreaker;
 game.startMatch = startMatch;
 </script>
 </body>
