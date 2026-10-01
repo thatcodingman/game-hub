@@ -2433,6 +2433,7 @@ window.addEventListener('keydown', (e) => {
   // Tab doubles as the turbo/sprint key — block its default browser behavior
   // (shifting page focus) so holding it just drives the game.
   if (e.code === 'Tab') e.preventDefault();
+  if (ctrlIgnore.has(e.code)) { e.preventDefault(); return; } // auto-released arrow: wait for a real release
   keysDown.add(e.code);
   if (game.phase !== 'live') return;
   // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
@@ -2454,13 +2455,13 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
 });
 window.addEventListener('keyup', (e) => {
-  keysDown.delete(e.code);
+  keysDown.delete(e.code); ctrlIgnore.delete(e.code);
   // Hold-to-shoot: letting go of SPACE is the release.
   if (e.code === 'Space') { e.preventDefault(); onActionReleased(); }
   if (e.code === 'KeyQ' && !game.foulPending && !game.freeThrow) onScreenKeyUp();
 });
 
-window.addEventListener('blur', () => { keysDown.clear(); onActionReleased(); });
+window.addEventListener('blur', () => { keysDown.clear(); ctrlIgnore.clear(); onActionReleased(); });
 
 function onSwitchPressed() {
   game.controlledIndex = (game.controlledIndex + 1) % game.teamA.length;
@@ -3507,9 +3508,15 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // let go -- so holding UP to sprint back on defense keeps taking you back after the
 // camera swings at half court, instead of suddenly reversing. Release (or tap a new
 // direction) and the new view's mapping takes over.
-let ctrlLatch = null; // forward axis only: keeps its pre-flip direction while held; left/right always follow the live camera (screen-correct)
+let ctrlLatch = null, ctrlLatchT = 0; // ONE shared mapping for every arrow while latched
+const ctrlIgnore = new Set(); // keys the game "let go of" for you: ignored until you physically release them
 function inputForward() { return ctrlLatch || camForward; }
-function inputRight() { const f = camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
+function inputRight() { const f = ctrlLatch || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
+function autoReleaseArrows() {
+  ctrlLatch = null;
+  for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) if (keysDown.has(k)) { keysDown.delete(k); ctrlIgnore.add(k); }
+  if (typeof touchMove !== 'undefined' && touchMove && touchMove.active) touchMove.vec.x = touchMove.vec.y = 0;
+}
 function axisHeld(vertical) {
   const ks = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
   if (ks.some((k) => keysDown.has(k))) return true;
@@ -3705,12 +3712,6 @@ function updateHumanMovement(dtMs) {
     if (keysDown.has('ArrowRight')) ix += 1;
     if (keysDown.has('ArrowUp')) iz += 1;
     if (keysDown.has('ArrowDown')) iz -= 1;
-  }
-  if (ctrlLatch && iz > 0) {
-    // latched "keep running back" stops at the top of your own key instead of dragging you
-    // under/behind the hoop; strafing and every other direction stay fully live
-    const ownX = human.team === 'A' ? -41 : 41, toward = Math.sign(ownX - human.x);
-    if (Math.abs(human.x - ownX) < 17 && ctrlLatch.x * toward > 0.3) iz = 0;
   }
   const mag = Math.hypot(ix, iz);
   // Hesitation move: a brief near-stop (selling the fake) followed by a
@@ -4767,14 +4768,19 @@ function updateCamera(dt) {
   if (pc > 0.001) camForward.copy(game.camLookAt).sub(camera.position).setY(0).normalize();
   else camForward.set(Math.cos(targetYaw), 0, Math.sin(targetYaw));
   const vHeld = axisHeld(true), hHeld = axisHeld(false);
-  const arrowSig = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].map((k) => (keysDown.has(k) ? 1 : 0)).join('');
-  if (game.ctrlArrowSig !== arrowSig) { ctrlLatch = null; game.ctrlArrowSig = arrowSig; } // any press/release = instant reset to the live camera
   if (game.ctrlDirKey !== undefined && game.ctrlDirKey !== dirSign) {
-    if (ctrlLatch && ctrlLatch.x * camForward.x + ctrlLatch.z * camForward.z > 0.9) ctrlLatch = null; // camera swung back to where the latch pointed
-    else if (vHeld) ctrlLatch = prevFwd;
+    if (ctrlLatch && ctrlLatch.x * camForward.x + ctrlLatch.z * camForward.z > 0.9) ctrlLatch = null; // camera swung back: mapping already matches
+    else if (vHeld || hHeld) { ctrlLatch = prevFwd; ctrlLatchT = performance.now(); }
   }
   game.ctrlDirKey = dirSign;
-  if (!vHeld) ctrlLatch = null;
+  if (!vHeld && !hHeld) ctrlLatch = null;
+  if (ctrlLatch) {
+    // Conditions where the game lets go of the arrows for you (re-press = instantly correct mapping):
+    // you've settled into defense (near your hoop / on the ball handler) or the latch has run its course.
+    const ownX = human.team === 'A' ? -41 : 41, c = game.ball.carrier;
+    if (performance.now() - ctrlLatchT > 1400 || Math.abs(human.x - ownX) < 20 ||
+        (c && c.team !== human.team && Math.hypot(c.x - human.x, c.z - human.z) < 7)) autoReleaseArrows();
+  }
   // Debug-only viewpoint override (unset in normal play); controls keep
   // using the real follow-cam direction computed above.
   const ov = window.__camOverride;
