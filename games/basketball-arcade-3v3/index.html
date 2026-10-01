@@ -295,9 +295,12 @@ const ORDER = ['PG', 'SF', 'C'];
 const POS_STATS = {
   // Another speed pass per request -- noticeably faster across the board,
   // same ratios between positions kept intact.
-  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
-  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
-  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
+  // pass: how accurately a position actually throws -- a point guard is the
+  // table-setter (tightest passes), a center is the least natural passer
+  // (the most scatter), a forward sits in between. See PASS_SCATTER_BASE.
+  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62, pass: 0.85 },
+  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90, pass: 0.64 },
+  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28, pass: 0.46 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 // Two speed tiers: the stat above is top speed running free; actually
@@ -314,17 +317,21 @@ const DEFENSE_CATCHUP_MAX_MULT = 0.78;
 // who just inherited the assignment plays with real urgency for a few
 // seconds -- closes faster and reacts quicker -- instead of looking like
 // he's not in the same league. Represents him recognizing the mismatch and
-// playing to it, not an actual speed-stat change. Buffed up across the
-// board for a more intense, "glued-to-the-ball-handler" scramble: lasts
-// longer, closes harder, reacts quicker, and plays right in his face.
-const SWITCH_URGENCY_MS = 3400;
-const SWITCH_URGENCY_SPEED_MULT = 1.4;
-const SWITCH_URGENCY_ACCEL_MULT = 0.42;
-// Default help-side cushion a defender plays off his man by; tightened hard
-// (see SWITCH_URGENCY_STANDOFF_MULT) right after a switch so he's actually
-// draped on the handler instead of giving him the same room as before.
+// playing to it, not an actual speed-stat change. Pulled back a real step
+// from the last pass (that one ran too hot -- draped right on top of the
+// ball handler and shoving him around) rather than just a small nudge, and
+// each switch now rolls its own random strength within a range instead of
+// every switch playing out identically -- see swapAssignments, which picks
+// the actual per-player mult from these ranges.
+const SWITCH_URGENCY_MS = 3000;
+const SWITCH_URGENCY_SPEED_MULT_RANGE = [1.10, 1.22];
+const SWITCH_URGENCY_ACCEL_MULT_RANGE = [0.55, 0.72];
+// Default help-side cushion a defender plays off his man by; tightened
+// (see SWITCH_URGENCY_STANDOFF_MULT_RANGE) right after a switch so he plays
+// noticeably tighter than usual without draping on top of the handler.
 const DEFENSE_STANDOFF = 4;
-const SWITCH_URGENCY_STANDOFF_MULT = 0.22;
+const SWITCH_URGENCY_STANDOFF_MULT_RANGE = [0.42, 0.58];
+function randRange([lo, hi]) { return lo + Math.random() * (hi - lo); }
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
@@ -1187,6 +1194,7 @@ function attemptPass(player) {
   // swing the aim wildly further than a real pass would ever lead someone.
   const PLAYER_VEL_FPS = 60;
   const PASS_LEAD_MAX = 5;
+  const initialDist = Math.hypot(best.x - player.x, best.z - player.z) || 1;
   let tx = best.x, tz = best.z;
   for (let iter = 0; iter < 2; iter++) {
     const dx0 = tx - player.x, dz0 = tz - player.z;
@@ -1197,6 +1205,20 @@ function attemptPass(player) {
     tx = best.x + leadX;
     tz = best.z + leadZ;
   }
+  // Passing accuracy actually varies by who's throwing it, not just a
+  // perfectly-solved lead every time -- a point guard (high pass stat)
+  // threads it right on the money almost always, a center scatters it a
+  // real amount, a forward sits in between. Worse on a longer pass, same as
+  // a real cross-court feed is harder to put exactly on the mark than a
+  // short outlet. Triangular-ish spread (sum of two uniforms) so small
+  // misses are common and wild ones are rare, rather than a flat random
+  // range.
+  const PASS_SCATTER_BASE = 3.0;
+  const passStat = (player.stats && player.stats.pass) || 0.65;
+  const scatterDistFactor = clamp(initialDist / 14, 0.5, 1.8);
+  const scatterMag = PASS_SCATTER_BASE * (1 - passStat) * scatterDistFactor;
+  tx += (Math.random() + Math.random() - 1) * scatterMag;
+  tz += (Math.random() + Math.random() - 1) * scatterMag;
   const dx = tx - player.x, dz = tz - player.z;
   const d = Math.hypot(dx, dz) || 1;
   const T = Math.max(d / PASS_EFFECTIVE_SPEED, 0.05);
@@ -1433,6 +1455,12 @@ function defenderOf(off) {
   return getOpponents(off.team).find((d) => getMark(d) === off) || null;
 }
 // Swap two defenders' assignments (keeps it a clean one-man-each mapping).
+// Three visually distinct ways a defender scrambles back into the play off
+// a switch -- picked at random each time so the recovery doesn't look like
+// the exact same canned animation playing on a loop. Just which overlay the
+// running pose reaches for during switchUrgencyTimer (see updateHumanoidPose);
+// all three use the same underlying speed/accel/standoff numbers below.
+const RECOVER_STYLE_COUNT = 3;
 function swapAssignments(a, b, label) {
   const ma = getMark(a), mb = getMark(b);
   a.markOverride = mb;
@@ -1441,8 +1469,18 @@ function swapAssignments(a, b, label) {
   // of real urgency so whichever one picked up the tougher cover (the
   // classic big switched onto a point guard) closes with intent instead of
   // getting left in the dust for a few steps while he "figures it out".
+  // Each switch rolls its own strength within a range (and its own recovery
+  // animation) so back-to-back switches don't all play out identically.
   a.switchUrgencyTimer = SWITCH_URGENCY_MS;
   b.switchUrgencyTimer = SWITCH_URGENCY_MS;
+  a.switchSpeedMult = randRange(SWITCH_URGENCY_SPEED_MULT_RANGE);
+  b.switchSpeedMult = randRange(SWITCH_URGENCY_SPEED_MULT_RANGE);
+  a.switchAccelMult = randRange(SWITCH_URGENCY_ACCEL_MULT_RANGE);
+  b.switchAccelMult = randRange(SWITCH_URGENCY_ACCEL_MULT_RANGE);
+  a.switchStandoffMult = randRange(SWITCH_URGENCY_STANDOFF_MULT_RANGE);
+  b.switchStandoffMult = randRange(SWITCH_URGENCY_STANDOFF_MULT_RANGE);
+  a.recoverStyle = 1 + Math.floor(Math.random() * RECOVER_STYLE_COUNT);
+  b.recoverStyle = 1 + Math.floor(Math.random() * RECOVER_STYLE_COUNT);
   showScreenCallout(label, 1100);
   playTone(label === 'SWITCH!' ? 420 : 340, 0.05);
 }
@@ -1956,7 +1994,7 @@ function approachVelocity(p, targetVx, targetVz, dtMs) {
   let accelMult = (p.stats && p.stats.accelMult) || 1;
   // Fresh off a defensive switch: reacts and changes speed quicker, not
   // just running faster -- plays alert instead of flat-footed.
-  if (p.switchUrgencyTimer > 0) accelMult *= SWITCH_URGENCY_ACCEL_MULT;
+  if (p.switchUrgencyTimer > 0) accelMult *= (p.switchAccelMult || 0.65);
   const tau = (targetSpeed > curSpeed + 0.001 ? ACCEL_TAU_MS : DECEL_TAU_MS) * accelMult;
   const alpha = 1 - Math.exp(-dtMs / tau);
   p.vx += (targetVx - p.vx) * alpha;
@@ -2131,8 +2169,8 @@ function updateAI(p, dtMs) {
         }
         if (p.switchUrgencyTimer > 0) {
           p.switchUrgencyTimer -= dtMs;
-          chaseMult *= SWITCH_URGENCY_SPEED_MULT;
-          standoff *= SWITCH_URGENCY_STANDOFF_MULT;
+          chaseMult *= (p.switchSpeedMult || 1.15);
+          standoff *= (p.switchStandoffMult || 0.5);
         }
         const towardHoopX = mark.x + (myHoop.x < mark.x ? -standoff : standoff);
         moveToward(p, towardHoopX, mark.z, dtMs, chaseMult);
@@ -2968,6 +3006,40 @@ function updateHumanoidPose(p, dt) {
     L.elbowRP.rotation.x = elbowBendR;
   }
 
+  // Scrambling back into the play off a screen switch: 3 visually distinct
+  // recovery styles (randomly picked once per switch in swapAssignments),
+  // layered on top of the normal running pose instead of replacing it, so
+  // the same urgency window doesn't look like one canned animation every
+  // time it plays.
+  if (p.switchUrgencyTimer > 0 && fakeAmt <= 0 && amt > 0.05) {
+    const style = p.recoverStyle || 1;
+    if (style === 1) {
+      // Hard sprint recover: bigger forward lean, a harder arm pump than
+      // the normal gait.
+      L.spine.rotation.x = Math.min(0.4, L.spine.rotation.x + 0.14);
+      armLP.rotation.x *= 1.35; armRP.rotation.x *= 1.35;
+    } else if (style === 2) {
+      // Low defensive scramble: wide, bent-knee defensive-slide stance with
+      // both arms out low and wide (feeling for the ball handler) instead
+      // of the normal pumping swing, over quicker/choppier little steps.
+      const spread = 0.3 * (amt / 0.55);
+      armLP.rotation.set(-0.3, 0, spread);
+      armRP.rotation.set(-0.3, 0, -spread);
+      kneeLP.rotation.x = Math.max(kneeLP.rotation.x, 0.3);
+      kneeRP.rotation.x = Math.max(kneeRP.rotation.x, 0.3);
+      L.spine.rotation.x = Math.max(0.05, L.spine.rotation.x * 0.5);
+    } else {
+      // Reach-and-close: closing hard with one hand already reaching up
+      // and out toward the man he just inherited, torso twisted slightly
+      // into the close instead of running square.
+      const side = (p.handSide || 1) < 0 ? -1 : 1;
+      const reachArm = side < 0 ? armLP : armRP;
+      reachArm.rotation.set(-1.4, 0, side * 0.3);
+      L.spine.rotation.z += side * 0.08;
+      L.spine.rotation.x = Math.min(0.32, L.spine.rotation.x + 0.08);
+    }
+  }
+
   // Subtle torso bob synced to the stride, fading out with swingAmt so it
   // settles to flat when the player stops rather than cutting off abruptly.
   const bob = Math.abs(Math.sin(phaseL)) * 0.13 * (amt / 0.55);
@@ -3456,6 +3528,7 @@ game.startShotRise = startShotRise;
 game.releaseShot = releaseShot;
 game.attemptBlock = attemptBlock;
 game.attemptPass = attemptPass;
+game.swapAssignments = swapAssignments;
 game.getCamDirSign = () => camDirSign;
 </script>
 </body>
