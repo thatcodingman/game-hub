@@ -966,6 +966,7 @@ function makePlayer(team, posLabel) {
     // direction (not just a one-frame nudge that the normal movement code
     // immediately overrides) -- see applyMoveKick/tickMoveBurst.
     moveBurstT: 1, moveBurstDur: 1, moveBurstDirX: 0, moveBurstDirZ: 0, moveBurstPeak: 0,
+    moveBoostTimer: 0,
   };
 }
 
@@ -1030,7 +1031,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
-    p.moveBurstT = 1; p.moveBurstPeak = 0;
+    p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0;
   };
   const b = game.ball;
 
@@ -1502,6 +1503,14 @@ const CROSSOVER_HAND_SWITCH_MS = 320;
 const BEHIND_STEAL_RESIST_MS = 480;
 const BEHIND_KICK_MULT = 0.3;
 const BEHIND_HAND_SWITCH_MS = 300;
+// A real crossover explodes forward past the defender, not just side to
+// side -- blend a forward drive in with the lateral snap so the move's
+// momentum actually carries the player downcourt.
+const MOVE_BURST_FORWARD_WEIGHT = 0.9;
+// After the hand-switch itself finishes, the carrier gets a short, real
+// jolt of extra speed -- the "blow-by" after you've sold the move.
+const CROSSOVER_BOOST_MS = 420;
+const CROSSOVER_BOOST_MULT = 1.4;
 // Behind-the-back gets its own short cooldown (~= its own switch time) instead
 // of sharing the longer universal MOVE_COOLDOWN_MS, so it can be chained back
 // to back like a real behind-the-back combo instead of one-and-done.
@@ -1526,11 +1535,16 @@ function applyMoveKick(p, mult, side, durMs) {
   // like the arrow-key strafe axis) -- a sustained push that fades out over
   // the move's duration, instead of a one-frame vx nudge that the normal
   // movement code (approachVelocity chasing the held-key target every
-  // frame) would otherwise erase almost instantly.
+  // frame) would otherwise erase almost instantly. Blended with a forward
+  // drive so the move actually carries the player downcourt, not just side
+  // to side.
   const fwd = camForward.clone().setY(0).normalize();
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  p.moveBurstDirX = right.x * side;
-  p.moveBurstDirZ = right.z * side;
+  const dirX = right.x * side + fwd.x * MOVE_BURST_FORWARD_WEIGHT;
+  const dirZ = right.z * side + fwd.z * MOVE_BURST_FORWARD_WEIGHT;
+  const dirMag = Math.hypot(dirX, dirZ) || 1;
+  p.moveBurstDirX = dirX / dirMag;
+  p.moveBurstDirZ = dirZ / dirMag;
   p.moveBurstPeak = p.stats.speed * mult;
   p.moveBurstT = 0;
   p.moveBurstDur = durMs;
@@ -1554,6 +1568,8 @@ function onCrossoverPressed() {
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
   applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 200);
+  // Short burst of extra speed right after the move itself -- the blow-by.
+  p.moveBoostTimer = CROSSOVER_HAND_SWITCH_MS + CROSSOVER_BOOST_MS;
   playTone(520, 0.05);
 }
 
@@ -1984,6 +2000,13 @@ function updateHumanMovement(dtMs) {
       if (human.exhausted && human.stamina >= STAMINA_EXHAUST_RECOVER) human.exhausted = false;
     }
   }
+  // Post-crossover blow-by: once the hand-switch itself has actually played
+  // out (not during it -- that's the lateral/forward momentum burst's job),
+  // a short real speed boost so the move actually buys separation.
+  if (human.moveBoostTimer > 0) {
+    human.moveBoostTimer -= dtMs;
+    if (human.handAnimT >= 1) speedMult *= CROSSOVER_BOOST_MULT;
+  }
   let targetVx = 0, targetVz = 0;
   if (mag >= 0.05) {
     const nx = ix / (mag || 1), nz = iz / (mag || 1);
@@ -2074,6 +2097,25 @@ function playBodyThud(vol) {
     SFX.tone(72, 0.07, 'sine', vol, null, 0);
     SFX.tone(46, 0.11, 'triangle', vol * 0.7, null, 0.004);
   } catch (e) {}
+}
+
+// Crossover/behind-the-back arm reach: IK's the ball-hand arm straight onto
+// the ball's own live, already-computed sweep position (updateBall runs
+// before this every frame) so the arm actually extends out to carry the
+// ball across instead of just swinging through its normal running arc with
+// the ball floating out past it.
+const _coTarget = new THREE.Vector3(), _coPole = new THREE.Vector3();
+function applyCrossoverReachOverlay(p, g, L) {
+  const e = p.handAnimT * p.handAnimT * (3 - 2 * p.handAnimT);
+  const curSide = lerp(p.handAnimFrom, p.handAnimTo, e);
+  const side = curSide < 0 ? -1 : 1;
+  const shoulder = side < 0 ? L.armLP : L.armRP;
+  const elbow = side < 0 ? L.elbowLP : L.elbowRP;
+  g.updateMatrixWorld(true);
+  _coTarget.set(game.ball.x, game.ball.y, game.ball.z);
+  L.spine.worldToLocal(_coTarget);
+  _coPole.set(side * 0.5, -0.4, 0.7);
+  solveArmIK(shoulder, elbow, _coTarget, _coPole, 1);
 }
 
 // Dribble-move plant-and-burst: a real athletic load-and-explode, not just
@@ -2386,6 +2428,9 @@ function updateHumanoidPose(p, dt) {
   // Dribble-move plant-and-burst (crossover, behind-the-back, ...) — only
   // live while that move's momentum burst is still playing out.
   if (p.moveBurstT !== undefined && p.moveBurstT < 1) applyBurstPlantOverlay(p, g, L, dt);
+
+  // Arm reach for the actual hand-switch sweep, ball carrier only.
+  if (p.handAnimT < 1 && game.ball.carrier === p) applyCrossoverReachOverlay(p, g, L);
 }
 
 function updateBall(dtMs) {
