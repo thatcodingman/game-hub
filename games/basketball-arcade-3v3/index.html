@@ -1561,7 +1561,8 @@ function updateActivePass(dtMs) {
 
 function attemptSteal(defender) {
   if (defender.actionCooldown > 0) return;
-  defender.actionCooldown = 300;
+  const isHumanDef = defender === controlledPlayer();
+  defender.actionCooldown = isHumanDef ? 300 : 750; // AI swipes less often
   // Nobody can strip the ball off anybody while a checkup/inbound pass is
   // actively being thrown in — the player putting the ball in play is fully
   // safe until it's actually delivered, not just the instant after.
@@ -1574,7 +1575,7 @@ function attemptSteal(defender) {
   // A recent crossover makes the carrier much harder to strip for a short
   // window — that's the whole point of the move.
   const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
-  const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult;
+  const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult * (isHumanDef ? 1 : 0.4);
   if (Math.random() < chance) {
     playTone(300, 0.05);
     if (defender === controlledPlayer()) showScreenCallout('STOLEN!', 900);
@@ -3252,6 +3253,11 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
   def.x -= ux * handlerCaused / 2; def.z -= uz * handlerCaused / 2;
   if (defCaused <= 0) return;
   const humanDef = def === controlledPlayer(); // you get a much more forgiving whistle than the AI
+  // Right after a check-in/inbound, or when it's just AI bumping AI, nobody gets whistled for body contact
+  if (performance.now() < (game.pushGraceUntil || 0) || h.inboundImmuneTimer > 0 || (!humanDef && h !== controlledPlayer())) {
+    def.x -= ux * defCaused; def.z -= uz * defCaused;
+    return;
+  }
   if (relClose < PUSH_INTENT_SPEED * (humanDef ? 1.6 : 1)) {
     // Walling up, not pushing: defender is held off, handler unmoved.
     def.x -= ux * defCaused; def.z -= uz * defCaused;
@@ -3514,8 +3520,6 @@ function inputForward() { return ctrlLatch || camForward; }
 function inputRight() { const f = ctrlLatch || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
 function autoReleaseArrows() {
   ctrlLatch = null;
-  for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) if (keysDown.has(k)) { keysDown.delete(k); ctrlIgnore.add(k); }
-  if (typeof touchMove !== 'undefined' && touchMove && touchMove.active) touchMove.vec.x = touchMove.vec.y = 0;
 }
 function axisHeld(vertical) {
   const ks = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
@@ -4469,6 +4473,7 @@ function updateBall(dtMs) {
       // no cheap strip the instant the ball lands, on top of the normal
       // partial steal resistance a crossover/behind-the-back gives.
       inb.receiver.inboundImmuneTimer = INBOUND_IMMUNE_MS;
+      game.pushGraceUntil = performance.now() + 3000; // bodies are still sorting themselves out after a check-in
       // At the opening checkup specifically, the guy who just caught it has
       // to actually get the ball moving (pass it off) before he's allowed to
       // run with it — no bringing it up solo the instant it lands in his hands.
@@ -4784,7 +4789,7 @@ function updateCamera(dt) {
     // Conditions where the game lets go of the arrows for you (re-press = instantly correct mapping):
     // you've settled into defense (near your hoop / on the ball handler) or the latch has run its course.
     const ownX = human.team === 'A' ? -41 : 41, c = game.ball.carrier;
-    if (performance.now() - ctrlLatchT > 700 || Math.abs(human.x - ownX) < 20 ||
+    if (performance.now() - ctrlLatchT > 300 || Math.abs(human.x - ownX) < 20 ||
         (c && c.team !== human.team && Math.hypot(c.x - human.x, c.z - human.z) < 7)) autoReleaseArrows();
   }
   // Debug-only viewpoint override (unset in normal play); controls keep
