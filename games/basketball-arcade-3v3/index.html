@@ -260,12 +260,12 @@ const ORDER = ['PG', 'SF', 'C'];
 // involved — a center shoving a point guard around is a different contest
 // than the other way around.
 const POS_STATS = {
-  // Overall movement slowed ~20% across the board (first step of a larger
-  // movement-feel pass) -- same speed ratios between positions, just a
-  // slower base pace for everyone.
-  PG: { speed: 0.38, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
-  SF: { speed: 0.30, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
-  C:  { speed: 0.22, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
+  // Overall movement slowed further (second pass, same ratios) -- ~35%
+  // slower than the original baseline now, for a more grounded, deliberate
+  // feel instead of everyone skating around at top speed.
+  PG: { speed: 0.32, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
+  SF: { speed: 0.26, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
+  C:  { speed: 0.19, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
@@ -1553,7 +1553,7 @@ function onCrossoverPressed() {
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
-  applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 120);
+  applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 200);
   playTone(520, 0.05);
 }
 
@@ -1563,7 +1563,7 @@ function onBehindBackPressed() {
   p.moveCooldown = BEHIND_COOLDOWN_MS;
   p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS);
-  applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 120);
+  applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 200);
   playTone(460, 0.05);
 }
 
@@ -2076,6 +2076,61 @@ function playBodyThud(vol) {
   } catch (e) {}
 }
 
+// Dribble-move plant-and-burst: a real athletic load-and-explode, not just
+// a velocity change. The first half of the move's window is the "plant" —
+// both knees sink hard, weight drops, the body braces — and the second
+// half is the "drive" — the trail leg kicks through and the torso launches
+// into the burst direction, easing back to the normal running pose as it
+// completes. Driven by moveBurstT (0 at trigger, 1 once it's faded out),
+// so it naturally blends with whatever gait is already playing underneath.
+function applyBurstPlantOverlay(p, g, L, dt) {
+  const t = p.moveBurstT;
+  if (t === undefined || t >= 1) return;
+  // Humped envelope: zero at the instant of the move and zero once it's
+  // over, peaking at the plant/drive handoff in the middle.
+  const w = Math.sin(Math.min(Math.max(t, 0), 1) * Math.PI);
+  if (w <= 0.003) return;
+
+  const fx = Math.sin(p.facing), fz = Math.cos(p.facing);
+  const rx = fz, rz = -fx;
+  const dirMag = Math.hypot(p.moveBurstDirX, p.moveBurstDirZ) || 1;
+  const localFwd = (p.moveBurstDirX * fx + p.moveBurstDirZ * fz) / dirMag;
+  const localRight = (p.moveBurstDirX * rx + p.moveBurstDirZ * rz) / dirMag;
+
+  const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = L;
+  if (t < 0.55) {
+    // Plant: the trail (back) foot digs in hard behind the body -- staked
+    // out, deeply bent, clearly bearing the load -- while the lead foot
+    // stays grounded in front, both knees sinking and the weight dropping
+    // low as the torso braces against the direction it's about to explode
+    // into. This is the moment that has to actually read as a real plant,
+    // not just a quick dip.
+    const kickL = -localRight, kickR = localRight; // which leg is the "back" one
+    kneeLP.rotation.x = lerp(kneeLP.rotation.x, kneeLP.rotation.x + 0.65 + 0.4 * Math.max(0, kickL), w);
+    kneeRP.rotation.x = lerp(kneeRP.rotation.x, kneeRP.rotation.x + 0.65 + 0.4 * Math.max(0, kickR), w);
+    legLP.rotation.x = lerp(legLP.rotation.x, legLP.rotation.x - 0.3 * localFwd - 0.3 * Math.max(0, kickL), w);
+    legRP.rotation.x = lerp(legRP.rotation.x, legRP.rotation.x - 0.3 * localFwd - 0.3 * Math.max(0, kickR), w);
+    legLP.rotation.z = lerp(legLP.rotation.z, -0.26, w);
+    legRP.rotation.z = lerp(legRP.rotation.z, 0.26, w);
+    g.position.y -= 0.26 * w;
+    L.spine.rotation.x = lerp(L.spine.rotation.x, -0.22 * localFwd, w);
+    L.spine.rotation.z = lerp(L.spine.rotation.z, -0.2 * localRight, w);
+  } else {
+    // Drive: the trail leg (opposite the burst direction) kicks through and
+    // extends, the lead leg plants hard, and the torso launches forward
+    // into the move, arms pumping to sell the explosion.
+    const kickL = -localRight, kickR = localRight;
+    legLP.rotation.x = lerp(legLP.rotation.x, legLP.rotation.x + 0.5 * localFwd + 0.35 * kickL, w);
+    legRP.rotation.x = lerp(legRP.rotation.x, legRP.rotation.x + 0.5 * localFwd + 0.35 * kickR, w);
+    kneeLP.rotation.x = lerp(kneeLP.rotation.x, Math.max(0, kneeLP.rotation.x + 0.3 * (1 + kickL)), w);
+    kneeRP.rotation.x = lerp(kneeRP.rotation.x, Math.max(0, kneeRP.rotation.x + 0.3 * (1 + kickR)), w);
+    L.spine.rotation.x = lerp(L.spine.rotation.x, 0.26 * localFwd, w);
+    L.spine.rotation.z = lerp(L.spine.rotation.z, 0.3 * localRight, w);
+    armLP.rotation.x = lerp(armLP.rotation.x, armLP.rotation.x - 0.35 * localFwd - 0.25 * localRight, w);
+    armRP.rotation.x = lerp(armRP.rotation.x, armRP.rotation.x - 0.35 * localFwd + 0.25 * localRight, w);
+  }
+}
+
 // Post defense: the defender gets his whole body onto the poster instead of
 // just standing behind him — low staggered stance with both feet planted,
 // chest leaned into the back, one forearm driven into the small of the
@@ -2327,6 +2382,10 @@ function updateHumanoidPose(p, dt) {
   g.userData.postDefBlend += ((engaged ? 1 : 0) - g.userData.postDefBlend) * (1 - Math.exp(-dt / 140));
   const w = g.userData.postDefBlend;
   if (w > 0.002 && mark && mark.mesh) applyPostDefenseOverlay(p, g, L, dt, w);
+
+  // Dribble-move plant-and-burst (crossover, behind-the-back, ...) — only
+  // live while that move's momentum burst is still playing out.
+  if (p.moveBurstT !== undefined && p.moveBurstT < 1) applyBurstPlantOverlay(p, g, L, dt);
 }
 
 function updateBall(dtMs) {
