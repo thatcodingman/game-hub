@@ -152,7 +152,7 @@
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -174,7 +174,7 @@
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
   <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS</div>
-  <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; F block &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -240,7 +240,19 @@ const POST_CONTACT_D = PLAYER_R * 2 * 0.72;
 const BALL_R = 0.45;
 const PICKUP_RANGE = PLAYER_R + BALL_R + 1.2;
 const STEAL_RANGE = PLAYER_R * 2 + 1.5;
-const CONTEST_RANGE = PLAYER_R * 2 + 5.5;
+// Three contest tiers (closest band wins): a hand up from way out barely
+// bothers the shooter, a real closeout costs him something, and a defender
+// right on top of him at the release point is a real problem. Radii are
+// picked off the court's own existing scales -- HEAVY sits right around
+// body-contact/steal-range (he's basically draped on him), DECENT is a
+// proper defensive closeout distance, LIGHT is "a defender's somewhere in
+// the area" and used to be the ONLY tier (the old flat CONTEST_RANGE).
+const CONTEST_HEAVY_RANGE = PLAYER_R * 2 + 0.2; // ~3.2 -- right in his face
+const CONTEST_DECENT_RANGE = PLAYER_R * 2 + 2.5; // ~5.5 -- closed out hard
+const CONTEST_LIGHT_RANGE = PLAYER_R * 2 + 5.5; // ~8.5 -- a hand up from distance (old CONTEST_RANGE)
+const CONTEST_HEAVY_PENALTY = 0.32;
+const CONTEST_DECENT_PENALTY = 0.18;
+const CONTEST_LIGHT_PENALTY = 0.08;
 const MAX_SHOT_RANGE = 32;
 const THREE_PT_R = 22;
 const MATCH_SECONDS = 150;
@@ -991,7 +1003,8 @@ function makePlayer(team, posLabel) {
     moveBoostTimer: 0, autoSwitchCooldown: 0,
     ankleStunTimer: 0, ankleDownTimer: 0, ankleGetUpTimer: 0, ankleImmuneTimer: 0, ankleFallSide: 1, ankleFallAmt: 0,
     switchUrgencyTimer: 0,
-    shotJumpTimer: 0, shotJumpDur: 1, shotReleaseFired: false, shotPendingQuality: null, shotHandSide: 1,
+    shotPhase: 'none', shotPhaseT: 0, shotFallFromHeight: 0, shotHandSide: 1, shotAIReleaseAt: 0,
+    blockCooldown: 0, blockJumpTimer: 0,
   };
 }
 
@@ -1016,10 +1029,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot (tap again to release!) or steal'
-  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · F block · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot (tap again!) /steal'
-  : 'Arrows move · SPACE shoot (tap again!) /steal · SHIFT pass · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · SPACE shoot (tap again!) /steal · F block · SHIFT pass · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1059,7 +1072,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0; p.autoSwitchCooldown = 0;
     p.ankleStunTimer = 0; p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleImmuneTimer = 0; p.ankleFallAmt = 0;
     p.switchUrgencyTimer = 0;
-    p.shotJumpTimer = 0; p.shotReleaseFired = false; p.shotPendingQuality = null;
+    p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.blockCooldown = 0; p.blockJumpTimer = 0;
   };
   const b = game.ball;
 
@@ -1179,6 +1192,45 @@ function attemptSteal(defender) {
   }
 }
 
+// Block: only breaks up a shot still in its "rise" -- before it's actually
+// left the shooter's hands (a block that could reach the ball once it's
+// already in flight toward the hoop is a much harder, riskier swat to
+// model fairly, so this keeps it to contesting the gather/ascent, same
+// window a real shot-blocker is actually attacking). Height and strength
+// (the "reach" and "pop" stats a shot-blocker actually needs) push the
+// chance up; the shooter's own shot stat (a quicker, more compact release)
+// pushes it back down.
+const BLOCK_RANGE = PLAYER_R * 2 + 1.0; // ~4.0 -- right there, contesting the release point
+const BLOCK_COOLDOWN_MS = 900;
+const BLOCK_BASE = 0.14;
+function attemptBlock(blocker) {
+  if (blocker.blockCooldown > 0) return;
+  blocker.blockCooldown = BLOCK_COOLDOWN_MS;
+  blocker.blockJumpTimer = BLOCK_JUMP_DUR_MS;
+  const shooter = game.ball.carrier;
+  if (!shooter || shooter.team === blocker.team || shooter.shotPhase !== 'rise') return;
+  if (dist2(blocker, shooter) > BLOCK_RANGE) return;
+  const heightGap = (blocker.stats.height || 6) - (shooter.stats.height || 6);
+  const strengthGap = (blocker.stats.strength || 1) - 1;
+  const chance = clamp(BLOCK_BASE + heightGap * 0.09 + strengthGap * 0.12 - (shooter.stats.shot || 0.5) * 0.18, 0.03, 0.55);
+  if (Math.random() < chance) {
+    // Knocked loose instead of ever becoming a real shot attempt -- cancel
+    // the rise outright and send the ball flying off on its own.
+    shooter.shotPhase = 'none'; shooter.shotPhaseT = 0;
+    shooter.actionCooldown = 400;
+    game.ball.carrier = null;
+    const away = Math.atan2(shooter.x - blocker.x, shooter.z - blocker.z) + (Math.random() - 0.5) * 0.6;
+    game.ball.vx = Math.sin(away) * (1.6 + Math.random());
+    game.ball.vz = Math.cos(away) * (1.6 + Math.random());
+    game.ball.vy = 2.0 + Math.random();
+    game.ball.justReleasedBy = blocker; game.ball.releaseLockTimer = 250;
+    showScreenCallout('BLOCKED!', 1100);
+    playBodyThud(0.5); playTone(140, 0.09);
+  } else {
+    playTone(260, 0.04); // a whiff -- no effect beyond the usual contest penalty
+  }
+}
+
 function attemptShot(player, meterQuality) {
   if (player.actionCooldown > 0) return;
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
@@ -1190,7 +1242,14 @@ function attemptShot(player, meterQuality) {
   const nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
   let acc = player.stats.shot;
   acc -= Math.max(0, (d - 5) / 40);
-  if (nearestDefDist < CONTEST_RANGE) acc -= 0.22;
+  // Three contest tiers instead of one flat in-range/out-of-range check --
+  // a hand up from way out barely matters, a tight closeout costs you
+  // something real, and a defender right on top of him at the release
+  // point is a genuine problem. Mutually exclusive by nearest distance,
+  // closest band wins.
+  if (nearestDefDist <= CONTEST_HEAVY_RANGE) acc -= CONTEST_HEAVY_PENALTY;
+  else if (nearestDefDist <= CONTEST_DECENT_RANGE) acc -= CONTEST_DECENT_PENALTY;
+  else if (nearestDefDist <= CONTEST_LIGHT_RANGE) acc -= CONTEST_LIGHT_PENALTY;
   // The shot-meter timing (human shots only — AI just calls attemptShot with
   // no meter and gets its usual straight accuracy roll): nail the release in
   // the green zone for a real bonus, badly time it (or let it expire) for a
@@ -1260,6 +1319,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') onCallForBallPressed();
   if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
+  if (e.code === 'KeyF') onBlockPressed();
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
   if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
@@ -1473,17 +1533,23 @@ const SHOT_METER_GOOD_WINDOW = 0.10; // this close outside the zone still counts
 const SHOT_METER_PERFECT_BONUS = 0.32;
 const SHOT_METER_GOOD_BONUS = 0.08;
 const SHOT_METER_BAD_PENALTY = 0.30;
-// Real jump-shot motion: gather with both hands on the ball, rise off the
-// ground together with it, and only peel down to one hand right at the
-// instant it actually leaves the fingers (the release), the way a real shot
-// looks -- not a flat, standing animation-less toss. The meter hold above
-// is the "dip" read; this is the actual shot itself, for both the human
-// (after the meter releases) and the AI (which has no meter, so it goes
-// straight into this with no separate windup).
-const SHOT_JUMP_DUR_MS = 560;
-const SHOT_RELEASE_FRAC = 0.58; // fraction of the jump where the ball actually leaves the hands
-const SHOT_JUMP_HEIGHT = 1.85; // body rise, world units
+// Real jump-shot motion: the jump itself starts the exact instant the shot
+// is triggered (the same frame the meter starts for the human, or the same
+// frame the AI decides to shoot) -- not after some separate standing charge
+// first. "Rise" is a single continuous climb that starts at press and holds
+// near its peak for as long as the shot is held (an asymptotic curve, not a
+// fixed-duration animation, since the human controls how long that is);
+// "fall" is a fixed-length landing that kicks off the instant it's actually
+// released, whenever that happens to be. Both hands stay on the ball for
+// all of "rise"; "fall" is the one-hand wrist-flick follow-through.
+const SHOT_RISE_TAU_MS = 170; // climb rate toward the peak -- fast, then hangs
+const SHOT_JUMP_HEIGHT = 1.85; // body rise at the peak, world units
+const SHOT_FALL_DUR_MS = 300; // fixed landing time after release
 const SHOT_RELEASE_HEIGHT = 7.0; // ball height at release -- overhead, matches the jump pose
+const SHOT_AI_HOLD_MS = 340; // how long an AI shooter (no meter) holds before releasing
+function shotRiseHeight(t) {
+  return SHOT_JUMP_HEIGHT * (1 - Math.exp(-t / SHOT_RISE_TAU_MS));
+}
 function shotMeterQuality(frac) {
   if (frac >= SHOT_METER_SWEET_START && frac <= SHOT_METER_SWEET_END) return 'perfect';
   const distOut = frac < SHOT_METER_SWEET_START ? SHOT_METER_SWEET_START - frac : frac - SHOT_METER_SWEET_END;
@@ -1494,29 +1560,43 @@ function releaseShotMeter() {
   if (!m) return;
   const frac = clamp(m.t / m.dur, 0, 1);
   game.shotMeter = null;
-  startShotJump(m.player, shotMeterQuality(frac));
+  releaseShot(m.player, shotMeterQuality(frac));
 }
-// Kicks off the real shot motion -- the jump, the ball rising with both
-// hands, and (partway up, at SHOT_RELEASE_FRAC) the actual accuracy roll
-// and ball release via attemptShot. Used by both the human (right after the
-// meter releases) and the AI (which skips the meter and jumps straight into
-// this the instant it decides to shoot).
-function startShotJump(player, quality) {
-  if (player.shotJumpTimer > 0) return; // already mid-shot
-  if (player.actionCooldown > 0) return;
+// Starts the rise -- the jump itself -- the instant a shot is triggered.
+// Both the human (right as the meter starts, not after it ends) and the AI
+// (which has no meter) go through this the same way.
+function startShotRise(player) {
+  if (player.shotPhase !== 'none') return false; // already mid-shot
+  if (player.actionCooldown > 0) return false;
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
-  if (dist2(player, hoop) > MAX_SHOT_RANGE) return;
-  player.shotJumpTimer = SHOT_JUMP_DUR_MS;
-  player.shotJumpDur = SHOT_JUMP_DUR_MS;
-  player.shotPendingQuality = quality;
-  player.shotReleaseFired = false;
+  if (dist2(player, hoop) > MAX_SHOT_RANGE) return false;
+  player.shotPhase = 'rise';
+  player.shotPhaseT = 0;
   player.shotHandSide = player.handSide || 1; // which hand finishes the flick
+  return true;
+}
+// Fires the instant the ball actually leaves the hands -- whatever height
+// the rise has reached by then is where the fall picks up from, and the
+// real accuracy roll + ball flight (attemptShot) happens right here.
+function releaseShot(player, quality) {
+  if (player.shotPhase !== 'rise') return;
+  player.shotFallFromHeight = shotRiseHeight(player.shotPhaseT);
+  player.shotPhase = 'fall';
+  player.shotPhaseT = 0;
+  attemptShot(player, quality);
 }
 function updateShotMeter(dtMs) {
   const wrap = document.getElementById('shot-meter-wrap');
   const m = game.shotMeter;
   if (!m) { wrap.classList.add('hidden'); return; }
-  if (game.ball.carrier !== m.player) { game.shotMeter = null; wrap.classList.add('hidden'); return; } // stolen mid-swing
+  if (game.ball.carrier !== m.player) {
+    // Stolen mid-swing -- he never released it, so the rise never happened
+    // either; cancel it outright instead of leaving him stuck mid-shot.
+    game.shotMeter = null;
+    if (m.player.shotPhase === 'rise') { m.player.shotPhase = 'none'; m.player.shotPhaseT = 0; }
+    wrap.classList.add('hidden');
+    return;
+  }
   m.t += dtMs;
   if (m.t >= m.dur) { releaseShotMeter(); wrap.classList.add('hidden'); return; }
   const frac = m.t / m.dur;
@@ -1533,15 +1613,15 @@ document.getElementById('shot-meter-zone').style.width = ((SHOT_METER_SWEET_END 
 function onActionPressed() {
   const p = controlledPlayer();
   if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return;
-  if (p.shotJumpTimer > 0) return; // already mid-shot, no re-triggering
   if (game.ball.carrier === p) {
     if (game.shotMeter && game.shotMeter.player === p) { releaseShotMeter(); return; }
-    const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
-    if (p.actionCooldown > 0 || dist2(p, hoop) > MAX_SHOT_RANGE) return;
+    if (p.shotPhase !== 'none') return; // still landing from a previous shot
+    if (!startShotRise(p)) return;
     game.shotMeter = { t: 0, dur: SHOT_METER_DUR_MS, player: p };
     playTone(340, 0.03);
     return;
   }
+  if (p.shotPhase !== 'none') return; // mid-air/landing, no stealing or picking up
   if (game.ball.carrier && game.ball.carrier.team !== p.team && dist2(p, game.ball.carrier) < STEAL_RANGE) {
     attemptSteal(p); return;
   }
@@ -1551,7 +1631,15 @@ function onActionPressed() {
 }
 function onPassPressed() {
   const p = controlledPlayer();
+  if (p.shotPhase !== 'none') return; // already mid-shot, can't bail into a pass
   if (game.ball.carrier === p) attemptPass(p);
+}
+function onBlockPressed() {
+  const p = controlledPlayer();
+  if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return;
+  if (p.shotPhase !== 'none') return; // can't go up for a block mid-shot himself
+  if (game.ball.carrier === p) return; // can't block your own shot
+  attemptBlock(p);
 }
 
 // -------------------------------------------------------------------------
@@ -1698,7 +1786,7 @@ function attemptAnkleBreaker(handler, moveKind) {
 
 function onCrossoverPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS, true);
@@ -1714,7 +1802,7 @@ function onCrossoverPressed() {
 
 function onBehindBackPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
   p.moveCooldown = BEHIND_COOLDOWN_MS;
   p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS, true);
@@ -1727,7 +1815,7 @@ function onBehindBackPressed() {
 
 function onHesitationPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0) return;
+  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.hesitateTimer = HESITATE_TOTAL_MS;
   playTone(320, 0.05);
@@ -1823,7 +1911,7 @@ function updateAI(p, dtMs) {
   // Mid-shot: planted from the gather through the landing, same as the
   // human below -- real shooters don't keep running while the ball's going
   // up through their hands.
-  if (p.shotJumpTimer > 0) {
+  if (p.shotPhase !== 'none') {
     approachVelocity(p, 0, 0, dtMs);
     return;
   }
@@ -1901,8 +1989,8 @@ function updateAI(p, dtMs) {
       return;
     }
     const d = dist2(p, oppHoop);
-    if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { startShotJump(p, null); return; }
-    if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { startShotJump(p, null); return; }
+    if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
+    if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
     // A teammate calling for it gets fed much sooner than the normal
     // occasional random pass.
     const teammateWantsIt = getTeammates(p.team).some((t) => t !== p && t.ballCallTimer > 0);
@@ -1976,6 +2064,9 @@ function updateAI(p, dtMs) {
       if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0045) {
         attemptSteal(p);
       }
+      if (mark.shotPhase === 'rise' && dist2(p, mark) < BLOCK_RANGE && Math.random() < 0.028) {
+        attemptBlock(p);
+      }
     }
   }
 }
@@ -2031,17 +2122,10 @@ function updateHumanMovement(dtMs) {
     human.postUpActive = false;
     return;
   }
-  if (game.shotMeter && game.shotMeter.player === human) {
-    // Mid-windup on the shot meter — planted until it's released (SPACE
-    // again) or it times out on its own.
-    approachVelocity(human, 0, 0, dtMs);
-    human.turboActive = false;
-    human.postUpActive = false;
-    return;
-  }
-  if (human.shotJumpTimer > 0) {
-    // Actually in the air going up for it -- planted through the whole
-    // gather/jump/land, same as the AI.
+  if (human.shotPhase !== 'none') {
+    // Mid-shot -- planted from the instant he goes up for it (the meter
+    // hold IS the rise now, not a separate standing charge) all the way
+    // through release and the landing.
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false;
     human.postUpActive = false;
@@ -2343,6 +2427,23 @@ function applyCrossoverReachOverlay(p, g, L) {
   }
 }
 
+// Block attempt: a quick straight-up hop, both arms fully extended
+// overhead -- the universal contest/block reach -- layered on top of
+// whatever pose was already running underneath it.
+const BLOCK_JUMP_DUR_MS = 380;
+const BLOCK_JUMP_HEIGHT = 1.5;
+function applyBlockJumpOverlay(p, g, L, dt) {
+  const t = clamp(1 - p.blockJumpTimer / BLOCK_JUMP_DUR_MS, 0, 1);
+  const reach = Math.sin(t * Math.PI);
+  g.position.y += reach * BLOCK_JUMP_HEIGHT;
+  L.armLP.rotation.set(-2.4 * reach, 0, 0.12 * reach);
+  L.armRP.rotation.set(-2.4 * reach, 0, -0.12 * reach);
+  L.elbowLP.rotation.x = -0.1 * reach;
+  L.elbowRP.rotation.x = -0.1 * reach;
+  L.kneeLP.rotation.x = Math.max(L.kneeLP.rotation.x, 0.32 * (1 - reach));
+  L.kneeRP.rotation.x = Math.max(L.kneeRP.rotation.x, 0.32 * (1 - reach));
+}
+
 // Dribble-move plant-and-burst: a real athletic load-and-explode, not just
 // a velocity change. The first half of the move's window is the "plant" —
 // both knees sink hard, weight drops, the body braces — and the second
@@ -2535,60 +2636,28 @@ function applyAnkleStunPose(p, g, L, dt) {
   L.spine.rotation.set(-0.08, 0, 0.18 * wobble);
 }
 
-// Charging the shot meter -- the dip before leaving the ground. Both hands
-// are already IK'd onto the ball (reads game.ball's live position, which
-// updateBall's shot-meter branch already pulled up into the gather), knees
-// sinking deeper the longer the meter's been held.
-function applyShotGatherPose(p, g, L, dt) {
-  const m = game.shotMeter;
-  const frac = clamp(m.t / m.dur, 0, 1);
+// The real shot motion, one continuous animation split by a single event
+// (the release) instead of two separately-triggered poses: "rise" starts
+// the instant the shot is thrown (same frame the meter starts for the
+// human, no separate grounded charge first) and climbs toward its peak,
+// both hands on the ball the entire time; "fall" starts the instant it's
+// actually released -- picking up from whatever height "rise" had reached
+// -- and plays the one-handed wrist-flick follow-through down through the
+// landing.
+function applyShotPose(p, g, L, dt) {
   g.rotation.y = p.facing;
-  g.position.set(p.x, 0, p.z);
   const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = L;
-  const kneeBend = lerp(0.12, 0.5, frac);
   legLP.rotation.set(0, 0, -0.05); legRP.rotation.set(0, 0, 0.05);
-  kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
-  g.updateMatrixWorld(true);
-  _coTarget.set(game.ball.x, game.ball.y, game.ball.z);
-  L.spine.worldToLocal(_coTarget);
-  _coPole.set(0.5, -0.3, 0.7);
-  solveArmIK(armLP, L.elbowLP, _coTarget, _coPole, 1);
-  _coTarget2.copy(_coTarget);
-  _coPole2.set(-0.5, -0.3, 0.7);
-  solveArmIK(armRP, L.elbowRP, _coTarget2, _coPole2, 1);
-  L.spine.rotation.set(lerp(0.05, -0.1, frac), 0, 0);
-}
 
-// The actual jump shot: leaves the ground with both hands already on the
-// ball (carried up from the gather), rises together with it, and right at
-// the release (SHOT_RELEASE_FRAC) peels down to a one-handed follow-through
-// -- shooting arm fully extended with a real wrist-flick snap, off hand
-// dropping away like it just let go -- then holds that through the landing.
-function applyShotJumpPose(p, g, L, dt) {
-  const dur = p.shotJumpDur || SHOT_JUMP_DUR_MS;
-  const t = clamp(1 - p.shotJumpTimer / dur, 0, 1);
-  const released = t >= SHOT_RELEASE_FRAC;
-
-  // Body arc: airborne through most of the animation, landed again well
-  // before it ends so the follow-through hold reads on the ground, not
-  // frozen in midair.
-  const jumpT = clamp(t / 0.82, 0, 1);
-  const rise = Math.sin(jumpT * Math.PI) * SHOT_JUMP_HEIGHT;
-  g.rotation.y = p.facing;
-  g.position.set(p.x, Math.max(0, rise), p.z);
-
-  const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = L;
-  const loadT = clamp(t / 0.22, 0, 1);
-  const legExtend = clamp((t - 0.12) / 0.45, 0, 1);
-  const kneeBend = lerp(0.18, 0.55, loadT) * (1 - legExtend) + 0.16 * legExtend;
-  legLP.rotation.set(0, 0, -0.05); legRP.rotation.set(0, 0, 0.05);
-  kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
-
-  g.updateMatrixWorld(true);
-
-  if (!released) {
-    // Still rising with it -- both hands on the ball, exactly like the
-    // gather, just carried higher as the jump climbs toward the set point.
+  if (p.shotPhase === 'rise') {
+    const rise = shotRiseHeight(p.shotPhaseT);
+    g.position.set(p.x, rise, p.z);
+    // Deep bend right at the launch, easing out as he climbs -- the load
+    // that actually sends him up, not a flat standing jump.
+    const loadT = clamp(p.shotPhaseT / 180, 0, 1);
+    const kneeBend = lerp(0.52, 0.2, loadT);
+    kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
+    g.updateMatrixWorld(true);
     _coTarget.set(game.ball.x, game.ball.y, game.ball.z);
     L.spine.worldToLocal(_coTarget);
     _coPole.set(0.5, -0.3, 0.7);
@@ -2596,25 +2665,31 @@ function applyShotJumpPose(p, g, L, dt) {
     _coTarget2.copy(_coTarget);
     _coPole2.set(-0.5, -0.3, 0.7);
     solveArmIK(armRP, L.elbowRP, _coTarget2, _coPole2, 1);
-    L.spine.rotation.set(lerp(0.08, -0.14, loadT), 0, 0);
+    L.spine.rotation.set(lerp(0.1, -0.14, loadT), 0, 0);
   } else {
-    // Released: the shooting hand finishes the motion alone -- arm
-    // extended up and out, wrist snapping forward right at the moment of
-    // release and relaxing through the follow-through -- while the other
-    // hand peels off and drops, same as a real shooter's guide hand
-    // falling away the instant it lets go.
-    const relT = clamp((t - SHOT_RELEASE_FRAC) / (1 - SHOT_RELEASE_FRAC), 0, 1);
+    // Fall: the shooting hand finishes the motion alone -- arm extended up
+    // and out, wrist snapping forward right at the moment of release and
+    // relaxing through the follow-through -- while the other hand peels
+    // off and drops, same as a real shooter's guide hand falling away the
+    // instant it lets go. Body eases back down from wherever it was.
+    const fallT = clamp(p.shotPhaseT / SHOT_FALL_DUR_MS, 0, 1);
+    const e = fallT * fallT * (3 - 2 * fallT);
+    const rise = lerp(p.shotFallFromHeight, 0, e);
+    g.position.set(p.x, Math.max(0, rise), p.z);
+    const kneeBend = lerp(0.16, 0.32, fallT); // soaks the landing
+    kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
+
     const side = (p.shotHandSide || 1) < 0 ? -1 : 1;
     const shootArm = side < 0 ? armLP : armRP;
     const shootElbow = side < 0 ? L.elbowLP : L.elbowRP;
     const offArm = side < 0 ? armRP : armLP;
     const offElbow = side < 0 ? L.elbowRP : L.elbowLP;
     shootArm.rotation.set(-2.5, 0, side * -0.08);
-    const flick = Math.exp(-Math.pow(relT / 0.3, 2)) * 1.05;
+    const flick = Math.exp(-Math.pow(fallT / 0.25, 2)) * 1.05;
     shootElbow.rotation.x = -0.12 - flick;
-    offArm.rotation.set(lerp(-1.25, -0.5, relT), 0, -side * lerp(0.55, 0.18, relT));
-    offElbow.rotation.x = lerp(0.3, 0.1, relT);
-    L.spine.rotation.set(lerp(-0.12, 0.08, relT), 0, 0);
+    offArm.rotation.set(lerp(-1.25, -0.5, fallT), 0, -side * lerp(0.55, 0.18, fallT));
+    offElbow.rotation.x = lerp(0.3, 0.1, fallT);
+    L.spine.rotation.set(lerp(-0.12, 0.08, fallT), 0, 0);
   }
 }
 
@@ -2643,18 +2718,13 @@ function updateHumanoidPose(p, dt) {
     return;
   }
 
-  // Mid-shot: the jump itself -- gather with both hands through the rise,
-  // one-hand wrist-flick release at the top, hold the follow-through down
-  // through the landing. Takes priority over running/post-up/screens since
-  // he's planted (see updateHumanMovement/updateAI) for the whole thing.
-  if (p.shotJumpTimer > 0) {
-    applyShotJumpPose(p, g, L, dt);
-    return;
-  }
-  // Charging the shot meter: the dip/load before he actually leaves the
-  // ground, both hands already coming onto the ball.
-  if (game.shotMeter && game.shotMeter.player === p) {
-    applyShotGatherPose(p, g, L, dt);
+  // Mid-shot: the real thing -- rising with both hands on the ball from
+  // the instant it starts, one-hand wrist-flick release, holding the
+  // follow-through down through the landing. Takes priority over running/
+  // post-up/screens since he's planted (see updateHumanMovement/updateAI)
+  // for the whole thing.
+  if (p.shotPhase !== 'none') {
+    applyShotPose(p, g, L, dt);
     return;
   }
 
@@ -2829,6 +2899,11 @@ function updateHumanoidPose(p, dt) {
 
   // Arm reach for the actual hand-switch sweep, ball carrier only.
   if (p.handAnimT < 1 && game.ball.carrier === p) applyCrossoverReachOverlay(p, g, L);
+
+  // Block attempt: a quick hop with both arms straight up, layered on top
+  // of whatever he was already doing -- doesn't lock him out of moving,
+  // same as a real contest jump doesn't freeze a defender in place.
+  if (p.blockJumpTimer > 0) applyBlockJumpOverlay(p, g, L, dt);
 }
 
 function updateBall(dtMs) {
@@ -2888,32 +2963,17 @@ function updateBall(dtMs) {
     const fx = camF.x, fz = camF.z;
     const rx = -camF.z, rz = camF.x;
 
-    // Charging the shot meter: the dip/load before actually leaving the
-    // ground -- the ball starts coming up off the dribble into both hands
-    // and the knees start loading, so holding the button already reads as
-    // the start of a real shot motion, not a frozen standing pose.
-    if (game.shotMeter && game.shotMeter.player === c) {
-      const frac = clamp(game.shotMeter.t / game.shotMeter.dur, 0, 1);
-      b.y = lerp(2.0, 3.6, frac);
-      const forwardOffset = lerp(0.3, 0.42, frac);
-      b.x = c.x + fx * forwardOffset;
-      b.z = c.z + fz * forwardOffset;
-      b.vx = 0; b.vy = 0; b.vz = 0;
-      return;
-    }
-
-    // Mid-shot: the ball rides up with both hands from the gather into the
-    // set point overhead as the jump rises -- completely overrides the
-    // normal dribble carry until the instant it's actually released (at
-    // which point attemptShot already cleared b.carrier, so this branch
-    // stops running for it entirely).
-    if (c.shotJumpTimer > 0) {
-      const t = clamp(1 - c.shotJumpTimer / c.shotJumpDur, 0, 1);
-      const riseT = clamp(t / SHOT_RELEASE_FRAC, 0, 1);
-      const e = riseT * riseT * (3 - 2 * riseT);
-      const gatherY = 2.0, setY = SHOT_RELEASE_HEIGHT;
-      b.y = lerp(gatherY, setY, e);
-      const forwardOffset = lerp(0.35, 0.55, e);
+    // Mid-shot (rise only -- "fall" already cleared b.carrier via
+    // attemptShot, so this branch naturally stops running for it): the
+    // ball rides up with both hands, in lockstep with the body's own rise,
+    // from the dribble into the overhead set point. Starts the instant the
+    // shot is thrown -- the same frame the meter starts -- not after some
+    // separate standing charge first.
+    if (c.shotPhase === 'rise') {
+      const rise = shotRiseHeight(c.shotPhaseT);
+      const liftT = clamp(rise / SHOT_JUMP_HEIGHT, 0, 1);
+      b.y = rise + lerp(2.0, 5.2, liftT);
+      const forwardOffset = lerp(0.32, 0.5, liftT);
       b.x = c.x + fx * forwardOffset;
       b.z = c.z + fz * forwardOffset;
       b.vx = 0; b.vy = 0; b.vz = 0;
@@ -3148,6 +3208,8 @@ function frame(now) {
       if (p.screenHoldTimer > 0) p.screenHoldTimer -= dtMs;
       if (p.ballCallTimer > 0) p.ballCallTimer -= dtMs;
       if (p.ballCallCooldown > 0) p.ballCallCooldown -= dtMs;
+      if (p.blockCooldown > 0) p.blockCooldown -= dtMs;
+      if (p.blockJumpTimer > 0) p.blockJumpTimer -= dtMs;
       // Ankle-breaker state machine: down -> getting up -> a brief immune
       // window before he's eligible to be dropped again. A stun on its own
       // (no knockdown) goes straight to the immune window once it ends.
@@ -3163,20 +3225,21 @@ function frame(now) {
       } else if (p.ankleImmuneTimer > 0) {
         p.ankleImmuneTimer -= dtMs;
       }
-      // Shot-jump state machine: ticks down regardless of who's controlling
-      // the player (AI or human) since the meter/decision already happened
-      // before this starts -- this is just the physical motion playing out,
-      // and the instant it crosses the release fraction, the real shot
-      // (accuracy roll + ball leaving the hands) actually fires.
-      if (p.shotJumpTimer > 0) {
-        const elapsedBefore = p.shotJumpDur - p.shotJumpTimer;
-        p.shotJumpTimer = Math.max(0, p.shotJumpTimer - dtMs);
-        const elapsedAfter = p.shotJumpDur - p.shotJumpTimer;
-        const releaseAt = p.shotJumpDur * SHOT_RELEASE_FRAC;
-        if (!p.shotReleaseFired && elapsedAfter >= releaseAt) {
-          p.shotReleaseFired = true;
-          attemptShot(p, p.shotPendingQuality);
+      // Shot state machine: "rise" starts the instant the shot is thrown
+      // (same frame as the meter, for a human) and just climbs -- it ends
+      // only when something actually releases it: the human pressing SPACE
+      // again (releaseShotMeter) or timing out on its own, or the AI's own
+      // short fixed hold below. "Fall" is just a fixed-length landing timer
+      // once that's happened.
+      if (p.shotPhase === 'rise') {
+        p.shotPhaseT += dtMs;
+        if (p.shotAIReleaseAt > 0 && p.shotPhaseT >= p.shotAIReleaseAt) {
+          p.shotAIReleaseAt = 0;
+          releaseShot(p, null);
         }
+      } else if (p.shotPhase === 'fall') {
+        p.shotPhaseT += dtMs;
+        if (p.shotPhaseT >= SHOT_FALL_DUR_MS) { p.shotPhase = 'none'; p.shotPhaseT = 0; }
       }
       if (p.hesitateTimer > 0) {
         const prevElapsed = HESITATE_TOTAL_MS - p.hesitateTimer;
