@@ -3520,6 +3520,8 @@ function inputForward() { return ctrlLatch || camForward; }
 function inputRight() { const f = ctrlLatch || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
 function autoReleaseArrows() {
   ctrlLatch = null;
+  for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) if (keysDown.has(k)) { keysDown.delete(k); ctrlIgnore.add(k); }
+  if (typeof touchMove !== 'undefined' && touchMove && touchMove.active) touchMove.vec.x = touchMove.vec.y = 0;
 }
 function axisHeld(vertical) {
   const ks = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
@@ -4710,7 +4712,10 @@ function updateCamera(dt) {
   } else {
     want = false;
   }
-  if (want !== !!game.camTransition && (canFlip || !onDefense)) { game.camTransition = want; game.camFlipAt = nowMs; }
+  // Holding the arrows? Never swing the camera under your fingers on defense: the view flips the
+  // moment you let up / change keys, so what you hold always matches what you see (no latch, no re-press).
+  const holdingMove = onDefense && arrowInputHeld();
+  if (want !== !!game.camTransition && (canFlip || !onDefense) && !holdingMove) { game.camTransition = want; game.camFlipAt = nowMs; }
   camDirSign = game.camTransition ? -attackSign : attackSign;
   let dirSign = camDirSign;
   // Free throws: a broadcast-style shot from behind whoever's at the line,
@@ -4775,7 +4780,6 @@ function updateCamera(dt) {
   const vHeld = axisHeld(true), hHeld = axisHeld(false);
   if (game.ctrlDirKey !== undefined && game.ctrlDirKey !== dirSign) {
     if (ctrlLatch && ctrlLatch.x * camForward.x + ctrlLatch.z * camForward.z > 0.9) ctrlLatch = null; // camera swung back: mapping already matches
-    else if (vHeld || hHeld) { ctrlLatch = prevFwd; ctrlLatchT = performance.now(); }
   }
   game.ctrlDirKey = dirSign;
   if (!vHeld && !hHeld) ctrlLatch = null;
@@ -4789,7 +4793,7 @@ function updateCamera(dt) {
     // Conditions where the game lets go of the arrows for you (re-press = instantly correct mapping):
     // you've settled into defense (near your hoop / on the ball handler) or the latch has run its course.
     const ownX = human.team === 'A' ? -41 : 41, c = game.ball.carrier;
-    if (performance.now() - ctrlLatchT > 300 || Math.abs(human.x - ownX) < 20 ||
+    if (performance.now() - ctrlLatchT > 700 || Math.abs(human.x - ownX) < 20 ||
         (c && c.team !== human.team && Math.hypot(c.x - human.x, c.z - human.z) < 7)) autoReleaseArrows();
   }
   // Debug-only viewpoint override (unset in normal play); controls keep
