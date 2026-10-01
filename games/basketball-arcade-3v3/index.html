@@ -267,6 +267,29 @@ const POS_STATS = {
   C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
+// Two speed tiers: the stat above is top speed running free; actually
+// controlling a live dribble is a touch slower and more deliberate, same as
+// real ball-handling vs. a flat-out sprint.
+const BALL_HANDLE_SPEED_MULT = 0.88;
+// Defensive catch-up: a defender trailing his man by a lot closes with real
+// urgency instead of drifting at a flat pace -- scales up with the gap.
+const DEFENSE_CATCHUP_DIST = 2.2;
+const DEFENSE_CATCHUP_RANGE = 7.0;
+const DEFENSE_CATCHUP_MAX_MULT = 0.55;
+// Right after a defensive switch (a screen forcing a size mismatch onto the
+// ball handler, e.g. a center switched onto a point guard), the defender
+// who just inherited the assignment plays with real urgency for a few
+// seconds -- closes faster and reacts quicker -- instead of looking like
+// he's not in the same league. Represents him recognizing the mismatch and
+// playing to it, not an actual speed-stat change.
+const SWITCH_URGENCY_MS = 2800;
+const SWITCH_URGENCY_SPEED_MULT = 1.22;
+const SWITCH_URGENCY_ACCEL_MULT = 0.62;
+// Default help-side cushion a defender plays off his man by; tightened hard
+// (see SWITCH_URGENCY_STANDOFF_MULT) right after a switch so he's actually
+// draped on the handler instead of giving him the same room as before.
+const DEFENSE_STANDOFF = 4;
+const SWITCH_URGENCY_STANDOFF_MULT = 0.35;
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
@@ -967,6 +990,7 @@ function makePlayer(team, posLabel) {
     moveBurstT: 1, moveBurstDur: 1, moveBurstDirX: 0, moveBurstDirZ: 0, moveBurstPeak: 0,
     moveBoostTimer: 0, autoSwitchCooldown: 0,
     ankleStunTimer: 0, ankleDownTimer: 0, ankleGetUpTimer: 0, ankleImmuneTimer: 0, ankleFallSide: 1, ankleFallAmt: 0,
+    switchUrgencyTimer: 0,
   };
 }
 
@@ -1033,6 +1057,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
     p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0; p.autoSwitchCooldown = 0;
     p.ankleStunTimer = 0; p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleImmuneTimer = 0; p.ankleFallAmt = 0;
+    p.switchUrgencyTimer = 0;
   };
   const b = game.ball;
 
@@ -1299,6 +1324,12 @@ function swapAssignments(a, b, label) {
   const ma = getMark(a), mb = getMark(b);
   a.markOverride = mb;
   b.markOverride = ma;
+  // Both defenders just inherited a new assignment -- give them a window
+  // of real urgency so whichever one picked up the tougher cover (the
+  // classic big switched onto a point guard) closes with intent instead of
+  // getting left in the dust for a few steps while he "figures it out".
+  a.switchUrgencyTimer = SWITCH_URGENCY_MS;
+  b.switchUrgencyTimer = SWITCH_URGENCY_MS;
   showScreenCallout(label, 1100);
   playTone(label === 'SWITCH!' ? 420 : 340, 0.05);
 }
@@ -1728,17 +1759,23 @@ function approachVelocity(p, targetVx, targetVz, dtMs) {
   // Bigger positions ramp up/down more sluggishly (accelMult > 1), smaller
   // ones snap to speed quicker (accelMult < 1) — so the size/speed tiers
   // are felt in how a player starts and stops, not just their top speed.
-  const accelMult = (p.stats && p.stats.accelMult) || 1;
+  let accelMult = (p.stats && p.stats.accelMult) || 1;
+  // Fresh off a defensive switch: reacts and changes speed quicker, not
+  // just running faster -- plays alert instead of flat-footed.
+  if (p.switchUrgencyTimer > 0) accelMult *= SWITCH_URGENCY_ACCEL_MULT;
   const tau = (targetSpeed > curSpeed + 0.001 ? ACCEL_TAU_MS : DECEL_TAU_MS) * accelMult;
   const alpha = 1 - Math.exp(-dtMs / tau);
   p.vx += (targetVx - p.vx) * alpha;
   p.vz += (targetVz - p.vz) * alpha;
 }
 
-function moveToward(p, tx, tz, dtMs) {
+function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   const dx = tx - p.x, dz = tz - p.z;
   const d = Math.hypot(dx, dz);
   let speed = p.stats.speed;
+  // Controlling a live dribble is a touch slower than running free.
+  if (game.ball.carrier === p) speed *= BALL_HANDLE_SPEED_MULT;
+  speed *= extraMult;
   if (p.screenHangTimer > 0) speed *= 1 - SCREEN_HANG_SLOW * (p.screenHangTimer / p.screenHangDur);
   let targetVx = 0, targetVz = 0;
   if (d >= 0.6) { targetVx = dx / d * speed; targetVz = dz / d * speed; }
@@ -1880,8 +1917,24 @@ function updateAI(p, dtMs) {
         p.postDefenseFacingAngle = Math.atan2(mark.x - p.x, mark.z - p.z);
         p.postDefenseMark = mark; // the pose layer reads his skeleton to put hands on him
       } else {
-        const towardHoopX = mark.x + (myHoop.x < mark.x ? -4 : 4);
-        moveToward(p, towardHoopX, mark.z, dtMs);
+        // Standoff distance -- how far off his man's hip a defender plays,
+        // staying on the help side. Right after inheriting a switch he plays
+        // noticeably tighter for a few seconds (sticks to him) instead of
+        // giving the same cushion he'd give someone his own speed.
+        let standoff = DEFENSE_STANDOFF;
+        const gap = dist2(p, mark);
+        let chaseMult = 1;
+        if (gap > DEFENSE_CATCHUP_DIST) {
+          const t = clamp((gap - DEFENSE_CATCHUP_DIST) / (DEFENSE_CATCHUP_RANGE - DEFENSE_CATCHUP_DIST), 0, 1);
+          chaseMult += DEFENSE_CATCHUP_MAX_MULT * t;
+        }
+        if (p.switchUrgencyTimer > 0) {
+          p.switchUrgencyTimer -= dtMs;
+          chaseMult *= SWITCH_URGENCY_SPEED_MULT;
+          standoff *= SWITCH_URGENCY_STANDOFF_MULT;
+        }
+        const towardHoopX = mark.x + (myHoop.x < mark.x ? -standoff : standoff);
+        moveToward(p, towardHoopX, mark.z, dtMs, chaseMult);
       }
       if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0045) {
         attemptSteal(p);
@@ -2110,7 +2163,8 @@ function updateHumanMovement(dtMs) {
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const worldX = right.x * nx + fwd.x * nz;
     const worldZ = right.z * nx + fwd.z * nz;
-    const speed = human.stats.speed * speedMult;
+    const carryMult = game.ball.carrier === human ? BALL_HANDLE_SPEED_MULT : 1;
+    const speed = human.stats.speed * speedMult * carryMult;
     targetVx = worldX * speed * Math.min(mag, 1);
     targetVz = worldZ * speed * Math.min(mag, 1);
   }
