@@ -260,12 +260,11 @@ const ORDER = ['PG', 'SF', 'C'];
 // involved — a center shoving a point guard around is a different contest
 // than the other way around.
 const POS_STATS = {
-  // Overall movement slowed further (second pass, same ratios) -- ~35%
-  // slower than the original baseline now, for a more grounded, deliberate
-  // feel instead of everyone skating around at top speed.
-  PG: { speed: 0.32, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
-  SF: { speed: 0.26, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
-  C:  { speed: 0.19, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
+  // Sped back up from the last (too sluggish) pass -- faster than the
+  // original baseline now, same ratios between positions.
+  PG: { speed: 0.44, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
+  SF: { speed: 0.35, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
+  C:  { speed: 0.26, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
@@ -966,7 +965,7 @@ function makePlayer(team, posLabel) {
     // direction (not just a one-frame nudge that the normal movement code
     // immediately overrides) -- see applyMoveKick/tickMoveBurst.
     moveBurstT: 1, moveBurstDur: 1, moveBurstDirX: 0, moveBurstDirZ: 0, moveBurstPeak: 0,
-    moveBoostTimer: 0,
+    moveBoostTimer: 0, autoSwitchCooldown: 0,
   };
 }
 
@@ -1031,7 +1030,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
-    p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0;
+    p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0; p.autoSwitchCooldown = 0;
   };
   const b = game.ball;
 
@@ -1512,6 +1511,17 @@ const MOVE_BURST_FORWARD_WEIGHT = 0.9;
 // by every dribble move that calls applyMoveKick.
 const MOVE_BOOST_MS = 260;
 const MOVE_BOOST_MULT = 1.18;
+// Automatic dribble-hand switching: the ball naturally follows whichever
+// way he's actually driving (camera-relative) -- holding right carries it
+// into the right hand as he goes that way, holding left into the left, the
+// way a real ball handler keeps it on the protected side of his move. The
+// lateral-speed threshold ignores drift/noise and only reacts to a real
+// sideways push; the cooldown stops it flickering if he's wavering right on
+// the threshold, and it never fights a deliberate crossover/behind-the-back
+// while that move's own cooldown is still running.
+const AUTO_HAND_SWITCH_LATERAL_THRESHOLD = 0.05;
+const AUTO_HAND_SWITCH_MS = 280;
+const AUTO_HAND_SWITCH_COOLDOWN_MS = 450;
 // Behind-the-back gets its own short cooldown (~= its own switch time) instead
 // of sharing the longer universal MOVE_COOLDOWN_MS, so it can be chained back
 // to back like a real behind-the-back combo instead of one-and-done.
@@ -2421,8 +2431,8 @@ function updateHumanoidPose(p, dt) {
   // the knee, and straightens again as it plants — so each leg alternates
   // between a bent recovery and a straight stance instead of both legs
   // staying rigid rods throughout.
-  const kneeL = Math.max(0, Math.cos(phaseL)) * amt * 1.7;
-  const kneeR = Math.max(0, -Math.cos(phaseL)) * amt * 1.7;
+  const kneeL = Math.max(0, Math.cos(phaseL)) * amt * 2.0;
+  const kneeR = Math.max(0, -Math.cos(phaseL)) * amt * 2.0;
 
   const { legLP, legRP, kneeLP, kneeRP, armLP, armRP } = g.userData.limbs;
   // Full .set() (not just .rotation.x = ...) so every axis is explicitly
@@ -2433,6 +2443,17 @@ function updateHumanoidPose(p, dt) {
   // to the side while otherwise running normally.
   legLP.rotation.set(swingL, 0, 0); legRP.rotation.set(swingR, 0, 0);
   kneeLP.rotation.x = kneeL; kneeRP.rotation.x = kneeR;
+
+  // Athletic running posture: lean forward into a real sprint the faster
+  // he's moving (upright and square when standing still), the hips/torso
+  // counter-rotate against the leg swing the way a real gait twists through
+  // the core, and a small lateral sway rides the stride -- without this the
+  // body was a rigid mannequin riding on top of legs that moved underneath
+  // it, instead of one connected, weighted-feeling body.
+  const lean = Math.min(0.26, speed * 1.5);
+  const twist = -swingL * 0.4;
+  const sway = Math.sin(phaseL) * amt * 0.07;
+  L.spine.rotation.set(lean, twist, sway);
 
   // Hesitation shot-fake: the shooting arm (and ball) cocks up as if about
   // to go up for a shot, then relaxes back into the normal running arm
@@ -2447,7 +2468,7 @@ function updateHumanoidPose(p, dt) {
 
   // Subtle torso bob synced to the stride, fading out with swingAmt so it
   // settles to flat when the player stops rather than cutting off abruptly.
-  const bob = Math.abs(Math.sin(phaseL)) * 0.1 * (amt / 0.55);
+  const bob = Math.abs(Math.sin(phaseL)) * 0.13 * (amt / 0.55);
   g.position.set(p.x, bob, p.z);
 
   // Post-defense body contact, blended in once he's actually on the poster
@@ -2513,10 +2534,35 @@ function updateBall(dtMs) {
   if (b.carrier) {
     // Dribble-hand offset: a bit forward and to one side, at hip height —
     // straight-ahead-and-chest-high would sit hidden behind the player's
-    // own body from the behind-the-player camera.
+    // own body from the behind-the-player camera. Camera-relative (not
+    // body-facing-relative): "left hand"/"right hand" always matches what
+    // the viewer actually sees as left/right on screen, same basis the
+    // movement/strafe controls already use, instead of flipping around
+    // whenever the player's body is turned a different way than the camera.
     const c = b.carrier;
-    const fx = Math.sin(c.facing), fz = Math.cos(c.facing);
-    const rx = fz, rz = -fx;
+    const camF = camForward.clone().setY(0).normalize();
+    const fx = camF.x, fz = camF.z;
+    const rx = -camF.z, rz = camF.x;
+
+    // Automatic hand switch that follows the direction he's actually
+    // driving toward (camera-relative, same rx/rz basis as the ball itself)
+    // -- holding right carries the ball into the right hand as he goes, the
+    // way a real ball handler naturally protects it on the side away from
+    // where he's attacking. Only once any switch already playing has
+    // finished, only once he's actually moving sideways with some real
+    // intent (not just drifting), and never right on top of a deliberate
+    // crossover/behind-the-back.
+    if (c.handAnimT >= 1) {
+      c.autoSwitchCooldown = Math.max(0, (c.autoSwitchCooldown || 0) - dtMs);
+      const lateralVel = c.vx * rx + c.vz * rz;
+      if (c.autoSwitchCooldown <= 0 && c.moveCooldown <= 0 && Math.abs(lateralVel) > AUTO_HAND_SWITCH_LATERAL_THRESHOLD) {
+        const desiredSide = lateralVel > 0 ? 1 : -1;
+        if (Math.sign(c.handSide || 1) !== desiredSide) {
+          triggerHandSwitch(c, 'front', AUTO_HAND_SWITCH_MS);
+          c.autoSwitchCooldown = AUTO_HAND_SWITCH_COOLDOWN_MS;
+        }
+      }
+    }
 
     // Dribble bounce: oscillate the carry height between a low floor
     // contact and hand height. Faster movement quickens the cadence, and
