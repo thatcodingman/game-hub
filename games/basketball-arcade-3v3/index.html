@@ -340,9 +340,9 @@ const POS_STATS = {
   // pass: how accurately a position actually throws -- a point guard is the
   // table-setter (tightest passes), a center is the least natural passer
   // (the most scatter), a forward sits in between. See PASS_SCATTER_BASE.
-  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62, pass: 0.85, ft: 0.84 },
-  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90, pass: 0.64, ft: 0.76 },
-  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28, pass: 0.46, ft: 0.62 },
+  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.98, strength: 0.62, pass: 0.85, ft: 0.84 },
+  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.1, strength: 0.90, pass: 0.64, ft: 0.76 },
+  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.22, strength: 1.28, pass: 0.46, ft: 0.62 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 // Two speed tiers: the stat above is top speed running free; actually
@@ -861,7 +861,7 @@ function makeNameSprite(text, color) {
 }
 
 function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
-  const legLen = 3.0, torsoLen = 2.3, headR = 0.55;
+  const legLen = 3.0, torsoLen = 2.3, headR = 0.47;
   const hipY = legLen, shoulderY = hipY + torsoLen - 0.25;
   const shortsColor = new THREE.Color(teamColor).multiplyScalar(0.55).getHex();
 
@@ -1452,7 +1452,7 @@ function attemptSteal(defender) {
     playTone(180, 0.04);
     // A missed swipe can be a reach-in -- likelier if he's reaching at a
     // ball that's mid-crossover/behind-the-back.
-    const reachChance = REACH_FOUL_BASE + (carrier.stealResistTimer > 0 ? REACH_FOUL_MOVE_BONUS : 0);
+    const reachChance = (REACH_FOUL_BASE + (carrier.stealResistTimer > 0 ? REACH_FOUL_MOVE_BONUS : 0)) * (defender === controlledPlayer() ? 0.4 : 1);
     if (Math.random() < reachChance) callFoul(defender, carrier, 'reach');
   }
 }
@@ -1480,7 +1480,7 @@ function attemptBlock(blocker) {
   // (straight up is nearly clean), and is he basically inside his body?
   const bux = (shooter.x - blocker.x) / (bd || 1), buz = (shooter.z - blocker.z) / (bd || 1);
   const lunge = Math.max(0, blocker.vx * bux + blocker.vz * buz);
-  const foulChance = clamp(BLOCK_FOUL_BASE + lunge * BLOCK_FOUL_LUNGE + (bd < PLAYER_R * 2 + 0.2 ? BLOCK_FOUL_TIGHT : 0), 0, BLOCK_FOUL_MAX);
+  const foulChance = clamp(BLOCK_FOUL_BASE + lunge * BLOCK_FOUL_LUNGE + (bd < PLAYER_R * 2 + 0.2 ? BLOCK_FOUL_TIGHT : 0), 0, BLOCK_FOUL_MAX) * (blocker === controlledPlayer() ? 0.5 : 1);
   if (Math.random() < foulChance) {
     const sHoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
     callFoul(blocker, shooter, 'shooting', { isThree: isThreePt(shooter.x, shooter.z, sHoop) });
@@ -1559,7 +1559,7 @@ function rollShotContactFoul(shooter, opponents) {
     let ch = (od <= BODY_CONTACT_D + 0.3 ? SHOT_FOUL_DRAPED : SHOT_FOUL_NEAR) + lunge * SHOT_FOUL_LUNGE;
     if (shooter.postShot) ch += POST_SHOT_FOUL_BONUS;
     ch += ((shooter.stats.strength || 1) - 1) * SHOT_FOUL_STRENGTH;
-    ch = clamp(ch, 0, SHOT_FOUL_MAX);
+    ch = clamp(ch, 0, SHOT_FOUL_MAX) * (o === controlledPlayer() ? 0.5 : 1);
     if (ch > bestChance) { bestChance = ch; best = o; }
   });
   return best && Math.random() < bestChance ? best : null;
@@ -1749,8 +1749,8 @@ function updateRebound(dtMs) {
 // stripped in the air. Tight contest can STUFF it; contact can draw an AND-ONE.
 const DUNK_DUR_MS = 760;
 const DUNK_RELEASE_U = 0.6;      // fraction of the move where the ball goes down
-const DUNK_MIN_APPROACH = 0.16;  // per-frame speed straight at the rim
-const DUNK_RANGE = { PG: 5.5, SF: 7.5, C: 9.0 };
+const DUNK_MIN_APPROACH = 0.08;  // per-frame speed straight at the rim
+const DUNK_RANGE = { PG: 6.5, SF: 8.5, C: 10.0 };
 const DUNK_MAKE_BASE = 0.94;
 function canDunk(p) {
   if (!p || game.ball.carrier !== p || p.shotPhase !== 'none' || p.dunk || p.postUpActive) return false;
@@ -2509,7 +2509,7 @@ const SHOT_METER_BAD_PENALTY = 0.30;
 const SHOT_RISE_TAU_MS = 170; // climb rate toward the peak -- fast, then hangs
 const SHOT_JUMP_HEIGHT = 1.85; // body rise at the peak, world units
 const SHOT_FALL_DUR_MS = 300; // fixed landing time after release
-const SHOT_RELEASE_HEIGHT = 7.0; // ball height at release -- overhead, matches the jump pose
+const SHOT_RELEASE_HEIGHT = 7.9; // ball height at release -- overhead, matches the jump pose
 const SHOT_AI_HOLD_MS = 340; // how long an AI shooter (no meter) holds before releasing
 // Position-based shot speed: reuses the same accelMult stat that already
 // makes bigger positions ramp up/down more sluggishly on movement (PG=0.8,
@@ -3033,12 +3033,14 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
   h.x += ux * handlerCaused / 2; h.z += uz * handlerCaused / 2;
   def.x -= ux * handlerCaused / 2; def.z -= uz * handlerCaused / 2;
   if (defCaused <= 0) return;
-  if (relClose < PUSH_INTENT_SPEED) {
+  const humanDef = def === controlledPlayer(); // you get a much more forgiving whistle than the AI
+  if (relClose < PUSH_INTENT_SPEED * (humanDef ? 1.6 : 1)) {
     // Walling up, not pushing: defender is held off, handler unmoved.
     def.x -= ux * defCaused; def.z -= uz * defCaused;
     return;
   }
-  const budget = Math.max(0, PUSH_FOUL_LIMIT - (h.pushAccum || 0));
+  const pushLimit = PUSH_FOUL_LIMIT * (humanDef ? 3 : 1);
+  const budget = Math.max(0, pushLimit - (h.pushAccum || 0));
   const applied = Math.min(defCaused, budget);
   h.x += ux * applied; h.z += uz * applied;
   def.x -= ux * (defCaused - applied); def.z -= uz * (defCaused - applied);
@@ -3046,7 +3048,7 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
   def.vx -= ux * defIn; def.vz -= uz * defIn;
   h.pushAccum = (h.pushAccum || 0) + defCaused;
   h.pushContactT = 0;
-  if (h.pushAccum >= PUSH_FOUL_LIMIT) {
+  if (h.pushAccum >= pushLimit) {
     h.pushAccum = 0;
     callFoul(def, h, 'push');
   }
@@ -3330,6 +3332,8 @@ function updateHumanMovement(dtMs) {
     human.postUpActive = false;
     return;
   }
+  // Holding X while driving: the dunk fires the moment you're in range.
+  if (keysDown.has('KeyX') && !human.dunk && canDunk(human)) startDunk(human);
   if (human.dunk) {
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false; human.postUpActive = false;
@@ -4279,7 +4283,7 @@ function updateBall(dtMs) {
     if (c.shotPhase === 'rise') {
       const rise = shotRiseHeight(shotRiseT(c), c);
       const liftT = clamp(rise / SHOT_JUMP_HEIGHT, 0, 1);
-      b.y = rise + lerp(2.0, 5.2, liftT);
+      b.y = rise + lerp(2.0, 5.2, liftT) * (c.stats.scale || 1);
       const forwardOffset = lerp(0.32, 0.5, liftT);
       b.x = c.x + fx * forwardOffset;
       b.z = c.z + fz * forwardOffset;
