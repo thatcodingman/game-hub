@@ -17,15 +17,15 @@
   * { font-family: 'Chakra Petch', system-ui, sans-serif; }
 
   #hud {
-    position: fixed; top: 0; left: 0; right: 0; height: 46px; z-index: 40;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 18px; box-sizing: border-box; pointer-events: none;
+    position: fixed; top: 0; left: 0; right: 0; min-height: 46px; z-index: 40;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+    padding: 6px 18px 10px; box-sizing: border-box; pointer-events: none;
     background: linear-gradient(#05070a 0%, rgba(5,7,10,0.0) 100%);
     color: #F2F4F7;
   }
   #hud-left { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; color: #7dd3fc; text-shadow: 0 1px 3px #000; }
-  #hud-center { text-align: center; text-shadow: 0 1px 3px #000; }
-  #hud-score { font-size: 20px; font-weight: 700; display: inline-block; }
+  #hud-center { text-align: center; text-shadow: 0 1px 3px #000; flex-shrink: 0; }
+  #hud-score { font-size: 20px; font-weight: 700; display: inline-block; white-space: nowrap; }
   #hud-score.flash { animation: scoreFlash 0.55s ease-out; }
   @keyframes scoreFlash {
     0% { color: #eab308; transform: scale(1.4); text-shadow: 0 0 10px rgba(234,179,8,0.9); }
@@ -33,6 +33,10 @@
   }
   #hud-clock { font-size: 12px; color: #94a3b8; margin-top: -2px; }
   #hud-right { font-size: 11px; color: #94a3b8; text-shadow: 0 1px 3px #000; text-align: right; }
+  @media (max-width: 640px) {
+    #hud { flex-wrap: wrap; row-gap: 4px; }
+    #hud-right { flex-basis: 100%; order: 3; text-align: center; font-size: 10px; }
+  }
 
   #stamina-wrap {
     position: fixed; left: 18px; bottom: 22px; z-index: 40; pointer-events: none;
@@ -67,6 +71,21 @@
     opacity: 0; transition: opacity 0.15s linear;
   }
   #shot-contest-callout.show { opacity: 1; }
+
+  #hud-fouls { font-size: 11px; color: #94a3b8; margin-top: 1px; letter-spacing: 0.03em; }
+  #hud-fouls .bonus { color: #fbbf24; font-weight: 700; }
+
+  #foul-banner {
+    position: fixed; top: 160px; left: 50%; transform: translateX(-50%) scale(0.9);
+    z-index: 43; pointer-events: none; text-align: center;
+    background: rgba(8,10,14,0.88); border: 2px solid #f97316; border-radius: 10px;
+    padding: 10px 22px; color: #F2F4F7; opacity: 0;
+    transition: opacity 0.15s linear, transform 0.15s ease-out;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5); max-width: calc(100vw - 32px); box-sizing: border-box;
+  }
+  #foul-banner.show { opacity: 1; transform: translateX(-50%) scale(1); }
+  #foul-banner-title { font-size: 22px; font-weight: 700; letter-spacing: 0.06em; color: #fde047; }
+  #foul-banner-sub { font-size: 13px; font-weight: 600; margin-top: 3px; color: #e2e8f0; }
 
   #shot-meter-wrap {
     position: fixed; left: 50%; bottom: 130px; transform: translateX(-50%);
@@ -159,8 +178,9 @@
   <div id="hud-center">
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
+    <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -170,6 +190,7 @@
 
 <div id="screen-callout"></div>
 <div id="shot-contest-callout"></div>
+<div id="foul-banner"><div id="foul-banner-title">FOUL</div><div id="foul-banner-sub"></div></div>
 
 <div id="shot-meter-wrap" class="hidden">
   <div id="shot-meter-label">TIME IT!</div>
@@ -295,12 +316,14 @@ const ORDER = ['PG', 'SF', 'C'];
 const POS_STATS = {
   // Another speed pass per request -- noticeably faster across the board,
   // same ratios between positions kept intact.
+  // ft: free-throw percentage before the meter -- guards are the best at
+  // the line, bigs the worst, same as the real game.
   // pass: how accurately a position actually throws -- a point guard is the
   // table-setter (tightest passes), a center is the least natural passer
   // (the most scatter), a forward sits in between. See PASS_SCATTER_BASE.
-  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62, pass: 0.85 },
-  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90, pass: 0.64 },
-  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28, pass: 0.46 },
+  PG: { speed: 0.53, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62, pass: 0.85, ft: 0.84 },
+  SF: { speed: 0.42, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90, pass: 0.64, ft: 0.76 },
+  C:  { speed: 0.31, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28, pass: 0.46, ft: 0.62 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 // Two speed tiers: the stat above is top speed running free; actually
@@ -332,6 +355,33 @@ const SWITCH_URGENCY_ACCEL_MULT_RANGE = [0.55, 0.72];
 const DEFENSE_STANDOFF = 4;
 const SWITCH_URGENCY_STANDOFF_MULT_RANGE = [0.42, 0.58];
 function randRange([lo, hi]) { return lo + Math.random() * (hi - lo); }
+
+// ---- No-push rule ----------------------------------------------------------
+// The court is built at real scale (94x50, 10ft rim), so 1 world unit = 1
+// foot. A defender may only ever displace a dribbling ball handler by up to
+// 2 inches total over one stretch of contact; driving him past that is an
+// automatic defensive (blocking) foul. Dribbling only -- a shooter (and,
+// once they exist, a dunker) is never pushed by this rule; shooting contact
+// is judged separately as a shooting foul.
+const PUSH_FOUL_LIMIT = 2 / 12; // 2 inches, in feet
+// Relative closing speed (units/frame, ~60fps) below which body contact is
+// just "walling up" -- the defender is held off, nobody moves the handler,
+// nothing is called. Above it, the defender is actually driving into him.
+const PUSH_INTENT_SPEED = 0.12;
+// How long after contact ends before the 2-inch budget starts refilling,
+// and how long a full refill takes.
+const PUSH_ACCUM_HOLD_MS = 350;
+const PUSH_ACCUM_RECOVER_MS = 500;
+// Body-contact distance used by the collision pass, and the closest an AI
+// defender will play a live dribbler (just outside contact, never inside it).
+const BODY_CONTACT_D = PLAYER_R * 2 * 0.9;
+const DEFENSE_MIN_GAP = BODY_CONTACT_D + 0.35;
+// Chance an AI defender plays a given closeout recklessly (no body
+// discipline) -- the only way the AI ever commits a push foul.
+const AI_RECKLESS_CLOSEOUT_CHANCE = 0.05;
+function isProtectedDribbler(p) {
+  return game.ball.carrier === p && p.shotPhase === 'none' && !game.activeInbound && !game.freeThrow;
+}
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
@@ -1059,10 +1109,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · tap the right side to shoot (tap again to release!) or steal'
-  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · F block · SHIFT pass · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · F block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · tap right side to shoot (tap again!) /steal'
-  : 'Arrows move · SPACE shoot (tap again!) /steal · F block · SHIFT pass · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · SPACE shoot (tap again!) /steal · F block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1090,6 +1140,10 @@ function startInboundPass(passer, receiver, durMs, isCheckup) {
 
 function resetPositions(possessionTeam, isMatchStart) {
   game.shotMeter = null;
+  game.activePass = null;
+  game.activeShot = null;
+  game.foulPending = null;
+  game.freeThrow = null;
   document.getElementById('shot-meter-wrap').classList.add('hidden');
   const resetMoveState = (p) => {
     p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0;
@@ -1103,6 +1157,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.ankleStunTimer = 0; p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleImmuneTimer = 0; p.ankleFallAmt = 0;
     p.switchUrgencyTimer = 0;
     p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.blockCooldown = 0; p.blockJumpTimer = 0;
+    p.pushAccum = 0; p.pushContactT = 0; p.recklessCloseout = false; p.inDiscZone = false;
   };
   const b = game.ball;
 
@@ -1161,74 +1216,117 @@ function setCarrier(p) {
   game.possessionTeam = p.team;
 }
 
-function attemptPass(player) {
+// ---- Passing -------------------------------------------------------------
+// Passes are guided: once thrown, the ball homes in on the receiver's LIVE
+// position for the whole flight instead of being a dumb projectile aimed at
+// wherever he was standing at release. The old projectile version could
+// only be caught below hip height, so a chest-high pass flew straight
+// through a receiver's body, and any change of direction mid-flight meant a
+// miss -- that's what made passing feel broken. Accuracy still comes from
+// the thrower: each pass carries an error offset sized by his pass stat
+// (PG on the money, C sprays it), and a pass that ends up farther off than
+// the receiver can reach goes loose past him. Defenders whose bodies get
+// into the passing lane get one roll each to pick it off.
+const PASS_SPEED = 62;          // ft/s -- a crisp chest pass
+const PASS_CATCH_R = 2.0;       // how far off-target a receiver can still reach and secure it
+const PASS_INTERCEPT_R = 1.9;   // how close a defender's body has to be to the ball in flight
+const PASS_INTERCEPT_MULT = 0.45; // x defender's steal stat = pick-off chance
+const PASS_SCATTER_BASE = 3.0;
+// Human passes go where he's steering: hold an arrow toward a teammate and
+// that's who gets it. No direction held = teammate calling for it, else the
+// most open man (same as the AI's choice).
+function pickPassTarget(player, aimDir) {
   const teammates = getTeammates(player.team).filter((t) => t !== player);
-  // A teammate actively calling for it gets first look — real players feed
-  // the guy waving for the ball instead of always hunting the most-open man.
+  if (!teammates.length) return null;
+  if (aimDir) {
+    let best = null, bestScore = -Infinity;
+    teammates.forEach((t) => {
+      const dx = t.x - player.x, dz = t.z - player.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const cos = (dx * aimDir.x + dz * aimDir.z) / d;
+      if (cos < 0.25) return; // not anywhere near the direction he's pointing
+      const score = cos * 2 - d / 60;
+      if (score > bestScore) { bestScore = score; best = t; }
+    });
+    if (best) return best;
+  }
   const caller = teammates.find((t) => t.ballCallTimer > 0);
+  if (caller) return caller;
   let best = teammates[0], bestScore = -1;
+  const opps = getOpponents(player.team);
   teammates.forEach((t) => {
-    const opps = getOpponents(player.team);
     const nearestOpp = Math.min(...opps.map((o) => dist2(t, o)));
     if (nearestOpp > bestScore) { bestScore = nearestOpp; best = t; }
   });
-  if (caller) best = caller;
-  const speed = 0.62;
-  const PASS_EFFECTIVE_SPEED = speed * 100; // units/sec of actual horizontal travel (matches the *10 launch scale times the *10 per-frame integration below)
-  const startY = 4.2, endY = 2.0; // endY sits just under the PICKUP_RANGE height check
-  // Lead the pass: aim at where the receiver WILL be when the ball actually
-  // arrives, not where he was standing the instant it's thrown. The old
-  // version aimed dead at his current x/z, so any receiver in motion (which
-  // is nearly always, in a live possession) had already moved on by the
-  // time a several-hundred-ms flight landed, and the ball would sail past
-  // or land behind him -- reading as "wildly inaccurate" passing even
-  // though the throw itself was dead-on for a stationary target. Two
-  // passes of the solve: estimate flight time off the current distance,
-  // project the receiver forward by his current velocity for that long,
-  // then re-aim and re-time off the predicted spot.
-  // Player vx/vz are a per-frame displacement (p.x += p.vx, no dt scaling),
-  // authored against a steady ~60fps tick like the rest of the movement
-  // code -- so converting to a real lead distance means scaling by frames
-  // elapsed over the flight, not seconds. Capped so a receiver's own
-  // transient burst speed (a crossover, a screen-urgency sprint) can't
-  // swing the aim wildly further than a real pass would ever lead someone.
-  const PLAYER_VEL_FPS = 60;
-  const PASS_LEAD_MAX = 5;
-  const initialDist = Math.hypot(best.x - player.x, best.z - player.z) || 1;
-  let tx = best.x, tz = best.z;
-  for (let iter = 0; iter < 2; iter++) {
-    const dx0 = tx - player.x, dz0 = tz - player.z;
-    const d0 = Math.hypot(dx0, dz0) || 1;
-    const T0 = Math.max(d0 / PASS_EFFECTIVE_SPEED, 0.05);
-    const leadX = clamp((best.vx || 0) * T0 * PLAYER_VEL_FPS, -PASS_LEAD_MAX, PASS_LEAD_MAX);
-    const leadZ = clamp((best.vz || 0) * T0 * PLAYER_VEL_FPS, -PASS_LEAD_MAX, PASS_LEAD_MAX);
-    tx = best.x + leadX;
-    tz = best.z + leadZ;
-  }
-  // Passing accuracy actually varies by who's throwing it, not just a
-  // perfectly-solved lead every time -- a point guard (high pass stat)
-  // threads it right on the money almost always, a center scatters it a
-  // real amount, a forward sits in between. Worse on a longer pass, same as
-  // a real cross-court feed is harder to put exactly on the mark than a
-  // short outlet. Triangular-ish spread (sum of two uniforms) so small
-  // misses are common and wild ones are rare, rather than a flat random
-  // range.
-  const PASS_SCATTER_BASE = 3.0;
+  return best;
+}
+function attemptPass(player, aimDir) {
+  const receiver = pickPassTarget(player, aimDir);
+  if (!receiver) return;
+  const d = dist2(player, receiver);
+  const dur = clamp(d / PASS_SPEED * 1000, 160, 900);
+  // Thrower's error, triangular spread (small misses common, wild ones
+  // rare), bigger on longer passes.
   const passStat = (player.stats && player.stats.pass) || 0.65;
-  const scatterDistFactor = clamp(initialDist / 14, 0.5, 1.8);
-  const scatterMag = PASS_SCATTER_BASE * (1 - passStat) * scatterDistFactor;
-  tx += (Math.random() + Math.random() - 1) * scatterMag;
-  tz += (Math.random() + Math.random() - 1) * scatterMag;
-  const dx = tx - player.x, dz = tz - player.z;
-  const d = Math.hypot(dx, dz) || 1;
-  const T = Math.max(d / PASS_EFFECTIVE_SPEED, 0.05);
-  const vy0 = (endY - startY + 0.5 * GRAVITY * T * T) / T;
-  game.ball.carrier = null; game.ball.inFlight = false;
-  game.ball.vx = dx / d * speed * 10; game.ball.vz = dz / d * speed * 10; game.ball.vy = vy0;
-  game.ball.y = startY;
-  game.ball.justReleasedBy = player; game.ball.releaseLockTimer = 220;
+  const scatterMag = PASS_SCATTER_BASE * (1 - passStat) * clamp(d / 14, 0.5, 1.8);
+  const b = game.ball;
+  b.carrier = null; b.inFlight = true;
+  b.vx = 0; b.vy = 0; b.vz = 0;
+  b.justReleasedBy = player; b.releaseLockTimer = dur + 120;
+  game.activePass = {
+    passer: player, receiver, t: 0, dur,
+    startX: player.x, startZ: player.z, startY: 4.2,
+    offX: (Math.random() + Math.random() - 1) * scatterMag,
+    offZ: (Math.random() + Math.random() - 1) * scatterMag,
+    arc: 0.5 + d * 0.025,
+    rolled: new Set(),
+  };
   player.checkupLocked = false;
   playTone(420, 0.04);
+}
+function updateActivePass(dtMs) {
+  const ps = game.activePass;
+  const b = game.ball;
+  ps.t += dtMs;
+  const u = clamp(ps.t / ps.dur, 0, 1);
+  const r = ps.receiver;
+  const ax = r.x + ps.offX, az = r.z + ps.offZ, ay = 3.6; // chest height on the live receiver
+  b.x = lerp(ps.startX, ax, u);
+  b.z = lerp(ps.startZ, az, u);
+  b.y = lerp(ps.startY, ay, u) + ps.arc * 4 * u * (1 - u);
+  b.vx = 0; b.vy = 0; b.vz = 0;
+  if (u > 0.15 && u < 0.97 && b.y < 6.5) {
+    const opps = getOpponents(ps.passer.team);
+    for (let i = 0; i < opps.length; i++) {
+      const o = opps[i];
+      if (ps.rolled.has(o)) continue;
+      if (Math.hypot(o.x - b.x, o.z - b.z) > PASS_INTERCEPT_R) continue;
+      ps.rolled.add(o);
+      if (o.ankleDownTimer > 0 || o.ankleStunTimer > 0) continue;
+      if (Math.random() < (o.stats.steal || 0.4) * PASS_INTERCEPT_MULT) {
+        game.activePass = null;
+        setCarrier(o);
+        showScreenCallout('PICKED OFF!', 1000);
+        playTone(300, 0.06);
+        return;
+      }
+    }
+  }
+  if (u >= 1) {
+    game.activePass = null;
+    if (Math.hypot(ps.offX, ps.offZ) <= PASS_CATCH_R) {
+      setCarrier(r);
+      playTone(520, 0.03);
+      return;
+    }
+    // Off target: sails past him as a live loose ball.
+    b.inFlight = false;
+    const dx = ax - ps.startX, dz = az - ps.startZ;
+    const dd = Math.hypot(dx, dz) || 1;
+    b.vx = dx / dd * 2.2; b.vz = dz / dd * 2.2; b.vy = -1;
+    b.justReleasedBy = ps.passer; b.releaseLockTimer = 200;
+    showScreenCallout('OFF TARGET', 800);
+  }
 }
 
 function attemptSteal(defender) {
@@ -1255,6 +1353,10 @@ function attemptSteal(defender) {
     game.ball.justReleasedBy = carrier; game.ball.releaseLockTimer = 260;
   } else {
     playTone(180, 0.04);
+    // A missed swipe can be a reach-in -- likelier if he's reaching at a
+    // ball that's mid-crossover/behind-the-back.
+    const reachChance = REACH_FOUL_BASE + (carrier.stealResistTimer > 0 ? REACH_FOUL_MOVE_BONUS : 0);
+    if (Math.random() < reachChance) callFoul(defender, carrier, 'reach');
   }
 }
 
@@ -1275,7 +1377,18 @@ function attemptBlock(blocker) {
   blocker.blockJumpTimer = BLOCK_JUMP_DUR_MS;
   const shooter = game.ball.carrier;
   if (!shooter || shooter.team === blocker.team || shooter.shotPhase !== 'rise') return;
-  if (dist2(blocker, shooter) > BLOCK_RANGE) return;
+  const bd = dist2(blocker, shooter);
+  if (bd > BLOCK_RANGE) return;
+  // Shooting foul check first: how hard is he lunging INTO the shooter
+  // (straight up is nearly clean), and is he basically inside his body?
+  const bux = (shooter.x - blocker.x) / (bd || 1), buz = (shooter.z - blocker.z) / (bd || 1);
+  const lunge = Math.max(0, blocker.vx * bux + blocker.vz * buz);
+  const foulChance = clamp(BLOCK_FOUL_BASE + lunge * BLOCK_FOUL_LUNGE + (bd < PLAYER_R * 2 + 0.2 ? BLOCK_FOUL_TIGHT : 0), 0, BLOCK_FOUL_MAX);
+  if (Math.random() < foulChance) {
+    const sHoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
+    callFoul(blocker, shooter, 'shooting', { isThree: dist2(shooter, sHoop) > THREE_PT_R });
+    return;
+  }
   const heightGap = (blocker.stats.height || 6) - (shooter.stats.height || 6);
   const strengthGap = (blocker.stats.strength || 1) - 1;
   const chance = clamp(BLOCK_BASE + heightGap * 0.09 + strengthGap * 0.12 - (shooter.stats.shot || 0.5) * 0.18, 0.03, 0.55);
@@ -1303,6 +1416,8 @@ function attemptShot(player, meterQuality) {
   const d = dist2(player, hoop);
   if (d > MAX_SHOT_RANGE) return;
   player.actionCooldown = 550;
+  // At the line: no contest, no defense, just his free-throw stroke + timing.
+  if (game.freeThrow && game.freeThrow.shooter === player) { launchFreeThrow(player, meterQuality); return; }
 
   const opponents = getOpponents(player.team);
   const nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
@@ -1370,6 +1485,376 @@ function scoreFor(team, points) {
   if (team === 'A') game.scoreA += points; else game.scoreB += points;
 }
 
+// =========================================================================
+// Fouls, free throws, and the referee
+// -------------------------------------------------------------------------
+// Three ways to foul, each with its own formula:
+//   BLOCKING (push)  -- deterministic: a defender displaces a live dribbler
+//                       2 inches or more (see resolveDribblerContact).
+//   REACH-IN         -- every missed steal swipe risks it: REACH_FOUL_BASE,
+//                       plus REACH_FOUL_MOVE_BONUS if the handler is in the
+//                       middle of a dribble move (reaching at a moving ball).
+//   SHOOTING         -- every block attempt on a rising shooter risks it:
+//                       BLOCK_FOUL_BASE + how hard the blocker is lunging
+//                       into the shooter (horizontal speed toward him, so
+//                       going straight up -- verticality -- is nearly safe)
+//                       + a bump if he's right on top of him. Rolled BEFORE
+//                       the block itself: a foul means no block.
+// Penalties (3x3-style team fouls, scaled to a 2.5 minute game):
+//   shooting foul           -> 2 free throws (3 if he was behind the arc)
+//   any other foul, team    -> side out (offense inbounds it again)
+//     fouls 1-4
+//   5th team foul onward    -> BONUS: 2 free throws
+// =========================================================================
+const TEAM_FOUL_BONUS = 5;
+const REACH_FOUL_BASE = 0.10;
+const REACH_FOUL_MOVE_BONUS = 0.15;
+const BLOCK_FOUL_BASE = 0.035;  // straight up (verticality) is nearly always clean
+const BLOCK_FOUL_LUNGE = 1.1;   // per unit/frame of horizontal speed into the shooter
+const BLOCK_FOUL_TIGHT = 0.045; // extra if he's essentially inside the shooter's body
+const BLOCK_FOUL_MAX = 0.55;
+const FOUL_DEAD_BALL_MS = 1600; // whistle -> ref signal -> play resumes
+const FT_LINE_DIST = 13.75;     // rim center to the free-throw line, ft
+const FT_READY_MS = 1000;       // settle at the line before he can shoot
+const FT_BETWEEN_MS = 1100;     // ball comes back between attempts
+const FT_AI_HOLD_MS = 420;
+const FT_METER_PERFECT_BONUS = 0.16;
+const FT_METER_GOOD_BONUS = 0.04;
+const FT_METER_BAD_PENALTY = 0.30;
+const FOUL_LABEL = { push: 'BLOCKING FOUL', reach: 'REACH-IN FOUL', shooting: 'SHOOTING FOUL' };
+function teamLabel(team) { return team === 'A' ? 'YOU' : 'AI'; }
+function teamFouls(team) { return team === 'A' ? (game.teamFoulsA || 0) : (game.teamFoulsB || 0); }
+
+function callFoul(fouler, fouled, kind, opts) {
+  opts = opts || {};
+  if (game.phase !== 'live' || game.foulPending || game.freeThrow) return;
+  if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1;
+  else game.teamFoulsB = (game.teamFoulsB || 0) + 1;
+  fouler.fouls = (fouler.fouls || 0) + 1;
+  let fts = 0, penalty;
+  if (kind === 'shooting') { fts = opts.isThree ? 3 : 2; penalty = fts + ' FREE THROWS'; }
+  else if (teamFouls(fouler.team) >= TEAM_FOUL_BONUS) { fts = 2; penalty = 'BONUS · 2 FREE THROWS'; }
+  else penalty = 'SIDE OUT';
+  // Whistle: everything live stops right where it is.
+  game.shotMeter = null;
+  document.getElementById('shot-meter-wrap').classList.add('hidden');
+  game.activePass = null;
+  game.activeInbound = null;
+  game.players.forEach((p) => {
+    if (p.shotPhase === 'rise') { p.shotPhase = 'none'; p.shotPhaseT = 0; }
+    p.shotAIReleaseAt = 0;
+    p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
+    p.screenAssignment = null;
+    p.pushAccum = 0;
+  });
+  setCarrier(fouled);
+  game.foulPending = { timer: FOUL_DEAD_BALL_MS, fouled, fts };
+  refSignalFoul(fouler);
+  showFoulBanner(FOUL_LABEL[kind] || 'FOUL',
+    teamLabel(fouler.team) + ' #' + (JERSEY_NUMBERS[fouler.name] || '?') + ' (' + fouler.name + ')  ·  ' + penalty,
+    fouler.team);
+}
+
+let foulBannerHideAt = 0;
+function showFoulBanner(title, sub, foulerTeam) {
+  const el = document.getElementById('foul-banner');
+  if (!el) return;
+  document.getElementById('foul-banner-title').textContent = title;
+  document.getElementById('foul-banner-sub').textContent = sub;
+  el.style.borderColor = foulerTeam === 'A' ? '#38bdf8' : '#f97316';
+  el.classList.add('show');
+  foulBannerHideAt = performance.now() + 2000;
+}
+
+function updateDeadBall(dtMs) {
+  if (game.foulPending) {
+    const fp = game.foulPending;
+    fp.timer -= dtMs;
+    if (fp.timer <= 0) {
+      game.foulPending = null;
+      if (fp.fts > 0) startFreeThrows(fp.fouled, fp.fts);
+      else resetPositions(fp.fouled.team); // side out
+    }
+    return;
+  }
+  if (game.freeThrow) updateFreeThrow(dtMs);
+}
+
+function placeForFreeThrow(p, x, z, hoop) {
+  p.x = x; p.z = z; p.vx = 0; p.vz = 0;
+  p.facing = Math.atan2(hoop.x - x, hoop.z - z);
+  p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0;
+  p.hesitateTimer = 0; p.hesitateFakeAmt = 0; p.postUpActive = false;
+  p.screenHoldTimer = 0; p.screenAssignment = null; p.turboActive = false;
+  p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleStunTimer = 0; p.ankleFallAmt = 0;
+  p.moveBurstT = 1; p.handAnimT = 1;
+}
+function lineUpForFreeThrows(shooter, hoop) {
+  const sgn = Math.sign(hoop.x) || 1;
+  placeForFreeThrow(shooter, hoop.x - sgn * FT_LINE_DIST, 0, hoop);
+  // Real lane rules: the defense gets the two spots closest to the rim, the
+  // shooting team the next two up; the defense's third man stays back
+  // behind the shooter. Bigs take the inside spots.
+  const byHeight = (a, b) => (b.stats.height || 6) - (a.stats.height || 6);
+  const offense = getTeammates(shooter.team).filter((t) => t !== shooter).sort(byHeight);
+  const defense = getOpponents(shooter.team).slice().sort(byHeight);
+  const laneZ = 9.5;
+  if (defense[0]) placeForFreeThrow(defense[0], hoop.x - sgn * 4.5, -laneZ, hoop);
+  if (defense[1]) placeForFreeThrow(defense[1], hoop.x - sgn * 4.5, laneZ, hoop);
+  if (offense[0]) placeForFreeThrow(offense[0], hoop.x - sgn * 8.5, -laneZ, hoop);
+  if (offense[1]) placeForFreeThrow(offense[1], hoop.x - sgn * 8.5, laneZ, hoop);
+  if (defense[2]) placeForFreeThrow(defense[2], hoop.x - sgn * (FT_LINE_DIST + 8), 6, hoop);
+}
+function startFreeThrows(shooter, count) {
+  const hoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
+  game.activeInbound = null; game.activePass = null; game.activeShot = null;
+  game.shotMeter = null;
+  lineUpForFreeThrows(shooter, hoop);
+  // Your own free throws are always yours to shoot.
+  if (shooter.team === 'A') game.controlledIndex = game.teamA.indexOf(shooter);
+  game.freeThrow = { shooter, total: count, taken: 0, made: 0, stage: 'ready', timer: FT_READY_MS, hoop };
+  setCarrier(shooter);
+  showScreenCallout('FREE THROW 1 OF ' + count, 1200);
+}
+function updateFreeThrow(dtMs) {
+  const ft = game.freeThrow;
+  const s = ft.shooter;
+  if (ft.stage === 'ready') {
+    ft.timer -= dtMs;
+    if (ft.timer <= 0) {
+      ft.stage = 'shoot';
+      if (s !== controlledPlayer()) {
+        if (startShotRise(s)) s.shotAIReleaseAt = FT_AI_HOLD_MS;
+      } else {
+        showScreenCallout('SPACE TO SHOOT', 1000);
+      }
+    }
+  } else if (ft.stage === 'between') {
+    ft.timer -= dtMs;
+    if (ft.timer <= 0) {
+      lineUpForFreeThrows(s, ft.hoop);
+      setCarrier(s);
+      ft.stage = 'ready';
+      ft.timer = FT_READY_MS * 0.6;
+      showScreenCallout('FREE THROW ' + (ft.taken + 1) + ' OF ' + ft.total, 1100);
+    }
+  }
+  // 'shoot' waits on the release; 'flight' waits on resolveFreeThrow.
+}
+// Called from attemptShot when the shooter is at the line.
+function launchFreeThrow(player, meterQuality) {
+  const ft = game.freeThrow;
+  let acc = player.stats.ft || 0.72;
+  if (meterQuality === 'perfect') acc += FT_METER_PERFECT_BONUS;
+  else if (meterQuality === 'good') acc += FT_METER_GOOD_BONUS;
+  else if (meterQuality === 'bad') acc -= FT_METER_BAD_PENALTY;
+  acc = clamp(acc, 0.05, 0.97);
+  const hoop = ft.hoop;
+  game.ball.carrier = null;
+  game.ball.inFlight = true;
+  playTone(560, 0.04);
+  game.activeShot = {
+    t: 0, dur: 520, startX: player.x, startZ: player.z, startY: SHOT_RELEASE_HEIGHT,
+    endX: hoop.x, endZ: hoop.z, endY: hoop.y, shooter: player,
+    made: Math.random() < acc, isThree: false, isFreeThrow: true,
+  };
+  ft.stage = 'flight';
+}
+function resolveFreeThrow(s) {
+  const ft = game.freeThrow;
+  const b = game.ball;
+  b.inFlight = false;
+  if (!ft) { resolveShot(s.shooter, s.made, false); return; }
+  ft.taken++;
+  if (s.made) {
+    scoreFor(s.shooter.team, 1);
+    ft.made++;
+    playTone(760, 0.08);
+  } else {
+    playTone(220, 0.08);
+  }
+  if (game.scoreA >= WIN_SCORE || game.scoreB >= WIN_SCORE) {
+    game.freeThrow = null;
+    showMatchOver();
+    return;
+  }
+  if (ft.taken < ft.total) {
+    showScreenCallout(s.made ? 'GOOD!' : 'NO GOOD', 900);
+    ft.stage = 'between';
+    ft.timer = FT_BETWEEN_MS;
+    // Drops through the net / clanks off and settles under the rim.
+    b.vx = (Math.random() - 0.5) * 0.6; b.vz = (Math.random() - 0.5) * 0.6;
+    b.vy = s.made ? -2 : 3;
+    return;
+  }
+  game.freeThrow = null;
+  if (s.made) {
+    showScreenCallout('GOOD!', 900);
+    resetPositions(s.shooter.team === 'A' ? 'B' : 'A');
+  } else {
+    // Last one missed: live ball, rebound it -- play resumes right here
+    // with everyone still on the lane.
+    showScreenCallout('NO GOOD — REBOUND!', 1000);
+    b.vx = (Math.random() - 0.5) * 3; b.vz = (Math.random() - 0.5) * 3;
+    b.vy = 2.5;
+    b.justReleasedBy = s.shooter; b.releaseLockTimer = 300;
+  }
+}
+
+// ---- The referee: a bull in stripes, working the sideline ---------------
+const REF_SIDELINE_Z = -(COURT_HALF_WID + 3.2);
+const REF_SPEED = 0.42;           // units/frame top jog
+const REF_SIGNAL_MS = 1500;
+const refState = { x: 0, z: REF_SIDELINE_Z, vx: 0, facing: 0, phase: 0, swing: 0, signalT: 0, mesh: null, limbs: null, signalTeam: 'A' };
+function makeStripeTexture() {
+  const cvs = document.createElement('canvas');
+  cvs.width = 64; cvs.height = 16;
+  const ctx = cvs.getContext('2d');
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === 0 ? '#f4f4f4' : '#111111';
+    ctx.fillRect(i * 8, 0, 8, 16);
+  }
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function buildBullRef() {
+  const g = new THREE.Group();
+  const mat = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.04, ...(extra || {}) });
+  const HIDE = 0x6b4423, HIDE_DARK = 0x3d2617, PANTS = 0x141414, HORN = 0xeee3c8, SNOUT = 0xa47452;
+  const stripes = makeStripeTexture();
+  const stripeMat = mat(0xffffff, { map: stripes });
+  const legLen = 2.9, thighLen = 1.5, shinLen = legLen - thighLen;
+  const hipY = legLen;
+  // Legs: black ref trousers ending in hooves.
+  function makeLeg(x) {
+    const hip = new THREE.Group(); hip.position.set(x, hipY, 0); g.add(hip);
+    hip.add(limbMesh(0.36, 0.32, thighLen, PANTS));
+    const knee = new THREE.Group(); knee.position.set(0, -thighLen, 0); hip.add(knee);
+    knee.add(limbMesh(0.3, 0.27, shinLen, PANTS));
+    const hoof = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.36, 0.32, 12), mat(HIDE_DARK));
+    hoof.position.set(0, -shinLen + 0.12, 0.08); hoof.castShadow = true;
+    knee.add(hoof);
+    return { hip, knee };
+  }
+  const legL = makeLeg(-0.42), legR = makeLeg(0.42);
+  // Upper body hangs off a spine pivot so it can lean into the jog.
+  const spine = new THREE.Group(); spine.position.set(0, hipY, 0); g.add(spine);
+  const torsoLen = 2.5;
+  const torso = roundedTorsoMesh(2.2, torsoLen, 1.45, 0xffffff, { map: stripes });
+  torso.position.set(0, torsoLen / 2, 0);
+  spine.add(torso);
+  // Whistle on a lanyard.
+  const lanyard = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.03, 6, 18, Math.PI), mat(0x222222));
+  lanyard.position.set(0, torsoLen - 0.15, 0.55); lanyard.rotation.set(0, 0, Math.PI);
+  spine.add(lanyard);
+  const whistle = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.26, 10), mat(0xc0c6cc, { metalness: 0.8, roughness: 0.25 }));
+  whistle.rotation.z = Math.PI / 2;
+  whistle.position.set(0, torsoLen - 0.6, 0.72);
+  spine.add(whistle);
+  // Arms: striped short sleeves, hide forearms.
+  function makeArm(x) {
+    const shoulder = new THREE.Group(); shoulder.position.set(x, torsoLen - 0.35, 0); spine.add(shoulder);
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.3, 0.9, 12).translate(0, -0.45, 0), stripeMat);
+    sleeve.castShadow = true; shoulder.add(sleeve);
+    const elbow = new THREE.Group(); elbow.position.set(0, -0.95, 0); shoulder.add(elbow);
+    elbow.add(limbMesh(0.27, 0.24, 1.0, HIDE));
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), mat(HIDE_DARK));
+    hand.position.set(0, -1.05, 0); hand.castShadow = true; elbow.add(hand);
+    return { shoulder, elbow };
+  }
+  const armL = makeArm(-1.25), armR = makeArm(1.25);
+  // Head: a bull's -- broad skull, long snout, horns, nose ring.
+  const head = new THREE.Group(); head.position.set(0, torsoLen + 0.75, 0.1); spine.add(head);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.78, 18, 14), mat(HIDE));
+  skull.scale.set(1.05, 0.92, 1.0); skull.castShadow = true; head.add(skull);
+  const snout = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.6, 0.7), mat(SNOUT));
+  snout.position.set(0, -0.25, 0.72); snout.castShadow = true; head.add(snout);
+  [-0.22, 0.22].forEach((nx) => {
+    const nostril = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), mat(0x1a0f08));
+    nostril.position.set(nx, -0.22, 1.07); head.add(nostril);
+  });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.035, 6, 16), mat(0xd4af37, { metalness: 0.9, roughness: 0.25 }));
+  ring.position.set(0, -0.48, 1.06); head.add(ring);
+  [-0.34, 0.34].forEach((ex) => {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), mat(0x0d0d0d, { roughness: 0.3 }));
+    eye.position.set(ex, 0.12, 0.7); head.add(eye);
+  });
+  [-1, 1].forEach((side) => {
+    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.16, 1.15, 12), mat(HORN));
+    horn.position.set(side * 0.95, 0.42, 0.05);
+    horn.rotation.z = -side * 1.15; // out to the side, curving up
+    horn.castShadow = true; head.add(horn);
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), mat(HIDE_DARK));
+    ear.scale.set(1.4, 0.55, 0.8);
+    ear.position.set(side * 0.82, 0.05, -0.1); head.add(ear);
+  });
+  scene.add(g);
+  refState.mesh = g;
+  refState.limbs = { legL, legR, armL, armR, spine, head };
+}
+buildBullRef();
+
+// Whistle + the signal: fist straight up, facing the floor.
+function refSignalFoul(fouler) {
+  refState.signalT = REF_SIGNAL_MS;
+  refState.signalTeam = fouler ? fouler.team : 'A';
+  // A trill: two quick alternating high notes.
+  for (let i = 0; i < 4; i++) playTone(i % 2 === 0 ? 2100 : 2350, 0.06, i * 70);
+}
+function updateRef(dtMs) {
+  const r = refState;
+  if (!r.mesh) return;
+  // Trails the play along the sideline; at the line he walks to the
+  // free-throw-line extended, like a real trail official.
+  let targetX = clamp(game.ball.x * 0.92, -COURT_HALF_LEN + 4, COURT_HALF_LEN - 4);
+  if (game.freeThrow) {
+    const h = game.freeThrow.hoop;
+    targetX = h.x - Math.sign(h.x) * FT_LINE_DIST;
+  }
+  const dx = targetX - r.x;
+  const want = Math.abs(dx) > 1.2 ? Math.sign(dx) * Math.min(REF_SPEED, Math.abs(dx) * 0.08 + 0.05) : 0;
+  const signaling = r.signalT > 0;
+  const tv = signaling ? 0 : want;
+  r.vx += (tv - r.vx) * (1 - Math.exp(-dtMs / 120));
+  r.x += r.vx * (dtMs / 16.67);
+  if (r.signalT > 0) r.signalT -= dtMs;
+  const speed = Math.abs(r.vx);
+  // Faces where he's jogging; squares up to the floor when he stops or signals.
+  const faceTarget = (speed > 0.04 && !signaling) ? (r.vx > 0 ? Math.PI / 2 : -Math.PI / 2) : 0;
+  let df = faceTarget - r.facing;
+  df = ((df + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  r.facing += clamp(df, -0.01 * dtMs, 0.01 * dtMs);
+  r.swing += ((speed > 0.04 ? Math.min(0.6, 0.2 + speed * 1.4) : 0) - r.swing) * (1 - Math.exp(-dtMs / 110));
+  r.phase += dtMs * 0.012 * (1 + speed * 3);
+  const L = r.limbs;
+  const s = Math.sin(r.phase) * r.swing;
+  L.legL.hip.rotation.x = s; L.legR.hip.rotation.x = -s;
+  L.legL.knee.rotation.x = Math.max(0, Math.cos(r.phase)) * r.swing * 1.8;
+  L.legR.knee.rotation.x = Math.max(0, -Math.cos(r.phase)) * r.swing * 1.8;
+  L.spine.rotation.set(Math.min(0.18, speed * 0.6), -s * 0.3, 0);
+  if (signaling) {
+    // Right fist straight up, left hand pointing at the spot of the foul.
+    const k = Math.min(1, (REF_SIGNAL_MS - r.signalT) / 150);
+    L.armR.shoulder.rotation.set(-3.0 * k, 0, -0.08 * k);
+    L.armR.elbow.rotation.x = -0.15 * k;
+    L.armL.shoulder.rotation.set(-1.5 * k, 0, 0.25 * k);
+    L.armL.elbow.rotation.x = 0;
+    L.head.rotation.x = -0.1 * k;
+  } else {
+    L.armL.shoulder.rotation.set(-s * 0.9, 0, 0.08);
+    L.armR.shoulder.rotation.set(s * 0.9, 0, -0.08);
+    L.armL.elbow.rotation.x = 0.5 * (r.swing / 0.6);
+    L.armR.elbow.rotation.x = 0.5 * (r.swing / 0.6);
+    L.head.rotation.x = 0;
+  }
+  const bob = Math.abs(Math.sin(r.phase)) * 0.12 * (r.swing / 0.6);
+  r.mesh.position.set(r.x, bob, r.z);
+  r.mesh.rotation.y = r.facing;
+}
+
 function playTone(freq, dur, delay) {
   if (typeof SFX === 'undefined' || !SFX || typeof SFX.tone !== 'function') return;
   try { SFX.tone(freq, dur, 'sine', 0.5, null, delay || 0); } catch (e) {}
@@ -1387,6 +1872,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab') e.preventDefault();
   keysDown.add(e.code);
   if (game.phase !== 'live') return;
+  // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
+  if (game.foulPending || game.freeThrow) {
+    if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
+    return;
+  }
   if (e.code === 'KeyE') onSwitchPressed();
   if (e.code === 'KeyQ') onScreenKeyDown();
   if (e.code === 'KeyR') onCallForBallPressed();
@@ -1399,7 +1889,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   keysDown.delete(e.code);
-  if (e.code === 'KeyQ') onScreenKeyUp();
+  if (e.code === 'KeyQ' && !game.foulPending && !game.freeThrow) onScreenKeyUp();
 });
 
 function onSwitchPressed() {
@@ -1726,6 +2216,12 @@ document.getElementById('shot-meter-zone').style.width = ((SHOT_METER_SWEET_END 
 
 function onActionPressed() {
   const p = controlledPlayer();
+  if (game.foulPending) return;
+  if (game.freeThrow) {
+    // At the line only the shooter acts, and only once he's set.
+    const ft = game.freeThrow;
+    if (p !== ft.shooter || ft.stage !== 'shoot') return;
+  }
   if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return;
   if (game.ball.carrier === p) {
     if (game.shotMeter && game.shotMeter.player === p) { releaseShotMeter(); return; }
@@ -1746,7 +2242,24 @@ function onActionPressed() {
 function onPassPressed() {
   const p = controlledPlayer();
   if (p.shotPhase !== 'none') return; // already mid-shot, can't bail into a pass
-  if (game.ball.carrier === p) attemptPass(p);
+  if (game.ball.carrier !== p) return;
+  // Aim with the arrows: same camera-relative mapping as movement.
+  let ix = 0, iz = 0;
+  if (keysDown.has('ArrowLeft')) ix -= 1;
+  if (keysDown.has('ArrowRight')) ix += 1;
+  if (keysDown.has('ArrowUp')) iz += 1;
+  if (keysDown.has('ArrowDown')) iz -= 1;
+  let aimDir = null;
+  const mag = Math.hypot(ix, iz);
+  if (mag > 0.05) {
+    const fwd = camForward.clone().setY(0).normalize();
+    const rx = -fwd.z, rz = fwd.x;
+    const wx = rx * ix / mag + fwd.x * iz / mag;
+    const wz = rz * ix / mag + fwd.z * iz / mag;
+    const wm = Math.hypot(wx, wz) || 1;
+    aimDir = { x: wx / wm, z: wz / wm };
+  }
+  attemptPass(p, aimDir);
 }
 function onBlockPressed() {
   const p = controlledPlayer();
@@ -2001,6 +2514,70 @@ function approachVelocity(p, targetVx, targetVz, dtMs) {
   p.vz += (targetVz - p.vz) * alpha;
 }
 
+// Body discipline: once a defender is right on a live dribbler he can't keep
+// running through him -- whatever part of his velocity would close the gap
+// faster than the handler is moving away gets shaved off (plus an optional
+// small "lean" allowance). Without this, plain decel lag carried defenders
+// straight into the ball handler on nearly every closeout, which is what was
+// shoving him backward. Post-ups are excluded: that's a deliberate contact
+// battle with its own rules (see the post contest in updateHumanMovement).
+function applyDribblerDiscipline(p, leanAllowance) {
+  const c = game.ball.carrier;
+  if (!c || c.team === p.team || c.postUpActive || !isProtectedDribbler(c)) return;
+  const dx = c.x - p.x, dz = c.z - p.z;
+  const d = Math.hypot(dx, dz) || 0.001;
+  if (d > DEFENSE_MIN_GAP + 0.4) return;
+  const ux = dx / d, uz = dz / d;
+  const closing = p.vx * ux + p.vz * uz;
+  const allowed = Math.max(0, c.vx * ux + c.vz * uz) + leanAllowance;
+  if (closing > allowed) {
+    const cut = closing - allowed;
+    p.vx -= ux * cut; p.vz -= uz * cut;
+  }
+}
+
+// Collision between a live dribbler and an opposing body. Whoever is
+// actually driving into whom gets the blame for the overlap:
+//   - the handler running into a defender: ordinary contact, split 50/50
+//     (he's slowed by the body, never knocked backward, nothing called);
+//   - a defender leaning in slower than PUSH_INTENT_SPEED: he's simply held
+//     off -- absorbs all of it, handler doesn't budge;
+//   - a defender actually driving into him: the handler can be moved, but
+//     only by whatever's left of his 2-inch budget for this stretch of
+//     contact; the defender absorbs the rest, and the instant the attempted
+//     displacement reaches 2 inches it's a blocking foul.
+function resolveDribblerContact(h, def, overlap, ux, uz) {
+  // (ux, uz) points from the defender to the handler.
+  const defIn = Math.max(0, def.vx * ux + def.vz * uz);
+  const hIn = Math.max(0, -(h.vx * ux + h.vz * uz));
+  const relClose = (def.vx - h.vx) * ux + (def.vz - h.vz) * uz;
+  const total = defIn + hIn;
+  const hShare = total > 1e-5 ? hIn / total : 0;
+  const handlerCaused = overlap * hShare;
+  const defCaused = overlap - handlerCaused;
+  // Handler-caused part: plain 50/50 body contact.
+  h.x += ux * handlerCaused / 2; h.z += uz * handlerCaused / 2;
+  def.x -= ux * handlerCaused / 2; def.z -= uz * handlerCaused / 2;
+  if (defCaused <= 0) return;
+  if (relClose < PUSH_INTENT_SPEED) {
+    // Walling up, not pushing: defender is held off, handler unmoved.
+    def.x -= ux * defCaused; def.z -= uz * defCaused;
+    return;
+  }
+  const budget = Math.max(0, PUSH_FOUL_LIMIT - (h.pushAccum || 0));
+  const applied = Math.min(defCaused, budget);
+  h.x += ux * applied; h.z += uz * applied;
+  def.x -= ux * (defCaused - applied); def.z -= uz * (defCaused - applied);
+  // His momentum into the handler is spent on the contact.
+  def.vx -= ux * defIn; def.vz -= uz * defIn;
+  h.pushAccum = (h.pushAccum || 0) + defCaused;
+  h.pushContactT = 0;
+  if (h.pushAccum >= PUSH_FOUL_LIMIT) {
+    h.pushAccum = 0;
+    callFoul(def, h, 'push');
+  }
+}
+
 function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   const dx = tx - p.x, dz = tz - p.z;
   const d = Math.hypot(dx, dz);
@@ -2088,7 +2665,11 @@ function updateAI(p, dtMs) {
     }
   }
   const isCarrier = game.ball.carrier === p;
-  const teamHasBall = game.ball.carrier && game.ball.carrier.team === p.team;
+  // A pass in the air still belongs to the team that threw it: the offense
+  // keeps running its spots and the defense keeps guarding, instead of all
+  // six players treating a pass as a loose ball and swarming it.
+  const ballTeam = game.ball.carrier ? game.ball.carrier.team : (game.activePass ? game.activePass.passer.team : null);
+  const teamHasBall = ballTeam === p.team;
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
   const myHoop = p.team === 'A' ? HOOP_B : HOOP_A;
   const oppHoop = p.team === 'A' ? HOOP_A : HOOP_B;
@@ -2172,8 +2753,24 @@ function updateAI(p, dtMs) {
           chaseMult *= (p.switchSpeedMult || 1.15);
           standoff *= (p.switchStandoffMult || 0.5);
         }
+        // Guarding the ball: never set up inside body-contact range -- the
+        // old tight switch cushion put his target point INSIDE the handler's
+        // body, so he was literally trying to stand where the dribbler was.
+        const guardingBall = game.ball.carrier === mark;
+        if (guardingBall) standoff = Math.max(standoff, DEFENSE_MIN_GAP);
         const towardHoopX = mark.x + (myHoop.x < mark.x ? -standoff : standoff);
         moveToward(p, towardHoopX, mark.z, dtMs, chaseMult);
+        if (guardingBall) {
+          // Each fresh closeout rolls once for whether he plays it under
+          // control (stops at the body) or recklessly (runs through -- and
+          // gets whistled for it by the no-push rule).
+          const inZone = dist2(p, mark) < DEFENSE_MIN_GAP + 0.4;
+          if (inZone && !p.inDiscZone) p.recklessCloseout = Math.random() < AI_RECKLESS_CLOSEOUT_CHANCE;
+          if (dist2(p, mark) > DEFENSE_MIN_GAP + 2) p.inDiscZone = false;
+          else if (inZone) p.inDiscZone = true;
+        } else {
+          p.recklessCloseout = false; p.inDiscZone = false;
+        }
       }
       if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0045) {
         attemptSteal(p);
@@ -2295,13 +2892,13 @@ function updateHumanMovement(dtMs) {
         human.rockVel += 0.0034 / clamp(strengthRatio, 0.7, 1.6);
       }
       if (wave < -pushThreshold) {
-        // The defender wins this beat outright and jars the poster back
-        // toward where they came from — how often and how hard depends on
-        // who's actually stronger.
+        // The defender wins this beat: he holds his ground and the poster's
+        // backdown stalls out -- how often and how completely depends on
+        // who's actually stronger. He does NOT shove the poster backward
+        // anymore; a defender can wall up in the post, not push the ball
+        // handler around (same no-push principle as everywhere else).
         const jar = (-wave - pushThreshold) / (1 - pushThreshold);
-        const pushSpeed = human.stats.speed * pushFactor * jar;
-        contestPushX = -(dx / d) * pushSpeed;
-        contestPushZ = -(dz / d) * pushSpeed;
+        contestMult *= Math.max(0, 1 - jar * clamp(pushFactor * 1.6, 0.4, 1));
       }
       // On the way up, the poster fires back — a real forward bump into the
       // defender's body, not just faster movement. Edge-triggered so it's
@@ -3095,6 +3692,11 @@ function updateBall(dtMs) {
     return;
   }
 
+  if (game.activePass) {
+    updateActivePass(dtMs);
+    return;
+  }
+
   if (game.activeShot) {
     const s = game.activeShot;
     s.t += dtMs;
@@ -3105,7 +3707,8 @@ function updateBall(dtMs) {
     b.y = (1 - t) * (1 - t) * s.startY + 2 * (1 - t) * t * peak + t * t * s.endY;
     if (t >= 1) {
       game.activeShot = null;
-      resolveShot(s.shooter, s.made, s.isThree);
+      if (s.isFreeThrow) resolveFreeThrow(s);
+      else resolveShot(s.shooter, s.made, s.isThree);
     }
     return;
   }
@@ -3237,6 +3840,7 @@ function updateBall(dtMs) {
 
   for (let i = 0; i < game.players.length; i++) {
     const pl = game.players[i];
+    if (game.freeThrow || game.foulPending) break; // dead ball -- nobody grabs it
     if (pl === b.justReleasedBy && b.releaseLockTimer > 0) continue;
     if (dist2(pl, b) < PICKUP_RANGE && b.y < 2.2) { setCarrier(pl); break; }
   }
@@ -3258,10 +3862,18 @@ function updateCamera(dt) {
   // leave it stale either.
   const relevantHoop = human.team === 'A' ? HOOP_A : HOOP_B;
   camDirSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
-  const dirSign = camDirSign;
+  let dirSign = camDirSign;
+  // Free throws: a broadcast-style shot from behind whoever's at the line,
+  // looking at the rim he's shooting on -- including when it's the AI
+  // shooting on your basket (which the normal follow-cam faces away from).
+  let focus = human;
+  if (game.freeThrow) {
+    focus = game.freeThrow.shooter;
+    dirSign = Math.sign(game.freeThrow.hoop.x) || 1;
+  }
 
-  const desiredPos = new THREE.Vector3(human.x - dirSign * 15, 8.5, human.z);
-  const desiredLook = new THREE.Vector3(human.x + dirSign * 10, 3.5, human.z);
+  const desiredPos = new THREE.Vector3(focus.x - dirSign * 15, 8.5, focus.z);
+  const desiredLook = new THREE.Vector3(focus.x + dirSign * 10, 3.5, focus.z);
 
   // Post-up camera: straight behind the poster, the defender battling on
   // his back is completely hidden behind his body. Like a broadcast post
@@ -3306,6 +3918,11 @@ function updateHUD() {
   document.getElementById('hud-clock').textContent = mins + ':' + String(secs).padStart(2, '0');
   redrawScoreboard(game.scoreA, game.scoreB, mins + ':' + String(secs).padStart(2, '0'));
   document.getElementById('hud-pos').textContent = controlledPlayer().name;
+  const fA = teamFouls('A'), fB = teamFouls('B');
+  const foulTxt = 'FOULS &nbsp;YOU ' + fA + (fA >= TEAM_FOUL_BONUS ? ' <span class="bonus">BONUS</span>' : '')
+    + ' &middot; AI ' + fB + (fB >= TEAM_FOUL_BONUS ? ' <span class="bonus">BONUS</span>' : '');
+  const foulsEl = document.getElementById('hud-fouls');
+  if (foulsEl && foulsEl.innerHTML !== foulTxt) foulsEl.innerHTML = foulTxt;
   const human = controlledPlayer();
   const staminaFillEl = document.getElementById('stamina-fill');
   if (staminaFillEl) {
@@ -3336,6 +3953,8 @@ function startMatch() {
   scoreboardLastText = null; // force the scoreboard to redraw fresh
   game.matchClock = MATCH_SECONDS;
   game.controlledIndex = 0;
+  game.teamFoulsA = 0; game.teamFoulsB = 0;
+  game.players.forEach((p) => { p.fouls = 0; });
   resetPositions('A', true);
   document.getElementById('menu-overlay').classList.add('hidden');
   document.getElementById('matchover-overlay').classList.add('hidden');
@@ -3350,7 +3969,8 @@ function frame(now) {
   lastTime = now;
 
   if (game.phase === 'live') {
-    game.matchClock -= dtMs / 1000;
+    // The clock stops on the whistle and stays stopped through free throws.
+    if (!game.foulPending && !game.freeThrow) game.matchClock -= dtMs / 1000;
     if (game.matchClock <= 0) { game.matchClock = 0; showMatchOver(); }
     updateHUD();
 
@@ -3367,6 +3987,13 @@ function frame(now) {
       if (p.ballCallCooldown > 0) p.ballCallCooldown -= dtMs;
       if (p.blockCooldown > 0) p.blockCooldown -= dtMs;
       if (p.blockJumpTimer > 0) p.blockJumpTimer -= dtMs;
+      // Push budget refills once contact has actually ended for a beat.
+      if (p.pushAccum > 0) {
+        p.pushContactT = (p.pushContactT || 0) + dtMs;
+        if (p.pushContactT > PUSH_ACCUM_HOLD_MS) {
+          p.pushAccum = Math.max(0, p.pushAccum - PUSH_FOUL_LIMIT * dtMs / PUSH_ACCUM_RECOVER_MS);
+        }
+      }
       // Ankle-breaker state machine: down -> getting up -> a brief immune
       // window before he's eligible to be dropped again. A stun on its own
       // (no knockdown) goes straight to the immune window once it ends.
@@ -3423,10 +4050,27 @@ function frame(now) {
     });
 
     const human = controlledPlayer();
-    updateHumanMovement(dtMs);
-    updateShotMeter(dtMs);
-    refreshAssignmentsForPossession();
-    game.players.forEach((p) => { if (p !== human) { updateLateSwitch(p, dtMs); updateAI(p, dtMs); } });
+    if (game.foulPending || game.freeThrow) {
+      // Dead ball: everybody coasts to a stop and nobody moves under their
+      // own power until play resumes (free throws run their own script).
+      game.players.forEach((p) => { approachVelocity(p, 0, 0, dtMs); p.turboActive = false; p.postUpActive = false; });
+      updateShotMeter(dtMs);
+      updateDeadBall(dtMs);
+    } else {
+      updateHumanMovement(dtMs);
+      // The human gets the same body discipline as the AI -- he can lean on
+      // a dribbler but not run through him -- unless he's sprinting (turbo),
+      // in which case he can absolutely bowl him over, and get whistled.
+      if (!human.turboActive) applyDribblerDiscipline(human, PUSH_INTENT_SPEED * 0.8);
+      updateShotMeter(dtMs);
+      refreshAssignmentsForPossession();
+      game.players.forEach((p) => {
+        if (p === human) return;
+        updateLateSwitch(p, dtMs);
+        updateAI(p, dtMs);
+        if (!p.recklessCloseout) applyDribblerDiscipline(p, 0);
+      });
+    }
 
     game.players.forEach((p) => {
       p.x += p.vx; p.z += p.vz;
@@ -3439,9 +4083,15 @@ function frame(now) {
         const a = game.players[i], b = game.players[j];
         const dx = b.x - a.x, dz = b.z - a.z;
         const d = Math.hypot(dx, dz) || 0.001;
-        const minD = (a.postUpActive || b.postUpActive) ? POST_CONTACT_D : PLAYER_R * 2 * 0.9;
+        const minD = (a.postUpActive || b.postUpActive) ? POST_CONTACT_D : BODY_CONTACT_D;
         if (d < minD) {
           const nx = dx / d, nz = dz / d;
+          // A live dribbler vs. an opponent (not a post-up, not a set
+          // screen) goes through the no-push rule instead of the even split.
+          if (a.team !== b.team && !a.postUpActive && !b.postUpActive && !(a.screenHoldTimer > 0) && !(b.screenHoldTimer > 0)) {
+            if (isProtectedDribbler(a)) { resolveDribblerContact(a, b, minD - d, -nx, -nz); continue; }
+            if (isProtectedDribbler(b)) { resolveDribblerContact(b, a, minD - d, nx, nz); continue; }
+          }
           // A player holding a set screen plants like a real pick — he
           // doesn't get shoved around by whoever runs into him, they do.
           // Whichever side is walled up eats none of the push; the other
@@ -3468,6 +4118,7 @@ function frame(now) {
     }
 
     updateBall(dtMs);
+    updateRef(dtMs);
     game.players.forEach((p) => updateHumanoidPose(p, dtMs));
 
     ballMesh.position.set(game.ball.x, game.ball.y, game.ball.z);
@@ -3497,6 +4148,11 @@ function frame(now) {
       const calloutEl = document.getElementById('screen-callout');
       if (calloutEl) calloutEl.classList.remove('show');
       screenCalloutHideAt = 0;
+    }
+    if (foulBannerHideAt && performance.now() >= foulBannerHideAt) {
+      const fbEl = document.getElementById('foul-banner');
+      if (fbEl) fbEl.classList.remove('show');
+      foulBannerHideAt = 0;
     }
     if (shotContestCalloutHideAt && performance.now() >= shotContestCalloutHideAt) {
       const shotCalloutEl = document.getElementById('shot-contest-callout');
@@ -3529,6 +4185,11 @@ game.releaseShot = releaseShot;
 game.attemptBlock = attemptBlock;
 game.attemptPass = attemptPass;
 game.swapAssignments = swapAssignments;
+game.callFoul = callFoul;
+game.resolveDribblerContact = resolveDribblerContact;
+game.startFreeThrows = startFreeThrows;
+game.refState = refState;
+game.PUSH_FOUL_LIMIT = PUSH_FOUL_LIMIT;
 game.getCamDirSign = () => camDirSign;
 </script>
 </body>
