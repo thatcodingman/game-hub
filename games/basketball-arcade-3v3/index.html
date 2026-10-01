@@ -427,7 +427,7 @@ root.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0f14);
-scene.fog = new THREE.Fog(0x0b0f14, 55, 150);
+scene.fog = new THREE.Fog(0x0b0f14, 90, 230);
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 300);
 camera.position.set(-20, 9, 0);
@@ -727,6 +727,140 @@ function buildThreePointArc(hoop) {
 }
 buildThreePointArc(HOOP_A);
 buildThreePointArc(HOOP_B);
+
+// -------------------------------------------------------------------------
+// Arena: bleachers packed with a colorful, sign-waving crowd (all instanced, so
+// ~1,500 fans cost a handful of draw calls). Fans bob in their seats and go
+// wild (jumping, signs high) right after a basket.
+// -------------------------------------------------------------------------
+const crowd = { fans: [], signs: [], excite: 0, tick: 0 };
+function buildArena() {
+  // dark concourse floor so there's no void past the hardwood
+  const apron = new THREE.Mesh(new THREE.PlaneGeometry(320, 240), new THREE.MeshStandardMaterial({ color: 0x151a23, roughness: 1 }));
+  apron.rotation.x = -Math.PI / 2; apron.position.y = -0.03; scene.add(apron);
+
+  // advertising boards around the court
+  const adCvs = document.createElement('canvas'); adCvs.width = 1024; adCvs.height = 64;
+  const actx = adCvs.getContext('2d');
+  const adTxt = [['BASKETBALL ARCADE', '#f97316'], ['HOOP HUB', '#38bdf8'], ['SLAM!', '#facc15'], ['FAST BREAK', '#22c55e'], ['3v3 LIVE', '#ec4899']];
+  adTxt.forEach((a, i) => { actx.fillStyle = '#0b0f14'; actx.fillRect(i * 204.8, 0, 204.8, 64); actx.fillStyle = a[1]; actx.font = 'bold 26px sans-serif'; actx.textAlign = 'center'; actx.textBaseline = 'middle'; actx.fillText(a[0], i * 204.8 + 102, 34); });
+  const adTex = new THREE.CanvasTexture(adCvs); adTex.wrapS = THREE.RepeatWrapping; adTex.colorSpace = THREE.SRGBColorSpace;
+  const adMat = new THREE.MeshBasicMaterial({ map: adTex });
+  const addBoard = (len, x, z, rotY) => { const t = adTex.clone(); t.needsUpdate = true; t.repeat.set(len / 40, 1); const m = new THREE.Mesh(new THREE.BoxGeometry(len, 2.6, 0.3), new THREE.MeshBasicMaterial({ map: t })); m.position.set(x, 1.3, z); m.rotation.y = rotY; scene.add(m); };
+  addBoard(108, 0, 31.5, 0); addBoard(108, 0, -31.5, Math.PI);
+  addBoard(64, 56, 0, Math.PI / 2); addBoard(64, -56, 0, -Math.PI / 2);
+
+  // sign textures
+  const SIGN = [['GO!', '#ef4444'], ['MVP', '#facc15'], ['DEFENSE!', '#3b82f6'], ['BUCKETS', '#f97316'], ['LET\'S GO', '#22c55e'], ['3 PTS!', '#a855f7'],
+    ['DUNK IT', '#ec4899'], ['WE WIN', '#06b6d4'], ['GOAT', '#fde047'], ['HYPE', '#fb7185'], ['SPLASH', '#38bdf8'], ['HOOPS <3', '#f472b6']];
+  const signTex = SIGN.map(([txt, bg]) => {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 160; const x = c.getContext('2d');
+    x.fillStyle = bg; x.fillRect(0, 0, 256, 160); x.strokeStyle = '#ffffff'; x.lineWidth = 10; x.strokeRect(5, 5, 246, 150);
+    x.fillStyle = '#ffffff'; x.font = 'bold ' + (txt.length > 6 ? 46 : 64) + 'px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.lineWidth = 8; x.strokeStyle = 'rgba(0,0,0,0.55)'; x.strokeText(txt, 128, 84); x.fillText(txt, 128, 84);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; });
+
+  const SHIRT = ['#ef4444', '#f59e0b', '#facc15', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899', '#f8fafc', '#fb923c', '#14b8a6', '#a3e635', '#e11d48', '#0ea5e9'];
+  const SKIN = ['#f1c9a5', '#e0ac82', '#c68642', '#8d5524', '#5c3a1e', '#ffdbb4', '#a56a3f'];
+  const HAIR = ['#111111', '#2b1a10', '#5a3a1c', '#c9a227', '#9b3d1f', '#9ca3af', '#7c3aed', '#ec4899', '#22d3ee'];
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const stepMat = [new THREE.MeshStandardMaterial({ color: 0x2c3548, roughness: 0.9 }), new THREE.MeshStandardMaterial({ color: 0x344058, roughness: 0.9 })];
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x10141c, roughness: 1 });
+
+  // axis 'z' = sideline stand (sgn = side), 'x' = end stand
+  function stand(axis, sgn, d0, half, rows) {
+    const ROW_D = 2.6, STEP_H = 1.5;
+    for (let r = 0; r < rows; r++) {
+      const d = d0 + r * ROW_D, h = STEP_H * (r + 1);
+      const len = half * 2;
+      const box = new THREE.Mesh(axis === 'z' ? new THREE.BoxGeometry(len, h, ROW_D) : new THREE.BoxGeometry(ROW_D, h, len), stepMat[r % 2]);
+      if (axis === 'z') box.position.set(0, h / 2, sgn * d); else box.position.set(sgn * d, h / 2, 0);
+      scene.add(box);
+      const spacing = 2.7;
+      for (let u = -half + 1.5; u <= half - 1.5; u += spacing) {
+        if (Math.random() < 0.07) continue; // the odd empty seat
+        const uu = u + (Math.random() - 0.5) * 0.4;
+        const f = { axis, sgn, u: uu, d, baseY: h, phase: Math.random() * 6.28, sp: 2.2 + Math.random() * 2.2, sc: 0.9 + Math.random() * 0.25,
+          shirt: pick(SHIRT), skin: pick(SKIN), hair: Math.random() < 0.12 ? null : pick(HAIR), sign: -1 };
+        if (Math.random() < 0.13) f.sign = Math.floor(Math.random() * SIGN.length);
+        f.rotY = axis === 'z' ? (sgn > 0 ? Math.PI : 0) : (sgn > 0 ? -Math.PI / 2 : Math.PI / 2);
+        f.wx = axis === 'z' ? uu : sgn * d; f.wz = axis === 'z' ? sgn * d : uu;
+        crowd.fans.push(f);
+      }
+    }
+    // back wall
+    const bw = d0 + rows * ROW_D + 1.2, wh = STEP_H * rows + 9;
+    const wall = new THREE.Mesh(axis === 'z' ? new THREE.BoxGeometry(half * 2 + 6, wh, 1) : new THREE.BoxGeometry(1, wh, half * 2 + 6), wallMat);
+    if (axis === 'z') wall.position.set(0, wh / 2, sgn * bw); else wall.position.set(sgn * bw, wh / 2, 0);
+    scene.add(wall);
+  }
+  stand('z', 1, 35, 62, 9); stand('z', -1, 35, 62, 9);
+  stand('x', 1, 64, 33, 7); stand('x', -1, 64, 33, 7);
+
+  const N = crowd.fans.length;
+  const torso = new THREE.InstancedMesh(new THREE.CapsuleGeometry(0.62, 0.9, 2, 6), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 }), N);
+  const head = new THREE.InstancedMesh(new THREE.SphereGeometry(0.46, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }), N);
+  const hair = new THREE.InstancedMesh(new THREE.SphereGeometry(0.5, 8, 4, 0, Math.PI * 2, 0, Math.PI * 0.55), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }), N);
+  const col = new THREE.Color();
+  crowd.fans.forEach((f, i) => {
+    torso.setColorAt(i, col.set(f.shirt)); head.setColorAt(i, col.set(f.skin)); hair.setColorAt(i, col.set(f.hair || f.skin));
+  });
+  [torso, head, hair].forEach((m) => { m.instanceColor.needsUpdate = true; m.frustumCulled = false; scene.add(m); });
+  crowd.torso = torso; crowd.head = head; crowd.hair = hair;
+
+  // signs: one instanced plane per texture (+ a stick each)
+  const stickGeo = new THREE.BoxGeometry(0.1, 2.2, 0.1);
+  const bySign = SIGN.map(() => []);
+  crowd.fans.forEach((f, i) => { if (f.sign >= 0) bySign[f.sign].push(i); });
+  const stickCount = crowd.fans.filter((f) => f.sign >= 0).length;
+  crowd.sticks = new THREE.InstancedMesh(stickGeo, new THREE.MeshStandardMaterial({ color: 0x8a6a3a }), stickCount);
+  crowd.sticks.frustumCulled = false; scene.add(crowd.sticks);
+  let si = 0;
+  bySign.forEach((idxs, k) => {
+    if (!idxs.length) return;
+    const m = new THREE.InstancedMesh(new THREE.PlaneGeometry(3.4, 2.1), new THREE.MeshBasicMaterial({ map: signTex[k], side: THREE.DoubleSide }), idxs.length);
+    m.frustumCulled = false; scene.add(m);
+    idxs.forEach((fi, j) => { crowd.signs.push({ mesh: m, j, fan: fi, stick: si }); crowd.fans[fi].signSlot = crowd.signs.length - 1; si++; });
+  });
+  updateCrowd(0, true);
+}
+const _cd = new THREE.Object3D();
+function updateCrowd(dtMs, force) {
+  if (!crowd.torso) return;
+  crowd.tick++;
+  if (!force && crowd.tick % 3) { crowd.pend = (crowd.pend || 0) + dtMs; return; }
+  dtMs += crowd.pend || 0; crowd.pend = 0;
+  crowd.excite = Math.max(0, crowd.excite - dtMs * 2 / 3200);
+  const t = performance.now() / 1000, ex = crowd.excite;
+  const fans = crowd.fans;
+  for (let i = 0; i < fans.length; i++) {
+    const f = fans[i];
+    const bob = Math.abs(Math.sin(t * f.sp * (1 + ex) + f.phase)) * (0.05 + ex * 0.9);
+    const y = f.baseY + bob, sc = f.sc;
+    _cd.rotation.set(0, f.rotY, 0); _cd.scale.set(sc, sc, sc * 0.75);
+    _cd.position.set(f.wx, y + 1.45 * sc, f.wz); _cd.updateMatrix(); crowd.torso.setMatrixAt(i, _cd.matrix);
+    _cd.scale.set(sc, sc, sc);
+    _cd.position.set(f.wx, y + 2.85 * sc, f.wz); _cd.updateMatrix(); crowd.head.setMatrixAt(i, _cd.matrix);
+    _cd.position.set(f.wx, y + 2.9 * sc, f.wz); _cd.updateMatrix(); crowd.hair.setMatrixAt(i, _cd.matrix);
+  }
+  for (let k = 0; k < crowd.signs.length; k++) {
+    const sg = crowd.signs[k], f = fans[sg.fan];
+    const bob = Math.abs(Math.sin(t * f.sp * (1 + ex) + f.phase)) * (0.05 + ex * 0.9);
+    const lift = 1.7 + ex * 1.1 + Math.sin(t * 3 + f.phase) * 0.12 * (1 + ex * 2);
+    const y = f.baseY + bob + 3.4 * f.sc + lift;
+    _cd.rotation.set(0, f.rotY, Math.sin(t * 2 + f.phase) * (0.06 + ex * 0.25)); _cd.scale.set(1, 1, 1);
+    // sign sits just in front of the fan's head, held up on a stick
+    const fx = Math.sin(f.rotY) * -0.35, fz = Math.cos(f.rotY) * -0.35;
+    _cd.position.set(f.wx + fx, y, f.wz + fz); _cd.updateMatrix(); sg.mesh.setMatrixAt(sg.j, _cd.matrix);
+    _cd.rotation.set(0, f.rotY, 0);
+    _cd.position.set(f.wx + fx, y - 1.5, f.wz + fz); _cd.updateMatrix(); crowd.sticks.setMatrixAt(sg.stick, _cd.matrix);
+  }
+  crowd.torso.instanceMatrix.needsUpdate = true; crowd.head.instanceMatrix.needsUpdate = true; crowd.hair.instanceMatrix.needsUpdate = true;
+  crowd.sticks.instanceMatrix.needsUpdate = true;
+  const seen = new Set(); crowd.signs.forEach((sg) => { if (!seen.has(sg.mesh)) { seen.add(sg.mesh); sg.mesh.instanceMatrix.needsUpdate = true; } });
+}
+buildArena();
+
 
 // -------------------------------------------------------------------------
 // Overhead scoreboard — a live, arena-style display hanging above center
@@ -1909,6 +2043,7 @@ function applyDunkPose(p, g, L, dt) {
 }
 
 function scoreFor(team, points) {
+  crowd.excite = 1; // the place erupts
   if (team === 'A') game.scoreA += points; else game.scoreB += points;
 }
 
@@ -2735,7 +2870,8 @@ function buildPostMove(p) {
   if (side) {
     // camera-relative left/right, same as every other arrow input
     const fwd = inputForward().clone().setY(0).normalize();
-    const rx = -fwd.z, rz = fwd.x;
+    const rgt = inputRight();
+    const rx = rgt.x, rz = rgt.z;
     let mx = rx * side * 0.85 + tx * 0.55, mz = rz * side * 0.85 + tz * 0.55;
     const m = Math.hypot(mx, mz) || 1;
     return { mx: mx / m, mz: mz / m, dist: POST_STEP_DIST, t: 0, dur: POST_MOVE_MS, moved: 0, side, fade: false,
@@ -2801,7 +2937,8 @@ function onPassPressed() {
   const mag = Math.hypot(ix, iz);
   if (mag > 0.05) {
     const fwd = inputForward().clone().setY(0).normalize();
-    const rx = -fwd.z, rz = fwd.x;
+    const rgt = inputRight();
+    const rx = rgt.x, rz = rgt.z;
     const wx = rx * ix / mag + fwd.x * iz / mag;
     const wz = rz * ix / mag + fwd.z * iz / mag;
     const wm = Math.hypot(wx, wz) || 1;
@@ -2899,7 +3036,7 @@ function applyMoveKick(p, mult, side, durMs) {
   // drive so the move actually carries the player downcourt, not just side
   // to side.
   const fwd = inputForward().clone().setY(0).normalize();
-  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const right = inputRight();
   const dirX = right.x * side + fwd.x * MOVE_BURST_FORWARD_WEIGHT;
   const dirZ = right.z * side + fwd.z * MOVE_BURST_FORWARD_WEIGHT;
   const dirMag = Math.hypot(dirX, dirZ) || 1;
@@ -3370,8 +3507,14 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // let go -- so holding UP to sprint back on defense keeps taking you back after the
 // camera swings at half court, instead of suddenly reversing. Release (or tap a new
 // direction) and the new view's mapping takes over.
-let ctrlLatch = null;
-function inputForward() { return ctrlLatch || camForward; }
+let ctrlLatchFwd = null, ctrlLatchLat = null; // up/down axis and left/right axis latch independently
+function inputForward() { return ctrlLatchFwd || camForward; }
+function inputRight() { const f = ctrlLatchLat || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
+function axisHeld(vertical) {
+  const ks = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+  if (ks.some((k) => keysDown.has(k))) return true;
+  return !!(touchMove && touchMove.active && Math.abs(vertical ? touchMove.vec.y : touchMove.vec.x) > 0.15);
+}
 function arrowInputHeld() {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].some((k) => keysDown.has(k))) return true;
   return !!(touchMove && touchMove.active && Math.hypot(touchMove.vec.x, touchMove.vec.y) > 0.15);
@@ -3535,7 +3678,7 @@ function updateHumanMovement(dtMs) {
       // movement uses, just at the (faster) post-steer speed.
       const nx = pix / pmag, nz = piz / pmag;
       const fwd = inputForward().clone().setY(0).normalize();
-      const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+      const right = inputRight();
       targetVx = (right.x * nx + fwd.x * nz) * POST_STEER_SPEED;
       targetVz = (right.z * nx + fwd.z * nz) * POST_STEER_SPEED;
     } else {
@@ -3597,7 +3740,7 @@ function updateHumanMovement(dtMs) {
   if (mag >= 0.05) {
     const nx = ix / (mag || 1), nz = iz / (mag || 1);
     const fwd = inputForward().clone().setY(0).normalize();
-    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const right = inputRight();
     const worldX = right.x * nx + fwd.x * nz;
     const worldZ = right.z * nx + fwd.z * nz;
     const carryMult = game.ball.carrier === human ? BALL_HANDLE_SPEED_MULT : 1;
@@ -4604,6 +4747,7 @@ function updateCamera(dt) {
     desiredLook.lerp(new THREE.Vector3(human.x + cdx * 2.5, 3.2, human.z + cdz * 2.5), pc);
   }
 
+  desiredPos.x = clamp(desiredPos.x, -60, 60);
   const alpha = 1 - Math.pow(lerp(0.001, 0.000005, swingK), dt / 1000); // catches up faster mid-swing, smoothly
   game.camPos.lerp(desiredPos, alpha);
   game.camLookAt.lerp(desiredLook, alpha);
@@ -4616,9 +4760,14 @@ function updateCamera(dt) {
   const prevFwd = camForward.clone();
   if (pc > 0.001) camForward.copy(game.camLookAt).sub(camera.position).setY(0).normalize();
   else camForward.set(Math.cos(targetYaw), 0, Math.sin(targetYaw));
-  if (game.ctrlDirKey !== undefined && game.ctrlDirKey !== dirSign && arrowInputHeld()) ctrlLatch = prevFwd;
+  const vHeld = axisHeld(true), hHeld = axisHeld(false);
+  if (game.ctrlDirKey !== undefined && game.ctrlDirKey !== dirSign) {
+    if (vHeld) ctrlLatchFwd = prevFwd;
+    if (hHeld) ctrlLatchLat = prevFwd;
+  }
   game.ctrlDirKey = dirSign;
-  if (!arrowInputHeld()) ctrlLatch = null;
+  if (!vHeld) ctrlLatchFwd = null;
+  if (!hHeld) ctrlLatchLat = null;
   // Debug-only viewpoint override (unset in normal play); controls keep
   // using the real follow-cam direction computed above.
   const ov = window.__camOverride;
@@ -4901,6 +5050,7 @@ function frame(now) {
     }
 
     updateBall(dtMs);
+    updateCrowd(dtMs);
     updateRef(dtMs);
     game.players.forEach((p) => updateHumanoidPose(p, dtMs));
 
