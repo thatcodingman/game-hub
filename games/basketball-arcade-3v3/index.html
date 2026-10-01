@@ -131,6 +131,13 @@
     padding: 5px 14px; display: inline-block;
   }
   .overlay .rules { font-size: 14px; font-weight: 600; color: #7dd3fc; margin-bottom: 10px; }
+  .uni-pick { margin: 0 0 18px; display: flex; flex-direction: column; gap: 8px; align-items: center; cursor: default; }
+  .uni-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .uni-row .lbl { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #94a3b8; width: 118px; text-align: right; }
+  .uni-sw { width: 26px; height: 26px; border-radius: 6px; border: 2px solid rgba(255,255,255,0.25); cursor: pointer; padding: 0; position: relative; overflow: hidden; }
+  .uni-sw i { position: absolute; left: 0; right: 0; bottom: 0; height: 40%; display: block; }
+  .uni-sw.sel { border-color: #fff; box-shadow: 0 0 0 2px #eab308; }
+  .uni-name { font-size: 11px; color: #cbd5e1; min-width: 78px; text-align: left; }
   .overlay .squad { font-size: 12px; color: #64748b; margin-bottom: 30px; }
   .overlay .start-btn { font-size: 18px; font-weight: 700; color: #eab308; animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -209,6 +216,10 @@
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
   <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS</div>
   <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; F block &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="uni-pick" id="uni-pick">
+    <div class="uni-row"><span class="lbl">YOUR UNIFORM</span><span id="uni-a-sw" class="uni-row"></span><span class="uni-name" id="uni-a-name"></span></div>
+    <div class="uni-row"><span class="lbl">AI UNIFORM</span><span id="uni-b-sw" class="uni-row"></span><span class="uni-name" id="uni-b-name"></span></div>
+  </div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
 </div>
@@ -273,7 +284,7 @@ const PLAYER_R = 1.5;
 const POST_CONTACT_D = PLAYER_R * 2 * 0.72;
 const BALL_R = 0.45;
 const PICKUP_RANGE = PLAYER_R + BALL_R + 1.2;
-const STEAL_RANGE = PLAYER_R * 2 + 1.5;
+const STEAL_RANGE = PLAYER_R * 2 + 2.6;
 // Three contest tiers (closest band wins): a hand up from way out barely
 // bothers the shooter, a real closeout costs him something, and a defender
 // right on top of him at the release point is a real problem. Five tiers,
@@ -300,7 +311,11 @@ const CONTEST_TIER_INFO = {
   heavy: { label: 'HEAVILY CONTESTED', color: '#ef4444' },
 };
 const MAX_SHOT_RANGE = 32;
-const THREE_PT_R = 22;
+const THREE_PT_R = 23.75;      // arc radius from the rim center (NBA)
+const THREE_CORNER_Z = 22;      // straight corner lines, 22 ft either side of the rim
+function isThreePt(x, z, hoop) { return Math.abs(z) >= THREE_CORNER_Z || Math.hypot(x - hoop.x, z - hoop.z) > THREE_PT_R; }
+const FT_LINE_DIST = 13.75;     // rim center to the free-throw line, ft
+const KEY_LEN = FT_LINE_DIST + (47 - 41); // baseline to the free-throw line (rim is 6 ft off the baseline)
 const MATCH_SECONDS = 150;
 const WIN_SCORE = 21; // first team to 21 wins outright, even if the clock hasn't run out
 const GRAVITY = 42; // units/s^2, for the loose-ball bounce
@@ -384,7 +399,7 @@ const DEFENSE_MIN_GAP = BODY_CONTACT_D + 0.35;
 // discipline) -- the only way the AI ever commits a push foul.
 const AI_RECKLESS_CLOSEOUT_CHANCE = 0.05;
 function isProtectedDribbler(p) {
-  return game.ball.carrier === p && p.shotPhase === 'none' && !game.activeInbound && !game.freeThrow;
+  return game.ball.carrier === p && p.shotPhase === 'none' && !p.dunk && !game.activeInbound && !game.freeThrow;
 }
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
@@ -439,62 +454,106 @@ scene.add(fillLight);
 // -------------------------------------------------------------------------
 // Court (canvas-texture floor markings, matching the hub's flat-shape look)
 // -------------------------------------------------------------------------
+const COURT_PAD = 7; // floor extends this far past the lines on every side
 function buildCourtTexture() {
-  const W_TEX = 1024, H_TEX = Math.round(W_TEX * (COURT_WID / COURT_LEN));
+  const PXF = 12; // texture pixels per foot
+  const W_TEX = (COURT_LEN + COURT_PAD * 2) * PXF, H_TEX = (COURT_WID + COURT_PAD * 2) * PXF;
   const cvs = document.createElement('canvas');
   cvs.width = W_TEX; cvs.height = H_TEX;
   const ctx = cvs.getContext('2d');
+  const X = (wx) => (wx + COURT_HALF_LEN + COURT_PAD) * PXF;
+  const Z = (wz) => (wz + COURT_HALF_WID + COURT_PAD) * PXF;
+  const px = (ft) => ft * PXF;
+  const PAINT = '#8f2a2a', WOOD_IN = '#c8944a', WOOD_OUT = '#9a6b32', LINE = '#f4f6f8';
 
-  // hardwood plank stripes
-  const plankW = W_TEX / 26;
-  for (let i = 0; i < 26; i++) {
-    ctx.fillStyle = i % 2 === 0 ? '#b8873f' : '#ad7c37';
-    ctx.fillRect(i * plankW, 0, plankW + 1, H_TEX);
+  // out-of-bounds surround, then the playing floor, both with long planks
+  ctx.fillStyle = WOOD_OUT; ctx.fillRect(0, 0, W_TEX, H_TEX);
+  ctx.fillStyle = WOOD_IN; ctx.fillRect(X(-COURT_HALF_LEN), Z(-COURT_HALF_WID), px(COURT_LEN), px(COURT_WID));
+  for (let i = 0; i * 0.5 < COURT_WID + COURT_PAD * 2; i++) {
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.045)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(0, i * 0.5 * PXF, W_TEX, 0.5 * PXF);
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.08)';
-  ctx.fillRect(0, 0, W_TEX, H_TEX);
+  ctx.fillStyle = 'rgba(0,0,0,0.05)';
+  for (let i = 0; i < 94; i += 4) ctx.fillRect(X(-47 + i), Z(-25), 1.5, px(50)); // plank seams
 
-  function toCanvas(wx, wz) {
-    return { x: (wx + COURT_HALF_LEN) / COURT_LEN * W_TEX, y: (wz + COURT_HALF_WID) / COURT_WID * H_TEX };
-  }
-  const px = (units) => units / COURT_LEN * W_TEX;
-
-  ctx.strokeStyle = 'rgba(242,244,247,0.85)';
-  ctx.lineWidth = 3;
-
-  // half-court line + center circle
-  let c = toCanvas(0, -COURT_HALF_WID), c2 = toCanvas(0, COURT_HALF_WID);
-  ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c2.x, c2.y); ctx.stroke();
-  let cc = toCanvas(0, 0);
-  ctx.beginPath(); ctx.arc(cc.x, cc.y, px(6), 0, Math.PI * 2); ctx.stroke();
-
-  // key/paint rectangles + free-throw circles + three-point arcs, both ends
+  // painted lanes (the "key"), baseline to the free-throw line
   [HOOP_A, HOOP_B].forEach((hoop) => {
-    const dir = hoop.x > 0 ? -1 : 1; // key extends inward from the baseline
-    const keyHalfW = 8, keyLen = 15;
-    const baselineX = hoop.x > 0 ? COURT_HALF_LEN : -COURT_HALF_LEN;
-    const ft = toCanvas(baselineX + dir * keyLen, 0);
-    const p1 = toCanvas(baselineX, -keyHalfW), p2 = toCanvas(baselineX, keyHalfW);
-    const p3 = toCanvas(baselineX + dir * keyLen, keyHalfW), p4 = toCanvas(baselineX + dir * keyLen, -keyHalfW);
-    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p4.x, p4.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-    ctx.beginPath(); ctx.arc(ft.x, ft.y, px(6), 0, Math.PI * 2); ctx.stroke();
-    const rc = toCanvas(hoop.x, 0);
-    // the three-point arc gets its own bold, high-contrast color (instead of
-    // blending into the same faint white as every other court line) so it
-    // actually reads as a distinct line from a normal in-game camera angle
-    ctx.save();
-    ctx.strokeStyle = '#ff5a1f';
-    ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.arc(rc.x, rc.y, px(THREE_PT_R), Math.PI * 0.5 * (dir), Math.PI * 1.5 * (dir), dir > 0); ctx.stroke();
+    const sgn = Math.sign(hoop.x);
+    const bx = sgn * COURT_HALF_LEN, fx = bx - sgn * KEY_LEN;
+    ctx.fillStyle = PAINT;
+    ctx.fillRect(Math.min(X(bx), X(fx)), Z(-8), Math.abs(X(fx) - X(bx)), px(16));
+  });
+
+  ctx.strokeStyle = LINE; ctx.fillStyle = LINE;
+  ctx.lineWidth = 4; ctx.lineJoin = 'miter';
+  // boundary + half-court line
+  ctx.strokeRect(X(-COURT_HALF_LEN), Z(-COURT_HALF_WID), px(COURT_LEN), px(COURT_WID));
+  ctx.beginPath(); ctx.moveTo(X(0), Z(-COURT_HALF_WID)); ctx.lineTo(X(0), Z(COURT_HALF_WID)); ctx.stroke();
+  // center circle: painted disc, ring, inner ring, wordmark
+  ctx.save();
+  ctx.fillStyle = PAINT; ctx.beginPath(); ctx.arc(X(0), Z(0), px(6), 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(X(0), Z(0), px(6), 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(X(0), Z(0), px(2), 0, Math.PI * 2); ctx.stroke();
+  ctx.font = 'bold ' + px(1.5) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  // read left-to-right from the standard behind-the-offense camera (looking down +x)
+  ctx.save(); ctx.translate(X(0), Z(0)); ctx.rotate(Math.PI / 2);
+  ctx.fillText('ARCADE', 0, -px(3.9)); ctx.fillText('BASKETBALL', 0, px(3.9));
+  ctx.restore();
+
+  [HOOP_A, HOOP_B].forEach((hoop) => {
+    const sgn = Math.sign(hoop.x);          // which baseline this hoop sits at
+    const dir = -sgn;                        // toward center court
+    const bx = sgn * COURT_HALF_LEN, fx = bx + dir * KEY_LEN;
+    ctx.lineWidth = 4;
+    // lane outline (open at the baseline side, closed by the baseline itself)
+    ctx.beginPath(); ctx.moveTo(X(bx), Z(-8)); ctx.lineTo(X(fx), Z(-8)); ctx.lineTo(X(fx), Z(8)); ctx.lineTo(X(bx), Z(8)); ctx.stroke();
+    // free-throw circle: solid half out toward center court, dashed half inside the lane
+    ctx.beginPath(); ctx.arc(X(fx), Z(0), px(6), dir > 0 ? -Math.PI / 2 : Math.PI / 2, dir > 0 ? Math.PI / 2 : Math.PI * 1.5); ctx.stroke();
+    ctx.save(); ctx.setLineDash([px(1.1), px(1.1)]);
+    ctx.beginPath(); ctx.arc(X(fx), Z(0), px(6), dir > 0 ? Math.PI / 2 : -Math.PI / 2, dir > 0 ? Math.PI * 1.5 : Math.PI / 2); ctx.stroke();
     ctx.restore();
+    // lane blocks + hash marks on both sides (first block 7-9 ft off the baseline)
+    [-1, 1].forEach((side) => {
+      const zIn = side * 8, zOut = side * 9.1;
+      const bxA = bx + dir * 7, bxB = bx + dir * 9;
+      ctx.fillRect(Math.min(X(bxA), X(bxB)), Math.min(Z(zIn), Z(zOut)), Math.abs(X(bxB) - X(bxA)), Math.abs(Z(zOut) - Z(zIn)));
+      [11, 14, 17].forEach((o) => {
+        const mx = bx + dir * o;
+        ctx.beginPath(); ctx.moveTo(X(mx), Z(zIn)); ctx.lineTo(X(mx), Z(side * 8.9)); ctx.stroke();
+      });
+    });
+    // backboard line, rim stem, and the restricted-area arc
+    const bbX = hoop.x + sgn * 1.25;
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(X(bbX), Z(-3)); ctx.lineTo(X(bbX), Z(3)); ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(X(bbX), Z(0)); ctx.lineTo(X(hoop.x), Z(0)); ctx.stroke();
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(X(hoop.x), Z(0), px(4), dir > 0 ? -Math.PI / 2 : Math.PI / 2, dir > 0 ? Math.PI / 2 : Math.PI * 1.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(hoop.x), Z(-4)); ctx.lineTo(X(bbX), Z(-4)); ctx.moveTo(X(hoop.x), Z(4)); ctx.lineTo(X(bbX), Z(4)); ctx.stroke();
+    // three-point line: dead-straight corner lines out to where they meet the arc
+    const dx = Math.sqrt(THREE_PT_R * THREE_PT_R - THREE_CORNER_Z * THREE_CORNER_Z);
+    const a0 = Math.atan2(THREE_CORNER_Z, dx);   // angle of the join, measured from the toward-center axis
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(X(bx), Z(-THREE_CORNER_Z));
+    ctx.lineTo(X(hoop.x + dir * dx), Z(-THREE_CORNER_Z));
+    for (let i = 0; i <= 60; i++) {
+      const t = -a0 + (2 * a0 * i) / 60;
+      ctx.lineTo(X(hoop.x + dir * THREE_PT_R * Math.cos(t)), Z(THREE_PT_R * Math.sin(t)));
+    }
+    ctx.lineTo(X(bx), Z(THREE_CORNER_Z));
+    ctx.stroke();
   });
 
   const tex = new THREE.CanvasTexture(cvs);
-  tex.anisotropy = 4;
+  tex.anisotropy = 8;
+  tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 
-const floorGeo = new THREE.PlaneGeometry(COURT_LEN + 14, COURT_WID + 14);
+const floorGeo = new THREE.PlaneGeometry(COURT_LEN + COURT_PAD * 2, COURT_WID + COURT_PAD * 2);
 const floorMat = new THREE.MeshStandardMaterial({ map: buildCourtTexture(), roughness: 0.85 });
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2;
@@ -649,17 +708,19 @@ buildHoop(HOOP_B, -1);
 // instead of relying purely on the flat floor texture.
 function buildThreePointArc(hoop) {
   const dir = hoop.x > 0 ? -1 : 1;
-  const pts = [];
-  const SEGMENTS = 40;
+  const bx = -dir * COURT_HALF_LEN;
+  const dx = Math.sqrt(THREE_PT_R * THREE_PT_R - THREE_CORNER_Z * THREE_CORNER_Z);
+  const a0 = Math.atan2(THREE_CORNER_Z, dx);
+  const pts = [new THREE.Vector3(bx, 0.05, -THREE_CORNER_Z), new THREE.Vector3(hoop.x + dir * dx, 0.05, -THREE_CORNER_Z)];
+  const SEGMENTS = 60;
   for (let i = 0; i <= SEGMENTS; i++) {
-    const t = -Math.PI / 2 + (Math.PI * i) / SEGMENTS;
-    const x = hoop.x + dir * THREE_PT_R * Math.cos(t);
-    const z = THREE_PT_R * Math.sin(t);
-    pts.push(new THREE.Vector3(x, 0.05, z));
+    const t = -a0 + (2 * a0 * i) / SEGMENTS;
+    pts.push(new THREE.Vector3(hoop.x + dir * THREE_PT_R * Math.cos(t), 0.05, THREE_PT_R * Math.sin(t)));
   }
-  const curve = new THREE.CatmullRomCurve3(pts);
-  const tubeGeo = new THREE.TubeGeometry(curve, SEGMENTS, 0.09, 6, false);
-  const tubeMat = new THREE.MeshStandardMaterial({ color: 0xff5a1f, emissive: 0x6b1f00, emissiveIntensity: 0.3, roughness: 0.5 });
+  pts.push(new THREE.Vector3(bx, 0.05, THREE_CORNER_Z));
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'chordal');
+  const tubeGeo = new THREE.TubeGeometry(curve, 160, 0.07, 6, false);
+  const tubeMat = new THREE.MeshStandardMaterial({ color: 0xf4f6f8, roughness: 0.6 });
   const tube = new THREE.Mesh(tubeGeo, tubeMat);
   tube.receiveShadow = true;
   scene.add(tube);
@@ -992,6 +1053,11 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   // Kept so a screen (or anything else) can flash the jersey a different
   // color and reliably reset it back to the real team color afterward.
   group.userData.torso = torso;
+  // Tag the uniform materials so the menu's uniform picker can recolor them.
+  { const jh = new THREE.Color(teamColor).getHex(), sh = new THREE.Color(shortsColor).getHex(), th = new THREE.Color(trimColor).getHex();
+    group.traverse((o) => { if (!o.isMesh || !o.material || !o.material.color) return;
+      const h = o.material.color.getHex();
+      if (h === jh) o.material.userData.uni = 'jersey'; else if (h === sh) o.material.userData.uni = 'shorts'; else if (h === th) o.material.userData.uni = 'trim'; }); }
   group.userData.baseTeamColor = teamColor;
   scene.add(group);
   return group;
@@ -1113,10 +1179,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · hold the right side to shoot (let go on green) or tap to steal'
-  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · F block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · drive at the rim + X to dunk · F block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · hold right side to shoot, let go on green / tap to steal'
-  : 'Arrows move · hold SPACE shoot, let go on green / steal · F block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · hold SPACE shoot, let go on green / steal · X dunk (drive at rim) · F block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1160,9 +1226,10 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.moveBurstT = 1; p.moveBurstPeak = 0; p.moveBoostTimer = 0; p.autoSwitchCooldown = 0;
     p.ankleStunTimer = 0; p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleImmuneTimer = 0; p.ankleFallAmt = 0;
     p.switchUrgencyTimer = 0;
-    p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.blockCooldown = 0; p.blockJumpTimer = 0;
+    p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.blockCooldown = 0; p.blockJumpTimer = 0; p.dunk = null;
     p.pushAccum = 0; p.pushContactT = 0; p.recklessCloseout = false; p.inDiscZone = false;
     p.catchHoldT = 0;
+    p.postMove = null; p.shotRiseDelay = 0; p.postShot = false; p.postFade = false;
   };
   const b = game.ball;
 
@@ -1210,7 +1277,7 @@ function resetPositions(possessionTeam, isMatchStart) {
 resetPositions('A', true);
 
 function setCarrier(p) {
-  game.ball.carrier = p; game.ball.inFlight = false;
+  game.ball.carrier = p; game.ball.inFlight = false; game.ball.rebound = null;
   game.ball.justReleasedBy = null; game.ball.releaseLockTimer = 0;
   game.ball.vx = 0; game.ball.vy = 0; game.ball.vz = 0;
   p.ballCallTimer = 0; // got it — no longer calling for it
@@ -1360,22 +1427,23 @@ function updateActivePass(dtMs) {
 
 function attemptSteal(defender) {
   if (defender.actionCooldown > 0) return;
-  defender.actionCooldown = 420;
+  defender.actionCooldown = 300;
   // Nobody can strip the ball off anybody while a checkup/inbound pass is
   // actively being thrown in — the player putting the ball in play is fully
   // safe until it's actually delivered, not just the instant after.
   if (game.activeInbound) return;
   const carrier = game.ball.carrier;
-  if (!carrier) return;
+  if (!carrier || carrier.dunk) return;
   // Fresh off an inbound/checkup, the carrier can't be stripped at all — no
   // cheap steal the instant they catch it to start a possession.
   if (carrier.inboundImmuneTimer > 0) return;
   // A recent crossover makes the carrier much harder to strip for a short
   // window — that's the whole point of the move.
   const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
-  const chance = defender.stats.steal * 0.34 * evadeMult;
+  const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult;
   if (Math.random() < chance) {
     playTone(300, 0.05);
+    if (defender === controlledPlayer()) showScreenCallout('STOLEN!', 900);
     game.ball.carrier = null; game.ball.inFlight = false;
     game.ball.vx = (Math.random() - 0.5) * 3; game.ball.vz = (Math.random() - 0.5) * 3;
     game.ball.vy = 4;
@@ -1415,7 +1483,7 @@ function attemptBlock(blocker) {
   const foulChance = clamp(BLOCK_FOUL_BASE + lunge * BLOCK_FOUL_LUNGE + (bd < PLAYER_R * 2 + 0.2 ? BLOCK_FOUL_TIGHT : 0), 0, BLOCK_FOUL_MAX);
   if (Math.random() < foulChance) {
     const sHoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
-    callFoul(blocker, shooter, 'shooting', { isThree: dist2(shooter, sHoop) > THREE_PT_R });
+    callFoul(blocker, shooter, 'shooting', { isThree: isThreePt(shooter.x, shooter.z, sHoop) });
     return;
   }
   const heightGap = (blocker.stats.height || 6) - (shooter.stats.height || 6);
@@ -1439,6 +1507,92 @@ function attemptBlock(blocker) {
   }
 }
 
+// ---- Shot distance ---------------------------------------------------------
+// Inside 28 ft this is the same falloff as before (so mid-range and threes
+// keep the balance they had), but past that it gets steep fast, the meter's
+// bonus shrinks the deeper you go (a perfect release doesn't make a 60-footer
+// a good shot), and anything past HEAVE_DIST is a true heave, capped at a few
+// percent no matter what.
+const DEEP_SHOT_DIST = 28;
+const DEEP_SHOT_PEN_PER_FT = 0.06;
+const HEAVE_DIST = 35;
+const HEAVE_MAX_PERFECT = 0.04, HEAVE_MAX = 0.015;
+function shotDistancePenalty(d) {
+  let pen = Math.max(0, (Math.min(d, DEEP_SHOT_DIST) - 5) / 40);
+  if (d > DEEP_SHOT_DIST) pen += (d - DEEP_SHOT_DIST) * DEEP_SHOT_PEN_PER_FT;
+  return pen;
+}
+function meterRangeScale(d) {
+  if (d <= THREE_PT_R) return 1;
+  if (d <= DEEP_SHOT_DIST) return 0.75;
+  if (d <= HEAVE_DIST) return 0.4;
+  return 0.15;
+}
+
+// ---- Shooting fouls on contact ----------------------------------------------
+// Judged at the instant the ball leaves his hands, for every defender close
+// enough to touch him. Each one's chance:
+//   (draped on him ? SHOT_FOUL_DRAPED : SHOT_FOUL_NEAR)
+//   + his speed INTO the shooter beyond a normal slide x SHOT_FOUL_LUNGE  (a flying closeout fouls,
+//                                                   a defender who's set doesn't)
+//   + POST_SHOT_FOUL_BONUS if it's a move out of the post (bodies are on bodies)
+//   + (shooter strength - 1) x SHOT_FOUL_STRENGTH   (bigs draw more contact)
+// capped at SHOT_FOUL_MAX; the most likely defender is the one rolled. A foul
+// doesn't stop the shot: it plays out, and a make is an AND-ONE (basket + 1
+// free throw), a miss is 2 free throws (3 if it was from deep).
+const SHOT_CONTACT_RANGE = PLAYER_R * 2 + 1.2; // ~4.2 ft
+const SHOT_FOUL_DRAPED = 0.10;
+const SHOT_FOUL_NEAR = 0.04;
+const SHOT_FOUL_LUNGE = 0.9;
+const POST_SHOT_FOUL_BONUS = 0.05;
+const SHOT_FOUL_SLIDE_SPEED = 0.08; // closing slower than a normal defensive slide isn't a lunge
+const SHOT_FOUL_STRENGTH = 0.06;
+const SHOT_FOUL_MAX = 0.45;
+function rollShotContactFoul(shooter, opponents) {
+  let best = null, bestChance = 0;
+  opponents.forEach((o) => {
+    if (o.ankleDownTimer > 0 || o.ankleGetUpTimer > 0 || o.ankleStunTimer > 0) return;
+    const od = dist2(shooter, o);
+    if (od > SHOT_CONTACT_RANGE) return;
+    const ux = (shooter.x - o.x) / (od || 1), uz = (shooter.z - o.z) / (od || 1);
+    const lunge = Math.max(0, o.vx * ux + o.vz * uz - SHOT_FOUL_SLIDE_SPEED);
+    let ch = (od <= BODY_CONTACT_D + 0.3 ? SHOT_FOUL_DRAPED : SHOT_FOUL_NEAR) + lunge * SHOT_FOUL_LUNGE;
+    if (shooter.postShot) ch += POST_SHOT_FOUL_BONUS;
+    ch += ((shooter.stats.strength || 1) - 1) * SHOT_FOUL_STRENGTH;
+    ch = clamp(ch, 0, SHOT_FOUL_MAX);
+    if (ch > bestChance) { bestChance = ch; best = o; }
+  });
+  return best && Math.random() < bestChance ? best : null;
+}
+function callShootingFoulOnShot(fouler, shooter, isThree) {
+  if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1;
+  else game.teamFoulsB = (game.teamFoulsB || 0) + 1;
+  fouler.fouls = (fouler.fouls || 0) + 1;
+  // Whistle on the release, but the ball's already gone -- everyone stops and
+  // watches it; resolveFouledShot decides and-one vs free throws.
+  game.foulPending = { timer: Infinity, fouled: shooter, fts: 0, awaitShot: true };
+  refSignalFoul(fouler);
+  showFoulBanner('SHOOTING FOUL',
+    teamLabel(fouler.team) + ' #' + (JERSEY_NUMBERS[fouler.name] || '?') + ' (' + fouler.name + ')  ·  ' + (isThree ? 3 : 2) + ' SHOTS — OR AND-ONE IF IT FALLS',
+    fouler.team);
+}
+function resolveFouledShot(s) {
+  const b = game.ball;
+  b.inFlight = false; b.arcHeight = 0;
+  b.vx = (Math.random() - 0.5) * 0.6; b.vz = (Math.random() - 0.5) * 0.6; b.vy = s.made ? -2 : 3;
+  game.foulPending = null;
+  if (s.made) {
+    playTone(760, 0.09); playTone(940, 0.09, 60);
+    scoreFor(s.shooter.team, s.isThree ? 3 : 2);
+    if (game.scoreA >= WIN_SCORE || game.scoreB >= WIN_SCORE) { showMatchOver(); return; }
+    showScreenCallout('AND ONE!', 1400);
+    game.foulPending = { timer: 1100, fouled: s.shooter, fts: 1 };
+  } else {
+    playTone(220, 0.08);
+    game.foulPending = { timer: 700, fouled: s.shooter, fts: s.isThree ? 3 : 2 };
+  }
+}
+
 function attemptShot(player, meterQuality) {
   if (player.actionCooldown > 0) return;
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
@@ -1450,16 +1604,20 @@ function attemptShot(player, meterQuality) {
   const opponents = getOpponents(player.team);
   const nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
   let acc = player.stats.shot;
-  acc -= Math.max(0, (d - 5) / 40);
+  acc -= shotDistancePenalty(d);
+  // Post moves: a drop-step hook shields the ball with the body (the contest
+  // matters less); a turnaround fade is a tougher, off-balance look.
+  const contestMult = player.postShot && !player.postFade ? 0.6 : 1;
+  if (player.postShot && player.postFade) acc -= 0.04;
   // Five contest tiers instead of one flat in-range/out-of-range check --
   // a hand up from way out barely matters, a tight closeout costs you
   // something real, a defender draped on him at the release point is a
   // genuine problem, and a truly clean look actually helps. Mutually
   // exclusive by nearest distance, closest band wins.
   let contestTier;
-  if (nearestDefDist <= CONTEST_HEAVY_RANGE) { acc -= CONTEST_HEAVY_PENALTY; contestTier = 'heavy'; }
-  else if (nearestDefDist <= CONTEST_NORMAL_RANGE) { acc -= CONTEST_NORMAL_PENALTY; contestTier = 'normal'; }
-  else if (nearestDefDist <= CONTEST_SLIGHT_RANGE) { acc -= CONTEST_SLIGHT_PENALTY; contestTier = 'slight'; }
+  if (nearestDefDist <= CONTEST_HEAVY_RANGE) { acc -= CONTEST_HEAVY_PENALTY * contestMult; contestTier = 'heavy'; }
+  else if (nearestDefDist <= CONTEST_NORMAL_RANGE) { acc -= CONTEST_NORMAL_PENALTY * contestMult; contestTier = 'normal'; }
+  else if (nearestDefDist <= CONTEST_SLIGHT_RANGE) { acc -= CONTEST_SLIGHT_PENALTY * contestMult; contestTier = 'slight'; }
   else if (nearestDefDist <= CONTEST_OPEN_RANGE) { contestTier = 'open'; }
   else { acc += CONTEST_WIDEOPEN_BONUS; contestTier = 'wideopen'; }
   // Shown only for the human's own shots, right as the shot is released
@@ -1470,12 +1628,17 @@ function attemptShot(player, meterQuality) {
   // no meter and gets its usual straight accuracy roll): nail the release in
   // the green zone for a real bonus, badly time it (or let it expire) for a
   // real penalty on top of everything else above.
-  if (meterQuality === 'perfect') acc += SHOT_METER_PERFECT_BONUS;
-  else if (meterQuality === 'good') acc += SHOT_METER_GOOD_BONUS;
+  const mScale = meterRangeScale(d);
+  if (meterQuality === 'perfect') acc += SHOT_METER_PERFECT_BONUS * mScale;
+  else if (meterQuality === 'good') acc += SHOT_METER_GOOD_BONUS * mScale;
   else if (meterQuality === 'bad') acc -= SHOT_METER_BAD_PENALTY;
-  acc = clamp(acc, 0.05, 0.95);
+  acc = clamp(acc, 0.02, 0.95);
+  if (d > HEAVE_DIST) acc = Math.min(acc, meterQuality === 'perfect' ? HEAVE_MAX_PERFECT : HEAVE_MAX);
+  player.lastShotAcc = acc; // exposed for tests/tuning
   const made = Math.random() < acc;
-  const isThree = d > THREE_PT_R;
+  const isThree = isThreePt(player.x, player.z, hoop);
+  // Contact on the release (see rollShotContactFoul).
+  const contactFouler = (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(player, opponents) : null;
 
   game.ball.carrier = null;
   game.ball.inFlight = true;
@@ -1485,6 +1648,7 @@ function attemptShot(player, meterQuality) {
   playTone(560, 0.04);
   const shot = { t: 0, dur: flightMs, startX, startZ, startY, endX, endZ, endY, shooter: player, made, isThree };
   game.activeShot = shot;
+  if (contactFouler) { shot.fouled = { by: contactFouler }; callShootingFoulOnShot(contactFouler, player, isThree); }
 }
 
 function resolveShot(shooter, made, isThree) {
@@ -1502,12 +1666,179 @@ function resolveShot(shooter, made, isThree) {
     }
   } else {
     playTone(220, 0.08);
-    game.ball.vx = (Math.random() - 0.5) * 3; game.ball.vz = (Math.random() - 0.5) * 3;
-    game.ball.vy = 2.5;
-    game.ball.justReleasedBy = shooter; game.ball.releaseLockTimer = 300;
+    popOffRim(shooter);
   }
 }
+game.canDunk = (p) => canDunk(p); game.startDunk = (p) => startDunk(p); game.popOffRim = (p) => popOffRim(p);
 game.resolveShot = resolveShot; // exposed for test instrumentation, matches prior debug convention
+
+// ---- Rebounding ---------------------------------------------------------------
+// A miss caroms off the rim (away from the basket, mostly short, sometimes a
+// long one) and everybody crashes the glass. The ball is grabbed the first
+// instant it drops into someone's reach (taller = reaches it sooner), and when
+// several people get there together the winner is decided by:
+//   height + strength + BOX-OUT position (who has the inside lane to the rim)
+//   + how close he is to the ball + a little luck.
+// Defenders box out their man while the shot is in the air (see updateAI).
+const REBOUND_R = 3.4;            // horizontal arm radius around the ball
+const REBOUND_DELAY_MS = 200;     // ball has to come off the rim first
+const REBOUND_BOX_RANGE = 5.0;    // an opponent this close is who you're battling
+const REBOUND_HEIGHT_W = 0.35, REBOUND_STRENGTH_W = 0.5, REBOUND_BOX_W = 0.55;
+const REBOUND_LUCK_W = 0.45, REBOUND_OFF_PENALTY = 0.12;
+function reboundReachY(p) { return (p.stats.height || 6.5) * 1.1 + 2.2; }
+function popOffRim(shooter) {
+  const b = game.ball;
+  const hoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
+  const dirx = -(Math.sign(hoop.x) || 1); // off the rim toward the floor, never through the backboard
+  const spread = (Math.random() - 0.5) * 2.0;
+  const long = Math.random() < 0.15;
+  const spd = long ? 1.0 + Math.random() * 0.45 : 0.3 + Math.random() * 0.5;
+  b.x = hoop.x; b.z = hoop.z; b.y = hoop.y;
+  b.vx = dirx * Math.cos(spread) * spd;
+  b.vz = Math.sin(spread) * spd;
+  b.vy = 8 + Math.random() * 4;
+  b.justReleasedBy = shooter; b.releaseLockTimer = 300;
+  b.rebound = { hoop, shooterTeam: shooter.team, t: 0 };
+}
+function reboundScore(c, hoop, shooterTeam) {
+  const opps = getOpponents(c.team);
+  let near = null, nd = REBOUND_BOX_RANGE;
+  opps.forEach((o) => { const d = dist2(c, o); if (d < nd) { nd = d; near = o; } });
+  let ins = 0;
+  if (near) ins = clamp((dist2(near, hoop) - dist2(c, hoop)) / 3, -1, 1);
+  const stats = c.stats;
+  return ((stats.height || 6.5) - 6.5) * REBOUND_HEIGHT_W
+    + ((stats.strength || 1) - 1) * REBOUND_STRENGTH_W
+    + ins * REBOUND_BOX_W
+    - (dist2(c, game.ball) / REBOUND_R) * 0.3
+    + Math.random() * REBOUND_LUCK_W
+    - (c.team === shooterTeam ? REBOUND_OFF_PENALTY : 0);
+}
+function updateRebound(dtMs) {
+  const b = game.ball, rb = b.rebound;
+  rb.t += dtMs;
+  if (game.freeThrow || game.foulPending) return;
+  const cands = [];
+  for (let i = 0; i < game.players.length; i++) {
+    const pl = game.players[i];
+    if (pl.ankleDownTimer > 0 || pl.ankleGetUpTimer > 0 || pl.ankleStunTimer > 0) continue;
+    if (pl.shotPhase !== 'none') continue;
+    if (pl === b.justReleasedBy && b.releaseLockTimer > 0) continue;
+    const hd = Math.hypot(pl.x - b.x, pl.z - b.z);
+    if (hd > REBOUND_R + 1.5) continue;
+    const reach = reboundReachY(pl);
+    // Elevate for it as the ball drops into range.
+    if (b.vy < 0 && b.y < reach + 3.5 && pl.blockJumpTimer <= 0) pl.blockJumpTimer = BLOCK_JUMP_DUR_MS;
+    if (hd <= REBOUND_R && b.y <= reach && rb.t >= REBOUND_DELAY_MS) cands.push(pl);
+  }
+  if (!cands.length) return;
+  let win = cands[0], best = -Infinity;
+  cands.forEach((c) => { const sc = reboundScore(c, rb.hoop, rb.shooterTeam); if (sc > best) { best = sc; win = c; } });
+  const off = win.team === rb.shooterTeam;
+  game.rebounds = (game.rebounds || 0) + 1;
+  secureBall(win);
+  if (win.team === controlledPlayer().team) showScreenCallout(off ? 'OFFENSIVE BOARD!' : 'REBOUND!', 900);
+  playBodyThud(0.35);
+}
+
+// ---- Dunks ----------------------------------------------------------------------
+// Press SPACE while DRIVING at the rim (moving toward it, inside your position's
+// range) and instead of a shot you take off and throw it down. Bigs dunk from
+// farther out and almost never miss; guards need to be right at the rim.
+// A dunker is never "pushed" (the no-push rule is for dribblers) and can't be
+// stripped in the air. Tight contest can STUFF it; contact can draw an AND-ONE.
+const DUNK_DUR_MS = 760;
+const DUNK_RELEASE_U = 0.6;      // fraction of the move where the ball goes down
+const DUNK_MIN_APPROACH = 0.16;  // per-frame speed straight at the rim
+const DUNK_RANGE = { PG: 5.5, SF: 7.5, C: 9.0 };
+const DUNK_MAKE_BASE = 0.94;
+function canDunk(p) {
+  if (!p || game.ball.carrier !== p || p.shotPhase !== 'none' || p.dunk || p.postUpActive) return false;
+  if (game.freeThrow || game.foulPending || game.activeInbound || p.checkupLocked || game.phase !== 'live') return false;
+  if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return false;
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const d = dist2(p, hoop);
+  if (d > (DUNK_RANGE[p.name] || 7) || d < 1.2) return false;
+  return p.vx * (hoop.x - p.x) / d + p.vz * (hoop.z - p.z) / d >= DUNK_MIN_APPROACH;
+}
+function startDunk(p) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const sgn = Math.sign(hoop.x) || 1;
+  const sc = (p.stats && p.stats.scale) || 1;
+  const opps = getOpponents(p.team);
+  let nd = Infinity, nearest = null;
+  opps.forEach((o) => { const dd = dist2(p, o); if (dd < nd) { nd = dd; nearest = o; } });
+  let ch = DUNK_MAKE_BASE - (p.name === 'PG' ? 0.06 : 0);
+  if (nd <= CONTEST_HEAVY_RANGE) ch -= 0.30; else if (nd <= CONTEST_NORMAL_RANGE) ch -= 0.12;
+  p.dunk = {
+    t: 0, dur: DUNK_DUR_MS, sx: p.x, sz: p.z, tx: hoop.x - sgn * 0.9, tz: hoop.z, hoop,
+    peak: clamp(10.9 - 8.58 * sc, 1.0, 3.6), sc, released: false,
+    made: Math.random() < ch, stuffer: nd <= CONTEST_HEAVY_RANGE ? nearest : null,
+    fouler: (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(p, opps) : null,
+  };
+  p.facing = Math.atan2(hoop.x - p.x, hoop.z - p.z);
+  p.vx = 0; p.vz = 0; p.turboActive = false; p.postUpActive = false;
+  p.actionCooldown = DUNK_DUR_MS + 300;
+  p.lastDunkChance = ch;
+  playTone(140, 0.07);
+}
+function dunkY(p) {
+  const d = p.dunk;
+  if (!d) return 0;
+  const u = clamp(d.t / d.dur, 0, 1);
+  if (u < DUNK_RELEASE_U) return d.peak * Math.sin((u / DUNK_RELEASE_U) * Math.PI / 2);
+  const hu = (u - DUNK_RELEASE_U) / (1 - DUNK_RELEASE_U);
+  if (hu < 0.4) return d.peak * (1 - 0.05 * hu / 0.4);
+  const k = clamp((hu - 0.4) / 0.6, 0, 1);
+  return d.peak * 0.95 * (1 - k * k * (3 - 2 * k));
+}
+function releaseDunk(p) {
+  const d = p.dunk, hoop = d.hoop, b = game.ball;
+  b.carrier = null; b.inFlight = true;
+  b.justReleasedBy = null; b.releaseLockTimer = 0;
+  const shot = { t: 0, dur: 300, startX: b.x, startZ: b.z, startY: b.y, endX: hoop.x, endZ: hoop.z, endY: hoop.y - 0.2,
+    shooter: p, made: d.made, isThree: false, flat: true, isDunk: true };
+  game.activeShot = shot;
+  if (d.fouler) { shot.fouled = { by: d.fouler }; callShootingFoulOnShot(d.fouler, p, false); }
+  const human = controlledPlayer();
+  if (d.made) showScreenCallout('DUNK!', 1000);
+  else if (d.stuffer) { showScreenCallout('STUFFED!', 1000); d.stuffer.blockJumpTimer = BLOCK_JUMP_DUR_MS; }
+  else showScreenCallout('RIMMED OUT!', 1000);
+  playBodyThud(0.7); playTone(d.made ? 110 : 200, 0.12);
+  game.dunks = (game.dunks || 0) + (d.made ? 1 : 0);
+}
+function stepDunk(p, dtMs) {
+  const d = p.dunk;
+  if (!d) return;
+  d.t += dtMs;
+  const u = clamp(d.t / d.dur, 0, 1);
+  const ru = clamp(u / DUNK_RELEASE_U, 0, 1);
+  const e = 1 - (1 - ru) * (1 - ru);
+  p.x = lerp(d.sx, d.tx, e); p.z = lerp(d.sz, d.tz, e);
+  p.vx = 0; p.vz = 0;
+  p.facing = Math.atan2(d.hoop.x - p.x, d.hoop.z - p.z);
+  if (!d.released && u >= DUNK_RELEASE_U) { d.released = true; releaseDunk(p); }
+  if (u >= 1) { p.dunk = null; p.actionCooldown = 300; }
+}
+function applyDunkPose(p, g, L, dt) {
+  const d = p.dunk;
+  g.rotation.y = p.facing;
+  g.position.set(p.x, dunkY(p), p.z);
+  const u = clamp(d.t / d.dur, 0, 1);
+  const ru = clamp(u / DUNK_RELEASE_U, 0, 1);
+  const after = u >= DUNK_RELEASE_U ? clamp((u - DUNK_RELEASE_U) / (1 - DUNK_RELEASE_U), 0, 1) : 0;
+  const tuck = Math.sin(Math.min(1, u / DUNK_RELEASE_U) * Math.PI) * 0.9;
+  L.legLP.rotation.set(-0.25 * tuck, 0, -0.05); L.legRP.rotation.set(0.1 * tuck, 0, 0.05);
+  L.kneeLP.rotation.x = 0.2 + tuck * 0.7; L.kneeRP.rotation.x = 0.2 + tuck * 0.5;
+  const up = lerp(-1.9, -2.7, ru);
+  // Both hands on the ball overhead, then the slam: left hand lets go and
+  // falls away, right hand stays up on the iron through the hang.
+  L.armRP.rotation.set(up - 0.1 * after, 0, -0.12);
+  L.armLP.rotation.set(lerp(up, -1.1, clamp(after * 2.5, 0, 1)), 0, 0.12 + 0.3 * clamp(after * 2.5, 0, 1));
+  L.elbowRP.rotation.x = lerp(-0.5, -0.05, ru);
+  L.elbowLP.rotation.x = lerp(-0.5, -0.05, ru);
+  L.spine.rotation.set(lerp(0.05, -0.18, ru), 0, 0);
+}
 
 function scoreFor(team, points) {
   if (team === 'A') game.scoreA += points; else game.scoreB += points;
@@ -1542,7 +1873,6 @@ const BLOCK_FOUL_LUNGE = 1.1;   // per unit/frame of horizontal speed into the s
 const BLOCK_FOUL_TIGHT = 0.045; // extra if he's essentially inside the shooter's body
 const BLOCK_FOUL_MAX = 0.55;
 const FOUL_DEAD_BALL_MS = 1600; // whistle -> ref signal -> play resumes
-const FT_LINE_DIST = 13.75;     // rim center to the free-throw line, ft
 const FT_READY_MS = 1000;       // settle at the line before he can shoot
 const FT_BETWEEN_MS = 1100;     // ball comes back between attempts
 const FT_AI_HOLD_MS = 420;
@@ -1570,7 +1900,7 @@ function callFoul(fouler, fouled, kind, opts) {
   game.activeInbound = null;
   game.players.forEach((p) => {
     if (p.shotPhase === 'rise') { p.shotPhase = 'none'; p.shotPhaseT = 0; }
-    p.shotAIReleaseAt = 0;
+    p.shotAIReleaseAt = 0; p.postMove = null;
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
     p.screenAssignment = null;
     p.pushAccum = 0;
@@ -1597,6 +1927,7 @@ function showFoulBanner(title, sub, foulerTeam) {
 function updateDeadBall(dtMs) {
   if (game.foulPending) {
     const fp = game.foulPending;
+    if (fp.awaitShot) return; // whistle on the release -- waiting on the ball
     fp.timer -= dtMs;
     if (fp.timer <= 0) {
       game.foulPending = null;
@@ -1611,7 +1942,8 @@ function updateDeadBall(dtMs) {
 function placeForFreeThrow(p, x, z, hoop) {
   p.x = x; p.z = z; p.vx = 0; p.vz = 0;
   p.facing = Math.atan2(hoop.x - x, hoop.z - z);
-  p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0;
+  p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.dunk = null;
+  p.postMove = null; p.shotRiseDelay = 0; p.postShot = false; p.postFade = false;
   p.hesitateTimer = 0; p.hesitateFakeAmt = 0; p.postUpActive = false;
   p.screenHoldTimer = 0; p.screenAssignment = null; p.turboActive = false;
   p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleStunTimer = 0; p.ankleFallAmt = 0;
@@ -1913,6 +2245,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
   if (e.code === 'KeyF') onBlockPressed();
+  if (e.code === 'KeyX') onDunkPressed();
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
   if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
@@ -2183,6 +2516,9 @@ const SHOT_AI_HOLD_MS = 340; // how long an AI shooter (no meter) holds before r
 // SF=1.0, C=1.3) so a center's jump shot climbs and lands slower than a
 // point guard's, with a small forward slower than both.
 function shotSpeedMult(player) { return (player && player.stats && player.stats.accelMult) || 1; }
+// Time actually spent rising -- post moves spend their first stretch on the
+// step/turn before the jump itself starts.
+function shotRiseT(p) { return Math.max(0, p.shotPhaseT - (p.shotRiseDelay || 0)); }
 function shotRiseHeight(t, player) {
   const tau = SHOT_RISE_TAU_MS * shotSpeedMult(player);
   return SHOT_JUMP_HEIGHT * (1 - Math.exp(-t / tau));
@@ -2215,6 +2551,7 @@ function startShotRise(player, anyRange) {
   player.shotPhase = 'rise';
   player.shotPhaseT = 0;
   player.shotHandSide = player.handSide || 1; // which hand finishes the flick
+  player.postMove = null; player.shotRiseDelay = 0; player.postShot = false; player.postFade = false;
   return true;
 }
 // Fires the instant the ball actually leaves the hands -- whatever height
@@ -2222,7 +2559,8 @@ function startShotRise(player, anyRange) {
 // real accuracy roll + ball flight (attemptShot) happens right here.
 function releaseShot(player, quality) {
   if (player.shotPhase !== 'rise') return;
-  player.shotFallFromHeight = shotRiseHeight(player.shotPhaseT, player);
+  player.shotFallFromHeight = shotRiseHeight(shotRiseT(player), player);
+  player.postMove = null;
   player.shotPhase = 'fall';
   player.shotPhaseT = 0;
   attemptShot(player, quality);
@@ -2281,13 +2619,22 @@ function onActionPressed() {
     // A second press while the meter is live still releases it (fallback if
     // a key-up was ever missed), but the normal way is letting go of SPACE.
     if (game.shotMeter && game.shotMeter.player === p) { releaseShotMeter(); return; }
-    if (p.shotPhase !== 'none') return; // still landing from a previous shot
+    if (p.shotPhase !== 'none' || p.dunk) return; // still landing from a previous shot
     // Your shot, your call: no range limit and no leftover action cooldown --
     // if you have the ball and hold SPACE, you're going up. (Distance still
     // costs accuracy, so a half-court heave is a real long shot.)
     p.actionCooldown = 0;
+    const postMove = p.postUpActive ? buildPostMove(p) : null;
     if (!startShotRise(p, true)) return;
-    game.shotMeter = { t: 0, dur: SHOT_METER_DUR_MS, player: p };
+    if (postMove) {
+      p.postMove = postMove;
+      p.shotRiseDelay = POST_MOVE_MS;
+      p.postShot = true; p.postFade = postMove.fade;
+      if (postMove.side) p.shotHandSide = postMove.side;
+      p.postUpActive = false;
+      showScreenCallout(postMove.label, 900);
+    }
+    game.shotMeter = { t: 0, dur: SHOT_METER_DUR_MS + (p.shotRiseDelay || 0), player: p };
     playTone(340, 0.03);
     return;
   }
@@ -2299,15 +2646,70 @@ function onActionPressed() {
     setCarrier(p);
   }
 }
+// ---- Shots out of the post -------------------------------------------------
+// SPACE while posting up (A+D) turns the backdown into a move:
+//   hold LEFT  -> drop step to the left, around his body toward the rim,
+//                 finishing with the left hand
+//   hold RIGHT -> same thing to the right, right hand
+//   neither    -> turnaround fadeaway: spin to face the rim, fade back off him
+// The step plays out first (POST_MOVE_MS), then he rises -- the meter is
+// stretched by the same amount so the green lines up with the jump.
+const POST_MOVE_MS = 280;
+const POST_STEP_DIST = 2.8, POST_FADE_DIST = 1.6;
+function buildPostMove(p) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const hx = hoop.x - p.x, hz = hoop.z - p.z;
+  const hd = Math.hypot(hx, hz) || 1;
+  const tx = hx / hd, tz = hz / hd;
+  let side = 0;
+  const L = keysDown.has('ArrowLeft'), R = keysDown.has('ArrowRight');
+  if (L && !R) side = -1; else if (R && !L) side = 1;
+  if (side) {
+    // camera-relative left/right, same as every other arrow input
+    const fwd = camForward.clone().setY(0).normalize();
+    const rx = -fwd.z, rz = fwd.x;
+    let mx = rx * side * 0.85 + tx * 0.55, mz = rz * side * 0.85 + tz * 0.55;
+    const m = Math.hypot(mx, mz) || 1;
+    return { mx: mx / m, mz: mz / m, dist: POST_STEP_DIST, t: 0, dur: POST_MOVE_MS, moved: 0, side, fade: false,
+      startFacing: p.facing, label: side < 0 ? 'DROP STEP LEFT' : 'DROP STEP RIGHT' };
+  }
+  return { mx: -tx, mz: -tz, dist: POST_FADE_DIST, t: 0, dur: POST_MOVE_MS, moved: 0, side: 0, fade: true,
+    startFacing: p.facing, label: 'TURNAROUND FADE' };
+}
+function stepPostMove(p, dtMs) {
+  const pm = p.postMove;
+  pm.t += dtMs;
+  const k = clamp(pm.t / pm.dur, 0, 1);
+  const e = k * k * (3 - 2 * k);
+  const want = pm.dist * e;
+  const step = want - pm.moved;
+  pm.moved = want;
+  p.x += pm.mx * step; p.z += pm.mz * step;
+  p.vx = 0; p.vz = 0;
+  // Turn to face the rim over the move (the turnaround).
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const target = Math.atan2(hoop.x - p.x, hoop.z - p.z);
+  let diff = target - pm.startFacing;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  p.facing = pm.startFacing + diff * e;
+  if (k >= 1) p.postMove = null;
+}
+
 // Letting go of SPACE (or lifting the finger off the action side) releases
 // the shot right where the needle is.
 function onActionReleased() {
   const m = game.shotMeter;
   if (m && m.player === controlledPlayer()) releaseShotMeter();
 }
+function onDunkPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || p.dunk || p.shotPhase !== 'none') return;
+  if (canDunk(p)) { startDunk(p); return; }
+  showScreenCallout('DRIVE AT THE RIM TO DUNK', 700);
+}
 function onPassPressed() {
   const p = controlledPlayer();
-  if (p.shotPhase !== 'none') return; // already mid-shot, can't bail into a pass
+  if (p.shotPhase !== 'none' || p.dunk) return; // already mid-shot, can't bail into a pass
   if (game.ball.carrier !== p) return;
   // Aim with the arrows: same camera-relative mapping as movement.
   let ix = 0, iz = 0;
@@ -2674,7 +3076,7 @@ function updateAI(p, dtMs) {
   // Mid-shot: planted from the gather through the landing, same as the
   // human below -- real shooters don't keep running while the ball's going
   // up through their hands.
-  if (p.shotPhase !== 'none') {
+  if (p.shotPhase !== 'none' || p.dunk) {
     approachVelocity(p, 0, 0, dtMs);
     return;
   }
@@ -2756,6 +3158,7 @@ function updateAI(p, dtMs) {
       return;
     }
     const d = dist2(p, oppHoop);
+    if (canDunk(p) && Math.random() < 0.09) { startDunk(p); return; }
     if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
     if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
     // A teammate calling for it gets fed much sooner than the normal
@@ -2763,6 +3166,25 @@ function updateAI(p, dtMs) {
     const teammateWantsIt = getTeammates(p.team).some((t) => t !== p && t.ballCallTimer > 0);
     if (Math.random() < (teammateWantsIt ? 0.12 : 0.01)) { attemptPass(p); return; }
     moveToward(p, oppHoop.x, oppHoop.z + (game.players.indexOf(p) % 2 === 0 ? -6 : 6), dtMs);
+  } else if (game.activeShot && !game.activeShot.isFreeThrow && !game.foulPending) {
+    // Shot in the air: defenders BOX OUT (get between their man and the rim,
+    // just on the inside shoulder), the shooter's teammates crash the glass.
+    const sh = game.activeShot;
+    const rim = { x: sh.endX, z: sh.endZ };
+    if (p.team === sh.shooter.team) {
+      const slot = getTeammates(p.team).indexOf(p);
+      const dirOut = -(Math.sign(rim.x) || 1);
+      moveToward(p, rim.x + dirOut * 4.5, rim.z + (slot - 1) * 4.5, dtMs);
+    } else {
+      const mark = getMark(p);
+      if (mark && mark !== sh.shooter) {
+        const hx = rim.x - mark.x, hz = rim.z - mark.z, hd = Math.hypot(hx, hz) || 1;
+        const gap = Math.min(BODY_CONTACT_D + 0.2, hd);
+        moveToward(p, mark.x + (hx / hd) * gap, mark.z + (hz / hd) * gap, dtMs);
+      } else {
+        moveToward(p, rim.x + (-(Math.sign(rim.x) || 1)) * 3.5, rim.z, dtMs);
+      }
+    }
   } else if (teamHasBall) {
     const teammates = getTeammates(p.team);
     const slot = teammates.indexOf(p);
@@ -2772,7 +3194,10 @@ function updateAI(p, dtMs) {
     const teammates = getTeammates(p.team);
     let closest = teammates[0], bestD = Infinity;
     teammates.forEach((t) => { const dd = dist2(t, game.ball); if (dd < bestD) { bestD = dd; closest = t; } });
-    if (p === closest) {
+    if (game.ball.rebound && dist2(p, game.ball) < 16) {
+      // Crashing the glass: everybody within reach goes to where it's falling.
+      moveToward(p, game.ball.x + game.ball.vx * 3, game.ball.z + game.ball.vz * 3, dtMs);
+    } else if (p === closest) {
       moveToward(p, game.ball.x, game.ball.z, dtMs);
     } else {
       const slot = teammates.indexOf(p);
@@ -2903,6 +3328,11 @@ function updateHumanMovement(dtMs) {
     approachVelocity(human, 0, 0, dtMs);
     human.turboActive = false;
     human.postUpActive = false;
+    return;
+  }
+  if (human.dunk) {
+    approachVelocity(human, 0, 0, dtMs);
+    human.turboActive = false; human.postUpActive = false;
     return;
   }
   if (human.shotPhase !== 'none') {
@@ -3433,11 +3863,11 @@ function applyShotPose(p, g, L, dt) {
   legLP.rotation.set(0, 0, -0.05); legRP.rotation.set(0, 0, 0.05);
 
   if (p.shotPhase === 'rise') {
-    const rise = shotRiseHeight(p.shotPhaseT, p);
+    const rise = shotRiseHeight(shotRiseT(p), p);
     g.position.set(p.x, rise, p.z);
     // Deep bend right at the launch, easing out as he climbs -- the load
     // that actually sends him up, not a flat standing jump.
-    const loadT = clamp(p.shotPhaseT / 180, 0, 1);
+    const loadT = clamp(shotRiseT(p) / 180, 0, 1);
     const kneeBend = lerp(0.52, 0.2, loadT);
     kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
     g.updateMatrixWorld(true);
@@ -3506,6 +3936,7 @@ function updateHumanoidPose(p, dt) {
   // follow-through down through the landing. Takes priority over running/
   // post-up/screens since he's planted (see updateHumanMovement/updateAI)
   // for the whole thing.
+  if (p.dunk) { applyDunkPose(p, g, L, dt); return; }
   if (p.shotPhase !== 'none') {
     applyShotPose(p, g, L, dt);
     return;
@@ -3808,10 +4239,11 @@ function updateBall(dtMs) {
     b.x = lerp(s.startX, s.endX, t);
     b.z = lerp(s.startZ, s.endZ, t);
     const peak = Math.max(s.startY, s.endY) + 5.5;
-    b.y = (1 - t) * (1 - t) * s.startY + 2 * (1 - t) * t * peak + t * t * s.endY;
+    b.y = s.flat ? lerp(s.startY, s.endY, t) : (1 - t) * (1 - t) * s.startY + 2 * (1 - t) * t * peak + t * t * s.endY;
     if (t >= 1) {
       game.activeShot = null;
       if (s.isFreeThrow) resolveFreeThrow(s);
+      else if (s.fouled) resolveFouledShot(s);
       else resolveShot(s.shooter, s.made, s.isThree);
     }
     return;
@@ -3836,8 +4268,16 @@ function updateBall(dtMs) {
     // from the dribble into the overhead set point. Starts the instant the
     // shot is thrown -- the same frame the meter starts -- not after some
     // separate standing charge first.
+    if (c.dunk) {
+      const dd = c.dunk;
+      const ru = clamp(dd.t / dd.dur / DUNK_RELEASE_U, 0, 1);
+      b.y = dunkY(c) + 8.58 * dd.sc * (0.74 + 0.26 * ru);
+      b.x = c.x + Math.sin(c.facing) * 0.6; b.z = c.z + Math.cos(c.facing) * 0.6;
+      b.vx = 0; b.vy = 0; b.vz = 0;
+      return;
+    }
     if (c.shotPhase === 'rise') {
-      const rise = shotRiseHeight(c.shotPhaseT, c);
+      const rise = shotRiseHeight(shotRiseT(c), c);
       const liftT = clamp(rise / SHOT_JUMP_HEIGHT, 0, 1);
       b.y = rise + lerp(2.0, 5.2, liftT);
       const forwardOffset = lerp(0.32, 0.5, liftT);
@@ -3944,6 +4384,7 @@ function updateBall(dtMs) {
 
   // loose ball: simple gravity + bounce + friction, with auto-pickup
   const dt = dtMs / 1000;
+  if (b.rebound) { if (b.y <= BALL_R + 0.01 && b.rebound.t > 100) b.rebound = null; else updateRebound(dtMs); if (b.carrier) return; }
   b.vy -= GRAVITY * dt;
   b.x += b.vx * dt * 10; b.z += b.vz * dt * 10; b.y += b.vy * dt;
   if (b.y <= BALL_R) {
@@ -3977,7 +4418,26 @@ function updateCamera(dt) {
   // cache against, and this way a mid-possession player switch (E) can never
   // leave it stale either.
   const relevantHoop = human.team === 'A' ? HOOP_A : HOOP_B;
-  camDirSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
+  const attackSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
+  // Transition defense: the moment your team loses the ball while you're
+  // still on your offensive side of half court, the camera swings around to
+  // look DOWN court -- toward the basket you have to get back and protect --
+  // so you can see the break you're chasing. Once you cross half court it
+  // swings back to the half-court set view (looking out from your basket,
+  // everyone in front of you). Latched per possession with a small margin
+  // so it can't flicker while you're standing on the half-court line.
+  const CAM_HALF_MARGIN = 1.5;
+  const onDefense = game.possessionTeam && game.possessionTeam !== human.team;
+  if (onDefense) {
+    if (game.camPossKey !== game.possessionTeam || game.camHuman !== human) {
+      game.camTransition = human.x * attackSign > CAM_HALF_MARGIN;
+    }
+    if (game.camTransition && human.x * attackSign < -CAM_HALF_MARGIN) game.camTransition = false;
+  } else {
+    game.camTransition = false;
+  }
+  game.camPossKey = game.possessionTeam; game.camHuman = human;
+  camDirSign = game.camTransition ? -attackSign : attackSign;
   let dirSign = camDirSign;
   // Free throws: a broadcast-style shot from behind whoever's at the line,
   // looking at the rim he's shooting on -- including when it's the AI
@@ -3987,11 +4447,20 @@ function updateCamera(dt) {
     focus = game.freeThrow.shooter;
     dirSign = Math.sign(game.freeThrow.hoop.x) || 1;
   }
+  // The view direction swings around (a smooth arc past the side of the
+  // player) instead of the camera cutting straight through him when it
+  // flips ends.
+  const targetYaw = dirSign > 0 ? 0 : Math.PI;
+  if (game.camYaw === undefined) game.camYaw = targetYaw;
+  let yd = Math.atan2(Math.sin(targetYaw - game.camYaw), Math.cos(targetYaw - game.camYaw));
+  if (Math.abs(yd) > Math.PI - 0.05) yd = (focus.z >= 0 ? -1 : 1) * Math.abs(yd); // swing out over open floor
+  game.camYaw += yd * (1 - Math.exp(-dt / 230));
+  const cdx = Math.cos(game.camYaw), cdz = Math.sin(game.camYaw);
 
   // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
   // floor (and the play developing around you) is in frame.
-  const desiredPos = new THREE.Vector3(focus.x - dirSign * 19, 10.8, focus.z);
-  const desiredLook = new THREE.Vector3(focus.x + dirSign * 10, 3.2, focus.z);
+  const desiredPos = new THREE.Vector3(focus.x - cdx * 19, 10.8, focus.z - cdz * 19);
+  const desiredLook = new THREE.Vector3(focus.x + cdx * 10, 3.2, focus.z + cdz * 10);
 
   // Post-up camera: straight behind the poster, the defender battling on
   // his back is completely hidden behind his body. Like a broadcast post
@@ -4004,8 +4473,8 @@ function updateCamera(dt) {
   const pc = game.postCamBlend * game.postCamBlend * (3 - 2 * game.postCamBlend); // smoothstep
   if (pc > 0.001) {
     const side = game.postCamSide;
-    desiredPos.lerp(new THREE.Vector3(human.x - dirSign * 11.5, 7.8, human.z + side * 11.5), pc);
-    desiredLook.lerp(new THREE.Vector3(human.x + dirSign * 2.5, 3.2, human.z), pc);
+    desiredPos.lerp(new THREE.Vector3(human.x - cdx * 11.5, 7.8, human.z - cdz * 11.5 + side * 11.5), pc);
+    desiredLook.lerp(new THREE.Vector3(human.x + cdx * 2.5, 3.2, human.z + cdz * 2.5), pc);
   }
 
   const alpha = 1 - Math.pow(0.001, dt / 1000);
@@ -4063,6 +4532,62 @@ function showMatchOver() {
   document.getElementById('matchover-sub').textContent = reason + 'FINAL  ' + game.scoreA + ' — ' + game.scoreB + '     click to play again';
   document.getElementById('matchover-overlay').classList.remove('hidden');
 }
+
+// ---- Uniforms ---------------------------------------------------------------
+const UNIFORMS = [
+  { name: 'Sky Blue', jersey: 0x38bdf8, shorts: 0x1e6a8c, trim: 0xf8fafc },
+  { name: 'Orange', jersey: 0xf97316, shorts: 0x8a3f0a, trim: 0xf8fafc },
+  { name: 'Crimson', jersey: 0xdc2626, shorts: 0x7a1414, trim: 0xf8fafc },
+  { name: 'Royal', jersey: 0x2f55d4, shorts: 0x14286e, trim: 0xfacc15 },
+  { name: 'Forest', jersey: 0x15803d, shorts: 0x0b4423, trim: 0xf8fafc },
+  { name: 'Purple', jersey: 0x7c3aed, shorts: 0x401a82, trim: 0xfacc15 },
+  { name: 'Gold', jersey: 0xfacc15, shorts: 0x8a6d0a, trim: 0x1f2937 },
+  { name: 'Black', jersey: 0x1f2937, shorts: 0x0b0f14, trim: 0xf97316 },
+  { name: 'White', jersey: 0xf1f5f9, shorts: 0xa9b4c2, trim: 0x2f55d4 },
+  { name: 'Pink', jersey: 0xec4899, shorts: 0x8a1f55, trim: 0xf8fafc },
+];
+const uniChoice = { A: 0, B: 1 };
+try { const sv = JSON.parse(localStorage.getItem('bball3d_uniforms') || 'null'); if (sv && UNIFORMS[sv.A] && UNIFORMS[sv.B]) { uniChoice.A = sv.A; uniChoice.B = sv.B; } } catch (e) {}
+function applyUniform(team, idx) {
+  const u = UNIFORMS[idx];
+  (team === 'A' ? game.teamA : game.teamB).forEach((pl) => {
+    pl.mesh.traverse((o) => {
+      if (!o.isMesh || !o.material || !o.material.userData.uni) return;
+      const k = o.material.userData.uni;
+      o.material.color.setHex(k === 'jersey' ? u.jersey : (k === 'shorts' ? u.shorts : u.trim));
+    });
+    pl.mesh.userData.baseTeamColor = u.jersey;
+  });
+}
+function renderUniformPicker() {
+  [['A', 'uni-a'], ['B', 'uni-b']].forEach(([team, id]) => {
+    const box = document.getElementById(id + '-sw');
+    box.innerHTML = '';
+    UNIFORMS.forEach((u, i) => {
+      const b = document.createElement('button');
+      b.className = 'uni-sw' + (uniChoice[team] === i ? ' sel' : '');
+      b.title = u.name;
+      b.style.background = '#' + u.jersey.toString(16).padStart(6, '0');
+      b.innerHTML = '<i style="background:#' + u.shorts.toString(16).padStart(6, '0') + '"></i>';
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        uniChoice[team] = i;
+        // Both teams in the same kit is unreadable: nudge the other side.
+        const other = team === 'A' ? 'B' : 'A';
+        if (uniChoice[other] === i) uniChoice[other] = (i + 1) % UNIFORMS.length;
+        applyUniform('A', uniChoice.A); applyUniform('B', uniChoice.B);
+        try { localStorage.setItem('bball3d_uniforms', JSON.stringify(uniChoice)); } catch (er) {}
+        renderUniformPicker();
+      });
+      box.appendChild(b);
+    });
+    document.getElementById(id + '-name').textContent = UNIFORMS[uniChoice[team]].name;
+  });
+}
+document.getElementById('uni-pick').addEventListener('click', (e) => e.stopPropagation());
+applyUniform('A', uniChoice.A); applyUniform('B', uniChoice.B);
+renderUniformPicker();
+game.applyUniform = applyUniform;
 
 function startMatch() {
   game.phase = 'live';
@@ -4134,8 +4659,10 @@ function frame(now) {
       // again (releaseShotMeter) or timing out on its own, or the AI's own
       // short fixed hold below. "Fall" is just a fixed-length landing timer
       // once that's happened.
+      if (p.dunk) stepDunk(p, dtMs);
       if (p.shotPhase === 'rise') {
         p.shotPhaseT += dtMs;
+        if (p.postMove) stepPostMove(p, dtMs);
         if (p.shotAIReleaseAt > 0 && p.shotPhaseT >= p.shotAIReleaseAt) {
           p.shotAIReleaseAt = 0;
           releaseShot(p, null);
@@ -4310,6 +4837,8 @@ game.startFreeThrows = startFreeThrows;
 game.refState = refState;
 game.PUSH_FOUL_LIMIT = PUSH_FOUL_LIMIT;
 game.getCamDirSign = () => camDirSign;
+game.shotDistancePenalty = shotDistancePenalty;
+game.rollShotContactFoul = rollShotContactFoul;
 </script>
 </body>
 </html>
