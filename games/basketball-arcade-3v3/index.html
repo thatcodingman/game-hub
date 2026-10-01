@@ -306,23 +306,25 @@ const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 const BALL_HANDLE_SPEED_MULT = 0.88;
 // Defensive catch-up: a defender trailing his man by a lot closes with real
 // urgency instead of drifting at a flat pace -- scales up with the gap.
-const DEFENSE_CATCHUP_DIST = 2.2;
+const DEFENSE_CATCHUP_DIST = 1.6;
 const DEFENSE_CATCHUP_RANGE = 7.0;
-const DEFENSE_CATCHUP_MAX_MULT = 0.55;
+const DEFENSE_CATCHUP_MAX_MULT = 0.78;
 // Right after a defensive switch (a screen forcing a size mismatch onto the
 // ball handler, e.g. a center switched onto a point guard), the defender
 // who just inherited the assignment plays with real urgency for a few
 // seconds -- closes faster and reacts quicker -- instead of looking like
 // he's not in the same league. Represents him recognizing the mismatch and
-// playing to it, not an actual speed-stat change.
-const SWITCH_URGENCY_MS = 2800;
-const SWITCH_URGENCY_SPEED_MULT = 1.22;
-const SWITCH_URGENCY_ACCEL_MULT = 0.62;
+// playing to it, not an actual speed-stat change. Buffed up across the
+// board for a more intense, "glued-to-the-ball-handler" scramble: lasts
+// longer, closes harder, reacts quicker, and plays right in his face.
+const SWITCH_URGENCY_MS = 3400;
+const SWITCH_URGENCY_SPEED_MULT = 1.4;
+const SWITCH_URGENCY_ACCEL_MULT = 0.42;
 // Default help-side cushion a defender plays off his man by; tightened hard
 // (see SWITCH_URGENCY_STANDOFF_MULT) right after a switch so he's actually
 // draped on the handler instead of giving him the same room as before.
 const DEFENSE_STANDOFF = 4;
-const SWITCH_URGENCY_STANDOFF_MULT = 0.35;
+const SWITCH_URGENCY_STANDOFF_MULT = 0.22;
 
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
@@ -1164,18 +1166,39 @@ function attemptPass(player) {
     if (nearestOpp > bestScore) { bestScore = nearestOpp; best = t; }
   });
   if (caller) best = caller;
-  const dx = best.x - player.x, dz = best.z - player.z;
-  const d = Math.hypot(dx, dz) || 1;
   const speed = 0.62;
-  // Horizontal speed stays constant (a real pass travels at one pace,
-  // longer passes just take proportionally longer) — but the launch angle
-  // is solved per-distance so the ball is actually down at a catchable
-  // height right as it reaches the target, instead of the old fixed
-  // "always drops after ~0.31s" timing that only lined up by coincidence
-  // at ~14-20 unit separations and sailed over anyone closer or fell short
-  // of anyone farther.
   const PASS_EFFECTIVE_SPEED = speed * 100; // units/sec of actual horizontal travel (matches the *10 launch scale times the *10 per-frame integration below)
   const startY = 4.2, endY = 2.0; // endY sits just under the PICKUP_RANGE height check
+  // Lead the pass: aim at where the receiver WILL be when the ball actually
+  // arrives, not where he was standing the instant it's thrown. The old
+  // version aimed dead at his current x/z, so any receiver in motion (which
+  // is nearly always, in a live possession) had already moved on by the
+  // time a several-hundred-ms flight landed, and the ball would sail past
+  // or land behind him -- reading as "wildly inaccurate" passing even
+  // though the throw itself was dead-on for a stationary target. Two
+  // passes of the solve: estimate flight time off the current distance,
+  // project the receiver forward by his current velocity for that long,
+  // then re-aim and re-time off the predicted spot.
+  // Player vx/vz are a per-frame displacement (p.x += p.vx, no dt scaling),
+  // authored against a steady ~60fps tick like the rest of the movement
+  // code -- so converting to a real lead distance means scaling by frames
+  // elapsed over the flight, not seconds. Capped so a receiver's own
+  // transient burst speed (a crossover, a screen-urgency sprint) can't
+  // swing the aim wildly further than a real pass would ever lead someone.
+  const PLAYER_VEL_FPS = 60;
+  const PASS_LEAD_MAX = 5;
+  let tx = best.x, tz = best.z;
+  for (let iter = 0; iter < 2; iter++) {
+    const dx0 = tx - player.x, dz0 = tz - player.z;
+    const d0 = Math.hypot(dx0, dz0) || 1;
+    const T0 = Math.max(d0 / PASS_EFFECTIVE_SPEED, 0.05);
+    const leadX = clamp((best.vx || 0) * T0 * PLAYER_VEL_FPS, -PASS_LEAD_MAX, PASS_LEAD_MAX);
+    const leadZ = clamp((best.vz || 0) * T0 * PLAYER_VEL_FPS, -PASS_LEAD_MAX, PASS_LEAD_MAX);
+    tx = best.x + leadX;
+    tz = best.z + leadZ;
+  }
+  const dx = tx - player.x, dz = tz - player.z;
+  const d = Math.hypot(dx, dz) || 1;
   const T = Math.max(d / PASS_EFFECTIVE_SPEED, 0.05);
   const vy0 = (endY - startY + 0.5 * GRAVITY * T * T) / T;
   game.ball.carrier = null; game.ball.inFlight = false;
@@ -1569,10 +1592,13 @@ function onCallForBallPressed() {
 // the accuracy bonus/penalty. Only the human ever goes through this — AI
 // shots keep calling attemptShot(p) directly with no meter, unaffected.
 // -------------------------------------------------------------------------
-const SHOT_METER_DUR_MS = 750;
-const SHOT_METER_SWEET_START = 0.70; // fraction of the bar (0-1) where the green zone begins
-const SHOT_METER_SWEET_END = 0.85;
-const SHOT_METER_GOOD_WINDOW = 0.10; // this close outside the zone still counts as a decent release
+// Tightened from 750ms and the good-window widened a touch -- the old timing
+// felt sluggish (nearly 2/3 of a second of holding before anything mattered)
+// and punished a near-miss timing harder than it needed to.
+const SHOT_METER_DUR_MS = 620;
+const SHOT_METER_SWEET_START = 0.68; // fraction of the bar (0-1) where the green zone begins
+const SHOT_METER_SWEET_END = 0.86;
+const SHOT_METER_GOOD_WINDOW = 0.13; // this close outside the zone still counts as a decent release
 const SHOT_METER_PERFECT_BONUS = 0.32;
 const SHOT_METER_GOOD_BONUS = 0.08;
 const SHOT_METER_BAD_PENALTY = 0.30;
@@ -2923,11 +2949,23 @@ function updateHumanoidPose(p, dt) {
   // to go up for a shot, then relaxes back into the normal running arm
   // swing as the burst kicks in, so the fake actually reads as a fake.
   const fakeAmt = p.hesitateFakeAmt || 0;
+  // Real running arms stay bent at the elbow throughout the swing (not
+  // locked straight like a mannequin's), flexing a bit more as each arm
+  // comes through the back of its swing -- same cosine shape the knees
+  // already use for the legs, just a gentler range since elbows don't
+  // need to fully unbend the way a recovering leg does.
+  const elbowRunBase = 0.3 * (amt / 0.55);
+  const elbowBendL = elbowRunBase + Math.max(0, Math.cos(phaseL)) * 0.3 * (amt / 0.55);
+  const elbowBendR = elbowRunBase + Math.max(0, -Math.cos(phaseL)) * 0.3 * (amt / 0.55);
   if (fakeAmt > 0) {
     armLP.rotation.set(lerp(-swingL, -0.6, fakeAmt), 0, lerp(armLP.rotation.z, 0, fakeAmt));
     armRP.rotation.set(lerp(-swingR, -2.0, fakeAmt), 0, lerp(0, -0.35, fakeAmt));
+    L.elbowLP.rotation.x = lerp(elbowBendL, 0.15, fakeAmt);
+    L.elbowRP.rotation.x = lerp(elbowBendR, 1.1, fakeAmt);
   } else {
     armLP.rotation.set(-swingL, 0, 0); armRP.rotation.set(-swingR, 0, 0);
+    L.elbowLP.rotation.x = elbowBendL;
+    L.elbowRP.rotation.x = elbowBendR;
   }
 
   // Subtle torso bob synced to the stride, fading out with swingAmt so it
@@ -3417,6 +3455,7 @@ game.startMatch = startMatch;
 game.startShotRise = startShotRise;
 game.releaseShot = releaseShot;
 game.attemptBlock = attemptBlock;
+game.attemptPass = attemptPass;
 game.getCamDirSign = () => camDirSign;
 </script>
 </body>
