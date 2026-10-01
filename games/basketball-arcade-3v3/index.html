@@ -111,6 +111,10 @@
   }
   #shot-meter-wrap.perfect #shot-meter-needle { background: #34d399; }
   #shot-meter-wrap.bad #shot-meter-needle { background: #ef4444; }
+  #shot-meter-wrap.good #shot-meter-needle { background: #fbbf24; }
+  #shot-meter-wrap.perfect #shot-meter-label { color: #34d399; }
+  #shot-meter-wrap.good #shot-meter-label { color: #fbbf24; }
+  #shot-meter-wrap.bad #shot-meter-label { color: #ef4444; }
 
   .overlay {
     position: fixed; inset: 0; z-index: 60;
@@ -1108,11 +1112,11 @@ game.players = game.teamA.concat(game.teamB);
 
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
-  ? 'Move stick to move · tap the right side to shoot (tap again to release!) or steal'
-  : 'Arrow keys move · SPACE to shoot (tap again to release!) or steal · F block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  ? 'Move stick to move · hold the right side to shoot (let go on green) or tap to steal'
+  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · F block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Q screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
-  ? 'Stick to move · tap right side to shoot (tap again!) /steal'
-  : 'Arrows move · SPACE shoot (tap again!) /steal · F block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  ? 'Stick to move · hold right side to shoot, let go on green / tap to steal'
+  : 'Arrows move · hold SPACE shoot, let go on green / steal · F block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Q screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1158,6 +1162,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.switchUrgencyTimer = 0;
     p.shotPhase = 'none'; p.shotPhaseT = 0; p.shotAIReleaseAt = 0; p.blockCooldown = 0; p.blockJumpTimer = 0;
     p.pushAccum = 0; p.pushContactT = 0; p.recklessCloseout = false; p.inDiscZone = false;
+    p.catchHoldT = 0;
   };
   const b = game.ball;
 
@@ -1276,6 +1281,7 @@ function attemptPass(player, aimDir) {
   game.activePass = {
     passer: player, receiver, t: 0, dur,
     startX: player.x, startZ: player.z, startY: 4.2,
+    offY: (Math.random() + Math.random() - 1) * scatterMag * 0.35, // high/low miss
     offX: (Math.random() + Math.random() - 1) * scatterMag,
     offZ: (Math.random() + Math.random() - 1) * scatterMag,
     arc: 0.5 + d * 0.025,
@@ -1284,13 +1290,36 @@ function attemptPass(player, aimDir) {
   player.checkupLocked = false;
   playTone(420, 0.04);
 }
+// Catching: the ball flies to the receiver's HANDS (out in front of his
+// chest, wherever he's facing), not to the middle of his body. He turns to
+// the ball over the back half of the flight, both arms come up and reach for
+// it, and possession only changes once it actually reaches them -- then he
+// secures it at his chest for a beat (CATCH_HOLD_MS) before he can dribble
+// it. Interceptions and loose-ball pickups get the same hands-first secure.
+const CATCH_HOLD_MS = 260;
+const _catchPt = { x: 0, y: 0, z: 0 };
+function catchPoint(p, out, reachMult) {
+  const sc = (p.stats && p.stats.scale) || 1;
+  const f = p.facing || 0;
+  const fwd = 1.05 * sc * (reachMult || 1);
+  out.x = p.x + Math.sin(f) * fwd;
+  out.z = p.z + Math.cos(f) * fwd;
+  out.y = 4.1 * sc;
+  return out;
+}
+function secureBall(p) {
+  setCarrier(p);
+  p.catchHoldT = CATCH_HOLD_MS;
+}
 function updateActivePass(dtMs) {
   const ps = game.activePass;
   const b = game.ball;
   ps.t += dtMs;
   const u = clamp(ps.t / ps.dur, 0, 1);
   const r = ps.receiver;
-  const ax = r.x + ps.offX, az = r.z + ps.offZ, ay = 3.6; // chest height on the live receiver
+  // Homes on his hands (live), plus the thrower's error.
+  const cp = catchPoint(r, _catchPt);
+  const ax = cp.x + ps.offX, az = cp.z + ps.offZ, ay = cp.y + ps.offY;
   b.x = lerp(ps.startX, ax, u);
   b.z = lerp(ps.startZ, az, u);
   b.y = lerp(ps.startY, ay, u) + ps.arc * 4 * u * (1 - u);
@@ -1305,7 +1334,7 @@ function updateActivePass(dtMs) {
       if (o.ankleDownTimer > 0 || o.ankleStunTimer > 0) continue;
       if (Math.random() < (o.stats.steal || 0.4) * PASS_INTERCEPT_MULT) {
         game.activePass = null;
-        setCarrier(o);
+        secureBall(o);
         showScreenCallout('PICKED OFF!', 1000);
         playTone(300, 0.06);
         return;
@@ -1315,7 +1344,7 @@ function updateActivePass(dtMs) {
   if (u >= 1) {
     game.activePass = null;
     if (Math.hypot(ps.offX, ps.offZ) <= PASS_CATCH_R) {
-      setCarrier(r);
+      secureBall(r);
       playTone(520, 0.03);
       return;
     }
@@ -1414,7 +1443,6 @@ function attemptShot(player, meterQuality) {
   if (player.actionCooldown > 0) return;
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
   const d = dist2(player, hoop);
-  if (d > MAX_SHOT_RANGE) return;
   player.actionCooldown = 550;
   // At the line: no contest, no defense, just his free-throw stroke + timing.
   if (game.freeThrow && game.freeThrow.shooter === player) { launchFreeThrow(player, meterQuality); return; }
@@ -1874,13 +1902,15 @@ window.addEventListener('keydown', (e) => {
   if (game.phase !== 'live') return;
   // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
   if (game.foulPending || game.freeThrow) {
-    if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
+    if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
     return;
   }
   if (e.code === 'KeyE') onSwitchPressed();
   if (e.code === 'KeyQ') onScreenKeyDown();
   if (e.code === 'KeyR') onCallForBallPressed();
-  if (e.code === 'Space') { e.preventDefault(); onActionPressed(); }
+  // Holding SPACE fires key-repeat events -- only the first real press counts,
+  // otherwise a held shot would get "released" by the OS's autorepeat.
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
   if (e.code === 'KeyF') onBlockPressed();
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
@@ -1889,8 +1919,12 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   keysDown.delete(e.code);
+  // Hold-to-shoot: letting go of SPACE is the release.
+  if (e.code === 'Space') { e.preventDefault(); onActionReleased(); }
   if (e.code === 'KeyQ' && !game.foulPending && !game.freeThrow) onScreenKeyUp();
 });
+
+window.addEventListener('blur', () => { keysDown.clear(); onActionReleased(); });
 
 function onSwitchPressed() {
   game.controlledIndex = (game.controlledIndex + 1) % game.teamA.length;
@@ -2159,21 +2193,25 @@ function shotMeterQuality(frac) {
   const distOut = frac < SHOT_METER_SWEET_START ? SHOT_METER_SWEET_START - frac : frac - SHOT_METER_SWEET_END;
   return distOut <= SHOT_METER_GOOD_WINDOW ? 'good' : 'bad';
 }
+const SHOT_METER_HOLD_MS = 650; // how long the needle stays frozen where you let go
+let shotMeterFreeze = null;
 function releaseShotMeter() {
   const m = game.shotMeter;
   if (!m) return;
   const frac = clamp(m.t / m.dur, 0, 1);
+  const q = shotMeterQuality(frac);
   game.shotMeter = null;
-  releaseShot(m.player, shotMeterQuality(frac));
+  shotMeterFreeze = { frac, q, early: frac < SHOT_METER_SWEET_START, until: performance.now() + SHOT_METER_HOLD_MS };
+  releaseShot(m.player, q);
 }
 // Starts the rise -- the jump itself -- the instant a shot is triggered.
 // Both the human (right as the meter starts, not after it ends) and the AI
 // (which has no meter) go through this the same way.
-function startShotRise(player) {
+function startShotRise(player, anyRange) {
   if (player.shotPhase !== 'none') return false; // already mid-shot
   if (player.actionCooldown > 0) return false;
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
-  if (dist2(player, hoop) > MAX_SHOT_RANGE) return false;
+  if (!anyRange && dist2(player, hoop) > MAX_SHOT_RANGE) return false;
   player.shotPhase = 'rise';
   player.shotPhaseT = 0;
   player.shotHandSide = player.handSide || 1; // which hand finishes the flick
@@ -2192,7 +2230,23 @@ function releaseShot(player, quality) {
 function updateShotMeter(dtMs) {
   const wrap = document.getElementById('shot-meter-wrap');
   const m = game.shotMeter;
-  if (!m) { wrap.classList.add('hidden'); return; }
+  const label = document.getElementById('shot-meter-label');
+  if (!m) {
+    // Just released: hold the needle exactly where you let go, colored and
+    // labeled, so you can actually see whether that was the green.
+    if (shotMeterFreeze && performance.now() < shotMeterFreeze.until) {
+      const f = shotMeterFreeze;
+      wrap.classList.remove('hidden', 'perfect', 'bad', 'good');
+      wrap.classList.add(f.q);
+      label.textContent = f.q === 'perfect' ? 'PERFECT!' : (f.q === 'good' ? (f.early ? 'SLIGHTLY EARLY' : 'SLIGHTLY LATE') : (f.early ? 'EARLY' : 'LATE'));
+      document.getElementById('shot-meter-needle').style.left = (f.frac * 100) + '%';
+      return;
+    }
+    shotMeterFreeze = null;
+    wrap.classList.add('hidden');
+    return;
+  }
+  label.textContent = 'RELEASE ON GREEN';
   if (game.ball.carrier !== m.player) {
     // Stolen mid-swing -- he never released it, so the rise never happened
     // either; cancel it outright instead of leaving him stuck mid-shot.
@@ -2205,7 +2259,7 @@ function updateShotMeter(dtMs) {
   if (m.t >= m.dur) { releaseShotMeter(); wrap.classList.add('hidden'); return; }
   const frac = m.t / m.dur;
   wrap.classList.remove('hidden');
-  wrap.classList.remove('perfect', 'bad');
+  wrap.classList.remove('perfect', 'bad', 'good');
   const q = shotMeterQuality(frac);
   if (q === 'perfect') wrap.classList.add('perfect');
   else if (q === 'bad') wrap.classList.add('bad');
@@ -2224,9 +2278,15 @@ function onActionPressed() {
   }
   if (p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0 || p.ankleStunTimer > 0) return;
   if (game.ball.carrier === p) {
+    // A second press while the meter is live still releases it (fallback if
+    // a key-up was ever missed), but the normal way is letting go of SPACE.
     if (game.shotMeter && game.shotMeter.player === p) { releaseShotMeter(); return; }
     if (p.shotPhase !== 'none') return; // still landing from a previous shot
-    if (!startShotRise(p)) return;
+    // Your shot, your call: no range limit and no leftover action cooldown --
+    // if you have the ball and hold SPACE, you're going up. (Distance still
+    // costs accuracy, so a half-court heave is a real long shot.)
+    p.actionCooldown = 0;
+    if (!startShotRise(p, true)) return;
     game.shotMeter = { t: 0, dur: SHOT_METER_DUR_MS, player: p };
     playTone(340, 0.03);
     return;
@@ -2238,6 +2298,12 @@ function onActionPressed() {
   if (!game.ball.carrier && !game.ball.inFlight && dist2(p, game.ball) < PICKUP_RANGE) {
     setCarrier(p);
   }
+}
+// Letting go of SPACE (or lifting the finger off the action side) releases
+// the shot right where the needle is.
+function onActionReleased() {
+  const m = game.shotMeter;
+  if (m && m.player === controlledPlayer()) releaseShotMeter();
 }
 function onPassPressed() {
   const p = controlledPlayer();
@@ -2457,6 +2523,7 @@ if (touchControlsEnabled) actionHintEl.classList.remove('hidden');
 
 function pointerIsLeftHalf(x) { return x < window.innerWidth / 2; }
 
+let actionPointerId = null; // the finger holding the action side (hold to shoot)
 window.addEventListener('pointerdown', (e) => {
   if (game.phase !== 'live') return;
   if (pointerIsLeftHalf(e.clientX)) {
@@ -2470,6 +2537,7 @@ window.addEventListener('pointerdown', (e) => {
       stickBaseEl.classList.remove('hidden'); stickKnobEl.classList.remove('hidden');
     }
   } else {
+    actionPointerId = e.pointerId;
     onActionPressed();
   }
 });
@@ -2483,7 +2551,11 @@ window.addEventListener('pointermove', (e) => {
   if (d < 10) { touchMove.vec = { x: 0, y: 0 }; return; }
   touchMove.vec = { x: dx / STICK_RADIUS, y: dy / STICK_RADIUS };
 });
+window.addEventListener('pointercancel', (e) => {
+  if (e.pointerId === actionPointerId) { actionPointerId = null; onActionReleased(); }
+});
 window.addEventListener('pointerup', (e) => {
+  if (e.pointerId === actionPointerId) { actionPointerId = null; onActionReleased(); }
   if (e.pointerId === touchMove.pointerId) {
     touchMove.active = false; touchMove.vec = { x: 0, y: 0 };
     stickBaseEl.classList.add('hidden'); stickKnobEl.classList.add('hidden');
@@ -3520,7 +3592,15 @@ function updateHumanoidPose(p, dt) {
   // spin the body to face sideways mid-sweep, which rotates the ball's
   // whole left/right reference frame and makes the crossover unreadable.
   const facingLocked = p.handAnimT < 1;
-  if (p.postDefenseFacing) {
+  const incoming = game.activePass && game.activePass.receiver === p ? game.activePass : null;
+  if (incoming && incoming.t / incoming.dur > 0.25) {
+    // Receiving a pass: square up to the ball so the hands can meet it.
+    const targetFacing = Math.atan2(game.ball.x - p.x, game.ball.z - p.z);
+    let diff = targetFacing - p.facing;
+    diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const maxTurn = TURN_RATE * 2.5 * dt;
+    p.facing += clamp(diff, -maxTurn, maxTurn);
+  } else if (p.postDefenseFacing) {
     // A defender closing in on a posting-up ball carrier squares up on him
     // directly instead of facing whatever angle he happens to be
     // approaching from — snapped instantly each frame, not eased in like
@@ -3661,6 +3741,30 @@ function updateHumanoidPose(p, dt) {
   // of whatever he was already doing -- doesn't lock him out of moving,
   // same as a real contest jump doesn't freeze a defender in place.
   if (p.blockJumpTimer > 0) applyBlockJumpOverlay(p, g, L, dt);
+
+  // Catching: hands come up and reach for the ball as it arrives, then hold
+  // it at the chest while he secures it.
+  let catchW = 0;
+  if (incoming) {
+    const u = clamp((incoming.t / incoming.dur - 0.3) / 0.55, 0, 1);
+    catchW = u * u * (3 - 2 * u);
+  }
+  if (p.catchHoldT > 0 && game.ball.carrier === p) catchW = Math.max(catchW, Math.min(1, p.catchHoldT / 90));
+  if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
+}
+
+function applyCatchReachOverlay(p, g, L, w) {
+  g.rotation.y = p.facing;
+  g.updateMatrixWorld(true);
+  _coTarget.set(game.ball.x, game.ball.y, game.ball.z);
+  L.spine.worldToLocal(_coTarget);
+  // Each hand takes its own side of the ball, not the same point.
+  _coTarget2.copy(_coTarget);
+  _coTarget.x -= 0.32; _coTarget2.x += 0.32;
+  _coPole.set(0.5, -0.3, 0.7);
+  solveArmIK(L.armLP, L.elbowLP, _coTarget, _coPole, w);
+  _coPole2.set(-0.5, -0.3, 0.7);
+  solveArmIK(L.armRP, L.elbowRP, _coTarget2, _coPole2, w);
 }
 
 function updateBall(dtMs) {
@@ -3740,6 +3844,18 @@ function updateBall(dtMs) {
       b.x = c.x + fx * forwardOffset;
       b.z = c.z + fz * forwardOffset;
       b.vx = 0; b.vy = 0; b.vz = 0;
+      return;
+    }
+
+    // Just caught it: the ball sits in both hands at the chest (eased in from
+    // wherever it was caught, so it never pops), then the dribble starts
+    // from the top of the bounce.
+    if (c.catchHoldT > 0) {
+      const hp = catchPoint(c, _catchPt, 0.72);
+      const k = 1 - Math.exp(-dtMs / 45);
+      b.x += (hp.x - b.x) * k; b.y += (hp.y - 0.2 - b.y) * k; b.z += (hp.z - b.z) * k;
+      b.vx = 0; b.vy = 0; b.vz = 0;
+      c.dribblePhase = Math.PI / 2;
       return;
     }
 
@@ -3842,7 +3958,7 @@ function updateBall(dtMs) {
     const pl = game.players[i];
     if (game.freeThrow || game.foulPending) break; // dead ball -- nobody grabs it
     if (pl === b.justReleasedBy && b.releaseLockTimer > 0) continue;
-    if (dist2(pl, b) < PICKUP_RANGE && b.y < 2.2) { setCarrier(pl); break; }
+    if (dist2(pl, b) < PICKUP_RANGE && b.y < 2.2) { secureBall(pl); break; }
   }
 }
 
@@ -3872,8 +3988,10 @@ function updateCamera(dt) {
     dirSign = Math.sign(game.freeThrow.hoop.x) || 1;
   }
 
-  const desiredPos = new THREE.Vector3(focus.x - dirSign * 15, 8.5, focus.z);
-  const desiredLook = new THREE.Vector3(focus.x + dirSign * 10, 3.5, focus.z);
+  // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
+  // floor (and the play developing around you) is in frame.
+  const desiredPos = new THREE.Vector3(focus.x - dirSign * 19, 10.8, focus.z);
+  const desiredLook = new THREE.Vector3(focus.x + dirSign * 10, 3.2, focus.z);
 
   // Post-up camera: straight behind the poster, the defender battling on
   // his back is completely hidden behind his body. Like a broadcast post
@@ -3886,7 +4004,7 @@ function updateCamera(dt) {
   const pc = game.postCamBlend * game.postCamBlend * (3 - 2 * game.postCamBlend); // smoothstep
   if (pc > 0.001) {
     const side = game.postCamSide;
-    desiredPos.lerp(new THREE.Vector3(human.x - dirSign * 9.5, 6.6, human.z + side * 9.5), pc);
+    desiredPos.lerp(new THREE.Vector3(human.x - dirSign * 11.5, 7.8, human.z + side * 11.5), pc);
     desiredLook.lerp(new THREE.Vector3(human.x + dirSign * 2.5, 3.2, human.z), pc);
   }
 
@@ -3987,6 +4105,7 @@ function frame(now) {
       if (p.ballCallCooldown > 0) p.ballCallCooldown -= dtMs;
       if (p.blockCooldown > 0) p.blockCooldown -= dtMs;
       if (p.blockJumpTimer > 0) p.blockJumpTimer -= dtMs;
+      if (p.catchHoldT > 0) p.catchHoldT -= dtMs;
       // Push budget refills once contact has actually ended for a beat.
       if (p.pushAccum > 0) {
         p.pushContactT = (p.pushContactT || 0) + dtMs;
