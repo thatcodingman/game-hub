@@ -60,6 +60,14 @@
   }
   #screen-callout.show { opacity: 1; }
 
+  #shot-contest-callout {
+    position: fixed; top: 130px; left: 50%; transform: translateX(-50%);
+    z-index: 42; pointer-events: none; font-size: 16px; font-weight: 800;
+    letter-spacing: 0.04em; text-shadow: 0 1px 4px #000;
+    opacity: 0; transition: opacity 0.15s linear;
+  }
+  #shot-contest-callout.show { opacity: 1; }
+
   #shot-meter-wrap {
     position: fixed; left: 50%; bottom: 130px; transform: translateX(-50%);
     z-index: 44; pointer-events: none; display: flex; flex-direction: column;
@@ -161,6 +169,7 @@
 </div>
 
 <div id="screen-callout"></div>
+<div id="shot-contest-callout"></div>
 
 <div id="shot-meter-wrap" class="hidden">
   <div id="shot-meter-label">TIME IT!</div>
@@ -242,17 +251,29 @@ const PICKUP_RANGE = PLAYER_R + BALL_R + 1.2;
 const STEAL_RANGE = PLAYER_R * 2 + 1.5;
 // Three contest tiers (closest band wins): a hand up from way out barely
 // bothers the shooter, a real closeout costs him something, and a defender
-// right on top of him at the release point is a real problem. Radii are
-// picked off the court's own existing scales -- HEAVY sits right around
-// body-contact/steal-range (he's basically draped on him), DECENT is a
-// proper defensive closeout distance, LIGHT is "a defender's somewhere in
-// the area" and used to be the ONLY tier (the old flat CONTEST_RANGE).
+// right on top of him at the release point is a real problem. Five tiers,
+// closest band wins: HEAVILY CONTESTED sits right around body-contact/steal
+// range (he's basically draped on him), NORMAL is a real closeout, SLIGHTLY
+// CONTESTED is a hand up from mid-range, OPEN is a defender somewhere in the
+// area but not closing, and WIDE OPEN -- nobody within a real shooting
+// radius -- actually grants a bonus instead of just zeroing the penalty,
+// since a truly clean look is genuinely easier than a neutral baseline.
 const CONTEST_HEAVY_RANGE = PLAYER_R * 2 + 0.2; // ~3.2 -- right in his face
-const CONTEST_DECENT_RANGE = PLAYER_R * 2 + 2.5; // ~5.5 -- closed out hard
-const CONTEST_LIGHT_RANGE = PLAYER_R * 2 + 5.5; // ~8.5 -- a hand up from distance (old CONTEST_RANGE)
+const CONTEST_NORMAL_RANGE = PLAYER_R * 2 + 1.8; // ~4.8 -- closed out hard
+const CONTEST_SLIGHT_RANGE = PLAYER_R * 2 + 3.5; // ~6.5 -- a hand up, not much more
+const CONTEST_OPEN_RANGE = PLAYER_R * 2 + 6.0; // ~9.0 -- in the area, not closing
 const CONTEST_HEAVY_PENALTY = 0.32;
-const CONTEST_DECENT_PENALTY = 0.18;
-const CONTEST_LIGHT_PENALTY = 0.08;
+const CONTEST_NORMAL_PENALTY = 0.20;
+const CONTEST_SLIGHT_PENALTY = 0.10;
+const CONTEST_WIDEOPEN_BONUS = 0.06;
+// tier -> { label, color } for the on-screen shot feedback.
+const CONTEST_TIER_INFO = {
+  wideopen: { label: 'WIDE OPEN', color: '#34d399' },
+  open: { label: 'OPEN', color: '#34d399' },
+  slight: { label: 'SLIGHTLY CONTESTED', color: '#f5c542' },
+  normal: { label: 'CONTESTED', color: '#f5c542' },
+  heavy: { label: 'HEAVILY CONTESTED', color: '#ef4444' },
+};
 const MAX_SHOT_RANGE = 32;
 const THREE_PT_R = 22;
 const MATCH_SECONDS = 150;
@@ -1242,14 +1263,21 @@ function attemptShot(player, meterQuality) {
   const nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
   let acc = player.stats.shot;
   acc -= Math.max(0, (d - 5) / 40);
-  // Three contest tiers instead of one flat in-range/out-of-range check --
+  // Five contest tiers instead of one flat in-range/out-of-range check --
   // a hand up from way out barely matters, a tight closeout costs you
-  // something real, and a defender right on top of him at the release
-  // point is a genuine problem. Mutually exclusive by nearest distance,
-  // closest band wins.
-  if (nearestDefDist <= CONTEST_HEAVY_RANGE) acc -= CONTEST_HEAVY_PENALTY;
-  else if (nearestDefDist <= CONTEST_DECENT_RANGE) acc -= CONTEST_DECENT_PENALTY;
-  else if (nearestDefDist <= CONTEST_LIGHT_RANGE) acc -= CONTEST_LIGHT_PENALTY;
+  // something real, a defender draped on him at the release point is a
+  // genuine problem, and a truly clean look actually helps. Mutually
+  // exclusive by nearest distance, closest band wins.
+  let contestTier;
+  if (nearestDefDist <= CONTEST_HEAVY_RANGE) { acc -= CONTEST_HEAVY_PENALTY; contestTier = 'heavy'; }
+  else if (nearestDefDist <= CONTEST_NORMAL_RANGE) { acc -= CONTEST_NORMAL_PENALTY; contestTier = 'normal'; }
+  else if (nearestDefDist <= CONTEST_SLIGHT_RANGE) { acc -= CONTEST_SLIGHT_PENALTY; contestTier = 'slight'; }
+  else if (nearestDefDist <= CONTEST_OPEN_RANGE) { contestTier = 'open'; }
+  else { acc += CONTEST_WIDEOPEN_BONUS; contestTier = 'wideopen'; }
+  // Shown only for the human's own shots, right as the shot is released
+  // (the meter's already gone by the time this runs) -- an AI teammate or
+  // opponent shooting across the court doesn't need a callout.
+  if (player === controlledPlayer()) showShotContestFeedback(contestTier);
   // The shot-meter timing (human shots only — AI just calls attemptShot with
   // no meter and gets its usual straight accuracy roll): nail the release in
   // the green zone for a real bonus, badly time it (or let it expire) for a
@@ -1460,6 +1488,21 @@ function showScreenCallout(text, ms) {
   el.classList.add('show');
   screenCalloutHideAt = performance.now() + ms;
 }
+// Shot-contest feedback: fires right when the human's own shot is released
+// (the shot meter's just gone), naming the contest tier the defense got on
+// it, color-coded green/yellow/red by how open the look actually was.
+const SHOT_CONTEST_CALLOUT_MS = 1300;
+let shotContestCalloutHideAt = 0;
+function showShotContestFeedback(tier) {
+  const el = document.getElementById('shot-contest-callout');
+  if (!el) return;
+  const info = CONTEST_TIER_INFO[tier];
+  if (!info) return;
+  el.textContent = info.label;
+  el.style.color = info.color;
+  el.classList.add('show');
+  shotContestCalloutHideAt = performance.now() + SHOT_CONTEST_CALLOUT_MS;
+}
 // Q is now a press-AND-HOLD: charging starts the instant it's pressed, and
 // releasing it is what actually sends the screener over — the longer you
 // held it (up to SCREEN_HOLD_CHARGE_MS), the longer the resulting screen
@@ -1547,9 +1590,16 @@ const SHOT_JUMP_HEIGHT = 1.85; // body rise at the peak, world units
 const SHOT_FALL_DUR_MS = 300; // fixed landing time after release
 const SHOT_RELEASE_HEIGHT = 7.0; // ball height at release -- overhead, matches the jump pose
 const SHOT_AI_HOLD_MS = 340; // how long an AI shooter (no meter) holds before releasing
-function shotRiseHeight(t) {
-  return SHOT_JUMP_HEIGHT * (1 - Math.exp(-t / SHOT_RISE_TAU_MS));
+// Position-based shot speed: reuses the same accelMult stat that already
+// makes bigger positions ramp up/down more sluggishly on movement (PG=0.8,
+// SF=1.0, C=1.3) so a center's jump shot climbs and lands slower than a
+// point guard's, with a small forward slower than both.
+function shotSpeedMult(player) { return (player && player.stats && player.stats.accelMult) || 1; }
+function shotRiseHeight(t, player) {
+  const tau = SHOT_RISE_TAU_MS * shotSpeedMult(player);
+  return SHOT_JUMP_HEIGHT * (1 - Math.exp(-t / tau));
 }
+function shotFallDurFor(player) { return SHOT_FALL_DUR_MS * shotSpeedMult(player); }
 function shotMeterQuality(frac) {
   if (frac >= SHOT_METER_SWEET_START && frac <= SHOT_METER_SWEET_END) return 'perfect';
   const distOut = frac < SHOT_METER_SWEET_START ? SHOT_METER_SWEET_START - frac : frac - SHOT_METER_SWEET_END;
@@ -1580,7 +1630,7 @@ function startShotRise(player) {
 // real accuracy roll + ball flight (attemptShot) happens right here.
 function releaseShot(player, quality) {
   if (player.shotPhase !== 'rise') return;
-  player.shotFallFromHeight = shotRiseHeight(player.shotPhaseT);
+  player.shotFallFromHeight = shotRiseHeight(player.shotPhaseT, player);
   player.shotPhase = 'fall';
   player.shotPhaseT = 0;
   attemptShot(player, quality);
@@ -2431,7 +2481,7 @@ function applyCrossoverReachOverlay(p, g, L) {
 // overhead -- the universal contest/block reach -- layered on top of
 // whatever pose was already running underneath it.
 const BLOCK_JUMP_DUR_MS = 380;
-const BLOCK_JUMP_HEIGHT = 1.5;
+const BLOCK_JUMP_HEIGHT = 2.6; // a real, full-extension leap -- noticeably higher than before
 function applyBlockJumpOverlay(p, g, L, dt) {
   const t = clamp(1 - p.blockJumpTimer / BLOCK_JUMP_DUR_MS, 0, 1);
   const reach = Math.sin(t * Math.PI);
@@ -2650,7 +2700,7 @@ function applyShotPose(p, g, L, dt) {
   legLP.rotation.set(0, 0, -0.05); legRP.rotation.set(0, 0, 0.05);
 
   if (p.shotPhase === 'rise') {
-    const rise = shotRiseHeight(p.shotPhaseT);
+    const rise = shotRiseHeight(p.shotPhaseT, p);
     g.position.set(p.x, rise, p.z);
     // Deep bend right at the launch, easing out as he climbs -- the load
     // that actually sends him up, not a flat standing jump.
@@ -2672,7 +2722,7 @@ function applyShotPose(p, g, L, dt) {
     // relaxing through the follow-through -- while the other hand peels
     // off and drops, same as a real shooter's guide hand falling away the
     // instant it lets go. Body eases back down from wherever it was.
-    const fallT = clamp(p.shotPhaseT / SHOT_FALL_DUR_MS, 0, 1);
+    const fallT = clamp(p.shotPhaseT / shotFallDurFor(p), 0, 1);
     const e = fallT * fallT * (3 - 2 * fallT);
     const rise = lerp(p.shotFallFromHeight, 0, e);
     g.position.set(p.x, Math.max(0, rise), p.z);
@@ -2970,7 +3020,7 @@ function updateBall(dtMs) {
     // shot is thrown -- the same frame the meter starts -- not after some
     // separate standing charge first.
     if (c.shotPhase === 'rise') {
-      const rise = shotRiseHeight(c.shotPhaseT);
+      const rise = shotRiseHeight(c.shotPhaseT, c);
       const liftT = clamp(rise / SHOT_JUMP_HEIGHT, 0, 1);
       b.y = rise + lerp(2.0, 5.2, liftT);
       const forwardOffset = lerp(0.32, 0.5, liftT);
@@ -3083,24 +3133,21 @@ function updateBall(dtMs) {
 }
 
 let camDirSign = 1;
-let camDirSignPossession = null; // last possessionTeam the camera side was computed for
 function updateCamera(dt) {
   const human = controlledPlayer();
-  // Which side of the court the camera sits on is only recomputed the
-  // instant possession actually changes (a real offense<->defense switch) —
-  // and even then it's based purely on which hoop is now relevant, never on
-  // the human's own live position. Using the human's position at the moment
-  // of the switch was still buggy: a turnover that happens to land while the
-  // human is standing right next to (or behind) a hoop could still latch the
-  // camera onto the wrong side for that whole possession. relevantHoop.x is
-  // always a fixed +41/-41, so this can never be thrown off by where anyone
-  // on the court happens to be standing.
-  if (game.possessionTeam !== camDirSignPossession) {
-    camDirSignPossession = game.possessionTeam;
-    const iAmOnOffense = game.possessionTeam === human.team;
-    const relevantHoop = iAmOnOffense ? (human.team === 'A' ? HOOP_A : HOOP_B) : (human.team === 'A' ? HOOP_B : HOOP_A);
-    camDirSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
-  }
+  // The camera always faces the same way relative to the human, regardless
+  // of who currently has the ball: toward the hoop his own team attacks.
+  // That's a fixed, permanent target per team (same hoop attemptShot scores
+  // on), never flipped by possession -- so on defense the camera sits behind
+  // the human's own basket looking back across the whole court toward that
+  // attacking hoop, the same direction the opposing offense is driving FROM.
+  // That's the play developing, not the empty baseline behind him. Cheap to
+  // compute (a ternary + Math.sign), so just do it fresh every frame instead
+  // of caching on possession -- there's no longer a possession dependency to
+  // cache against, and this way a mid-possession player switch (E) can never
+  // leave it stale either.
+  const relevantHoop = human.team === 'A' ? HOOP_A : HOOP_B;
+  camDirSign = Math.sign(relevantHoop.x) || (human.team === 'A' ? 1 : -1);
   const dirSign = camDirSign;
 
   const desiredPos = new THREE.Vector3(human.x - dirSign * 15, 8.5, human.z);
@@ -3239,7 +3286,7 @@ function frame(now) {
         }
       } else if (p.shotPhase === 'fall') {
         p.shotPhaseT += dtMs;
-        if (p.shotPhaseT >= SHOT_FALL_DUR_MS) { p.shotPhase = 'none'; p.shotPhaseT = 0; }
+        if (p.shotPhaseT >= shotFallDurFor(p)) { p.shotPhase = 'none'; p.shotPhaseT = 0; }
       }
       if (p.hesitateTimer > 0) {
         const prevElapsed = HESITATE_TOTAL_MS - p.hesitateTimer;
@@ -3341,6 +3388,11 @@ function frame(now) {
       if (calloutEl) calloutEl.classList.remove('show');
       screenCalloutHideAt = 0;
     }
+    if (shotContestCalloutHideAt && performance.now() >= shotContestCalloutHideAt) {
+      const shotCalloutEl = document.getElementById('shot-contest-callout');
+      if (shotCalloutEl) shotCalloutEl.classList.remove('show');
+      shotContestCalloutHideAt = 0;
+    }
 
     updateCamera(dtMs);
   }
@@ -3362,6 +3414,10 @@ game.getMark = getMark;
 game.defenderOf = defenderOf;
 game.attemptAnkleBreaker = attemptAnkleBreaker;
 game.startMatch = startMatch;
+game.startShotRise = startShotRise;
+game.releaseShot = releaseShot;
+game.attemptBlock = attemptBlock;
+game.getCamDirSign = () => camDirSign;
 </script>
 </body>
 </html>
