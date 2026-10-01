@@ -1508,9 +1508,10 @@ const BEHIND_HAND_SWITCH_MS = 300;
 // momentum actually carries the player downcourt.
 const MOVE_BURST_FORWARD_WEIGHT = 0.9;
 // After the hand-switch itself finishes, the carrier gets a short, real
-// jolt of extra speed -- the "blow-by" after you've sold the move.
-const CROSSOVER_BOOST_MS = 420;
-const CROSSOVER_BOOST_MULT = 1.4;
+// jolt of extra speed -- the "blow-by" after you've sold the move. Shared
+// by every dribble move that calls applyMoveKick.
+const MOVE_BOOST_MS = 260;
+const MOVE_BOOST_MULT = 1.18;
 // Behind-the-back gets its own short cooldown (~= its own switch time) instead
 // of sharing the longer universal MOVE_COOLDOWN_MS, so it can be chained back
 // to back like a real behind-the-back combo instead of one-and-done.
@@ -1569,7 +1570,7 @@ function onCrossoverPressed() {
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
   applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 200);
   // Short burst of extra speed right after the move itself -- the blow-by.
-  p.moveBoostTimer = CROSSOVER_HAND_SWITCH_MS + CROSSOVER_BOOST_MS;
+  p.moveBoostTimer = CROSSOVER_HAND_SWITCH_MS + MOVE_BOOST_MS;
   playTone(520, 0.05);
 }
 
@@ -1580,6 +1581,8 @@ function onBehindBackPressed() {
   p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS);
   applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 200);
+  // Behind-the-back gets the same post-move blow-by as the crossover.
+  p.moveBoostTimer = BEHIND_HAND_SWITCH_MS + MOVE_BOOST_MS;
   playTone(460, 0.05);
 }
 
@@ -2005,7 +2008,7 @@ function updateHumanMovement(dtMs) {
   // a short real speed boost so the move actually buys separation.
   if (human.moveBoostTimer > 0) {
     human.moveBoostTimer -= dtMs;
-    if (human.handAnimT >= 1) speedMult *= CROSSOVER_BOOST_MULT;
+    if (human.handAnimT >= 1) speedMult *= MOVE_BOOST_MULT;
   }
   let targetVx = 0, targetVz = 0;
   if (mag >= 0.05) {
@@ -2104,9 +2107,19 @@ function playBodyThud(vol) {
 // before this every frame) so the arm actually extends out to carry the
 // ball across instead of just swinging through its normal running arc with
 // the ball floating out past it.
+//
+// Behind-the-back gets its own treatment on top of that: the ball's own
+// sweep path already tucks it behind the body (BEHIND_FORWARD_OFFSET), so
+// the passing arm reaching that same point already swings behind the back
+// -- but a real behind-the-back also has the OTHER hand reaching back to
+// meet it (not just hanging in a normal running swing), and a quick wrist
+// snap right at the handoff instant to sell the flick that sends it to the
+// other hand.
 const _coTarget = new THREE.Vector3(), _coPole = new THREE.Vector3();
+const _coTarget2 = new THREE.Vector3(), _coPole2 = new THREE.Vector3();
 function applyCrossoverReachOverlay(p, g, L) {
-  const e = p.handAnimT * p.handAnimT * (3 - 2 * p.handAnimT);
+  const t = p.handAnimT;
+  const e = t * t * (3 - 2 * t);
   const curSide = lerp(p.handAnimFrom, p.handAnimTo, e);
   const side = curSide < 0 ? -1 : 1;
   const shoulder = side < 0 ? L.armLP : L.armRP;
@@ -2116,6 +2129,26 @@ function applyCrossoverReachOverlay(p, g, L) {
   L.spine.worldToLocal(_coTarget);
   _coPole.set(side * 0.5, -0.4, 0.7);
   solveArmIK(shoulder, elbow, _coTarget, _coPole, 1);
+
+  if (p.handSwitchKind === 'behind') {
+    // Wrist flick: a quick extra snap of the forearm right at the moment
+    // the ball crosses from one hand to the other, on top of the IK pose.
+    const flick = Math.exp(-Math.pow((t - 0.5) / 0.16, 2)) * 0.85;
+    elbow.rotation.x -= flick;
+
+    // Receiving hand reaches back to meet it in the second half of the
+    // sweep, instead of just hanging in its normal running swing.
+    const otherSide = -side;
+    const w2 = clamp((t - 0.3) / 0.55, 0, 1);
+    if (w2 > 0.002) {
+      const oShoulder = otherSide < 0 ? L.armLP : L.armRP;
+      const oElbow = otherSide < 0 ? L.elbowLP : L.elbowRP;
+      _coTarget2.set(game.ball.x, game.ball.y, game.ball.z);
+      L.spine.worldToLocal(_coTarget2);
+      _coPole2.set(otherSide * 0.5, -0.4, 0.7);
+      solveArmIK(oShoulder, oElbow, _coTarget2, _coPole2, w2);
+    }
+  }
 }
 
 // Dribble-move plant-and-burst: a real athletic load-and-explode, not just
