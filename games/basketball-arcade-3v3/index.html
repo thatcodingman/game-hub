@@ -1761,7 +1761,8 @@ const DUNK_MAKE_BASE = 0.94;
 //   poster    knees-up, cocked, hang on the rim -- a strong dunker with a
 //             defender squarely in his path (harder, but tight contest hurts less)
 const DUNK_STYLES = {
-  slam:     { dur: 700, make: 0,     label: 'DUNK!' },
+  slam:     { dur: 700, make: 0,     label: 'ONE-HAND JAM!' },
+  cradle:   { dur: 840, make: -0.02, label: 'ROCK THE CRADLE!' },
   power:    { dur: 720, make: 0.02,  label: 'POWER SLAM!' },
   windmill: { dur: 860, make: -0.03, label: 'WINDMILL!' },
   tomahawk: { dur: 800, make: -0.01, label: 'TOMAHAWK!' },
@@ -1778,15 +1779,20 @@ function pickDunkStyle(p, hoop, opps) {
   const big = (st.strength || 1) >= 0.9 || (st.scale || 1) >= 1.1;
   const athletic = (st.speed || 0) >= 0.4;
   let pool;
-  if (inFront && nd < 6.5) pool = big ? ['poster', 'poster', 'power', 'slam'] : ['power', 'slam'];
-  else if (nd >= 9) pool = athletic ? ['windmill', 'windmill', 'tomahawk', 'slam'] : ['power', 'tomahawk', 'slam'];
-  else pool = big ? ['power', 'tomahawk', 'slam'] : ['tomahawk', 'slam', 'windmill'];
+  if (inFront && nd < 6.5) pool = big ? ['poster', 'poster', 'power', 'slam'] : ['power', 'slam', 'cradle'];
+  else if (nd >= 9) pool = athletic ? ['windmill', 'cradle', 'tomahawk', 'slam', 'slam'] : ['power', 'tomahawk', 'slam', 'cradle'];
+  else pool = big ? ['power', 'tomahawk', 'slam', 'slam'] : ['tomahawk', 'slam', 'cradle', 'windmill'];
   return pool[Math.floor(Math.random() * pool.length)];
 }
 // Angle of the ball arm (shoulder x-rotation; -PI is straight up) for the styles
 // that swing it; null means "both hands overhead" handled by the plain pose.
 function dunkBallArmAngle(d, ru) {
   if (d.style === 'windmill') return -2.7 + Math.PI * 2 * (ru - 1);
+  if (d.style === 'slam') return lerp(-1.7, -2.75, ru * (2 - ru));   // ball in ONE hand, arm extending up
+  if (d.style === 'cradle') {   // arm swings down and back past the hip, then sweeps up and over
+    if (ru < 0.45) { const e = ru / 0.45; return lerp(-1.3, 0.55, e * e * (3 - 2 * e)); }
+    const e = (ru - 0.45) / 0.55; return lerp(0.55, -2.75, e * e * (3 - 2 * e));
+  }
   if (d.style === 'tomahawk' || d.style === 'poster') {
     const k = 0.55;
     if (ru < k) { const e = ru / k; return lerp(-2.0, -3.5, e * e * (3 - 2 * e)); }
@@ -1881,9 +1887,11 @@ function applyDunkPose(p, g, L, dt) {
   if (ang !== null) {
     // swung ball arm (windmill / tomahawk / poster); settles on the rim after
     L.armRP.rotation.set(ang - 0.15 * after, 0, -0.12);
-    L.elbowRP.rotation.x = st === 'windmill' ? -0.05 : lerp(-0.9, -0.05, ru);
+    L.elbowRP.rotation.x = (st === 'windmill' || st === 'slam') ? -0.05 : lerp(-0.9, -0.05, ru);
     if (st === 'windmill') L.armLP.rotation.set(-0.5, 0, 0.8);                       // free arm out for balance
     else if (st === 'poster') L.armLP.rotation.set(lerp(-2.2, -2.8, ru), 0, 0.12);    // both on the iron
+    else if (st === 'slam') L.armLP.rotation.set(lerp(-0.7, -1.7, ru), 0, 0.55);      // free hand up for balance
+    else if (st === 'cradle') L.armLP.rotation.set(-0.35, 0, 0.75);                   // free arm out wide
     else L.armLP.rotation.set(lerp(-1.3, -0.6, ru), 0, 0.35 + 0.25 * drop);          // tomahawk guide arm falls away
     L.elbowLP.rotation.x = -0.1;
   } else if (st === 'power') {
@@ -4532,7 +4540,8 @@ function updateCamera(dt) {
   if (game.camYaw === undefined) game.camYaw = targetYaw;
   let yd = Math.atan2(Math.sin(targetYaw - game.camYaw), Math.cos(targetYaw - game.camYaw));
   if (Math.abs(yd) > Math.PI - 0.05) yd = (focus.z >= 0 ? -1 : 1) * Math.abs(yd); // swing out over open floor
-  game.camYaw += yd * (1 - Math.exp(-dt / 230));
+  game.camYaw += yd * (1 - Math.exp(-dt / 95)); // quick swing at half court
+  const flipping = Math.abs(yd) > 0.35;
   const cdx = Math.cos(game.camYaw), cdz = Math.sin(game.camYaw);
 
   // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
@@ -4555,13 +4564,17 @@ function updateCamera(dt) {
     desiredLook.lerp(new THREE.Vector3(human.x + cdx * 2.5, 3.2, human.z + cdz * 2.5), pc);
   }
 
-  const alpha = 1 - Math.pow(0.001, dt / 1000);
+  const alpha = 1 - Math.pow(flipping ? 0.000002 : 0.001, dt / 1000);
   game.camPos.lerp(desiredPos, alpha);
   game.camLookAt.lerp(desiredLook, alpha);
 
   camera.position.copy(game.camPos);
   camera.lookAt(game.camLookAt);
-  camForward.copy(game.camLookAt).sub(camera.position).setY(0).normalize();
+  // Controls follow where the camera is GOING (its target direction), not where
+  // the swing happens to be mid-flip, so inputs never map through an in-between
+  // angle (that's what made players slide the wrong way during the flip).
+  if (pc > 0.001) camForward.copy(game.camLookAt).sub(camera.position).setY(0).normalize();
+  else camForward.set(Math.cos(targetYaw), 0, Math.sin(targetYaw));
   // Debug-only viewpoint override (unset in normal play); controls keep
   // using the real follow-cam direction computed above.
   const ov = window.__camOverride;
