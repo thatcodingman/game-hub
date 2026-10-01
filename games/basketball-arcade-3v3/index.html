@@ -260,9 +260,12 @@ const ORDER = ['PG', 'SF', 'C'];
 // involved — a center shoving a point guard around is a different contest
 // than the other way around.
 const POS_STATS = {
-  PG: { speed: 0.48, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
-  SF: { speed: 0.38, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
-  C:  { speed: 0.28, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
+  // Overall movement slowed ~20% across the board (first step of a larger
+  // movement-feel pass) -- same speed ratios between positions, just a
+  // slower base pace for everyone.
+  PG: { speed: 0.38, shot: 0.58, steal: 0.60, height: 6.2, accelMult: 0.8, scale: 0.86, strength: 0.62 },
+  SF: { speed: 0.30, shot: 0.60, steal: 0.48, height: 6.6, accelMult: 1.0, scale: 1.0, strength: 0.90 },
+  C:  { speed: 0.22, shot: 0.64, steal: 0.34, height: 7.0, accelMult: 1.3, scale: 1.16, strength: 1.28 },
 };
 const JERSEY_NUMBERS = { PG: '1', SF: '23', C: '34' };
 
@@ -959,6 +962,10 @@ function makePlayer(team, posLabel) {
     postContestTimer: 0, postPrevWave: 0,
     postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200,
     markOverride: null, lateSwitchCheck: null, screenHangTimer: 0, screenHangDur: 1,
+    // Dribble-move momentum: a real, sustained velocity push in the move's
+    // direction (not just a one-frame nudge that the normal movement code
+    // immediately overrides) -- see applyMoveKick/tickMoveBurst.
+    moveBurstT: 1, moveBurstDur: 1, moveBurstDirX: 0, moveBurstDirZ: 0, moveBurstPeak: 0,
   };
 }
 
@@ -1023,6 +1030,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
+    p.moveBurstT = 1; p.moveBurstPeak = 0;
   };
   const b = game.ball;
 
@@ -1513,14 +1521,30 @@ function triggerHandSwitch(p, kind, durMs) {
   return newSide;
 }
 
-function applyMoveKick(p, mult, side) {
-  // A lateral kick (relative to the camera, like the WASD strafe axis) that
-  // eases back into whatever direction the player is holding — the "snap"
-  // of the move — rather than a clean instant sidestep.
+function applyMoveKick(p, mult, side, durMs) {
+  // Real momentum in the direction of the move (relative to the camera,
+  // like the arrow-key strafe axis) -- a sustained push that fades out over
+  // the move's duration, instead of a one-frame vx nudge that the normal
+  // movement code (approachVelocity chasing the held-key target every
+  // frame) would otherwise erase almost instantly.
   const fwd = camForward.clone().setY(0).normalize();
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  const kick = p.stats.speed * mult * side;
-  p.vx += right.x * kick; p.vz += right.z * kick;
+  p.moveBurstDirX = right.x * side;
+  p.moveBurstDirZ = right.z * side;
+  p.moveBurstPeak = p.stats.speed * mult;
+  p.moveBurstT = 0;
+  p.moveBurstDur = durMs;
+}
+
+// Advances a player's move-burst timer and returns its current velocity
+// contribution (fades linearly from full strength at trigger to zero at
+// moveBurstDur). Called every frame so it decays smoothly regardless of
+// what branch of movement is active.
+function tickMoveBurst(p, dtMs) {
+  if (p.moveBurstT >= 1) return { x: 0, z: 0 };
+  p.moveBurstT = Math.min(1, p.moveBurstT + dtMs / p.moveBurstDur);
+  const fade = 1 - p.moveBurstT;
+  return { x: p.moveBurstDirX * p.moveBurstPeak * fade, z: p.moveBurstDirZ * p.moveBurstPeak * fade };
 }
 
 function onCrossoverPressed() {
@@ -1529,7 +1553,7 @@ function onCrossoverPressed() {
   p.moveCooldown = MOVE_COOLDOWN_MS;
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS);
-  applyMoveKick(p, CROSSOVER_KICK_MULT, newSide);
+  applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 120);
   playTone(520, 0.05);
 }
 
@@ -1539,7 +1563,7 @@ function onBehindBackPressed() {
   p.moveCooldown = BEHIND_COOLDOWN_MS;
   p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS);
-  applyMoveKick(p, BEHIND_KICK_MULT, newSide);
+  applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 120);
   playTone(460, 0.05);
 }
 
@@ -1786,6 +1810,9 @@ const POST_BUMP_THRESHOLD = 0.55; // wave level that triggers a bump (rising edg
 const POST_BUMP_DISTANCE = 0.2; // units shoved forward on a bump, before strength scaling
 function updateHumanMovement(dtMs) {
   const human = controlledPlayer();
+  // Always tick the dribble-move momentum burst so it decays smoothly no
+  // matter which movement branch is active below.
+  const moveBurst = tickMoveBurst(human, dtMs);
   if (game.activeInbound) {
     // Locked in place while the ball is being checked/inbounded in — you
     // can't just walk off before it actually arrives.
@@ -1968,6 +1995,11 @@ function updateHumanMovement(dtMs) {
     targetVx = worldX * speed * Math.min(mag, 1);
     targetVz = worldZ * speed * Math.min(mag, 1);
   }
+  // Layer in any live dribble-move momentum (crossover, behind-the-back,
+  // ...) on top of whatever direction the keys are driving toward, so the
+  // move actually carries the player's body, not just the ball.
+  targetVx += moveBurst.x;
+  targetVz += moveBurst.z;
   approachVelocity(human, targetVx, targetVz, dtMs);
 }
 
