@@ -2744,6 +2744,18 @@ function buildPostMove(p) {
   return { mx: -tx, mz: -tz, dist: POST_FADE_DIST, t: 0, dur: POST_MOVE_MS, moved: 0, side: 0, fade: true,
     startFacing: p.facing, label: 'TURNAROUND FADE' };
 }
+// Post shots are fadeaways: he jumps AWAY from the basket (and leans back off
+// the defender) instead of straight up -- drift away from the rim through the
+// rise and the early part of the fall.
+const FADE_JUMP_SPEED = 0.0032; // ft per ms at full drift
+function fadeAwayDrift(p, dtMs, amt) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const dx = p.x - hoop.x, dz = p.z - hoop.z, d = Math.hypot(dx, dz) || 1;
+  const step = FADE_JUMP_SPEED * dtMs * amt;
+  p.x = clamp(p.x + dx / d * step, -COURT_HALF_LEN + 1.5, COURT_HALF_LEN - 1.5);
+  p.z = clamp(p.z + dz / d * step, -COURT_HALF_WID + 1.5, COURT_HALF_WID - 1.5);
+  p.vx = 0; p.vz = 0;
+}
 function stepPostMove(p, dtMs) {
   const pm = p.postMove;
   pm.t += dtMs;
@@ -3950,7 +3962,11 @@ function applyShotPose(p, g, L, dt) {
     _coTarget2.copy(_coTarget);
     _coPole2.set(-0.5, -0.3, 0.7);
     solveArmIK(armRP, L.elbowRP, _coTarget2, _coPole2, 1);
-    L.spine.rotation.set(lerp(0.1, -0.14, loadT), 0, 0);
+    L.spine.rotation.set(p.postShot ? lerp(0.1, -0.5, loadT) : lerp(0.1, -0.14, loadT), 0, 0);
+    if (p.postShot) { // leaning back, legs kicked out toward the defender
+      legLP.rotation.x = -0.55 * loadT; legRP.rotation.x = -0.25 * loadT;
+      kneeLP.rotation.x = 0.25; kneeRP.rotation.x = 0.45;
+    }
   } else {
     // Fall: the shooting hand finishes the motion alone -- arm extended up
     // and out, wrist snapping forward right at the moment of release and
@@ -3974,7 +3990,8 @@ function applyShotPose(p, g, L, dt) {
     shootElbow.rotation.x = -0.12 - flick;
     offArm.rotation.set(lerp(-1.25, -0.5, fallT), 0, -side * lerp(0.55, 0.18, fallT));
     offElbow.rotation.x = lerp(0.3, 0.1, fallT);
-    L.spine.rotation.set(lerp(-0.12, 0.08, fallT), 0, 0);
+    L.spine.rotation.set(p.postShot ? lerp(-0.5, -0.05, fallT) : lerp(-0.12, 0.08, fallT), 0, 0);
+    if (p.postShot) { legLP.rotation.x = -0.55 * (1 - fallT); legRP.rotation.x = -0.25 * (1 - fallT); }
   }
 }
 
@@ -4508,13 +4525,13 @@ function updateCamera(dt) {
   //     court toward the basket you're defending, so you see the break, unless
   //     the ball is actually ahead of you the other way
   // The ball-ahead test has hysteresis (latched) so it can't flicker.
-  const CAM_HALF_MARGIN = 3.5, CAM_FLIP_ZONE = 5;
+  const CAM_HALF_MARGIN = 2.0, CAM_FLIP_ZONE = 4;
   const onDefense = game.possessionTeam && game.possessionTeam !== human.team;
   // Anti-shake: a dead zone around half court (the view only changes once you're
   // clearly past it) plus a minimum dwell between flips, so standing, jogging or
   // dribbling on the line can never make it swing back and forth.
   const nowMs = performance.now();
-  const canFlip = nowMs - (game.camFlipAt || 0) > 700;
+  const canFlip = nowMs - (game.camFlipAt || 0) > 500;
   let want = game.camTransition;
   if (onDefense) {
     const hs = human.x * attackSign;
@@ -4548,7 +4565,11 @@ function updateCamera(dt) {
   // mid-swing, which is what made it shudder when z crossed the center line)
   if (game.camLastTarget !== targetYaw) { game.camLastTarget = targetYaw; game.camSwingSign = focus.z >= 0 ? -1 : 1; }
   if (Math.abs(yd) > Math.PI - 0.3) yd = (game.camSwingSign || 1) * Math.abs(yd);
-  game.camYaw += yd * (1 - Math.exp(-dt / 95)); // quick swing at half court
+  { // snappy swing: fast exponential plus a minimum angular speed so it never crawls at the end
+    const ease = yd * (1 - Math.exp(-dt / 48));
+    const minStep = Math.sign(yd) * Math.min(Math.abs(yd), 11 * dt / 1000);
+    game.camYaw += Math.abs(minStep) > Math.abs(ease) ? minStep : ease;
+  }
   const swingK = clamp(Math.abs(yd) / 1.2, 0, 1);
   const cdx = Math.cos(game.camYaw), cdz = Math.sin(game.camYaw);
 
@@ -4572,7 +4593,7 @@ function updateCamera(dt) {
     desiredLook.lerp(new THREE.Vector3(human.x + cdx * 2.5, 3.2, human.z + cdz * 2.5), pc);
   }
 
-  const alpha = 1 - Math.pow(lerp(0.001, 0.00005, swingK), dt / 1000); // catches up faster mid-swing, smoothly
+  const alpha = 1 - Math.pow(lerp(0.001, 0.000005, swingK), dt / 1000); // catches up faster mid-swing, smoothly
   game.camPos.lerp(desiredPos, alpha);
   game.camLookAt.lerp(desiredLook, alpha);
 
@@ -4762,12 +4783,14 @@ function frame(now) {
       if (p.shotPhase === 'rise') {
         p.shotPhaseT += dtMs;
         if (p.postMove) stepPostMove(p, dtMs);
+        else if (p.postShot) fadeAwayDrift(p, dtMs, Math.min(1, shotRiseT(p) / 140));
         if (p.shotAIReleaseAt > 0 && p.shotPhaseT >= p.shotAIReleaseAt) {
           p.shotAIReleaseAt = 0;
           releaseShot(p, null);
         }
       } else if (p.shotPhase === 'fall') {
         p.shotPhaseT += dtMs;
+        if (p.postShot) fadeAwayDrift(p, dtMs, Math.max(0, 1 - p.shotPhaseT / (shotFallDurFor(p) * 0.7)));
         if (p.shotPhaseT >= shotFallDurFor(p)) { p.shotPhase = 'none'; p.shotPhaseT = 0; }
       }
       if (p.hesitateTimer > 0) {
