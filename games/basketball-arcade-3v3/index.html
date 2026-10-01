@@ -3507,9 +3507,21 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // let go -- so holding UP to sprint back on defense keeps taking you back after the
 // camera swings at half court, instead of suddenly reversing. Release (or tap a new
 // direction) and the new view's mapping takes over.
-let ctrlLatchFwd = null, ctrlLatchLat = null; // up/down axis and left/right axis latch independently
-function inputForward() { return ctrlLatchFwd || camForward; }
-function inputRight() { const f = ctrlLatchLat || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
+let ctrlLatch = null, ctrlLatchT = 0; // one shared latch basis for both axes, eases out to the live camera
+const LATCH_HOLD = 3000, LATCH_BLEND = 520; // hold while sprinting back; eases out near own basket
+function latchedBasis() {
+  if (!ctrlLatch) return camForward;
+  const age = performance.now() - ctrlLatchT;
+  if (age <= LATCH_HOLD) return ctrlLatch;
+  if (age >= LATCH_HOLD + LATCH_BLEND) { ctrlLatch = null; return camForward; }
+  const t = (age - LATCH_HOLD) / LATCH_BLEND, e = t * t * (3 - 2 * t);
+  const a0 = Math.atan2(ctrlLatch.z, ctrlLatch.x), a1 = Math.atan2(camForward.z, camForward.x);
+  let d = a1 - a0; while (d > Math.PI + 1e-6) d -= 2 * Math.PI; while (d <= -Math.PI) d += 2 * Math.PI;
+  const a = a0 + d * e;
+  return new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+}
+function inputForward() { return latchedBasis(); }
+function inputRight() { const f = latchedBasis(); return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
 function axisHeld(vertical) {
   const ks = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
   if (ks.some((k) => keysDown.has(k))) return true;
@@ -4762,12 +4774,15 @@ function updateCamera(dt) {
   else camForward.set(Math.cos(targetYaw), 0, Math.sin(targetYaw));
   const vHeld = axisHeld(true), hHeld = axisHeld(false);
   if (game.ctrlDirKey !== undefined && game.ctrlDirKey !== dirSign) {
-    if (vHeld) ctrlLatchFwd = prevFwd;
-    if (hHeld) ctrlLatchLat = prevFwd;
+    if (vHeld || hHeld) { ctrlLatch = prevFwd; ctrlLatchT = performance.now(); }
   }
   game.ctrlDirKey = dirSign;
-  if (!vHeld) ctrlLatchFwd = null;
-  if (!hHeld) ctrlLatchLat = null;
+  if (!vHeld && !hHeld) ctrlLatch = null;
+  if (ctrlLatch) {
+    // running back toward your own hoop: hand control to the live camera well before the baseline
+    const ownX = human.team === 'A' ? -41 : 41;
+    if (Math.abs(human.x - ownX) < 26 && performance.now() - ctrlLatchT < LATCH_HOLD) ctrlLatchT = performance.now() - LATCH_HOLD;
+  }
   // Debug-only viewpoint override (unset in normal play); controls keep
   // using the real follow-cam direction computed above.
   const ov = window.__camOverride;
