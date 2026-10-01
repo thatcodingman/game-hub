@@ -4508,21 +4508,26 @@ function updateCamera(dt) {
   //     court toward the basket you're defending, so you see the break, unless
   //     the ball is actually ahead of you the other way
   // The ball-ahead test has hysteresis (latched) so it can't flicker.
-  const CAM_HALF_MARGIN = 1.5;
+  const CAM_HALF_MARGIN = 3.5, CAM_FLIP_ZONE = 5;
   const onDefense = game.possessionTeam && game.possessionTeam !== human.team;
+  // Anti-shake: a dead zone around half court (the view only changes once you're
+  // clearly past it) plus a minimum dwell between flips, so standing, jogging or
+  // dribbling on the line can never make it swing back and forth.
+  const nowMs = performance.now();
+  const canFlip = nowMs - (game.camFlipAt || 0) > 700;
+  let want = game.camTransition;
   if (onDefense) {
     const hs = human.x * attackSign;
     const ahead = game.ball.x * attackSign - hs; // + = ball is further toward their basket than you
-    if (hs < -CAM_HALF_MARGIN) {
-      game.camTransition = false;
-    } else if (!game.camTransition && ahead < 2) {
-      game.camTransition = true;
-    } else if (game.camTransition && ahead > 8) {
-      game.camTransition = false;
-    }
+    if (hs < -CAM_HALF_MARGIN) want = false;            // clearly back in your own half
+    else if (hs > CAM_FLIP_ZONE) {                      // clearly in their half
+      if (!game.camTransition && ahead < 2) want = true;
+      else if (game.camTransition && ahead > 8) want = false;
+    }                                                   // in between: keep the current view
   } else {
-    game.camTransition = false;
+    want = false;
   }
+  if (want !== !!game.camTransition && (canFlip || !onDefense)) { game.camTransition = want; game.camFlipAt = nowMs; }
   camDirSign = game.camTransition ? -attackSign : attackSign;
   let dirSign = camDirSign;
   // Free throws: a broadcast-style shot from behind whoever's at the line,
@@ -4539,9 +4544,12 @@ function updateCamera(dt) {
   const targetYaw = dirSign > 0 ? 0 : Math.PI;
   if (game.camYaw === undefined) game.camYaw = targetYaw;
   let yd = Math.atan2(Math.sin(targetYaw - game.camYaw), Math.cos(targetYaw - game.camYaw));
-  if (Math.abs(yd) > Math.PI - 0.05) yd = (focus.z >= 0 ? -1 : 1) * Math.abs(yd); // swing out over open floor
+  // swing out over open floor -- direction chosen ONCE per flip (never re-decided
+  // mid-swing, which is what made it shudder when z crossed the center line)
+  if (game.camLastTarget !== targetYaw) { game.camLastTarget = targetYaw; game.camSwingSign = focus.z >= 0 ? -1 : 1; }
+  if (Math.abs(yd) > Math.PI - 0.3) yd = (game.camSwingSign || 1) * Math.abs(yd);
   game.camYaw += yd * (1 - Math.exp(-dt / 95)); // quick swing at half court
-  const flipping = Math.abs(yd) > 0.35;
+  const swingK = clamp(Math.abs(yd) / 1.2, 0, 1);
   const cdx = Math.cos(game.camYaw), cdz = Math.sin(game.camYaw);
 
   // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
@@ -4564,7 +4572,7 @@ function updateCamera(dt) {
     desiredLook.lerp(new THREE.Vector3(human.x + cdx * 2.5, 3.2, human.z + cdz * 2.5), pc);
   }
 
-  const alpha = 1 - Math.pow(flipping ? 0.000002 : 0.001, dt / 1000);
+  const alpha = 1 - Math.pow(lerp(0.001, 0.00005, swingK), dt / 1000); // catches up faster mid-swing, smoothly
   game.camPos.lerp(desiredPos, alpha);
   game.camLookAt.lerp(desiredLook, alpha);
 
