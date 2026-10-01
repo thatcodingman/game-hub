@@ -1141,6 +1141,67 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
     spine.add(eye);
   });
 
+  // --- Hair, glasses, headband, beard: every player rolls a look ----------------------------
+  {
+    const rnd = (a) => a[Math.floor(Math.random() * a.length)];
+    const hairCol = rnd([0x0d0907, 0x1a120c, 0x2b1a0e, 0x3a2412, 0x6b4a2a, 0x151515, 0x8a5a2b]);
+    const hairMat = new THREE.MeshStandardMaterial({ color: hairCol, roughness: 0.9 });
+    const hy = torsoLen + headR + 0.05; // head centre
+    const add = (m, x, y, z) => { m.position.set(x, y, z); m.castShadow = true; spine.add(m); return m; };
+    const style = rnd(['buzz', 'buzz', 'fade', 'afro', 'afro', 'bun', 'braids', 'bald', 'waves']);
+    const cap = (r, arc, rotX, yOff) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12, 0, Math.PI * 2, 0, arc), hairMat);
+      m.rotation.x = rotX; return add(m, 0, hy + (yOff || 0), -0.02);
+    };
+    if (style === 'buzz') cap(headR * 1.03, Math.PI * 0.5, -0.28, 0.02);
+    else if (style === 'fade') { cap(headR * 1.05, Math.PI * 0.42, -0.2, 0.06); }
+    else if (style === 'waves') { cap(headR * 1.07, Math.PI * 0.5, -0.3, 0.04); }
+    else if (style === 'afro') add(new THREE.Mesh(new THREE.SphereGeometry(headR * 1.38, 16, 12), hairMat), 0, hy + 0.14, -0.1);
+    else if (style === 'bun') {
+      cap(headR * 1.04, Math.PI * 0.5, -0.28, 0.02);
+      add(new THREE.Mesh(new THREE.SphereGeometry(headR * 0.4, 12, 10), hairMat), 0, hy + headR * 1.05, -0.12);
+    } else if (style === 'braids') {
+      cap(headR * 1.04, Math.PI * 0.5, -0.28, 0.02);
+      for (let i = -3; i <= 3; i++) {
+        const b = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.035, 0.75, 6), hairMat);
+        const ang = (i / 3) * 1.1;
+        add(b, Math.sin(ang) * headR * 1.0, hy - 0.05, -Math.cos(ang) * headR * 0.92 - 0.04);
+      }
+    }
+    // glasses (about a third of the roster): round frames, sport goggles or shades
+    const gl = rnd([null, null, 'round', 'shades', 'goggles']);
+    if (gl) {
+      const frame = new THREE.MeshStandardMaterial({ color: gl === 'shades' ? 0x0a0a0a : 0x15151a, roughness: 0.35, metalness: 0.4 });
+      const lens = new THREE.MeshStandardMaterial({ color: gl === 'round' ? 0x9fc4d8 : 0x0b0b10, roughness: 0.12, metalness: 0.5, transparent: true, opacity: gl === 'round' ? 0.35 : 0.85 });
+      const ey = hy + headR * 0.12, ez = headR * 0.97;
+      if (gl === 'goggles') {
+        add(new THREE.Mesh(new THREE.BoxGeometry(headR * 1.5, headR * 0.5, 0.1), lens), 0, ey, ez);
+        const strap = new THREE.Mesh(new THREE.TorusGeometry(headR * 1.02, 0.045, 6, 20), frame);
+        strap.rotation.x = Math.PI / 2; add(strap, 0, ey, 0);
+      } else {
+        [-0.19, 0.19].forEach((ex) => {
+          const w = gl === 'shades' ? headR * 0.42 : headR * 0.32;
+          const l = new THREE.Mesh(new THREE.CylinderGeometry(w, w, 0.05, 16), lens); l.rotation.x = Math.PI / 2;
+          add(l, ex, ey, ez + 0.01);
+          const r = new THREE.Mesh(new THREE.TorusGeometry(w, 0.035, 6, 16), frame); add(r, ex, ey, ez + 0.03);
+        });
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.04, 0.04), frame), 0, ey, ez + 0.03);
+        [-1, 1].forEach((sx) => add(new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, headR * 0.9), frame), sx * headR * 0.88, ey, ez - headR * 0.42));
+      }
+    }
+    // headband / sweatband
+    if (Math.random() < 0.25) {
+      const hb = new THREE.Mesh(new THREE.TorusGeometry(headR * 1.02, 0.07, 8, 24), new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.8 }));
+      hb.rotation.x = Math.PI / 2; hb.rotation.y = 0; add(hb, 0, hy + headR * 0.45, -0.02);
+    }
+    // beard / goatee
+    const beard = rnd([null, null, null, 'full', 'goatee']);
+    if (beard === 'full') {
+      const b = new THREE.Mesh(new THREE.SphereGeometry(headR * 1.03, 16, 10, 0, Math.PI * 2, Math.PI * 0.62, Math.PI * 0.3), hairMat);
+      b.rotation.x = -0.1; add(b, 0, hy - 0.02, 0.03);
+    } else if (beard === 'goatee') add(new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), hairMat), 0, hy - headR * 0.78, headR * 0.82);
+  }
+
   // Hands and feet — without these the figures read as bare rods swinging
   // in space instead of an actual person. Hands cap each arm; shoe-shaped
   // feet cap each shin, nudged forward so they plant naturally under the
@@ -4746,8 +4807,8 @@ function updateCamera(dt) {
 
   // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
   // floor (and the play developing around you) is in frame.
-  const desiredPos = new THREE.Vector3(focus.x - cdx * 19, 10.8, focus.z - cdz * 19);
-  const desiredLook = new THREE.Vector3(focus.x + cdx * 10, 3.2, focus.z + cdz * 10);
+  const desiredPos = new THREE.Vector3(focus.x - cdx * 25, 13.8, focus.z - cdz * 25);
+  const desiredLook = new THREE.Vector3(focus.x + cdx * 11, 3.0, focus.z + cdz * 11);
 
   // Post-up camera: straight behind the poster, the defender battling on
   // his back is completely hidden behind his body. Like a broadcast post
