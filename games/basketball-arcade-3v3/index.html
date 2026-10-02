@@ -66,7 +66,7 @@
   }
   #screen-callout.show { opacity: 1; }
 
-  #shot-contest-callout {
+  #shot-contest-callout { text-align: center;
     position: fixed; top: 130px; left: 50%; transform: translateX(-50%);
     z-index: 42; pointer-events: none; font-size: 16px; font-weight: 800;
     letter-spacing: 0.04em; text-shadow: 0 1px 4px #000;
@@ -1795,6 +1795,19 @@ function shotDistancePenalty(d) {
   if (d > DEEP_SHOT_DIST) pen += (d - DEEP_SHOT_DIST) * DEEP_SHOT_PEN_PER_FT;
   return pen;
 }
+// 0-100 how contested a shot is, from the nearest defender's distance (hands-up counts closer).
+function contestPct(nd) {
+  const lo = CONTEST_HEAVY_RANGE - 1.2, hi = CONTEST_OPEN_RANGE + 1;
+  return Math.round(100 * (1 - clamp((nd - lo) / (hi - lo), 0, 1)));
+}
+// Green-window scale by shot distance: normal inside the arc, shrinking out to a sliver at full court.
+function meterDistScale(d) {
+  if (d <= THREE_PT_R) return 1;
+  if (d <= DEEP_SHOT_DIST) return 0.7;
+  if (d <= HEAVE_DIST) return 0.4;
+  if (d <= 50) return 0.22;
+  return 0.1;
+}
 function meterRangeScale(d) {
   if (d <= THREE_PT_R) return 1;
   if (d <= DEEP_SHOT_DIST) return 0.75;
@@ -1897,7 +1910,7 @@ function attemptShot(player, meterQuality) {
   // Shown only for the human's own shots, right as the shot is released
   // (the meter's already gone by the time this runs) -- an AI teammate or
   // opponent shooting across the court doesn't need a callout.
-  if (player === controlledPlayer()) showShotContestFeedback(contestTier);
+  if (player === controlledPlayer()) showShotContestFeedback(contestTier, contestPct(nearestDefDist), meterQuality);
   // The shot-meter timing (human shots only — AI just calls attemptShot with
   // no meter and gets its usual straight accuracy roll): nail the release in
   // the green zone for a real bonus, badly time it (or let it expire) for a
@@ -1907,9 +1920,9 @@ function attemptShot(player, meterQuality) {
   else if (meterQuality === 'good') acc += SHOT_METER_GOOD_BONUS * mScale;
   else if (meterQuality === 'bad') acc -= SHOT_METER_BAD_PENALTY;
   acc = clamp(acc, 0.02, 0.95);
-  if (d > HEAVE_DIST) acc = Math.min(acc, meterQuality === 'perfect' ? HEAVE_MAX_PERFECT : HEAVE_MAX);
+  if (d > HEAVE_DIST && meterQuality !== 'perfect') acc = Math.min(acc, HEAVE_MAX);
   player.lastShotAcc = acc; // exposed for tests/tuning
-  const made = Math.random() < acc;
+  const made = (meterQuality === 'perfect' && player === controlledPlayer()) ? true : Math.random() < acc; // a perfect release always falls
   const isThree = isThreePt(player.x, player.z, hoop);
   // Contact on the release (see rollShotContactFoul).
   const contactFouler = (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(player, opponents) : null;
@@ -2798,12 +2811,14 @@ function showScreenCallout(text, ms) {
 // it, color-coded green/yellow/red by how open the look actually was.
 const SHOT_CONTEST_CALLOUT_MS = 1300;
 let shotContestCalloutHideAt = 0;
-function showShotContestFeedback(tier) {
+function showShotContestFeedback(tier, pct, quality) {
   const el = document.getElementById('shot-contest-callout');
   if (!el) return;
   const info = CONTEST_TIER_INFO[tier];
   if (!info) return;
-  el.textContent = info.label;
+  const f = shotMeterFreeze;
+  const timing = quality === 'perfect' ? 'PERFECT TIMING' : (quality ? ((quality === 'good' ? 'SLIGHTLY ' : '') + (f && !f.early ? 'LATE' : 'EARLY')) : '');
+  el.innerHTML = info.label + ' &middot; ' + (pct == null ? '' : pct + '%') + (timing ? '<br><span style="font-size:0.7em;opacity:.9">' + timing + '</span>' : '');
   el.style.color = info.color;
   el.classList.add('show');
   shotContestCalloutHideAt = performance.now() + SHOT_CONTEST_CALLOUT_MS;
@@ -2888,7 +2903,8 @@ function meterZoneWidth(p) {
   getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o) - (o.handsUp ? 2.5 : 0)); });
   if (p.stepBackT > 0) nd += 2.6; // wider green after a step-back
   const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
-  return 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
+  const w = 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
+  return Math.max(0.014, w * meterDistScale(dist2(p, p.team === 'A' ? HOOP_A : HOOP_B)));
 }
 function updateMeterZone(p, snap) {
   const tw = meterZoneWidth(p);
@@ -3896,9 +3912,9 @@ function applyBodyContacts(dtMs) {
       if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.55 + 0.6 * defEdge) * turboK; off.vx -= ox * cut; off.vz -= oz * cut; }
       if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.9 - 0.5 * defEdge); def.vx += ox * cut; def.vz += oz * cut; }
       // Planted defender (hold C, stand still) vs a sprinting ball handler: chance of a charge
-      if (def === controlledPlayer() && (def.plantT || 0) >= 150 && game.ball.carrier === off && (offIn >= 0.3 || off.turboActive) && !(off.chargeCd > 0)) {
-        const chance = clamp(0.3 + (offIn - 0.3) * 1.2 + (off.turboActive ? 0.2 : 0) + (sDef - sOff) * 0.15, 0.15, 0.9);
-        off.chargeCd = 800;
+      if (def === controlledPlayer() && (def.plantT || 0) >= 40 && game.ball.carrier === off && (offIn >= 0.15 || off.turboActive) && !(off.chargeCd > 0)) {
+        const chance = clamp(0.55 + (offIn - 0.3) * 1.2 + (off.turboActive ? 0.2 : 0) + (sDef - sOff) * 0.15, 0.4, 0.95);
+        off.chargeCd = 450;
         if (Math.random() < chance) { callFoul(off, def, 'charge'); return; }
       }
       if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1) {
@@ -4824,16 +4840,6 @@ function applyShotPose(p, g, L, dt) {
   }
 }
 
-// Defensive stance: whoever is guarding the ball handler up close stays squared up to him (instead of turning to face
-// his own running direction) with a lowered stance and arms out. Hands up (V) puts the arms straight up.
-function slideTarget(p) {
-  const c = game.ball.carrier;
-  if (!c || c.team === p.team || game.phase !== 'live' || game.freeThrow || game.foulPending) return null;
-  if (p.shotPhase !== 'none' || p.dunk || p.fight || p.postUpActive || p.ankleDownTimer > 0 || p.ankleStunTimer > 0) return null;
-  if (dist2(p, c) > 13) return null;
-  if (p === controlledPlayer() || defenderOf(c) === p) return c;
-  return null;
-}
 function updateHumanoidPose(p, dt) {
   const g = p.mesh;
   if (g.userData.stamFill) {
@@ -4981,12 +4987,6 @@ function updateHumanoidPose(p, dt) {
     let diff = Math.atan2(hp.x - p.x, hp.z - p.z) - p.facing;
     diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     const maxTurn = TURN_RATE * 3 * dt;
-    p.facing += clamp(diff, -maxTurn, maxTurn);
-  } else if (slideTarget(p)) {
-    const c = slideTarget(p);
-    let diff = Math.atan2(c.x - p.x, c.z - p.z) - p.facing;
-    diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    const maxTurn = TURN_RATE * 2.4 * dt;
     p.facing += clamp(diff, -maxTurn, maxTurn);
   } else if (speed > 0.02 && !facingLocked) {
     // Turn toward the movement direction at a limited rate (shortest-angle),
@@ -5139,10 +5139,8 @@ function updateHumanoidPose(p, dt) {
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
   // Defensive stance / hands up
-  if ((slideTarget(p) || p.handsUp) && !(p.blockJumpTimer > 0)) {
-    if (slideTarget(p)) { g.position.y -= 0.16; L.kneeLP.rotation.x += 0.3; L.kneeRP.rotation.x += 0.3; L.spine.rotation.x += 0.12; }
-    if (p.handsUp) { L.armLP.rotation.set(-2.75, 0, 0.22); L.armRP.rotation.set(-2.75, 0, -0.22); }
-    else { L.armLP.rotation.set(-0.5, 0, 0.95); L.armRP.rotation.set(-0.5, 0, -0.95); }
+  if (p.handsUp && !(p.blockJumpTimer > 0)) {
+    L.armLP.rotation.set(-2.75, 0, 0.22); L.armRP.rotation.set(-2.75, 0, -0.22);
   }
   // Step-back: lean away and hop as the burst plays.
   // Real step-back footwork: the lead (right) foot jabs out in front and plants to load the body, then it
