@@ -1675,18 +1675,24 @@ function updateActivePass(dtMs) {
     const opps = getOpponents(ps.passer.team);
     for (let i = 0; i < opps.length; i++) {
       const o = opps[i];
-      if (ps.rolled.has(o)) continue;
-      if (Math.hypot(o.x - b.x, o.z - b.z) > PASS_INTERCEPT_R) continue;
-      ps.rolled.add(o);
+      const hd = Math.hypot(o.x - b.x, o.z - b.z);
+      if (hd > DEFLECT_R) continue; // a hand in the lane: within about 4 ft of the ball
       if (o.ankleDownTimer > 0 || o.ankleStunTimer > 0) continue;
-      if (Math.random() < (o.stats.steal || 0.4) * PASS_INTERCEPT_MULT) {
-        game.activePass = null;
-        secureBall(o);
-        showScreenCallout('PICKED OFF!', 1000);
-        playTone(300, 0.06);
-        return;
+      if (!ps.rolledI) ps.rolledI = new Set();
+      if (hd <= PASS_INTERCEPT_R && !ps.rolledI.has(o)) {
+        ps.rolledI.add(o);
+        if (Math.random() < (o.stats.steal || 0.4) * PASS_INTERCEPT_MULT) {
+          game.activePass = null;
+          secureBall(o);
+          showScreenCallout('PICKED OFF!', 1000);
+          playTone(300, 0.06);
+          return;
+        }
       }
-      if (Math.random() < (o.stats.steal || 0.4) * PASS_DEFLECT_MULT) { deflectPass(o, false); return; }
+      if (!ps.rolled.has(o)) {
+        ps.rolled.add(o);
+        if (Math.random() < (o.stats.steal || 0.4) * PASS_DEFLECT_MULT) { deflectPass(o, false); if (!game.activePass) return; }
+      }
     }
   }
   if (u >= 1) {
@@ -1968,6 +1974,7 @@ function resolveShot(shooter, made, isThree) {
   }
 }
 game.pickDunkStyle = (p) => pickDunkStyle(p, p.team === 'A' ? HOOP_A : HOOP_B, getOpponents(p.team)); game.canDunk = (p) => canDunk(p); game.startDunk = (p) => startDunk(p); game.popOffRim = (p) => popOffRim(p);
+game.deflectPass = (o, g) => deflectPass(o, g); game.tryDeflectPass = (p) => tryDeflectPass(p);
 game.resolveShot = resolveShot; // exposed for test instrumentation, matches prior debug convention
 
 // ---- Rebounding ---------------------------------------------------------------
@@ -3965,30 +3972,47 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
 // defender -- the weak-side man, never the human's -- sags into the lane between the ball and the rim to stunt at him.
 // His own man is left open (kick-out pass!), and when the threat is over he scrambles back at a boosted pace.
 const HELP_RANGE = 26, HELP_BEATEN_SEP = 5.2, HELP_MIN_HOLD_MS = 700, HELP_LINGER_MS = 450, HELP_RECOVER_MS = 900;
+const HELP_CHANCE = 0.7; // how often a trigger actually brings help (else the defense stays home)
 function updateHelpAssignment(dtMs) {
-  const h = game.help || (game.help = { helper: null, handler: null, spot: { x: 0, z: 0 }, hold: 0, off: 0 });
+  const h = game.help || (game.help = { helper: null, handler: null, spot: { x: 0, z: 0 }, hold: 0, off: 0, t: 0, ep: null });
   const c = game.ball.carrier;
-  let want = false;
+  let want = false, own = null;
   if (c && game.phase === 'live' && !game.freeThrow && !game.foulPending && !game.activeInbound && !c.checkupLocked && c.shotPhase === 'none' && !c.dunk) {
     const hoop = c.team === 'A' ? HOOP_A : HOOP_B;
     const dh = dist2(c, hoop);
-    const own = defenderOf(c);
+    own = defenderOf(c);
     const sep = own ? dist2(c, own) : 99;
     const toward = ((c.vx || 0) * (hoop.x - c.x) + (c.vz || 0) * (hoop.z - c.z)) / (dh || 1);
     want = dh < HELP_RANGE && (sep > HELP_BEATEN_SEP || c.postUpActive || (dh < 20 && toward > 0.35 * (c.stats.speed || 0.3)));
     if (want) {
       const u = (c.x - hoop.x) / (dh || 1), w = (c.z - hoop.z) / (dh || 1);
-      let off = clamp(dh * 0.5, 5.5, 10);
-      if (dh - off < 4.5) off = Math.max(2, dh - 4.5); // never inside the handler's body
+      let off = (h.ep && h.ep.style === 'stay') ? dh - 4.4 : clamp(dh * 0.5, 5.5, 10); // 'stay' guards the ball itself
+      if (dh - off < 4.4) off = Math.max(2, dh - 4.4); // never inside the handler's body
       h.spot.x = hoop.x + u * off; h.spot.z = hoop.z + w * off;
     }
   }
-  if (h.helper) h.hold -= dtMs;
   if (want) h.off = 0; else h.off += dtMs;
-  const done = !c || (h.handler && c !== h.handler) || (!want && h.off > HELP_LINGER_MS);
-  if (h.helper && (done || (h.hold <= 0 && !want))) { h.helper.helpRecoverT = HELP_RECOVER_MS; h.helper = null; h.handler = null; }
-  if (!h.helper && want) {
-    const own = defenderOf(c), human = controlledPlayer();
+  // A new "episode" starts when a trigger appears; it rolls whether help comes at all, and in what style.
+  if (h.ep && ((h.handler && c !== h.handler) || (c !== h.ep.handler) || (!want && h.off > HELP_LINGER_MS))) {
+    if (h.helper) h.helper.helpRecoverT = HELP_RECOVER_MS;
+    h.helper = null; h.handler = null; h.ep = null;
+  }
+  if (!h.ep && want) {
+    const r = Math.random();
+    const style = r < 0.35 ? 'stunt' : (r < 0.7 ? 'stay' : 'switch');
+    h.ep = { handler: c, help: Math.random() < HELP_CHANCE, style, spent: false, stuntMs: 500 + Math.random() * 350 };
+  }
+  if (h.helper) {
+    h.t += dtMs;
+    const e = h.ep;
+    let release = false;
+    if (e && e.style === 'stunt' && h.t > e.stuntMs) release = true; // half-help: a quick step in, then back to his man
+    if (e && e.style === 'stay' && own && dist2(own, c) < 4.6 && h.t > 500) release = true; // his teammate got back in front
+    if (!want && h.off > HELP_LINGER_MS) release = true;
+    if (release) { h.helper.helpRecoverT = HELP_RECOVER_MS; h.helper = null; if (e) e.spent = true; }
+  }
+  if (!h.helper && want && h.ep && h.ep.help && !h.ep.spent) {
+    const human = controlledPlayer();
     let best = null, bd = Infinity;
     getOpponents(c.team).forEach((o) => {
       if (o === own || o === human || o.ankleDownTimer > 0 || o.ankleStunTimer > 0 || o.screenHoldTimer > 0 || o.screenAssignment || o.bitTimer > 0) return;
@@ -3996,28 +4020,50 @@ function updateHelpAssignment(dtMs) {
       if (d < bd) { bd = d; best = o; }
     });
     if (best) {
-      h.helper = best; h.handler = c; h.hold = HELP_MIN_HOLD_MS;
-      if (c === controlledPlayer()) showScreenCallout('HELP DEFENSE!', 700);
+      h.ep.spent = h.ep.style === 'switch';
+      if (h.ep.style === 'switch' && own && own !== human) {
+        swapAssignments(own, best, 'SWITCH!'); // full switch: the helper takes the ball, his man takes the helper's man
+      } else {
+        h.helper = best; h.handler = c; h.t = 0; h.ep.spent = false;
+        if (h.ep.style === 'switch') h.ep.style = 'stay'; // can't switch off the human's own man
+        if (c === controlledPlayer()) showScreenCallout('HELP DEFENSE!', 700);
+      }
     }
   }
 }
 // ---- Pass deflections --------------------------------------------------------
 // A defender with a hand in the lane can knock a pass loose (or, rarely, snatch it). The human does it on purpose with SPACE
 // while a pass is in the air; AI defenders get a roll as the ball passes them.
-const DEFLECT_R = 5.5, PASS_DEFLECT_MULT = 0.35;
-function deflectPass(o, grab) {
+const DEFLECT_R = 4.0, PASS_DEFLECT_MULT = 0.35;
+// Outcomes vary: a clean tip that sends it loose, a slap that dumps it near the floor, a bobble (the pass survives but
+// gets slower and sloppier), a tip back toward the defender's teammates, and only occasionally an outright pick.
+function deflectPass(o, forceGrab) {
   const ps = game.activePass, b = game.ball;
   if (!ps) return;
-  game.activePass = null;
   o.swipeT = 320; o.swipeSide = Math.random() < 0.5 ? 1 : -1;
-  if (grab) { secureBall(o); showScreenCallout('PICKED OFF!', 1000); playTone(300, 0.06); return; }
+  const r = Math.random();
+  const kind = forceGrab ? 'grab' : (r < 0.10 ? 'grab' : (r < 0.40 ? 'tip' : (r < 0.60 ? 'slap' : (r < 0.82 ? 'bobble' : 'redirect'))));
+  if (kind === 'bobble') { // still in the air: slower, sloppier, more likely to be dropped
+    ps.offX += (Math.random() - 0.5) * 4.5; ps.offZ += (Math.random() - 0.5) * 4.5; ps.offY += (Math.random() - 0.5) * 2;
+    showScreenCallout('TIPPED!', 800); playTone(260, 0.05);
+    return;
+  }
+  game.activePass = null;
+  if (kind === 'grab') { secureBall(o); showScreenCallout('PICKED OFF!', 1000); playTone(300, 0.06); return; }
   const dx = b.x - ps.startX, dz = b.z - ps.startZ, dd = Math.hypot(dx, dz) || 1;
-  const ang = (Math.random() - 0.5) * 2.2, ca = Math.cos(ang), sa = Math.sin(ang);
-  const sp = 1.8 + Math.random() * 1.4;
+  let ux = dx / dd, uz = dz / dd, sp, vy;
+  if (kind === 'redirect') { // knocked back toward the defender's side of the floor
+    const mates = getTeammates(o.team).filter((t) => t !== o);
+    const m = mates[Math.floor(Math.random() * mates.length)];
+    if (m) { const mx = m.x - b.x, mz = m.z - b.z, md = Math.hypot(mx, mz) || 1; ux = mx / md; uz = mz / md; }
+    sp = 2.4 + Math.random() * 1.0; vy = 3;
+  } else if (kind === 'slap') { sp = 0.8 + Math.random() * 0.9; vy = -1; ux = -ux * 0.4 + (Math.random() - 0.5); uz = -uz * 0.4 + (Math.random() - 0.5); }
+  else { const ang = (Math.random() - 0.5) * 2.4, ca = Math.cos(ang), sa = Math.sin(ang); const rx = ux * ca - uz * sa, rz = ux * sa + uz * ca; ux = rx; uz = rz; sp = 1.8 + Math.random() * 1.8; vy = 3 + Math.random() * 2; }
+  const um = Math.hypot(ux, uz) || 1;
   b.inFlight = false;
-  b.vx = (dx / dd * ca - dz / dd * sa) * sp; b.vz = (dx / dd * sa + dz / dd * ca) * sp; b.vy = 3;
+  b.vx = ux / um * sp; b.vz = uz / um * sp; b.vy = vy;
   b.justReleasedBy = ps.passer; b.releaseLockTimer = 150;
-  showScreenCallout('DEFLECTED!', 900); playTone(250, 0.06);
+  showScreenCallout(kind === 'slap' ? 'KNOCKED DOWN!' : 'DEFLECTED!', 900); playTone(250, 0.06);
 }
 function tryDeflectPass(p) {
   const ps = game.activePass, b = game.ball;
@@ -4026,7 +4072,7 @@ function tryDeflectPass(p) {
   const d = Math.hypot(p.x - b.x, p.z - b.z);
   if (d > DEFLECT_R || b.y > 8.5) { playTone(200, 0.03); return true; } // swiped at air
   const chance = clamp(0.3 + (p.stats.steal || 0.4) * 0.5 - (d / DEFLECT_R) * 0.3, 0.12, 0.75);
-  if (Math.random() < chance) deflectPass(p, d < 2.4 && Math.random() < 0.3);
+  if (Math.random() < chance) deflectPass(p, false);
   else playTone(180, 0.03);
   return true;
 }
