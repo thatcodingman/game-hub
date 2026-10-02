@@ -751,13 +751,18 @@ function buildArena() {
   addBoard(64, 56, 0, Math.PI / 2); addBoard(64, -56, 0, -Math.PI / 2);
 
   // sign textures
-  const SIGN = [['GO!', '#ef4444'], ['MVP', '#facc15'], ['DEFENSE!', '#3b82f6'], ['BUCKETS', '#f97316'], ['LET\'S GO', '#22c55e'], ['3 PTS!', '#a855f7'],
-    ['DUNK IT', '#ec4899'], ['WE WIN', '#06b6d4'], ['GOAT', '#fde047'], ['HYPE', '#fb7185'], ['SPLASH', '#38bdf8'], ['HOOPS <3', '#f472b6']];
+  const SIGN = [['GO!', '#ef4444'], ['MVP', '#facc15'], ['DEFENSE!', '#3b82f6'], ['BUCKETS', '#f97316'], ['HI MOM!', '#22c55e'], ['3 PTS!', '#a855f7'],
+    ['I PAID $14\nFOR NACHOS', '#ec4899'], ['REF NEEDS\nGLASSES', '#06b6d4'], ['AIRBALL\nINSURANCE', '#fde047'], ['SEND HELP\nI\'M AT WORK', '#fb7185'],
+    ['CAME FOR THE\nFREE T-SHIRT', '#38bdf8'], ['PASS THE\nBALL, BRO', '#f472b6'], ['DEFENSE?\nWHAT\'S THAT', '#84cc16'], ['MY MOM\nCAME FOR THIS', '#f59e0b'],
+    ['TRUST THE\nPROCESS (LOL)', '#8b5cf6'], ['FEED THE\nBIG GUY', '#14b8a6']];
   const signTex = SIGN.map(([txt, bg]) => {
     const c = document.createElement('canvas'); c.width = 256; c.height = 160; const x = c.getContext('2d');
     x.fillStyle = bg; x.fillRect(0, 0, 256, 160); x.strokeStyle = '#ffffff'; x.lineWidth = 10; x.strokeRect(5, 5, 246, 150);
-    x.fillStyle = '#ffffff'; x.font = 'bold ' + (txt.length > 6 ? 46 : 64) + 'px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.lineWidth = 8; x.strokeStyle = 'rgba(0,0,0,0.55)'; x.strokeText(txt, 128, 84); x.fillText(txt, 128, 84);
+    const lines = txt.split('\n'), maxLen = Math.max.apply(null, lines.map((l) => l.length));
+    const fs = Math.min(64, Math.floor(214 / (maxLen * 0.64)));
+    x.fillStyle = '#ffffff'; x.font = 'bold ' + fs + 'px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.lineWidth = 8; x.strokeStyle = 'rgba(0,0,0,0.55)';
+    lines.forEach((ln, li) => { const yy = 80 + (li - (lines.length - 1) / 2) * (fs * 1.1); x.strokeText(ln, 128, yy); x.fillText(ln, 128, yy); });
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; });
 
   const SHIRT = ['#ef4444', '#f59e0b', '#facc15', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899', '#f8fafc', '#fb923c', '#14b8a6', '#a3e635', '#e11d48', '#0ea5e9'];
@@ -3010,7 +3015,7 @@ function ensureFightUI() {
     '<div style="flex:1;height:16px;background:#222;border:2px solid #fff;border-radius:8px;overflow:hidden"><div id="fx-b1" style="height:100%;width:100%;background:#38bdf8"></div></div>' +
     '<div style="flex:1;height:16px;background:#222;border:2px solid #fff;border-radius:8px;overflow:hidden;direction:rtl"><div id="fx-b2" style="height:100%;width:100%;background:#f97316"></div></div>' +
     '<span id="fx-n2" style="width:60px;text-align:left">AI</span></div>' +
-    '<div style="margin-top:8px;font-size:13px;opacity:.9">MASH SPACE to punch &middot; hold SHIFT or F to block</div></div>';
+    '<div style="margin-top:8px;font-size:13px;opacity:.9">MASH SPACE to punch &middot; X to kick (slower, hits harder) &middot; hold SHIFT or F to block</div></div>';
   document.body.appendChild(wrap);
   fightUI = { wrap, msg: wrap.querySelector('#fx-msg'), bars: wrap.querySelector('#fx-bars'), b1: wrap.querySelector('#fx-b1'), b2: wrap.querySelector('#fx-b2'), n1: wrap.querySelector('#fx-n1'), n2: wrap.querySelector('#fx-n2') };
   return fightUI;
@@ -3086,18 +3091,18 @@ function startFight(a, b, instigator) {
   a.x = -1.8; a.z = 0; b.x = 1.8; b.z = 0;
   a.facing = Math.atan2(b.x - a.x, b.z - a.z); b.facing = Math.atan2(a.x - b.x, a.z - b.z);
   game.players.forEach((p) => { if (p !== a && p !== b) p.facing = Math.atan2(0 - p.x, 0 - p.z); });
-  a.fight = { punchT: 0, side: 1, block: false }; b.fight = { punchT: 0, side: -1, block: false };
+  a.fight = { punchT: 0, kickT: 0, side: 1, block: false }; b.fight = { punchT: 0, kickT: 0, side: -1, block: false };
   const ui = ensureFightUI(); ui.n1.textContent = 'YOU'; ui.n2.textContent = b.name; ui.b1.style.width = '100%'; ui.b2.style.width = '100%';
   fightMsg('FIGHT!', true);
   showScreenCallout('FIGHT!', 900);
   crowd.excite = 1;
 }
-function fightPunch(att, def, dmg, defBlocking) {
-  att.fight.punchT = 1; att.fight.side *= -1;
+function fightPunch(att, def, dmg, defBlocking, isKick) {
+  if (!isKick) { att.fight.punchT = 1; att.fight.side *= -1; }
   const hit = defBlocking ? dmg * 0.3 : dmg;
   def.rockVel += 0.006 * (defBlocking ? 0.4 : 1);
   playBodyThud(defBlocking ? 0.25 : 0.6);
-  if (!defBlocking) showScreenCallout('POW', 350);
+  if (!defBlocking) showScreenCallout(isKick ? 'KICK!' : 'POW', 350);
   return hit;
 }
 function endFight(f) {
@@ -3135,11 +3140,14 @@ function fightFrame(dtMs) {
   f.t += dtMs; f.punchCd -= dtMs; f.aiNext -= dtMs;
   const a = f.a, b = f.b;
   a.fight.block = keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || keysDown.has('KeyF');
-  [a, b].forEach((p) => { p.fight.punchT = Math.max(0, p.fight.punchT - dtMs / 160); });
+  [a, b].forEach((p) => { p.fight.punchT = Math.max(0, p.fight.punchT - dtMs / 160); p.fight.kickT = Math.max(0, p.fight.kickT - dtMs / 300); });
   if (f.aiNext <= 0) {
     f.aiNext = 360 + Math.random() * 240;
     b.fight.block = Math.random() < 0.22;
-    if (!b.fight.block && Math.random() < 0.8) f.hpA -= fightPunch(b, a, 3.5 + (b.stats.strength || 1) * 3, a.fight.block);
+    if (!b.fight.block && Math.random() < 0.8) {
+      if (Math.random() < 0.25) { b.fight.kickT = 1; f.aiNext += 220; f.hpA -= fightPunch(b, a, (3.5 + (b.stats.strength || 1) * 3) * 1.7, a.fight.block, true); }
+      else f.hpA -= fightPunch(b, a, 3.5 + (b.stats.strength || 1) * 3, a.fight.block);
+    }
   }
   f.hpA = Math.max(0, f.hpA); f.hpB = Math.max(0, f.hpB);
   const ui = ensureFightUI(); ui.b1.style.width = f.hpA + '%'; ui.b2.style.width = f.hpB + '%';
@@ -3149,6 +3157,12 @@ function fightFrame(dtMs) {
 function fightKey(e) {
   const f = game.fight; if (!f) return;
   if (f.stage === 'prompt') { if (e.code === 'KeyY') answerChallenge(true); else if (e.code === 'KeyN') answerChallenge(false); return; }
+  if (e.code === 'KeyX') {
+    if (e.repeat || f.punchCd > 0 || f.a.fight.block) return;
+    f.punchCd = 480; f.a.fight.kickT = 1;
+    f.hpB -= fightPunch(f.a, f.b, (4.2 + (f.a.stats.strength || 1) * 3) * 1.7, f.b.fight.block, true);
+    return;
+  }
   if (e.code === 'Space') {
     e.preventDefault();
     if (e.repeat || f.punchCd > 0 || f.a.fight.block) return;
@@ -3170,7 +3184,8 @@ function answerChallenge(yes) {
 function applyFightPose(p, g, L) {
   const fp = p.fight, f = p.facing;
   g.rotation.y = f;
-  g.position.set(p.x + Math.sin(f) * 0.7 * fp.punchT, 0, p.z + Math.cos(f) * 0.7 * fp.punchT);
+  const lunge = Math.max(0.7 * fp.punchT, 0.95 * fp.kickT);
+  g.position.set(p.x + Math.sin(f) * lunge, 0, p.z + Math.cos(f) * lunge);
   L.legLP.rotation.set(-0.3, 0, -0.14); L.legRP.rotation.set(0.35, 0, 0.14);
   L.kneeLP.rotation.x = 0.35; L.kneeRP.rotation.x = 0.3;
   const guard = (arm, elbow, sgn) => { arm.rotation.set(-1.0, 0, 0.3 * sgn); elbow.rotation.x = -1.5; };
@@ -3180,7 +3195,13 @@ function applyFightPose(p, g, L) {
     const arm = fp.side > 0 ? L.armRP : L.armLP, el = fp.side > 0 ? L.elbowRP : L.elbowLP;
     arm.rotation.set(-1.55, 0, 0); el.rotation.x = -0.05;
   }
-  L.spine.rotation.set(0.2 + fp.punchT * 0.25 - (p.rock || 0) * 0.8, 0, 0);
+  if (fp.kickT > 0) {
+    const k = Math.sin((1 - fp.kickT) * Math.PI); // 0 -> 1 -> 0 across the kick
+    L.legRP.rotation.set(-1.45 * k, 0, 0.1); L.kneeRP.rotation.x = 0.1 + 0.2 * (1 - k);
+    L.legLP.rotation.set(0.25 * k, 0, -0.14); L.kneeLP.rotation.x = 0.5;
+    L.armLP.rotation.set(-0.5, 0, 0.9); L.armRP.rotation.set(-0.3, 0, -0.9); L.elbowLP.rotation.x = -0.6; L.elbowRP.rotation.x = -0.6;
+  }
+  L.spine.rotation.set(0.2 + fp.punchT * 0.25 - fp.kickT * 0.35 - (p.rock || 0) * 0.8, 0, 0);
 }
 
 // DROP STEP (double-tap UP while posted up): pivot off the defender and take a hard step to the
@@ -4071,6 +4092,7 @@ function updateHumanMovement(dtMs) {
 // -------------------------------------------------------------------------
 // Main loop
 // -------------------------------------------------------------------------
+const GAME_SPEED = 0.78; // overall pace of everyone on the floor (1 = old speed)
 const TURN_RATE = 0.012; // rad/ms — shortest-angle turn speed, not an instant snap
 
 // --- Body-contact animation helpers ---------------------------------------
@@ -4970,13 +4992,13 @@ function updateBall(dtMs) {
 
 // Per-state framing: how far back / up the camera sits and how far ahead it aims.
 const CAM_STATE_ZOOM = {
-  HALF_COURT: { back: 25, up: 13.8, look: 11 },
-  TRANSITION: { back: 27, up: 15, look: 12 },
-  FAST_BREAK: { back: 29, up: 16.5, look: 14 },
-  SHOT:       { back: 23, up: 12.5, look: 10 },
-  REBOUND:    { back: 24, up: 13.5, look: 9 },
-  DEAD_BALL:  { back: 26, up: 14.5, look: 8 },
-  INBOUND:    { back: 26, up: 14.5, look: 8 },
+  HALF_COURT: { back: 21, up: 11.8, look: 10 },
+  TRANSITION: { back: 22, up: 12.4, look: 11 },
+  FAST_BREAK: { back: 23.5, up: 13.4, look: 12.5 },
+  SHOT:       { back: 19.5, up: 10.8, look: 9 },
+  REBOUND:    { back: 20.5, up: 11.6, look: 8.5 },
+  DEAD_BALL:  { back: 22, up: 12.4, look: 8 },
+  INBOUND:    { back: 22, up: 12.4, look: 8 },
 };
 let camDirSign = 1;
 function updateCamera(dt) {
@@ -5366,7 +5388,8 @@ function frame(now) {
     }
 
     game.players.forEach((p) => {
-      p.x += p.vx; p.z += p.vz;
+      const stepK = (dtMs / 16.67) * GAME_SPEED; // frame-rate independent, so a 144 Hz screen isn't faster than a 60 Hz one
+      p.x += p.vx * stepK; p.z += p.vz * stepK;
       p.x = clamp(p.x, -COURT_HALF_LEN + PLAYER_R, COURT_HALF_LEN - PLAYER_R);
       p.z = clamp(p.z, -COURT_HALF_WID + PLAYER_R, COURT_HALF_WID - PLAYER_R);
     });
