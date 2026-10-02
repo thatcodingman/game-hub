@@ -1700,6 +1700,7 @@ function attemptSteal(defender) {
   if (defender.actionCooldown > 0) return;
   const isHumanDef = defender === controlledPlayer();
   defender.actionCooldown = isHumanDef ? 300 : 750; // AI swipes less often
+  defender.swipeT = 320; defender.swipeSide = Math.random() < 0.5 ? 1 : -1;
   // Nobody can strip the ball off anybody while a checkup/inbound pass is
   // actively being thrown in — the player putting the ball in play is fully
   // safe until it's actually delivered, not just the instant after.
@@ -5139,6 +5140,28 @@ function updateHumanoidPose(p, dt) {
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
   // Defensive stance / hands up
+  // Planted: wide low brace, arms folded across the chest, chin tucked -- waiting to take the hit.
+  if (p.bracing && !(p.blockJumpTimer > 0) && !(p.swipeT > 0)) {
+    const w = clamp((p.plantT || 0) / 120 + 0.5, 0.5, 1);
+    g.position.y -= 0.3 * w;
+    L.kneeLP.rotation.x += 0.55 * w; L.kneeRP.rotation.x += 0.55 * w;
+    L.legLP.rotation.x -= 0.25 * w; L.legRP.rotation.x -= 0.25 * w;
+    L.spine.rotation.x += 0.14 * w;
+    L.armLP.rotation.set(-0.75 * w, 0, -0.55 * w); L.armRP.rotation.set(-0.75 * w, 0, 0.55 * w);
+    L.elbowLP.rotation.x = -1.5 * w; L.elbowRP.rotation.x = -1.5 * w;
+  }
+  // Steal swipe: lunge in and sweep the lead hand across the ball.
+  if (p.swipeT > 0 && !(p.blockJumpTimer > 0)) {
+    const k = clamp(1 - p.swipeT / 320, 0, 1), e = Math.sin(k * Math.PI);
+    g.position.y -= 0.18 * e;
+    L.spine.rotation.x += 0.3 * e;
+    L.kneeLP.rotation.x += 0.4 * e; L.kneeRP.rotation.x += 0.4 * e;
+    const sw = p.swipeSide || 1, sweep = (k - 0.5) * 1.3 * sw;
+    const A = sw > 0 ? L.armRP : L.armLP, B = sw > 0 ? L.armLP : L.armRP, EA = sw > 0 ? L.elbowRP : L.elbowLP;
+    A.rotation.set(-1.45 * Math.min(1, e * 1.6), 0, sweep * -1 * sw * 0 + sweep);
+    EA.rotation.x = -0.15 * e;
+    B.rotation.set(-0.7 * e, 0, -0.5 * sw * e);
+  }
   if (p.handsUp && !(p.blockJumpTimer > 0)) {
     L.armLP.rotation.set(-2.75, 0, 0.22); L.armRP.rotation.set(-2.75, 0, -0.22);
   }
@@ -5733,10 +5756,14 @@ function frame(now) {
       if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stepBackT > 0) p.stepBackT -= dtMs;
+      if (p.swipeT > 0) p.swipeT -= dtMs;
       if (p === controlledPlayer()) {
         const cdef = game.ball.carrier && game.ball.carrier.team !== p.team && game.phase === 'live' && !game.freeThrow && !game.foulPending;
         const still = Math.hypot(p.vx, p.vz) < 0.07;
         p.plantT = (cdef && keysDown.has('KeyC') && still) ? (p.plantT || 0) + dtMs : 0;
+        p.bracing = !!(cdef && keysDown.has('KeyC') && p.shotPhase === 'none');
+        if (p.plantT >= 40 && !p.plantShown) { p.plantShown = true; showScreenCallout('PLANTED \u2014 TAKING THE CHARGE', 700); }
+        if (!p.plantT) p.plantShown = false;
         p.handsUp = !!(keysDown.has('KeyV') && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
         if (p.handsUp) p.stamina = Math.max(0, p.stamina - 3 * dtMs / 1000);
       }
