@@ -223,8 +223,16 @@
     <div class="uni-row"><span class="lbl">YOUR UNIFORM</span><span id="uni-a-sw" class="uni-row"></span><span class="uni-name" id="uni-a-name"></span></div>
     <div class="uni-row"><span class="lbl">AI UNIFORM</span><span id="uni-b-sw" class="uni-row"></span><span class="uni-name" id="uni-b-name"></span></div>
   </div>
+  <div class="uni-pick"><button id="moves-btn" class="uni-sw" style="width:auto;height:auto;padding:8px 18px;border-radius:8px;font-weight:700;letter-spacing:.06em;color:#7dd3fc;background:#0f172a;border:1px solid #334155;cursor:pointer">MOVES &amp; CONTROLS</button></div>
   <div class="squad">YOU: PG &middot; SF &middot; C &nbsp;&nbsp;&nbsp; AI: PG &middot; SF &middot; C</div>
   <div class="start-btn">CLICK TO START</div>
+</div>
+
+<div id="moves-panel" style="display:none;position:fixed;inset:0;z-index:80;background:rgba(2,6,23,.94);overflow:auto;padding:24px 16px;color:#e2e8f0;font-family:inherit">
+  <div style="max-width:880px;margin:0 auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h2 style="margin:0;font-size:24px;letter-spacing:.04em">MOVES &amp; CONTROLS</h2><button id="moves-close" style="background:#eab308;color:#111;border:0;border-radius:8px;padding:8px 16px;font-weight:800;cursor:pointer">CLOSE</button></div>
+    <div id="moves-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;font-size:13px;line-height:1.5"></div>
+  </div>
 </div>
 
 <div id="matchover-overlay" class="overlay hidden">
@@ -3063,8 +3071,10 @@ function onActionPressed() {
     return;
   }
   if (p.shotPhase !== 'none') return; // mid-air/landing, no stealing or picking up
-  if (game.ball.carrier && game.ball.carrier.team !== p.team && dist2(p, game.ball.carrier) < STEAL_RANGE) {
-    attemptSteal(p); return;
+  if (game.ball.carrier && game.ball.carrier.team !== p.team) {
+    if (dist2(p, game.ball.carrier) < STEAL_RANGE) { attemptSteal(p); return; }
+    if (p.actionCooldown <= 0) { p.actionCooldown = 300; p.swipeT = 320; p.swipeSide = Math.random() < 0.5 ? 1 : -1; playTone(200, 0.03); } // swipe at air
+    return;
   }
   if (!game.ball.carrier && !game.ball.inFlight && dist2(p, game.ball) < PICKUP_RANGE) {
     setCarrier(p);
@@ -5140,6 +5150,15 @@ function updateHumanoidPose(p, dt) {
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
   // Defensive stance / hands up
+  // Drop step: load into the pivot foot, lead leg drives out toward the rim, shoulder and ball shield the defender.
+  if (p.dropStep) {
+    const ds = p.dropStep, k = clamp(ds.t / ds.dur, 0, 1), e = Math.sin(k * Math.PI);
+    g.position.y -= 0.3 * e;
+    L.spine.rotation.x += 0.3 * e; L.spine.rotation.y += 0.45 * e * (ds.mz >= 0 ? 1 : -1);
+    L.legRP.rotation.x = -1.05 * e; L.kneeRP.rotation.x = 0.6 * e;
+    L.legLP.rotation.x = 0.35 * e; L.kneeLP.rotation.x = Math.max(L.kneeLP.rotation.x, 0.55 * e);
+    L.armLP.rotation.set(-0.9 * e, 0, 0.5 * e); L.elbowLP.rotation.x = -0.8 * e; // off arm out to ward off the defender
+  }
   // Planted: wide low brace, arms folded across the chest, chin tucked -- waiting to take the hit.
   if (p.bracing && !(p.blockJumpTimer > 0) && !(p.swipeT > 0)) {
     const w = clamp((p.plantT || 0) / 120 + 0.5, 0.5, 1);
@@ -5147,8 +5166,8 @@ function updateHumanoidPose(p, dt) {
     L.kneeLP.rotation.x += 0.55 * w; L.kneeRP.rotation.x += 0.55 * w;
     L.legLP.rotation.x -= 0.25 * w; L.legRP.rotation.x -= 0.25 * w;
     L.spine.rotation.x += 0.14 * w;
-    L.armLP.rotation.set(-0.75 * w, 0, -0.55 * w); L.armRP.rotation.set(-0.75 * w, 0, 0.55 * w);
-    L.elbowLP.rotation.x = -1.5 * w; L.elbowRP.rotation.x = -1.5 * w;
+    L.armLP.rotation.set(-0.95 * w, 0, -1.0 * w); L.armRP.rotation.set(-0.95 * w, 0, 1.0 * w);
+    L.elbowLP.rotation.x = -1.9 * w; L.elbowRP.rotation.x = -1.9 * w;
   }
   // Steal swipe: lunge in and sweep the lead hand across the ball.
   if (p.swipeT > 0 && !(p.blockJumpTimer > 0)) {
@@ -5735,6 +5754,25 @@ function startMatch() {
   document.getElementById('matchover-overlay').classList.add('hidden');
 }
 
+const MOVES_HELP = [
+  ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim'],['Shot clock','24s; 14 after an offensive rebound']]],
+  ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
+  ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Q (hold)','Call a screen from your big']]],
+  ['DEFENSE', [['SPACE','Swipe for the steal (misses can be reach-in fouls)'],['F','Block a shot in the air'],['C (stand still)','Plant and take a charge on a sprinting handler'],['V (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina']]],
+  ['PASSING & OTHER', [['SHIFT','Pass; aim with the arrows'],['G','Challenge to a fight at half court; Y / N to answer'],['Stamina bars','Sprinting and hands up drain it; rest to recover']]],
+];
+(function () {
+  const body = document.getElementById('moves-body');
+  body.innerHTML = MOVES_HELP.map(([t, rows]) => '<div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 14px"><div style="color:#eab308;font-weight:800;letter-spacing:.08em;margin-bottom:6px">' + t + '</div>' + rows.map(([k, d]) => '<div style="margin:3px 0"><b style="color:#7dd3fc">' + k + '</b> &mdash; ' + d + '</div>').join('') + '</div>').join('');
+  const panel = document.getElementById('moves-panel');
+  const open = (e) => { e.stopPropagation(); panel.style.display = 'block'; };
+  const close = (e) => { if (e) e.stopPropagation(); panel.style.display = 'none'; };
+  document.getElementById('moves-btn').addEventListener('click', open);
+  document.getElementById('moves-close').addEventListener('click', close);
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  window.addEventListener('keydown', (e) => { if (e.code === 'Escape') close(); });
+})();
 document.getElementById('menu-overlay').addEventListener('click', () => { if (game.phase === 'menu') startMatch(); });
 document.getElementById('matchover-overlay').addEventListener('click', () => { if (game.phase === 'match-over') startMatch(); });
 
