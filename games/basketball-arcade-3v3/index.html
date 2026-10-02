@@ -353,7 +353,7 @@ const BALL_HANDLE_SPEED_MULT = 0.88;
 // urgency instead of drifting at a flat pace -- scales up with the gap.
 const DEFENSE_CATCHUP_DIST = 1.6;
 const DEFENSE_CATCHUP_RANGE = 7.0;
-const DEFENSE_CATCHUP_MAX_MULT = 0.78;
+const DEFENSE_CATCHUP_MAX_MULT = 0.45;
 // Right after a defensive switch (a screen forcing a size mismatch onto the
 // ball handler, e.g. a center switched onto a point guard), the defender
 // who just inherited the assignment plays with real urgency for a few
@@ -366,7 +366,7 @@ const DEFENSE_CATCHUP_MAX_MULT = 0.78;
 // every switch playing out identically -- see swapAssignments, which picks
 // the actual per-player mult from these ranges.
 const SWITCH_URGENCY_MS = 3000;
-const SWITCH_URGENCY_SPEED_MULT_RANGE = [1.10, 1.22];
+const SWITCH_URGENCY_SPEED_MULT_RANGE = [0.98, 1.08];
 const SWITCH_URGENCY_ACCEL_MULT_RANGE = [0.55, 0.72];
 // Default help-side cushion a defender plays off his man by; tightened
 // (see SWITCH_URGENCY_STANDOFF_MULT_RANGE) right after a switch so he plays
@@ -3995,6 +3995,9 @@ function updateAI(p, dtMs) {
         // body, so he was literally trying to stand where the dribbler was.
         const guardingBall = game.ball.carrier === mark;
         if (guardingBall) standoff = Math.max(standoff, DEFENSE_MIN_GAP);
+        // Easier for the human to shake: an AI defender on YOUR ball handler reacts a beat slower and
+        // closes slower (extra so for a big switched onto a guard), so he isn't glued to every step.
+        if (guardingBall && mark === controlledPlayer()) chaseMult *= (p.stats.speed < mark.stats.speed ? 0.72 : 0.85);
         const towardHoopX = mark.x + (myHoop.x < mark.x ? -standoff : standoff);
         moveToward(p, towardHoopX, mark.z, dtMs, chaseMult);
         if (guardingBall) {
@@ -4288,6 +4291,19 @@ function updateHumanMovement(dtMs) {
   // Layer in any live dribble-move momentum (crossover, behind-the-back,
   // ...) on top of whatever direction the keys are driving toward, so the
   // move actually carries the player's body, not just the ball.
+  // Defense assist (arrows can't do an analog slide): guarding the ball handler up close, you're a bit
+  // quicker and your target glides partly with HIS motion, so staying in front is actually doable.
+  {
+    const bc = game.ball.carrier;
+    if (bc && bc.team !== human.team && game.phase === 'live' && !game.freeThrow && mag >= 0.05) {
+      const dd = dist2(human, bc);
+      if (dd < 11) {
+        const k = clamp((11 - dd) / 7, 0, 1);
+        targetVx = targetVx * (1 + 0.12 * k) + bc.vx * 0.45 * k;
+        targetVz = targetVz * (1 + 0.12 * k) + bc.vz * 0.45 * k;
+      }
+    }
+  }
   targetVx += moveBurst.x;
   targetVz += moveBurst.z;
   approachVelocityFluid(human, targetVx, targetVz, dtMs);
@@ -4296,7 +4312,7 @@ function updateHumanMovement(dtMs) {
 // -------------------------------------------------------------------------
 // Main loop
 // -------------------------------------------------------------------------
-const GAME_SPEED = 0.78; // overall pace of everyone on the floor (1 = old speed)
+const GAME_SPEED = 0.72; // overall pace of everyone on the floor (1 = old speed)
 const TURN_RATE = 0.012; // rad/ms — shortest-angle turn speed, not an instant snap
 
 // --- Body-contact animation helpers ---------------------------------------
