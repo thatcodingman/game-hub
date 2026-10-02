@@ -1480,6 +1480,7 @@ function setCarrier(p) {
   // not during the null-carrier instant of a pass in flight, a missed shot,
   // or a contested loose ball. This is what the camera follows, so it holds
   // a stable side through those transients instead of flickering.
+  if (game.possessionTeam !== p.team) { game.camPossAt = performance.now(); game.camPossFrom = game.possessionTeam; } // possession-change event for the camera
   game.possessionTeam = p.team;
 }
 
@@ -1697,6 +1698,7 @@ function attemptBlock(blocker) {
     game.ball.vy = 2.0 + Math.random();
     game.ball.justReleasedBy = blocker; game.ball.releaseLockTimer = 250;
     showScreenCallout('BLOCKED!', 1100);
+    fightHook('block', blocker, shooter);
     playBodyThud(0.5); playTone(140, 0.09);
   } else {
     playTone(260, 0.04); // a whiff -- no effect beyond the usual contest penalty
@@ -2006,6 +2008,7 @@ function canDunk(p) {
   return p.vx * (hoop.x - p.x) / d + p.vz * (hoop.z - p.z) / d >= DUNK_MIN_APPROACH;
 }
 function startDunk(p) {
+  fightHook('dunk', p);
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
   const sgn = Math.sign(hoop.x) || 1;
   const sc = (p.stats && p.stats.scale) || 1;
@@ -2106,6 +2109,7 @@ function applyDunkPose(p, g, L, dt) {
 
 function scoreFor(team, points) {
   crowd.excite = 1; // the place erupts
+  fightHook('score', team);
   if (team === 'A') game.scoreA += points; else game.scoreB += points;
 }
 
@@ -2151,6 +2155,7 @@ function teamFouls(team) { return team === 'A' ? (game.teamFoulsA || 0) : (game.
 function callFoul(fouler, fouled, kind, opts) {
   opts = opts || {};
   if (game.phase !== 'live' || game.foulPending || game.freeThrow) return;
+  fightHook('foul', fouler, fouled, kind);
   if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1;
   else game.teamFoulsB = (game.teamFoulsB || 0) + 1;
   fouler.fouls = (fouler.fouls || 0) + 1;
@@ -2497,6 +2502,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab') e.preventDefault();
   if (ctrlIgnore.has(e.code)) { e.preventDefault(); return; } // auto-released arrow: wait for a real release
   keysDown.add(e.code);
+  if (game.phase === 'fight') { fightKey(e); return; }
+  if (e.code === 'KeyG' && !e.repeat) onFightChallengeKey();
   if (game.phase !== 'live') return;
   // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
   if (game.foulPending || game.freeThrow) {
@@ -2512,6 +2519,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
   if (e.code === 'KeyF') onBlockPressed();
   if (e.code === 'KeyX') onDunkPressed();
+  if (e.code === 'ArrowUp' && !e.repeat) {
+    const hp = controlledPlayer(), nowT = performance.now();
+    if (hp && hp.postUpActive && game.ball.carrier === hp && nowT - (game.lastUpTap || 0) < 320) { startDropStep(hp); game.lastUpTap = 0; }
+    else game.lastUpTap = nowT;
+  }
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
   if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
@@ -2979,6 +2991,230 @@ function stepPostMove(p, dtMs) {
 function onActionReleased() {
   const m = game.shotMeter;
   if (m && m.player === controlledPlayer()) releaseShotMeter();
+}
+// =========================================================================
+// FIGHTS: a challenge is only ever on the table after something heated happens (hard foul, a
+// swat, a dunk in somebody's face, a scoring run). The AI doesn't always say yes: it rolls on its
+// aggression, and anybody who backs down eats a 5% stat penalty for the rest of the game.
+// =========================================================================
+const FIGHT_AGGR = { PG: 0.35, SF: 0.55, C: 0.7 };
+const FIGHT_WINDOW_MS = 9000, FIGHT_COOLDOWN_MS = 40000, FIGHT_MAX_MS = 14000, FIGHT_BACKDOWN_MULT = 0.95;
+let fightUI = null;
+function ensureFightUI() {
+  if (fightUI) return fightUI;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:60;pointer-events:none;font-family:system-ui,sans-serif;text-align:center;color:#fff;text-shadow:0 2px 6px #000;display:none';
+  wrap.innerHTML = '<div id="fx-msg" style="font-size:22px;font-weight:800;letter-spacing:1px"></div>' +
+    '<div id="fx-bars" style="display:none;margin-top:10px;width:520px">' +
+    '<div style="display:flex;gap:12px;align-items:center;font-weight:700;font-size:14px"><span id="fx-n1" style="width:60px;text-align:right">YOU</span>' +
+    '<div style="flex:1;height:16px;background:#222;border:2px solid #fff;border-radius:8px;overflow:hidden"><div id="fx-b1" style="height:100%;width:100%;background:#38bdf8"></div></div>' +
+    '<div style="flex:1;height:16px;background:#222;border:2px solid #fff;border-radius:8px;overflow:hidden;direction:rtl"><div id="fx-b2" style="height:100%;width:100%;background:#f97316"></div></div>' +
+    '<span id="fx-n2" style="width:60px;text-align:left">AI</span></div>' +
+    '<div style="margin-top:8px;font-size:13px;opacity:.9">MASH SPACE to punch &middot; hold SHIFT or F to block</div></div>';
+  document.body.appendChild(wrap);
+  fightUI = { wrap, msg: wrap.querySelector('#fx-msg'), bars: wrap.querySelector('#fx-bars'), b1: wrap.querySelector('#fx-b1'), b2: wrap.querySelector('#fx-b2'), n1: wrap.querySelector('#fx-n1'), n2: wrap.querySelector('#fx-n2') };
+  return fightUI;
+}
+function fightMsg(text, showBars) {
+  const ui = ensureFightUI();
+  if (!text && !showBars) { ui.wrap.style.display = 'none'; return; }
+  ui.wrap.style.display = 'block'; ui.msg.textContent = text || ''; ui.bars.style.display = showBars ? 'block' : 'none';
+}
+function fightAggr(p) { return (FIGHT_AGGR[p.name] || 0.5) + Math.min(0.2, (p.fouls || 0) * 0.04); }
+function fightReady() {
+  return game.phase === 'live' && !game.foulPending && !game.freeThrow && !game.activeInbound && performance.now() > (game.fightCooldownUntil || 0);
+}
+function applyBackDown(p) {
+  if (p.backedDown) return;
+  p.backedDown = true;
+  const st = Object.assign({}, p.stats);
+  ['speed', 'shot', 'steal', 'strength', 'pass', 'ft'].forEach((k) => { if (typeof st[k] === 'number') st[k] *= FIGHT_BACKDOWN_MULT; });
+  p.stats = st;
+}
+function openFightWindow(target) {
+  if (!fightReady() || !target || target.team === controlledPlayer().team) return;
+  game.fightWindow = { target, until: performance.now() + FIGHT_WINDOW_MS };
+}
+function scheduleAiChallenge(ai, chance) {
+  if (!fightReady() || !ai || ai.team === controlledPlayer().team) return;
+  if (Math.random() < chance * (fightAggr(ai) / 0.5)) game.pendingChallenge = { ai, at: performance.now() + 900 };
+}
+function fightHook(kind, a, b, c) {
+  try {
+    const human = controlledPlayer(); if (!human) return;
+    if (kind === 'foul') { // a = fouler, b = fouled, c = kind
+      if (c === 'shooting' || c === 'push' || c === 'reach') {
+        if (a.team !== human.team) openFightWindow(a);
+        else if (c === 'push') scheduleAiChallenge(b, 0.55);
+      }
+    } else if (kind === 'dunk') { // a = dunker
+      const opps = getOpponents(a.team); let nd = 9, n = null;
+      opps.forEach((o) => { const dd = dist2(a, o); if (dd < nd) { nd = dd; n = o; } });
+      if (a.team === human.team) { if (n) scheduleAiChallenge(n, 0.45); } else openFightWindow(a);
+    } else if (kind === 'block') { // a = blocker, b = shooter
+      if (a.team !== human.team) openFightWindow(a); else scheduleAiChallenge(b, 0.4);
+    } else if (kind === 'score') { // a = scoring team letter
+      const aiTeam = human.team === 'A' ? 'B' : 'A';
+      game.scoreRun = game.scoreRun || { A: 0, B: 0 };
+      game.scoreRun[a]++; game.scoreRun[a === 'A' ? 'B' : 'A'] = 0;
+      if (a === aiTeam && game.scoreRun[a] >= 2) {
+        const opps = getOpponents(human.team); let nd = Infinity, n = null;
+        opps.forEach((o) => { const dd = dist2(human, o); if (dd < nd) { nd = dd; n = o; } });
+        openFightWindow(n);
+      }
+    }
+  } catch (err) { /* fight triggers must never break play */ }
+}
+function onFightChallengeKey() {
+  const w = game.fightWindow, human = controlledPlayer();
+  if (!w || !fightReady() || performance.now() > w.until) return;
+  game.fightWindow = null; game.fightCooldownUntil = performance.now() + 25000;
+  const t = w.target;
+  const chance = clamp(fightAggr(t) + 0.15 + (game.scoreA < game.scoreB ? (human.team === 'A' ? -0.05 : 0.1) : 0), 0.15, 0.92);
+  if (Math.random() < chance) startFight(human, t, human);
+  else {
+    applyBackDown(t);
+    showScreenCallout(t.name + ' BACKED DOWN · -5% STATS', 1800);
+    playTone(120, 0.12); crowd.excite = Math.max(crowd.excite, 0.5);
+  }
+}
+function startFight(a, b, instigator) {
+  game.fight = { stage: 'fight', a, b, instigator, hpA: 100, hpB: 100, t: 0, aiNext: 500, punchCd: 0, saved: game.players.map((p) => ({ p, x: p.x, z: p.z, facing: p.facing })),
+    ballSave: { carrier: game.ball.carrier } };
+  game.phase = 'fight'; game.fightWindow = null; game.pendingChallenge = null;
+  game.players.forEach((p) => { p.vx = 0; p.vz = 0; p.postUpActive = false; p.dropStep = null; });
+  a.x = -1.8; a.z = 0; b.x = 1.8; b.z = 0;
+  a.facing = Math.atan2(b.x - a.x, b.z - a.z); b.facing = Math.atan2(a.x - b.x, a.z - b.z);
+  game.players.forEach((p) => { if (p !== a && p !== b) p.facing = Math.atan2(0 - p.x, 0 - p.z); });
+  a.fight = { punchT: 0, side: 1, block: false }; b.fight = { punchT: 0, side: -1, block: false };
+  const ui = ensureFightUI(); ui.n1.textContent = 'YOU'; ui.n2.textContent = b.name; ui.b1.style.width = '100%'; ui.b2.style.width = '100%';
+  fightMsg('FIGHT!', true);
+  showScreenCallout('FIGHT!', 900);
+  crowd.excite = 1;
+}
+function fightPunch(att, def, dmg, defBlocking) {
+  att.fight.punchT = 1; att.fight.side *= -1;
+  const hit = defBlocking ? dmg * 0.3 : dmg;
+  def.rockVel += 0.006 * (defBlocking ? 0.4 : 1);
+  playBodyThud(defBlocking ? 0.25 : 0.6);
+  if (!defBlocking) showScreenCallout('POW', 350);
+  return hit;
+}
+function endFight(f) {
+  const win = f.hpA === f.hpB ? null : (f.hpA > f.hpB ? f.a : f.b), lose = win === f.a ? f.b : (win ? f.a : null);
+  f.saved.forEach((s) => { s.p.x = s.x; s.p.z = s.z; s.p.facing = s.facing; s.p.vx = 0; s.p.vz = 0; });
+  f.a.fight = null; f.b.fight = null;
+  game.phase = 'live'; game.fight = null; fightMsg('', false);
+  game.fightCooldownUntil = performance.now() + FIGHT_COOLDOWN_MS;
+  [f.a, f.b].forEach((p) => { p.fouls = (p.fouls || 0) + 1; if (p.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1; else game.teamFoulsB = (game.teamFoulsB || 0) + 1; });
+  if (lose) lose.ankleDownTimer = ANKLE_DOWN_MS * 1.6;
+  showScreenCallout(win ? (win === controlledPlayer() ? 'YOU WON THE FIGHT · TECHNICALS ON BOTH' : win.name + ' WON · TECHNICALS ON BOTH') : 'DRAW · TECHNICALS ON BOTH', 2200);
+  crowd.excite = 1;
+}
+function tickFight(dtMs) {
+  const f = game.fight;
+  if (game.pendingChallenge && fightReady()) {
+    const pc = game.pendingChallenge;
+    if (performance.now() >= pc.at) {
+      const h = controlledPlayer();
+      if (h.shotPhase !== 'none' || h.dunk || pc.ai.shotPhase !== 'none' || pc.ai.dunk) pc.at = performance.now() + 400;
+      else { game.pendingChallenge = null; game.fight = { stage: 'prompt', ai: pc.ai, until: performance.now() + 7000 }; game.phase = 'fight'; }
+    }
+  }
+  if (!f) return;
+}
+function fightFrame(dtMs) {
+  const f = game.fight; if (!f) { game.phase = 'live'; return; }
+  const h = controlledPlayer();
+  if (f.stage === 'prompt') {
+    const left = Math.max(0, f.until - performance.now());
+    fightMsg(f.ai.name + ' WANTS TO FIGHT  ·  Y = FIGHT   N = BACK DOWN (-5% STATS)  ·  ' + Math.ceil(left / 1000) + 's', false);
+    if (left <= 0) answerChallenge(false);
+    return;
+  }
+  f.t += dtMs; f.punchCd -= dtMs; f.aiNext -= dtMs;
+  const a = f.a, b = f.b;
+  a.fight.block = keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || keysDown.has('KeyF');
+  [a, b].forEach((p) => { p.fight.punchT = Math.max(0, p.fight.punchT - dtMs / 160); });
+  if (f.aiNext <= 0) {
+    f.aiNext = 360 + Math.random() * 240;
+    b.fight.block = Math.random() < 0.22;
+    if (!b.fight.block && Math.random() < 0.8) f.hpA -= fightPunch(b, a, 3.5 + (b.stats.strength || 1) * 3, a.fight.block);
+  }
+  f.hpA = Math.max(0, f.hpA); f.hpB = Math.max(0, f.hpB);
+  const ui = ensureFightUI(); ui.b1.style.width = f.hpA + '%'; ui.b2.style.width = f.hpB + '%';
+  stepBodyRock(a, dtMs); stepBodyRock(b, dtMs);
+  if (f.hpA <= 0 || f.hpB <= 0 || f.t >= FIGHT_MAX_MS) endFight(f);
+}
+function fightKey(e) {
+  const f = game.fight; if (!f) return;
+  if (f.stage === 'prompt') { if (e.code === 'KeyY') answerChallenge(true); else if (e.code === 'KeyN') answerChallenge(false); return; }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (e.repeat || f.punchCd > 0 || f.a.fight.block) return;
+    f.punchCd = 110;
+    const dmg = 4.2 + (f.a.stats.strength || 1) * 3;
+    f.hpB -= fightPunch(f.a, f.b, dmg, f.b.fight.block);
+  }
+}
+function answerChallenge(yes) {
+  const f = game.fight; if (!f || f.stage !== 'prompt') return;
+  const h = controlledPlayer(), ai = f.ai;
+  if (yes) { game.fight = null; game.phase = 'live'; fightMsg('', false); startFight(h, ai, ai); return; }
+  game.fight = null; game.phase = 'live'; fightMsg('', false);
+  game.fightCooldownUntil = performance.now() + 25000;
+  applyBackDown(h);
+  showScreenCallout('YOU BACKED DOWN · -5% STATS', 1800);
+  playTone(120, 0.12);
+}
+function applyFightPose(p, g, L) {
+  const fp = p.fight, f = p.facing;
+  g.rotation.y = f;
+  g.position.set(p.x + Math.sin(f) * 0.7 * fp.punchT, 0, p.z + Math.cos(f) * 0.7 * fp.punchT);
+  L.legLP.rotation.set(-0.3, 0, -0.14); L.legRP.rotation.set(0.35, 0, 0.14);
+  L.kneeLP.rotation.x = 0.35; L.kneeRP.rotation.x = 0.3;
+  const guard = (arm, elbow, sgn) => { arm.rotation.set(-1.0, 0, 0.3 * sgn); elbow.rotation.x = -1.5; };
+  guard(L.armLP, L.elbowLP, 1); guard(L.armRP, L.elbowRP, -1);
+  if (fp.block) { L.armLP.rotation.set(-1.5, 0, 0.1); L.armRP.rotation.set(-1.5, 0, -0.1); L.elbowLP.rotation.x = -2.1; L.elbowRP.rotation.x = -2.1; }
+  if (fp.punchT > 0) {
+    const arm = fp.side > 0 ? L.armRP : L.armLP, el = fp.side > 0 ? L.elbowRP : L.elbowLP;
+    arm.rotation.set(-1.55, 0, 0); el.rotation.x = -0.05;
+  }
+  L.spine.rotation.set(0.2 + fp.punchT * 0.25 - (p.rock || 0) * 0.8, 0, 0);
+}
+
+// DROP STEP (double-tap UP while posted up): pivot off the defender and take a hard step to the
+// rim on the side away from him. Space is the shot button, so this lives on the arrows.
+const DROP_STEP_MS = 360, DROP_STEP_DIST = 6.5;
+function startDropStep(p) {
+  if (p.dropStep || game.ball.carrier !== p || p.shotPhase !== 'none' || p.dunk) return;
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const d = defenderOf(p);
+  let side = d ? (p.z - d.z >= 0 ? 1 : -1) : (p.z >= 0 ? -1 : 1);
+  if (d && Math.abs(p.z - d.z) < 0.4) side = p.z >= 0 ? -1 : 1;
+  let tx = hoop.x - p.x, tz = hoop.z - p.z + side * 2.2;
+  const m = Math.hypot(tx, tz) || 1; tx /= m; tz /= m;
+  const dist = Math.min(DROP_STEP_DIST, Math.max(2.5, m - 2.5));
+  p.dropStep = { t: 0, dur: DROP_STEP_MS, moved: 0, dist, mx: tx, mz: tz, startFacing: p.facing };
+  p.postUpActive = false; p.postLockUntil = performance.now() + 900;
+  p.stealResistTimer = Math.max(p.stealResistTimer || 0, 700);
+  if (d) { const dd = Math.hypot(d.x - p.x, d.z - p.z) || 1; d.x += (d.x - p.x) / dd * 0.8; d.z += (d.z - p.z) / dd * 0.8; }
+  showScreenCallout('DROP STEP', 800);
+  playTone(260, 0.05);
+}
+function stepDropStep(p, dtMs) {
+  const ds = p.dropStep;
+  ds.t += dtMs;
+  const k = clamp(ds.t / ds.dur, 0, 1), e = k * k * (3 - 2 * k);
+  const want = ds.dist * e, step = want - ds.moved; ds.moved = want;
+  p.x = clamp(p.x + ds.mx * step, -COURT_HALF_LEN + 1.5, COURT_HALF_LEN - 1.5);
+  p.z = clamp(p.z + ds.mz * step, -COURT_HALF_WID + 1.5, COURT_HALF_WID - 1.5);
+  p.vx = 0; p.vz = 0;
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  let diff = Math.atan2(hoop.x - p.x, hoop.z - p.z) - ds.startFacing;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  p.facing = ds.startFacing + diff * e;
+  if (k >= 1) p.dropStep = null;
 }
 function onDunkPressed() {
   const p = controlledPlayer();
@@ -3657,6 +3893,8 @@ function updateHumanMovement(dtMs) {
     return;
   }
 
+  if (human.dropStep) { human.postUpActive = false; stepDropStep(human, dtMs); return; }
+
   // Post up: hold A+D — movement itself now lives entirely on the arrow
   // keys (see below), which frees A/D to be a dedicated hold-to-post
   // modifier instead of overloading the movement keys. While held (and
@@ -3666,7 +3904,7 @@ function updateHumanMovement(dtMs) {
   // around (see the postUpActive check in the collision pass below). The
   // arrow keys still work at the same time, steering the backdown left/
   // right/in/out instead of only being able to walk straight into the hoop.
-  if (!touchControlsEnabled && keysDown.has('KeyA') && keysDown.has('KeyD') && game.ball.carrier === human) {
+  if (!touchControlsEnabled && keysDown.has('KeyA') && keysDown.has('KeyD') && game.ball.carrier === human && performance.now() > (human.postLockUntil || 0)) {
     human.postUpActive = true;
     const hoop = human.team === 'A' ? HOOP_A : HOOP_B;
     const dx = hoop.x - human.x, dz = hoop.z - human.z;
@@ -4253,6 +4491,7 @@ function updateHumanoidPose(p, dt) {
   // follow-through down through the landing. Takes priority over running/
   // post-up/screens since he's planted (see updateHumanMovement/updateAI)
   // for the whole thing.
+  if (p.fight) { applyFightPose(p, g, L); return; }
   if (p.dunk) { applyDunkPose(p, g, L, dt); return; }
   if (p.shotPhase !== 'none') {
     applyShotPose(p, g, L, dt);
@@ -4729,6 +4968,16 @@ function updateBall(dtMs) {
   }
 }
 
+// Per-state framing: how far back / up the camera sits and how far ahead it aims.
+const CAM_STATE_ZOOM = {
+  HALF_COURT: { back: 25, up: 13.8, look: 11 },
+  TRANSITION: { back: 27, up: 15, look: 12 },
+  FAST_BREAK: { back: 29, up: 16.5, look: 14 },
+  SHOT:       { back: 23, up: 12.5, look: 10 },
+  REBOUND:    { back: 24, up: 13.5, look: 9 },
+  DEAD_BALL:  { back: 26, up: 14.5, look: 8 },
+  INBOUND:    { back: 26, up: 14.5, look: 8 },
+};
 let camDirSign = 1;
 function updateCamera(dt) {
   const human = controlledPlayer();
@@ -4754,30 +5003,17 @@ function updateCamera(dt) {
   //     court toward the basket you're defending, so you see the break, unless
   //     the ball is actually ahead of you the other way
   // The ball-ahead test has hysteresis (latched) so it can't flicker.
-  const CAM_HALF_MARGIN = 2.0, CAM_FLIP_ZONE = 4;
-  const onDefense = game.possessionTeam && game.possessionTeam !== human.team;
-  // Anti-shake: a dead zone around half court (the view only changes once you're
-  // clearly past it) plus a minimum dwell between flips, so standing, jogging or
-  // dribbling on the line can never make it swing back and forth.
-  const nowMs = performance.now();
-  const canFlip = nowMs - (game.camFlipAt || 0) > 250;
-  let want = game.camTransition;
-  if (onDefense) {
-    const hs = human.x * attackSign;
-    const ahead = game.ball.x * attackSign - hs; // + = ball is further toward their basket than you
-    if (hs < -CAM_HALF_MARGIN) want = false;            // clearly back in your own half
-    else if (hs > CAM_FLIP_ZONE) {                      // clearly in their half
-      if (!game.camTransition && ahead < 2) want = true;
-      else if (game.camTransition && ahead > 8) want = false;
-    }                                                   // in between: keep the current view
-  } else {
-    want = false;
-  }
-  // Holding the arrows? Never swing the camera under your fingers on defense: the view flips the
-  // moment you let up / change keys, so what you hold always matches what you see (no latch, no re-press).
-  const holdingMove = onDefense && arrowInputHeld();
-  if (want !== !!game.camTransition && (canFlip || !onDefense) && !holdingMove) { game.camTransition = want; game.camFlipAt = nowMs; }
-  camDirSign = game.camTransition ? -attackSign : attackSign;
+  // 2K camera logic (per the guide): the camera faces the basket the team WITH POSSESSION is
+  // attacking. Possession change is the event that requests a flip; the flip is locked while it
+  // swings and has a 0.5 s cooldown so it can never oscillate. No half-court trigger at all.
+  const possTeamNow = game.ball.carrier ? game.ball.carrier.team : (game.possessionTeam || human.team);
+  const wantDir = possTeamNow === 'A' ? 1 : -1; // team A attacks +x, team B attacks -x
+  if (game.camDir === undefined) game.camDir = wantDir;
+  if (game.camFlipCd === undefined) game.camFlipCd = 0;
+  if (game.camFlipCd > 0) game.camFlipCd -= dt / 1000;
+  if (wantDir !== game.camDir && game.camFlipCd <= 0 && !game.camSwinging) { game.camDir = wantDir; game.camFlipCd = 0.5; game.camFlipAt = performance.now(); }
+  game.camTransition = game.camDir !== attackSign;
+  camDirSign = game.camDir;
   let dirSign = camDirSign;
   // Free throws: a broadcast-style shot from behind whoever's at the line,
   // looking at the rim he's shooting on -- including when it's the AI
@@ -4802,13 +5038,46 @@ function updateCamera(dt) {
     const minStep = Math.sign(yd) * Math.min(Math.abs(yd), 22 * dt / 1000);
     game.camYaw += Math.abs(minStep) > Math.abs(ease) ? minStep : ease;
   }
+  game.camSwinging = Math.abs(yd) > 0.35;
   const swingK = clamp(Math.abs(yd) / 1.2, 0, 1);
   const cdx = Math.cos(game.camYaw), cdz = Math.sin(game.camYaw);
 
   // Pulled back and up a bit from the old 15 back / 8.5 up so more of the
   // floor (and the play developing around you) is in frame.
-  const desiredPos = new THREE.Vector3(focus.x - cdx * 25, 13.8, focus.z - cdz * 25);
-  const desiredLook = new THREE.Vector3(focus.x + cdx * 11, 3.0, focus.z + cdz * 11);
+  // ---- 2K-style camera state machine (see CAM_STATE_ZOOM) -------------------------------------
+  const camNow = performance.now(), cb = game.ball, cc = cb.carrier;
+  if (game.activeShot) game.camShotAt = camNow;
+  const handler = cc || focus;
+  const theirDir = cc && cc.team !== human.team ? -attackSign : attackSign; // way the ball team attacks, in x
+  const recentPoss = game.camPossAt && camNow - game.camPossAt < 4500;
+  const fastBreak = !!(recentPoss && cc && Math.hypot(cc.vx, cc.vz) > 0.2 && cc.vx * (cc.team === 'A' ? 1 : -1) > 0.12 && Math.abs(cc.x) < 38);
+  let camSt = 'HALF_COURT';
+  if (game.foulPending) camSt = 'DEAD_BALL';
+  else if (game.activeInbound) camSt = 'INBOUND';
+  else if (game.activeShot || (cc && cc.shotPhase !== 'none')) camSt = 'SHOT';
+  else if (cb.rebound || (!cc && game.camShotAt && camNow - game.camShotAt < 2600 && !game.activePass)) camSt = 'REBOUND';
+  else if (fastBreak) camSt = 'FAST_BREAK';
+  else if (game.camSwinging || camNow - (game.camFlipAt || 0) < 700) camSt = 'TRANSITION';
+  game.camState = camSt;
+  const CZ = CAM_STATE_ZOOM[camSt] || CAM_STATE_ZOOM.HALF_COURT;
+  if (!game.camZ) game.camZ = Object.assign({}, CZ);
+  const zk = 1 - Math.exp(-dt / 260);
+  game.camZ.back += (CZ.back - game.camZ.back) * zk; game.camZ.up += (CZ.up - game.camZ.up) * zk; game.camZ.look += (CZ.look - game.camZ.look) * zk;
+  // target = a blend of the ball, the player you control, and a look-ahead point -- not just the player
+  const aimHoop = human.team === 'A' ? HOOP_A : HOOP_B;
+  const shootHoop = cc ? (cc.team === 'A' ? HOOP_A : HOOP_B) : aimHoop;
+  // guide: target = ball * 0.50 + ballHandler * 0.30 + lookAhead * 0.20 (transition/fast break add the look-ahead)
+  const ahead = (camSt === 'FAST_BREAK' || camSt === 'TRANSITION') ? 8 : 3;
+  let hx = handler.x + cdx * ahead, hz = handler.z + cdz * ahead;
+  if (camSt === 'SHOT') { hx = shootHoop.x; hz = shootHoop.z; }
+  else if (camSt === 'REBOUND') { hx = aimHoop.x * 0.6 + cb.x * 0.4; hz = cb.z * 0.8; }
+  else if (camSt === 'INBOUND' && game.activeInbound) { const ib = game.activeInbound; hx = (ib.startX + ib.endX) / 2; hz = (ib.startZ + ib.endZ) / 2; }
+  let tx = cb.x * 0.5 + handler.x * 0.3 + hx * 0.2, tz = cb.z * 0.5 + handler.z * 0.3 + hz * 0.2;
+  if (game.freeThrow) { tx = focus.x; tz = focus.z; }
+  if (!game.camTgt) game.camTgt = { x: tx, z: tz };
+  const tk = 1 - Math.exp(-dt / 130); game.camTgt.x += (tx - game.camTgt.x) * tk; game.camTgt.z += (tz - game.camTgt.z) * tk;
+  const desiredPos = new THREE.Vector3(game.camTgt.x - cdx * game.camZ.back, game.camZ.up, game.camTgt.z - cdz * game.camZ.back);
+  const desiredLook = new THREE.Vector3(game.camTgt.x + cdx * game.camZ.look, 3.0, game.camTgt.z + cdz * game.camZ.look);
 
   // Post-up camera: straight behind the poster, the defender battling on
   // his back is completely hidden behind his body. Like a broadcast post
@@ -4970,7 +5239,8 @@ function startMatch() {
   game.matchClock = MATCH_SECONDS;
   game.controlledIndex = 0;
   game.teamFoulsA = 0; game.teamFoulsB = 0;
-  game.players.forEach((p) => { p.fouls = 0; });
+  game.players.forEach((p) => { p.fouls = 0; p.fight = null; p.dropStep = null; if (p.backedDown) { p.stats = POS_STATS[p.name]; p.backedDown = false; } });
+  game.fight = null; game.fightWindow = null; game.pendingChallenge = null; game.fightCooldownUntil = 0; game.scoreRun = { A: 0, B: 0 };
   resetPositions('A', true);
   document.getElementById('menu-overlay').classList.add('hidden');
   document.getElementById('matchover-overlay').classList.add('hidden');
@@ -4985,6 +5255,8 @@ function frame(now) {
   lastTime = now;
 
   if (game.phase === 'live') {
+    tickFight(dtMs);
+    { const w = game.fightWindow; const show = w && fightReady() && performance.now() < w.until; if (show) fightMsg('PRESS G TO CHALLENGE ' + w.target.name + ' TO A FIGHT', false); else if (!game.fight && fightUI && fightUI.wrap.style.display !== 'none') fightMsg('', false); if (w && performance.now() >= w.until) game.fightWindow = null; }
     // The clock stops on the whistle and stays stopped through free throws.
     if (!game.foulPending && !game.freeThrow) game.matchClock -= dtMs / 1000;
     if (game.matchClock <= 0) { game.matchClock = 0; showMatchOver(); }
@@ -5185,6 +5457,22 @@ function frame(now) {
     updateCamera(dtMs);
   }
 
+  if (game.phase === 'fight') {
+    fightFrame(dtMs);
+    updateCrowd(dtMs); updateRef(dtMs);
+    game.players.forEach((p) => updateHumanoidPose(p, dtMs));
+    const fa = game.fight && game.fight.a ? game.fight.a : controlledPlayer(), fb = game.fight && game.fight.b ? game.fight.b : controlledPlayer();
+    const mx = (fa.x + fb.x) / 2, mz = (fa.z + fb.z) / 2;
+    const prompt = game.fight && game.fight.stage === 'prompt';
+    if (!prompt) {
+      camera.position.lerp(new THREE.Vector3(mx, 7.5, mz + 17), 0.12);
+      camera.lookAt(mx, 3.6, mz);
+    }
+    if (screenCalloutHideAt && performance.now() >= screenCalloutHideAt) {
+      const calloutEl = document.getElementById('screen-callout'); if (calloutEl) calloutEl.classList.remove('show'); screenCalloutHideAt = 0;
+    }
+  }
+
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
@@ -5212,6 +5500,7 @@ game.resolveDribblerContact = resolveDribblerContact;
 game.startFreeThrows = startFreeThrows;
 game.refState = refState;
 game.PUSH_FOUL_LIMIT = PUSH_FOUL_LIMIT;
+game.fightApi = { fightHook, startFight, onFightChallengeKey, startDropStep, openFightWindow, scheduleAiChallenge, answerChallenge, endFight };
 game.getCamDirSign = () => camDirSign;
 game.shotDistancePenalty = shotDistancePenalty;
 game.rollShotContactFoul = rollShotContactFoul;
