@@ -405,10 +405,10 @@ function isProtectedDribbler(p) {
 // Turbo/stamina: hold Ctrl to sprint for a speed burst, burning stamina;
 // once it's fully drained turbo locks out until it recovers past a recovery
 // threshold, so it can't be feathered on/off to cheat the drain.
-const STAMINA_MAX = 100;
+const STAMINA_MAX = 50; // half the old tank
 const STAMINA_DRAIN_PER_SEC = 32;
-const STAMINA_REGEN_PER_SEC = 20;
-const STAMINA_EXHAUST_RECOVER = 25;
+const STAMINA_REGEN_PER_SEC = 10; // and half the refill speed
+const STAMINA_EXHAUST_RECOVER = 14;
 const TURBO_SPEED_MULT = 1.35;
 
 function dist2(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
@@ -787,7 +787,7 @@ function buildArena() {
         const uu = u + (Math.random() - 0.5) * 0.4;
         const f = { axis, sgn, u: uu, d, baseY: h, phase: Math.random() * 6.28, sp: 2.2 + Math.random() * 2.2, sc: 0.9 + Math.random() * 0.25,
           shirt: pick(SHIRT), skin: pick(SKIN), hair: Math.random() < 0.12 ? null : pick(HAIR), sign: -1 };
-        if (Math.random() < 0.13) f.sign = Math.floor(Math.random() * SIGN.length);
+        if (r >= 3 && Math.random() < 0.17) f.sign = Math.floor(Math.random() * SIGN.length); // never the front rows (clipped by the camera)
         f.rotY = axis === 'z' ? (sgn > 0 ? Math.PI : 0) : (sgn > 0 ? -Math.PI / 2 : Math.PI / 2);
         f.wx = axis === 'z' ? uu : sgn * d; f.wz = axis === 'z' ? sgn * d : uu;
         crowd.fans.push(f);
@@ -835,24 +835,37 @@ function updateCrowd(dtMs, force) {
   crowd.tick++;
   if (!force && crowd.tick % 3) { crowd.pend = (crowd.pend || 0) + dtMs; return; }
   dtMs += crowd.pend || 0; crowd.pend = 0;
-  crowd.excite = Math.max(0, crowd.excite - dtMs * 2 / 3200);
+  if (crowd.hold > 0) crowd.hold -= dtMs; else crowd.excite = Math.max(0, crowd.excite - dtMs * 2 / 3200);
+  if (crowd.allUp > 0) crowd.allUp -= dtMs;
+  // Standing algorithm: tension = how close the score is x how late in the game it is.
+  let standTarget = 0;
+  if (window.__gameReady && game.phase === 'live') {
+    const diff = Math.abs(game.scoreA - game.scoreB);
+    const progress = Math.max(1 - clamp(game.matchClock / MATCH_SECONDS, 0, 1), Math.max(game.scoreA, game.scoreB) / WIN_SCORE);
+    const tension = (1 - clamp(diff / 8, 0, 1)) * (0.25 + 0.75 * progress);
+    standTarget = clamp((tension - 0.3) / 0.45, 0, 1);
+  }
+  if (crowd.allUp > 0) standTarget = 1;
+  crowd.stand = (crowd.stand || 0) + (standTarget - (crowd.stand || 0)) * (1 - Math.exp(-dtMs / 900));
   const t = performance.now() / 1000, ex = crowd.excite;
   const fans = crowd.fans;
   for (let i = 0; i < fans.length; i++) {
     const f = fans[i];
+    if (f.standAt === undefined) f.standAt = Math.random();
+    f.up = (f.up || 0) + ((crowd.stand > f.standAt ? 1 : 0) - (f.up || 0)) * (1 - Math.exp(-dtMs / 220));
     const bob = Math.abs(Math.sin(t * f.sp * (1 + ex) + f.phase)) * (0.05 + ex * 0.9);
-    const y = f.baseY + bob, sc = f.sc;
-    _cd.rotation.set(0, f.rotY, 0); _cd.scale.set(sc, sc, sc * 0.75);
-    _cd.position.set(f.wx, y + 1.45 * sc, f.wz); _cd.updateMatrix(); crowd.torso.setMatrixAt(i, _cd.matrix);
+    const y = f.baseY + bob + f.up * 0.9 * f.sc, sc = f.sc;
+    _cd.rotation.set(0, f.rotY, 0); _cd.scale.set(sc, sc * (1 + 0.3 * f.up), sc * 0.75);
+    _cd.position.set(f.wx, y + (1.45 + 0.4 * f.up) * sc, f.wz); _cd.updateMatrix(); crowd.torso.setMatrixAt(i, _cd.matrix);
     _cd.scale.set(sc, sc, sc);
-    _cd.position.set(f.wx, y + 2.85 * sc, f.wz); _cd.updateMatrix(); crowd.head.setMatrixAt(i, _cd.matrix);
-    _cd.position.set(f.wx, y + 2.9 * sc, f.wz); _cd.updateMatrix(); crowd.hair.setMatrixAt(i, _cd.matrix);
+    _cd.position.set(f.wx, y + (2.85 + 0.9 * f.up) * sc, f.wz); _cd.updateMatrix(); crowd.head.setMatrixAt(i, _cd.matrix);
+    _cd.position.set(f.wx, y + (2.9 + 0.9 * f.up) * sc, f.wz); _cd.updateMatrix(); crowd.hair.setMatrixAt(i, _cd.matrix);
   }
   for (let k = 0; k < crowd.signs.length; k++) {
     const sg = crowd.signs[k], f = fans[sg.fan];
     const bob = Math.abs(Math.sin(t * f.sp * (1 + ex) + f.phase)) * (0.05 + ex * 0.9);
     const lift = 1.7 + ex * 1.1 + Math.sin(t * 3 + f.phase) * 0.12 * (1 + ex * 2);
-    const y = f.baseY + bob + 3.4 * f.sc + lift;
+    const y = f.baseY + bob + 3.4 * f.sc + lift + (f.up || 0) * 1.3 * f.sc;
     _cd.rotation.set(0, f.rotY, Math.sin(t * 2 + f.phase) * (0.06 + ex * 0.25)); _cd.scale.set(1, 1, 1);
     // sign sits just in front of the fan's head, held up on a stick
     const fx = Math.sin(f.rotY) * -0.35, fz = Math.cos(f.rotY) * -0.35;
@@ -1295,6 +1308,35 @@ ballCallRing.position.y = 0.06;
 ballCallRing.visible = false;
 scene.add(ballCallRing);
 
+// Guide arrows -- for the human's side only: one over the player you control, and (on defense) a
+// red arrow + ring + dashed line on whoever he's responsible for guarding.
+const arrowGeo = new THREE.ConeGeometry(0.55, 1.2, 4); arrowGeo.rotateX(Math.PI);
+const humanArrow = new THREE.Mesh(arrowGeo, new THREE.MeshBasicMaterial({ color: 0x38bdf8 }));
+const markArrow = new THREE.Mesh(arrowGeo, new THREE.MeshBasicMaterial({ color: 0xff4d4d }));
+const markRing = new THREE.Mesh(new THREE.RingGeometry(PLAYER_R + 0.15, PLAYER_R + 0.7, 28), new THREE.MeshBasicMaterial({ color: 0xff4d4d, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+markRing.rotation.x = -Math.PI / 2;
+const guideGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]);
+const guideLine = new THREE.Line(guideGeo, new THREE.LineDashedMaterial({ color: 0xff4d4d, dashSize: 0.7, gapSize: 0.45 }));
+[humanArrow, markArrow, markRing, guideLine].forEach((o) => { o.visible = false; o.frustumCulled = false; scene.add(o); });
+function updateGuideArrows(human) {
+  const tt = performance.now() / 1000;
+  humanArrow.visible = true;
+  humanArrow.position.set(human.x, 9.1 * ((human.stats && human.stats.scale) || 1) + Math.sin(tt * 4) * 0.25, human.z);
+  humanArrow.rotation.y = tt * 1.6;
+  const onD = game.possessionTeam && game.possessionTeam !== human.team && !game.freeThrow && !game.foulPending;
+  const mark = onD ? getMark(human) : null;
+  const show = !!mark;
+  markArrow.visible = markRing.visible = guideLine.visible = show;
+  if (!show) return;
+  markArrow.position.set(mark.x, 9.1 * ((mark.stats && mark.stats.scale) || 1) + Math.sin(tt * 4 + 1) * 0.25, mark.z);
+  markArrow.rotation.y = -tt * 1.6;
+  markRing.position.set(mark.x, 0.07, mark.z);
+  markRing.material.opacity = 0.55 + 0.3 * Math.sin(tt * 6);
+  const pos = guideGeo.attributes.position;
+  pos.setXYZ(0, human.x, 0.12, human.z); pos.setXYZ(1, mark.x, 0.12, mark.z); pos.needsUpdate = true;
+  guideLine.computeLineDistances();
+}
+
 // Ball
 function buildBallTexture() {
   const cvs = document.createElement('canvas');
@@ -1358,6 +1400,7 @@ function makePlayer(team, posLabel) {
   };
 }
 
+window.__gameReady = false;
 const game = {
   phase: 'menu',
   scoreA: 0, scoreB: 0,
@@ -1786,7 +1829,7 @@ function resolveFouledShot(s) {
   game.foulPending = null;
   if (s.made) {
     playTone(760, 0.09); playTone(940, 0.09, 60);
-    scoreFor(s.shooter.team, s.isThree ? 3 : 2);
+    scoreFor(s.shooter.team, s.isThree ? 3 : 2, { andOne: true });
     if (game.scoreA >= WIN_SCORE || game.scoreB >= WIN_SCORE) { showMatchOver(); return; }
     showScreenCallout('AND ONE!', 1400);
     game.foulPending = { timer: 1100, fouled: s.shooter, fts: 1 };
@@ -1859,7 +1902,7 @@ function resolveShot(shooter, made, isThree) {
   game.ball.arcHeight = 0;
   if (made) {
     playTone(760, 0.09); playTone(940, 0.09, 60);
-    scoreFor(shooter.team, isThree ? 3 : 2);
+    scoreFor(shooter.team, isThree ? 3 : 2, { dunk: !!shooter.dunk });
     if (game.phase === 'live') {
       if (game.scoreA >= WIN_SCORE || game.scoreB >= WIN_SCORE) {
         showMatchOver();
@@ -2112,8 +2155,18 @@ function applyDunkPose(p, g, L, dt) {
   L.spine.rotation.set(st === 'poster' ? lerp(0.05, -0.32, ru) : lerp(0.05, -0.18, ru), 0, 0);
 }
 
-function scoreFor(team, points) {
-  crowd.excite = 1; // the place erupts
+function scoreFor(team, points, ctx) {
+  // The crowd reacts to WHAT happened: a bucket pops them, a three or a dunk gets more, an and-one
+  // brings the house down (everyone up, long roar), and a late bucket in a close game is bedlam.
+  ctx = ctx || {};
+  const home = team === (controlledPlayer() ? controlledPlayer().team : 'A');
+  let lvl = points >= 3 ? 1.15 : 1, hold = 900, allUp = 0;
+  if (ctx.dunk) { lvl = 1.4; hold = 1800; allUp = 2200; }
+  if (ctx.andOne) { lvl = 1.8; hold = 3400; allUp = 4200; }
+  const lateClose = game.matchClock < 40 && Math.abs(game.scoreA - game.scoreB) <= 3;
+  if (lateClose) { lvl = Math.max(lvl, 1.55); hold = Math.max(hold, 2400); allUp = Math.max(allUp, 3000); }
+  lvl *= home ? 1.1 : 0.85;
+  crowd.excite = Math.min(1.9, Math.max(crowd.excite, lvl)); crowd.hold = Math.max(crowd.hold || 0, hold); crowd.allUp = Math.max(crowd.allUp || 0, allUp);
   fightHook('score', team);
   if (team === 'A') game.scoreA += points; else game.scoreB += points;
 }
@@ -5443,6 +5496,7 @@ function frame(now) {
     ballShadow.scale.setScalar(clamp(1.4 - game.ball.y * 0.08, 0.4, 1.4));
 
     controlRing.position.set(human.x, 0.05, human.z);
+    updateGuideArrows(human);
     const moveActive = human.stealResistTimer > 0 || human.hesitateTimer > 0;
     controlRing.material.color.setHex(human.turboActive ? 0x38bdf8 : (moveActive ? 0xffd23f : 0xffffff));
 
@@ -5481,6 +5535,7 @@ function frame(now) {
   }
 
   if (game.phase === 'fight') {
+    humanArrow.visible = markArrow.visible = markRing.visible = guideLine.visible = false;
     fightFrame(dtMs);
     updateCrowd(dtMs); updateRef(dtMs);
     game.players.forEach((p) => updateHumanoidPose(p, dtMs));
@@ -5504,7 +5559,7 @@ requestAnimationFrame(frame);
 // Debugging / verification hook, mirrors the convention used across the
 // hub's other games (window.__game_scene) so existing test tooling and any
 // future debugging follows the same pattern.
-window.__game_scene = game;
+window.__game_scene = game; window.__gameReady = true;
 window.__game_controlledPlayer = controlledPlayer;
 game.controlledPlayer = controlledPlayer;
 game.getTeammates = getTeammates;
