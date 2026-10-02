@@ -1400,7 +1400,7 @@ function makePlayer(team, posLabel) {
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
     postContestTimer: 0, postPrevWave: 0,
-    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200,
+    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200, bumpCd: 0, bumpDrag: 0, bumpT: 0, bumpDirX: 0, bumpDirZ: 0,
     markOverride: null, lateSwitchCheck: null, screenHangTimer: 0, screenHangDur: 1,
     // Dribble-move momentum: a real, sustained velocity push in the move's
     // direction (not just a one-frame nudge that the normal movement code
@@ -3736,6 +3736,62 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
   }
 }
 
+// ---- Legal body contact (checking) -------------------------------------------------------------
+// Basketball allows bumping: a defender can meet the ball handler in stride, give a shoulder, and
+// slow him down, as long as it isn't a hard blocking foul or a reach-in (those stay as they are).
+// Opposing players who run into each other inside BUMP_D lose the speed they were closing at (the
+// offensive player more than the defender, scaled by strength), get a short drag, a lean/lunge
+// animation and a thud. Pairs have a short cooldown so it reads as a bump, not a buzz.
+const BUMP_D = PLAYER_R * 2 + 1.0;
+const BUMP_CLOSE_MIN = 0.07;      // closing speed (units/frame) needed to count as a collision
+const BUMP_CD_MS = 420, BUMP_DRAG_MS = 340;
+function applyBodyContacts(dtMs) {
+  const P = game.players;
+  const possTeam = game.ball.carrier ? game.ball.carrier.team : game.possessionTeam;
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i];
+    if (a.bumpCd > 0) a.bumpCd -= dtMs;
+    if (a.bumpDrag > 0) { a.bumpDrag -= dtMs; const k = Math.exp(-dtMs / 1100); a.vx *= k; a.vz *= k; }
+  }
+  if (game.activeInbound || game.freeThrow || game.foulPending) return;
+  for (let i = 0; i < P.length; i++) {
+    for (let j = i + 1; j < P.length; j++) {
+      const a = P[i], b = P[j];
+      if (a.team === b.team) continue;
+      if (a.postUpActive || b.postUpActive || a.screenHoldTimer > 0 || b.screenHoldTimer > 0) continue;
+      if (a.dunk || b.dunk || a.shotPhase !== 'none' || b.shotPhase !== 'none') continue;
+      if (a.ankleDownTimer > 0 || b.ankleDownTimer > 0 || a.fight || b.fight) continue;
+      const dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz) || 0.001;
+      if (d > BUMP_D) continue;
+      const nx = dx / d, nz = dz / d; // a -> b
+      const aIn = a.vx * nx + a.vz * nz;       // a's speed into b
+      const bIn = -(b.vx * nx + b.vz * nz);    // b's speed into a
+      const closing = aIn + bIn;
+      if (closing < BUMP_CLOSE_MIN) continue;
+      const off = a.team === possTeam ? a : b, def = off === a ? b : a;
+      const offIn = off === a ? aIn : bIn, defIn = def === a ? aIn : bIn;
+      const sOff = (off.stats && off.stats.strength) || 1, sDef = (def.stats && def.stats.strength) || 1;
+      const defEdge = clamp(sDef / (sOff + sDef), 0.25, 0.75); // 0.5 = even
+      const ox = off === a ? nx : -nx, oz = off === a ? nz : -nz; // off -> def
+      // continuous resistance while pushing into a body (turbo shoulders through a bit better)
+      const turboK = off.turboActive ? 0.7 : 1;
+      if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.55 + 0.6 * defEdge) * turboK; off.vx -= ox * cut; off.vz -= oz * cut; }
+      if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.9 - 0.5 * defEdge); def.vx += ox * cut; def.vz += oz * cut; }
+      if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1) {
+        a.bumpCd = b.bumpCd = BUMP_CD_MS;
+        const big = clamp(closing / 0.4, 0.5, 1.3);
+        off.vx -= ox * offIn * 0.35 * turboK; off.vz -= oz * offIn * 0.35 * turboK; // the hit itself
+        def.vx += ox * defIn * 0.2; def.vz += oz * defIn * 0.2;
+        off.bumpDrag = BUMP_DRAG_MS * (turboK < 1 ? 0.7 : 1);
+        a.bumpT = 1; b.bumpT = 1; a.bumpDirX = nx; a.bumpDirZ = nz; b.bumpDirX = -nx; b.bumpDirZ = -nz;
+        off.rockVel -= 0.0042 * big * (1.2 - defEdge); def.rockVel += 0.003 * big * defEdge;
+        playBodyThud(clamp(0.3 * big, 0.2, 0.45));
+        if (off === controlledPlayer() || def === controlledPlayer()) showScreenCallout(off === controlledPlayer() ? 'CHECKED' : 'BUMP', 450);
+      }
+    }
+  }
+}
+
 function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   const dx = tx - p.x, dz = tz - p.z;
   const d = Math.hypot(dx, dz);
@@ -4908,6 +4964,17 @@ function updateHumanoidPose(p, dt) {
   }
   if (p.catchHoldT > 0 && game.ball.carrier === p) catchW = Math.max(catchW, Math.min(1, p.catchHoldT / 90));
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
+
+  // Body bump: shoulder into the contact, brace with the arms, a short lunge toward the other player.
+  if (p.bumpT > 0) {
+    p.bumpT = Math.max(0, p.bumpT - dt / 320);
+    const e = Math.sin(Math.min(1, p.bumpT) * Math.PI * 0.5);
+    const cross = Math.sin(p.facing) * p.bumpDirZ - Math.cos(p.facing) * p.bumpDirX;
+    L.spine.rotation.z += (cross > 0 ? -1 : 1) * 0.28 * e;
+    L.spine.rotation.x += 0.16 * e;
+    L.armLP.rotation.x = Math.min(L.armLP.rotation.x, -0.5 * e - 0.2); L.armRP.rotation.x = Math.min(L.armRP.rotation.x, -0.5 * e - 0.2);
+    g.position.x += p.bumpDirX * 0.35 * e; g.position.z += p.bumpDirZ * 0.35 * e;
+  }
 }
 
 function applyCatchReachOverlay(p, g, L, w) {
@@ -5565,6 +5632,7 @@ function frame(now) {
       });
     }
 
+    applyBodyContacts(dtMs);
     game.players.forEach((p) => {
       const stepK = (dtMs / 16.67) * GAME_SPEED; // frame-rate independent, so a 144 Hz screen isn't faster than a 60 Hz one
       p.x += p.vx * stepK; p.z += p.vz * stepK;
