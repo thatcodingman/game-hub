@@ -3526,6 +3526,7 @@ function applyMoveKick(p, mult, side, durMs) {
 // what branch of movement is active.
 function tickMoveBurst(p, dtMs) {
   if (p.moveBurstT >= 1) return { x: 0, z: 0 };
+  if (p.moveBurstT < 0) { p.moveBurstT = Math.min(0, p.moveBurstT + dtMs / p.moveBurstDur); return { x: 0, z: 0 }; } // wind-up (plant) phase
   p.moveBurstT = Math.min(1, p.moveBurstT + dtMs / p.moveBurstDur);
   const fade = 1 - p.moveBurstT;
   return { x: p.moveBurstDirX * p.moveBurstPeak * fade, z: p.moveBurstDirZ * p.moveBurstPeak * fade };
@@ -3629,17 +3630,9 @@ function onSpinPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none' || p.dunk) return;
   registerMove(p, 's', 620);
-  const right = inputRight();
-  let side = 0;
-  if (keysDown.has('ArrowLeft')) side -= 1;
-  if (keysDown.has('ArrowRight')) side += 1;
-  if (!side) {
-    const d = defenderOf(p);
-    if (d) side = -(Math.sign((d.x - p.x) * right.x + (d.z - p.z) * right.z) || 1);
-    else side = p.handSide || 1;
-  }
+  // A spin reverses you: the ball goes to the OTHER hand (right hand -> left) and you come out going that way.
   p.stealResistTimer = Math.max(p.stealResistTimer, SPIN_STEAL_RESIST_MS);
-  triggerHandSwitch(p, 'front', SPIN_MS * 0.7, true);
+  const side = triggerHandSwitch(p, 'front', SPIN_MS * 0.7, true);
   applyMoveKick(p, SPIN_KICK_MULT, side, SPIN_MS + 120);
   p.moveBoostTimer = SPIN_MS + MOVE_BOOST_MS;
   p.moveKind = 'spin';
@@ -3649,21 +3642,26 @@ function onSpinPressed() {
 }
 // ---- Step-back (5): hop backward away from the rim/defender to create space; a shot taken in the next
 // ~1.4 s gets a much weaker contest and a small accuracy bump. -----------------------------------------------
-const STEPBACK_MS = 330, STEPBACK_KICK_MULT = 0.75, STEPBACK_WINDOW_MS = 1400;
+const STEPBACK_MS = 430, STEPBACK_PLANT_MS = 150, STEPBACK_KICK_MULT = 1.7, STEPBACK_WINDOW_MS = 1500;
 function onStepBackPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none' || p.dunk) return;
   registerMove(p, 't', 620);
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
-  let bx = p.x - hoop.x, bz = p.z - hoop.z; // away from the rim
+  let bx = p.x - hoop.x, bz = p.z - hoop.z; // straight away from the rim (you stay facing it)
+  { const m0 = Math.hypot(bx, bz) || 1; bx /= m0; bz /= m0; }
   const d = defenderOf(p);
-  if (d) { bx = p.x - d.x + bx * 0.5; bz = p.z - d.z + bz * 0.5; } // ...and away from him
+  if (d && dist2(d, p) < 9) { // a close defender: angle the hop slightly away from his side too
+    const px = -bz, pz = bx, sg = Math.sign((p.x - d.x) * px + (p.z - d.z) * pz) || 1;
+    bx += px * sg * 0.35; bz += pz * sg * 0.35;
+  }
   const right = inputRight();
   let lat = 0; if (keysDown.has('ArrowLeft')) lat -= 1; if (keysDown.has('ArrowRight')) lat += 1;
   bx += right.x * lat * 0.7; bz += right.z * lat * 0.7;
   const bm = Math.hypot(bx, bz) || 1;
   p.moveBurstDirX = bx / bm; p.moveBurstDirZ = bz / bm;
-  p.moveBurstPeak = p.stats.speed * STEPBACK_KICK_MULT; p.moveBurstT = 0; p.moveBurstDur = STEPBACK_MS;
+  p.moveBurstPeak = p.stats.speed * STEPBACK_KICK_MULT; p.moveBurstDur = STEPBACK_MS; p.moveBurstT = -STEPBACK_PLANT_MS / STEPBACK_MS; // short plant first, then the push-off
+  p.sbT = 0;
   p.stealResistTimer = Math.max(p.stealResistTimer, 380);
   p.moveKind = 'stepback'; p.stepBackT = STEPBACK_WINDOW_MS;
   attemptAnkleBreaker(p, 'stepback');
@@ -4840,6 +4838,9 @@ function updateHumanoidPose(p, dt) {
   // Every pose starts from a neutral upper body and straight elbows, so no
   // pose can leave a lean or a bent elbow stuck on after it ends (the same
   // stale-axis trap the limb z-rotations fell into before).
+  if (!(p.ankleDownTimer > 0 || p.ankleGetUpTimer > 0)) { // fall pose finished: never leave a leftover tilt on the body
+    g.rotation.x = 0; g.rotation.z = 0; p.ankleFallAmt = 0;
+  }
   L.spine.rotation.set(0, 0, 0);
   L.elbowLP.rotation.set(0, 0, 0);
   L.elbowRP.rotation.set(0, 0, 0);
@@ -4966,6 +4967,13 @@ function updateHumanoidPose(p, dt) {
     // the normal turn below, so it reads as a blunt, straight-on close
     // rather than a smooth defensive-slide pivot.
     p.facing = p.postDefenseFacingAngle;
+  } else if (p.moveKind === 'stepback' && p.stepBackT > 800 && game.ball.carrier === p) {
+    // Step-back: you stay squared up to the rim the whole time, never turn your back to it.
+    const hp = p.team === 'A' ? HOOP_A : HOOP_B;
+    let diff = Math.atan2(hp.x - p.x, hp.z - p.z) - p.facing;
+    diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const maxTurn = TURN_RATE * 3 * dt;
+    p.facing += clamp(diff, -maxTurn, maxTurn);
   } else if (speed > 0.02 && !facingLocked) {
     // Turn toward the movement direction at a limited rate (shortest-angle),
     // instead of snapping the whole body to face it instantly.
@@ -5117,17 +5125,31 @@ function updateHumanoidPose(p, dt) {
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
   // Step-back: lean away and hop as the burst plays.
-  if (p.moveKind === 'stepback' && p.moveBurstT !== undefined && p.moveBurstT < 1) {
-    const w2 = Math.sin(p.moveBurstT * Math.PI);
-    L.spine.rotation.x -= 0.38 * w2;
-    g.position.y += 0.35 * w2;
+  // Real step-back footwork: the lead (right) foot jabs out in front and plants to load the body, then it
+  // drives off that foot, snapping it back to meet the trail foot as the body hops away from the defender.
+  if (p.moveKind === 'stepback' && p.sbT !== undefined && p.sbT < 1) {
+    p.sbT = Math.min(1, p.sbT + dt / (STEPBACK_PLANT_MS + STEPBACK_MS));
+    const t = p.sbT, plantEnd = STEPBACK_PLANT_MS / (STEPBACK_PLANT_MS + STEPBACK_MS);
+    if (t < plantEnd) { // plant: lead leg out in front, weight dropping onto it
+      const k = t / plantEnd, e = k * k * (3 - 2 * k);
+      L.legRP.rotation.x = -1.0 * e; L.kneeRP.rotation.x = 0.55 * e;
+      L.legLP.rotation.x = 0.3 * e; L.kneeLP.rotation.x = 0.35 * e;
+      L.spine.rotation.x += 0.22 * e;
+      g.position.y -= 0.28 * e;
+    } else { // push-off: lead leg swings back to the trail foot, body leans away and hops
+      const k = (t - plantEnd) / (1 - plantEnd), e = k * k * (3 - 2 * k), hop = Math.sin(k * Math.PI);
+      L.legRP.rotation.x = lerp(-1.0, 0.15, e); L.kneeRP.rotation.x = lerp(0.55, 0.45, e) + 0.35 * hop;
+      L.legLP.rotation.x = lerp(0.3, 0.05, e) + 0.2 * hop; L.kneeLP.rotation.x = lerp(0.35, 0.3, e) + 0.35 * hop;
+      L.spine.rotation.x += lerp(0.22, -0.34, Math.min(1, k * 2)) * (1 - 0.7 * Math.max(0, k - 0.6) / 0.4);
+      g.position.y += 0.55 * hop - 0.28 * (1 - e);
+    }
   }
   // Body bump: shoulder into the contact, brace with the arms, a short lunge toward the other player.
   if (p.bumpT > 0) {
     p.bumpT = Math.max(0, p.bumpT - dt / 320);
     const e = Math.sin(Math.min(1, p.bumpT) * Math.PI * 0.5);
     const cross = Math.sin(p.facing) * p.bumpDirZ - Math.cos(p.facing) * p.bumpDirX;
-    L.spine.rotation.z += (cross > 0 ? -1 : 1) * 0.28 * e;
+    L.spine.rotation.z += (cross > 0 ? -1 : 1) * 0.16 * e;
     L.spine.rotation.x += 0.16 * e;
     L.armLP.rotation.x = Math.min(L.armLP.rotation.x, -0.5 * e - 0.2); L.armRP.rotation.x = Math.min(L.armRP.rotation.x, -0.5 * e - 0.2);
     g.position.x += p.bumpDirX * 0.35 * e; g.position.z += p.bumpDirZ * 0.35 * e;
