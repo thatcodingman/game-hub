@@ -191,7 +191,7 @@
     <div id="hud-clock">2:30</div>
     <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; V defense arrows swap &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
 </div>
 
 <div id="stamina-wrap">
@@ -2576,6 +2576,7 @@ window.addEventListener('keydown', (e) => {
   keysDown.add(e.code);
   if (game.phase === 'fight') { fightKey(e); return; }
   if (e.code === 'KeyG' && !e.repeat) onFightChallengeKey();
+  if (e.code === 'KeyV' && !e.repeat && game.phase === 'live') { game.defSwap = game.defSwap === false; showScreenCallout(game.defSwap === false ? 'DEFENSE ARROWS: SCREEN (UP = AWAY FROM YOU)' : 'DEFENSE ARROWS: COURT (UP = TOWARD THEIR BASKET)', 1400); }
   if (game.phase !== 'live') return;
   // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
   if (game.foulPending || game.freeThrow) {
@@ -2912,6 +2913,7 @@ function releaseShotMeter() {
 function startShotRise(player, anyRange) {
   if (player.shotPhase !== 'none') return false; // already mid-shot
   if (player.actionCooldown > 0) return false;
+  if (game.activeInbound) return false; // no shooting until the ball is actually passed in
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
   if (!anyRange && dist2(player, hoop) > MAX_SHOT_RANGE) return false;
   player.shotPhase = 'rise';
@@ -3947,7 +3949,15 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // direction) and the new view's mapping takes over.
 let ctrlLatch = null, ctrlLatchT = 0; // ONE shared mapping for every arrow while latched
 const ctrlIgnore = new Set(); // keys the game "let go of" for you: ignored until you physically release them
-function inputForward() { return ctrlLatch || camForward; }
+// Defense arrows (court-relative up/down): on defense the camera looks the OTHER way (toward your own
+// basket), so by screen UP would be "back". With this on, UP always means toward the basket you attack
+// (forward) and DOWN means back, on offense AND defense, so possession flips never change what UP does.
+// Left/right stay screen-relative. Toggle with V.
+function defSwapActive() {
+  const h = controlledPlayer();
+  return game.defSwap !== false && h && game.camDir !== undefined && !game.freeThrow && game.camDir !== (h.team === 'A' ? 1 : -1);
+}
+function inputForward() { const f = ctrlLatch || camForward; return defSwapActive() ? f.clone().negate() : f; }
 function inputRight() { const f = ctrlLatch || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
 function autoReleaseArrows() {
   ctrlLatch = null;
