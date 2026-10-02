@@ -194,7 +194,7 @@
     <div id="hud-shotclock">SHOT 24</div>
     <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos &middot; C plant to take a charge &middot; V hands up</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos &middot; <b>DEFENSE:</b> 1 hands up &middot; 2 plant (charge) &middot; 3 steal &middot; W deflect pass &middot; E block &middot; Q switch &middot; <b>X</b> dunk / lob</div>
 </div>
 
 <div id="stamina-wrap">
@@ -1666,7 +1666,8 @@ function updateActivePass(dtMs) {
   const r = ps.receiver;
   // Homes on his hands (live), plus the thrower's error.
   const cp = catchPoint(r, _catchPt);
-  const ax = cp.x + ps.offX, az = cp.z + ps.offZ, ay = cp.y + ps.offY;
+  let ax = cp.x + ps.offX, az = cp.z + ps.offZ, ay = cp.y + ps.offY;
+  if (ps.lob) { ax = ps.lobX; az = ps.lobZ; ay = 9.4; } // aimed at a point above the rim, not at his hands
   b.x = lerp(ps.startX, ax, u);
   b.z = lerp(ps.startZ, az, u);
   b.y = lerp(ps.startY, ay, u) + ps.arc * 4 * u * (1 - u);
@@ -1695,9 +1696,15 @@ function updateActivePass(dtMs) {
       }
     }
   }
+  if (u >= 1 && ps.lob && Math.hypot(r.x - ps.lobX, r.z - ps.lobZ) < 5.5 && !(r.ankleDownTimer > 0)) {
+    game.activePass = null;
+    secureBall(r); r.lobT = 0; r.catchHoldT = 0;
+    startDunk(r, { alley: true }); // caught in the air and finished
+    return;
+  }
   if (u >= 1) {
     game.activePass = null;
-    if (Math.hypot(ps.offX, ps.offZ) <= PASS_CATCH_R) {
+    if (!ps.lob && Math.hypot(ps.offX, ps.offZ) <= PASS_CATCH_R) {
       secureBall(r);
       playTone(520, 0.03);
       return;
@@ -2057,53 +2064,38 @@ const DUNK_RELEASE_U = 0.6;      // fraction of the move where the ball goes dow
 const DUNK_MIN_APPROACH = 0.08;  // per-frame speed straight at the rim
 const DUNK_RANGE = { PG: 6.5, SF: 8.5, C: 10.0 };
 const DUNK_MAKE_BASE = 0.94;
-// Five dunk styles, chosen from the defender's position on the ball handler and
-// the dunker's stats:
-//   slam      one-hand throw-down -- the default
-//   power     two-hand rim-rattler -- bigs, or a crowded lane
-//   windmill  full arm revolution -- open lane + quick/athletic (PG, SF)
-//   tomahawk  ball cocked back behind the head -- a defender hovering near
-//   poster    knees-up, cocked, hang on the rim -- a strong dunker with a
-//             defender squarely in his path (harder, but tight contest hurts less)
+// Four dunks: ONE-HAND jam, TWO-HAND slam, WINDMILL, and the CONTACT dunk -- any of those three thrown down over a
+// defender in the lane (higher leap, ball cocked back on the one-hand version). A made contact dunk can leave the
+// defender on the floor or stumbling. Style is picked from the defender's position and the dunker's stats.
 const DUNK_STYLES = {
   slam:     { dur: 700, make: 0,     label: 'ONE-HAND JAM!' },
-  cradle:   { dur: 840, make: -0.02, label: 'ROCK THE CRADLE!' },
-  power:    { dur: 720, make: 0.02,  label: 'POWER SLAM!' },
+  power:    { dur: 720, make: 0.02,  label: 'TWO-HAND SLAM!' },
   windmill: { dur: 860, make: -0.03, label: 'WINDMILL!' },
-  tomahawk: { dur: 800, make: -0.01, label: 'TOMAHAWK!' },
-  poster:   { dur: 920, make: -0.04, label: 'POSTERIZED!' },
 };
 function pickDunkStyle(p, hoop, opps) {
   const st = p.stats;
   const hx = hoop.x - p.x, hz = hoop.z - p.z, hd = Math.hypot(hx, hz) || 1;
-  let nd = Infinity, inFront = false;
-  opps.forEach((o) => {
-    const dx = o.x - p.x, dz = o.z - p.z, dd = Math.hypot(dx, dz) || 0.001;
-    if (dd < nd) { nd = dd; inFront = (dx * hx + dz * hz) / (dd * hd) > 0.45; }
-  });
+  let nd = Infinity;
+  opps.forEach((o) => { const dd = Math.hypot(o.x - p.x, o.z - p.z) || 0.001; if (dd < nd) nd = dd; });
   const big = (st.strength || 1) >= 0.9 || (st.scale || 1) >= 1.1;
   const athletic = (st.speed || 0) >= 0.4;
   let pool;
-  if (inFront && nd < 6.5) pool = big ? ['poster', 'poster', 'power', 'slam'] : ['power', 'slam', 'cradle'];
-  else if (nd >= 9) pool = athletic ? ['windmill', 'cradle', 'tomahawk', 'slam', 'slam'] : ['power', 'tomahawk', 'slam', 'cradle'];
-  else pool = big ? ['power', 'tomahawk', 'slam', 'slam'] : ['tomahawk', 'slam', 'cradle', 'windmill'];
+  if (nd >= 9 && athletic) pool = ['windmill', 'windmill', 'slam', 'power'];
+  else if (big) pool = ['power', 'power', 'slam', 'windmill'];
+  else pool = ['slam', 'slam', 'power', 'windmill'];
   return pool[Math.floor(Math.random() * pool.length)];
 }
 // Angle of the ball arm (shoulder x-rotation; -PI is straight up) for the styles
 // that swing it; null means "both hands overhead" handled by the plain pose.
 function dunkBallArmAngle(d, ru) {
   if (d.style === 'windmill') return -2.7 + Math.PI * 2 * (ru - 1);
-  if (d.style === 'slam') return lerp(-1.7, -2.75, ru * (2 - ru));   // ball in ONE hand, arm extending up
-  if (d.style === 'cradle') {   // arm swings down and back past the hip, then sweeps up and over
-    if (ru < 0.45) { const e = ru / 0.45; return lerp(-1.3, 0.55, e * e * (3 - 2 * e)); }
-    const e = (ru - 0.45) / 0.55; return lerp(0.55, -2.75, e * e * (3 - 2 * e));
-  }
-  if (d.style === 'tomahawk' || d.style === 'poster') {
+  if (d.style === 'slam' && d.contact) { // ball cocked back behind the head, then hammered down over the defender
     const k = 0.55;
     if (ru < k) { const e = ru / k; return lerp(-2.0, -3.5, e * e * (3 - 2 * e)); }
     const e = (ru - k) / (1 - k); return lerp(-3.5, -2.6, e * e);
   }
-  return null;
+  if (d.style === 'slam') return lerp(-1.7, -2.75, ru * (2 - ru));   // ball in ONE hand, arm extending up
+  return null; // two-hand: both hands overhead, plain pose
 }
 function canDunk(p) {
   if (!p || game.ball.carrier !== p || p.shotPhase !== 'none' || p.dunk || p.postUpActive) return false;
@@ -2114,7 +2106,8 @@ function canDunk(p) {
   if (d > (DUNK_RANGE[p.name] || 7) || d < 1.2) return false;
   return p.vx * (hoop.x - p.x) / d + p.vz * (hoop.z - p.z) / d >= DUNK_MIN_APPROACH;
 }
-function startDunk(p) {
+function startDunk(p, opts) {
+  opts = opts || {};
   fightHook('dunk', p);
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
   const sgn = Math.sign(hoop.x) || 1;
@@ -2123,15 +2116,29 @@ function startDunk(p) {
   let nd = Infinity, nearest = null;
   opps.forEach((o) => { const dd = dist2(p, o); if (dd < nd) { nd = dd; nearest = o; } });
   const style = pickDunkStyle(p, hoop, opps);
-  let ch = DUNK_MAKE_BASE - (p.name === 'PG' ? 0.06 : 0) + DUNK_STYLES[style].make;
-  const contestMul = style === 'poster' ? 0.5 : 1; // a posterizer powers through contact
+  // CONTACT dunk: a defender squarely between him and the rim, and he goes right over him.
+  const hxx = hoop.x - p.x, hzz = hoop.z - p.z, hdd = Math.hypot(hxx, hzz) || 1;
+  let victim = null, vd = 6.5;
+  opps.forEach((o) => {
+    const dx = o.x - p.x, dz = o.z - p.z, dd = Math.hypot(dx, dz) || 0.001;
+    if (dd < vd && (dx * hxx + dz * hzz) / (dd * hdd) > 0.45 && !(o.ankleDownTimer > 0)) { vd = dd; victim = o; }
+  });
+  const bigD = ((p.stats && p.stats.strength) || 1) >= 0.9 || sc >= 1.1;
+  const contact = !!victim && Math.random() < (bigD ? 0.85 : 0.6);
+  let ch = DUNK_MAKE_BASE - (p.name === 'PG' ? 0.06 : 0) + DUNK_STYLES[style].make + (opts.alley ? 0.04 : 0);
+  const contestMul = contact ? 0.5 : 1; // going over a defender: contact hurts less
   if (nd <= CONTEST_HEAVY_RANGE) ch -= 0.30 * contestMul; else if (nd <= CONTEST_NORMAL_RANGE) ch -= 0.12 * contestMul;
   p.dunk = {
     t: 0, dur: DUNK_STYLES[style].dur, style, sx: p.x, sz: p.z, tx: hoop.x - sgn * 0.9, tz: hoop.z, hoop,
-    peak: clamp(10.9 - 8.58 * sc, 1.0, 3.6), sc, released: false,
+    peak: clamp(10.9 - 8.58 * sc, 1.0, 3.6) * (contact ? 1.12 : 1), sc, released: false, contact, victim: contact ? victim : null, alley: !!opts.alley,
     made: Math.random() < ch, stuffer: nd <= CONTEST_HEAVY_RANGE ? nearest : null,
     fouler: (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(p, opps) : null,
   };
+  if (contact && !p.dunk.fouler && Math.random() < 0.2) p.dunk.fouler = victim; // sometimes the contact is a whistle: and-one
+  if (opts.alley) { // he catches it already in the air: start the dunk mid-leap, fixing the start point so he doesn't teleport
+    const d0 = p.dunk, e0 = 1 - (1 - 0.4 / DUNK_RELEASE_U) * (1 - 0.4 / DUNK_RELEASE_U);
+    d0.t = d0.dur * 0.4; d0.sx = (p.x - d0.tx * e0) / (1 - e0); d0.sz = (p.z - d0.tz * e0) / (1 - e0);
+  }
   p.facing = Math.atan2(hoop.x - p.x, hoop.z - p.z);
   p.vx = 0; p.vz = 0; p.turboActive = false; p.postUpActive = false;
   p.actionCooldown = DUNK_STYLES[style].dur + 300;
@@ -2157,7 +2164,17 @@ function releaseDunk(p) {
   game.activeShot = shot;
   if (d.fouler) { shot.fouled = { by: d.fouler }; callShootingFoulOnShot(d.fouler, p, false); }
   const human = controlledPlayer();
-  if (d.made) showScreenCallout(DUNK_STYLES[d.style].label, 1000);
+  if (d.made && d.contact && d.victim) {
+    const v = d.victim;
+    v.ankleFallSide = Math.random() < 0.5 ? -1 : 1; v.vx = 0; v.vz = 0;
+    const away = Math.atan2(v.x - p.x, v.z - p.z);
+    v.x += Math.sin(away) * 1.3; v.z += Math.cos(away) * 1.3; // knocked back off the spot
+    if (Math.random() < 0.55) { v.ankleDownTimer = ANKLE_DOWN_MS * 1.5; showScreenCallout('POSTERIZED!', 1500); }
+    else { v.ankleStunTimer = ANKLE_STUN_MS * 1.3; showScreenCallout('OVER THE TOP!', 1300); }
+    playBodyThud(0.9);
+    crowd.excite = Math.min(1.9, Math.max(crowd.excite, 1.7)); crowd.allUp = Math.max(crowd.allUp || 0, 3200);
+  }
+  else if (d.made) showScreenCallout((d.alley ? 'ALLEY-OOP! ' : '') + DUNK_STYLES[d.style].label, 1000);
   else if (d.stuffer) { showScreenCallout('STUFFED!', 1000); d.stuffer.blockJumpTimer = BLOCK_JUMP_DUR_MS; }
   else showScreenCallout('RIMMED OUT!', 1000);
   playBodyThud(0.7); playTone(d.made ? 110 : 200, 0.12);
@@ -2184,9 +2201,9 @@ function applyDunkPose(p, g, L, dt) {
   const ru = clamp(u / DUNK_RELEASE_U, 0, 1);
   const after = u >= DUNK_RELEASE_U ? clamp((u - DUNK_RELEASE_U) / (1 - DUNK_RELEASE_U), 0, 1) : 0;
   const st = d.style;
-  const tuck = Math.sin(Math.min(1, u / DUNK_RELEASE_U) * Math.PI) * (st === 'poster' ? 1.35 : (st === 'power' ? 0.7 : 0.9));
-  L.legLP.rotation.set(-0.25 * tuck, 0, -0.05); L.legRP.rotation.set((st === 'poster' ? -0.2 : 0.1) * tuck, 0, 0.05);
-  L.kneeLP.rotation.x = 0.2 + tuck * 0.7; L.kneeRP.rotation.x = 0.2 + tuck * (st === 'poster' ? 0.7 : 0.5);
+  const tuck = Math.sin(Math.min(1, u / DUNK_RELEASE_U) * Math.PI) * (d.contact ? 1.35 : (st === 'power' ? 0.7 : 0.9));
+  L.legLP.rotation.set(-0.25 * tuck, 0, -0.05); L.legRP.rotation.set((d.contact ? -0.2 : 0.1) * tuck, 0, 0.05);
+  L.kneeLP.rotation.x = 0.2 + tuck * 0.7; L.kneeRP.rotation.x = 0.2 + tuck * (d.contact ? 0.7 : 0.5);
   const up = lerp(-1.9, -2.7, ru);
   const ang = dunkBallArmAngle(d, ru);
   const drop = clamp(after * 2.5, 0, 1);
@@ -2195,10 +2212,8 @@ function applyDunkPose(p, g, L, dt) {
     L.armRP.rotation.set(ang - 0.15 * after, 0, -0.12);
     L.elbowRP.rotation.x = (st === 'windmill' || st === 'slam') ? -0.05 : lerp(-0.9, -0.05, ru);
     if (st === 'windmill') L.armLP.rotation.set(-0.5, 0, 0.8);                       // free arm out for balance
-    else if (st === 'poster') L.armLP.rotation.set(lerp(-2.2, -2.8, ru), 0, 0.12);    // both on the iron
     else if (st === 'slam') L.armLP.rotation.set(lerp(-0.7, -1.7, ru), 0, 0.55);      // free hand up for balance
-    else if (st === 'cradle') L.armLP.rotation.set(-0.35, 0, 0.75);                   // free arm out wide
-    else L.armLP.rotation.set(lerp(-1.3, -0.6, ru), 0, 0.35 + 0.25 * drop);          // tomahawk guide arm falls away
+    else L.armLP.rotation.set(lerp(-1.3, -0.6, ru), 0, 0.35 + 0.25 * drop);
     L.elbowLP.rotation.x = -0.1;
   } else if (st === 'power') {
     // two hands over the top, then both hammer down and hang
@@ -2211,7 +2226,7 @@ function applyDunkPose(p, g, L, dt) {
     L.armLP.rotation.set(lerp(up, -1.1, drop), 0, 0.12 + 0.3 * drop);
     L.elbowRP.rotation.x = lerp(-0.5, -0.05, ru); L.elbowLP.rotation.x = lerp(-0.5, -0.05, ru);
   }
-  L.spine.rotation.set(st === 'poster' ? lerp(0.05, -0.32, ru) : lerp(0.05, -0.18, ru), 0, 0);
+  L.spine.rotation.set(d.contact ? lerp(0.05, -0.32, ru) : lerp(0.05, -0.18, ru), 0, 0);
 }
 
 function scoreFor(team, points, ctx) {
@@ -2648,8 +2663,11 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
     return;
   }
-  if (e.code === 'KeyE') onSwitchPressed();
-  if (e.code === 'KeyQ') onScreenKeyDown();
+  const defCtx = defenseContext();
+  // On defense: W deflect, E block, Q switch player (E/Q go back to switch/screen on offense).
+  if (e.code === 'KeyE') { if (defCtx) { if (!e.repeat) onBlockPressed(); } else onSwitchPressed(); }
+  if (e.code === 'KeyQ') { if (defCtx) { if (!e.repeat) onSwitchPressed(); } else onScreenKeyDown(); }
+  if (e.code === 'KeyW' && defCtx && !e.repeat) { const hp = controlledPlayer(); if (game.activePass) tryDeflectPass(hp); else airSwipe(hp); }
   if (e.code === 'KeyR') onCallForBallPressed();
   // Holding SPACE fires key-repeat events -- only the first real press counts,
   // otherwise a held shot would get "released" by the OS's autorepeat.
@@ -2662,11 +2680,17 @@ window.addEventListener('keydown', (e) => {
     if (hp && hp.postUpActive && game.ball.carrier === hp && nowT - (game.lastUpTap || 0) < 320) { startDropStep(hp); game.lastUpTap = 0; }
     else game.lastUpTap = nowT;
   }
-  if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
-  if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
-  if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
-  if (e.code === 'Digit4' || e.code === 'Numpad4') onSpinPressed();
-  if (e.code === 'Digit5' || e.code === 'Numpad5') onStepBackPressed();
+  const numKey = /^(Digit|Numpad)[1-5]$/.test(e.code) ? +e.code.slice(-1) : 0;
+  if (numKey && numKey <= 3 && defCtx) {
+    // On defense 1-3 are the defensive toolkit: 1 hands up (hold), 2 plant (hold), 3 steal. (W deflect, E block, Q switch.)
+    if (numKey === 3 && !e.repeat) { if (game.activePass) airSwipe(controlledPlayer()); else onActionPressed(); }
+  } else if (numKey) {
+    if (numKey === 1) onCrossoverPressed();
+    if (numKey === 2) onBehindBackPressed();
+    if (numKey === 3) onHesitationPressed();
+    if (numKey === 4) onSpinPressed();
+    if (numKey === 5) onStepBackPressed();
+  }
 });
 window.addEventListener('keyup', (e) => {
   keysDown.delete(e.code); ctrlIgnore.delete(e.code);
@@ -2677,6 +2701,18 @@ window.addEventListener('keyup', (e) => {
 
 window.addEventListener('blur', () => { keysDown.clear(); ctrlIgnore.clear(); onActionReleased(); });
 
+// True while the human is the one defending (the other team has the ball or a pass is in the air).
+function defenseContext() {
+  const h = controlledPlayer(), c = game.ball.carrier;
+  if (!h || game.phase !== 'live' || c === h) return false;
+  if (c) return c.team !== h.team;
+  return !!(game.activePass && game.activePass.passer.team !== h.team);
+}
+function airSwipe(p) {
+  if (p.actionCooldown > 0 || p.shotPhase !== 'none') return;
+  p.actionCooldown = 300; p.swipeT = 320; p.swipeSide = Math.random() < 0.5 ? 1 : -1; playTone(200, 0.03);
+}
+function defKeyHeld(codes) { return codes.some((c) => keysDown.has(c)); }
 function onSwitchPressed() {
   game.controlledIndex = (game.controlledIndex + 1) % game.teamA.length;
 }
@@ -3426,11 +3462,46 @@ function stepDropStep(p, dtMs) {
   p.facing = ds.startFacing + diff * e;
   if (k >= 1) p.dropStep = null;
 }
+// X: dunk when you're driving at the rim; otherwise a LOB. A teammate already near the rim gets the alley-oop pass;
+// if nobody is there yet, the first X sends the closest one cutting to the rim and the next X throws it up to him.
+const LOB_RIM_RANGE = 17;
 function onDunkPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.dunk || p.shotPhase !== 'none') return;
   if (canDunk(p)) { startDunk(p); return; }
-  showScreenCallout('DRIVE AT THE RIM TO DUNK', 700);
+  tryLob(p);
+}
+function lobSpotFor(p, r) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, sgn = Math.sign(hoop.x) || 1;
+  return { x: hoop.x - sgn * 2.6, z: hoop.z + clamp(r.z - hoop.z, -4, 4) * 0.5 };
+}
+function tryLob(p) {
+  if (game.freeThrow || game.foulPending || game.activeInbound || p.checkupLocked || game.phase !== 'live') return;
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const mates = getTeammates(p.team).filter((t) => t !== p && !(t.ankleDownTimer > 0) && !(t.ankleStunTimer > 0));
+  if (!mates.length) return;
+  mates.sort((a, b) => dist2(a, hoop) - dist2(b, hoop));
+  const ready = mates.find((t) => dist2(t, hoop) <= LOB_RIM_RANGE);
+  if (ready && dist2(p, hoop) > 6) { throwLob(p, ready); return; }
+  const cutter = mates[0];
+  cutter.lobSpot = lobSpotFor(p, cutter); cutter.lobT = 1900;
+  showScreenCallout('CUTTING \u2014 PRESS X FOR THE LOB', 1100);
+  playTone(480, 0.04);
+}
+function throwLob(p, r) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const spot = lobSpotFor(p, r);
+  const d = Math.hypot(spot.x - p.x, spot.z - p.z);
+  const dur = clamp(d / PASS_SPEED * 1000 * 1.9, 700, 1400);
+  const b = game.ball;
+  b.carrier = null; b.inFlight = true; b.vx = b.vy = b.vz = 0;
+  b.justReleasedBy = p; b.releaseLockTimer = dur + 120;
+  r.lobSpot = spot; r.lobT = dur + 500;
+  game.activePass = { passer: p, receiver: r, t: 0, dur, startX: p.x, startZ: p.z, startY: 4.2, offX: 0, offY: 0, offZ: 0,
+    arc: 2.2 + d * 0.05, rolled: new Set(), lob: true, lobX: spot.x, lobZ: spot.z };
+  p.checkupLocked = false;
+  showScreenCallout('LOB!', 800);
+  playTone(380, 0.05);
 }
 function onPassPressed() {
   const p = controlledPlayer();
@@ -3972,16 +4043,17 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
 // defender -- the weak-side man, never the human's -- sags into the lane between the ball and the rim to stunt at him.
 // His own man is left open (kick-out pass!), and when the threat is over he scrambles back at a boosted pace.
 const HELP_RANGE = 26, HELP_BEATEN_SEP = 5.2, HELP_MIN_HOLD_MS = 700, HELP_LINGER_MS = 450, HELP_RECOVER_MS = 900;
-const HELP_CHANCE = 0.7; // how often a trigger actually brings help (else the defense stays home)
+const HELP_CHANCE = 0.7; // how often a BEATEN defender brings help (else the defense stays home)
+const HELP_CHANCE_ON_BALL = 0.05; // his man is still right on him: help only comes ~5% of the time
 function updateHelpAssignment(dtMs) {
   const h = game.help || (game.help = { helper: null, handler: null, spot: { x: 0, z: 0 }, hold: 0, off: 0, t: 0, ep: null });
   const c = game.ball.carrier;
-  let want = false, own = null;
+  let want = false, own = null, sep = 0;
   if (c && game.phase === 'live' && !game.freeThrow && !game.foulPending && !game.activeInbound && !c.checkupLocked && c.shotPhase === 'none' && !c.dunk) {
     const hoop = c.team === 'A' ? HOOP_A : HOOP_B;
     const dh = dist2(c, hoop);
     own = defenderOf(c);
-    const sep = own ? dist2(c, own) : 99;
+    sep = own ? dist2(c, own) : 99;
     const toward = ((c.vx || 0) * (hoop.x - c.x) + (c.vz || 0) * (hoop.z - c.z)) / (dh || 1);
     want = dh < HELP_RANGE && (sep > HELP_BEATEN_SEP || c.postUpActive || (dh < 20 && toward > 0.35 * (c.stats.speed || 0.3)));
     if (want) {
@@ -3997,10 +4069,12 @@ function updateHelpAssignment(dtMs) {
     if (h.helper) h.helper.helpRecoverT = HELP_RECOVER_MS;
     h.helper = null; h.handler = null; h.ep = null;
   }
+  // Defender on the ball got beaten after the trigger was rolled as 'stay home': he gets one fresh 70% roll.
+  if (h.ep && want && !h.ep.help && !h.ep.reRolled && sep > HELP_BEATEN_SEP) { h.ep.reRolled = true; h.ep.help = Math.random() < HELP_CHANCE; }
   if (!h.ep && want) {
     const r = Math.random();
     const style = r < 0.35 ? 'stunt' : (r < 0.7 ? 'stay' : 'switch');
-    h.ep = { handler: c, help: Math.random() < HELP_CHANCE, style, spent: false, stuntMs: 500 + Math.random() * 350 };
+    h.ep = { handler: c, help: Math.random() < (sep > HELP_BEATEN_SEP ? HELP_CHANCE : HELP_CHANCE_ON_BALL), style, spent: false, stuntMs: 500 + Math.random() * 350 };
   }
   if (h.helper) {
     h.t += dtMs;
@@ -4151,6 +4225,12 @@ function updateAI(p, dtMs) {
       }
       return;
     }
+  }
+  if (p.lobT > 0 && p.lobSpot) { // cutting to the rim for an alley-oop
+    p.lobT -= dtMs;
+    if (game.ball.carrier && game.ball.carrier.team !== p.team) p.lobT = 0;
+    moveToward(p, p.lobSpot.x, p.lobSpot.z, dtMs, 1.4);
+    return;
   }
   const isCarrier = game.ball.carrier === p;
   // A pass in the air still belongs to the team that threw it: the offense
@@ -5884,10 +5964,10 @@ function startMatch() {
 
 const MOVES_HELP = [
   ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
-  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim'],['Shot clock','24s; 14 after an offensive rebound']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X throws an ALLEY-OOP LOB to a teammate near the rim, or sends one cutting first (press X again)'],['Shot clock','24s; 14 after an offensive rebound']]],
   ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Q (hold)','Call a screen from your big']]],
-  ['DEFENSE', [['SPACE','Swipe for the steal (misses can be reach-in fouls). While a pass is in the air, SPACE swipes at it: deflect or pick it off'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out'],['F','Block a shot in the air'],['C (stand still)','Plant and take a charge on a sprinting handler'],['V (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina']]],
+  ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['W','Swipe at a pass in the air: deflect, tip or pick it off'],['E','Block a shot in the air'],['Q','Switch the player you control (on defense)'],['Old keys','SPACE steal/deflect, F block, C plant, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['PASSING & OTHER', [['SHIFT','Pass; aim with the arrows'],['G','Challenge to a fight at half court; Y / N to answer'],['Stamina bars','Sprinting and hands up drain it; rest to recover']]],
 ];
 (function () {
@@ -5926,11 +6006,11 @@ function frame(now) {
       if (p === controlledPlayer()) {
         const cdef = game.ball.carrier && game.ball.carrier.team !== p.team && game.phase === 'live' && !game.freeThrow && !game.foulPending;
         const still = Math.hypot(p.vx, p.vz) < 0.07;
-        p.plantT = (cdef && keysDown.has('KeyC') && still) ? (p.plantT || 0) + dtMs : 0;
-        p.bracing = !!(cdef && keysDown.has('KeyC') && p.shotPhase === 'none');
+        p.plantT = (cdef && defKeyHeld(['KeyC', 'Digit2', 'Numpad2']) && still) ? (p.plantT || 0) + dtMs : 0;
+        p.bracing = !!(cdef && defKeyHeld(['KeyC', 'Digit2', 'Numpad2']) && p.shotPhase === 'none');
         if (p.plantT >= 40 && !p.plantShown) { p.plantShown = true; showScreenCallout('PLANTED \u2014 TAKING THE CHARGE', 700); }
         if (!p.plantT) p.plantShown = false;
-        p.handsUp = !!(keysDown.has('KeyV') && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
+        p.handsUp = !!(defKeyHeld(['KeyV', 'Digit1', 'Numpad1']) && defenseContext() && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
         if (p.handsUp) p.stamina = Math.max(0, p.stamina - 3 * dtMs / 1000);
       }
       if (p.comboT > 0) { p.comboT -= dtMs; if (p.comboT <= 0 || game.ball.carrier !== p) { p.comboT = 0; p.comboCount = 0; p.comboBonus = 0; } }
