@@ -3640,6 +3640,31 @@ function approachVelocity(p, targetVx, targetVz, dtMs) {
   p.vz += (targetVz - p.vz) * alpha;
 }
 
+// Fluid human movement. The plain approachVelocity eases the whole velocity VECTOR toward the target, so
+// any turn or reversal bleeds speed through zero and feels mushy. This version splits velocity into the
+// part along the wanted direction (accelerates like normal) and the sideways part (a planted foot kills it
+// quickly, so you carve cuts instead of sliding), with a fast brake when you reverse and a short glide
+// when you let go. Same top speeds and size tiers (accelMult), just crisper and more controllable.
+const FLUID_SIDE_TAU_MS = 48, FLUID_REVERSE_TAU_MS = 55, FLUID_STOP_TAU_MS = 90;
+function approachVelocityFluid(p, targetVx, targetVz, dtMs) {
+  let accelMult = (p.stats && p.stats.accelMult) || 1;
+  if (p.switchUrgencyTimer > 0) accelMult *= (p.switchAccelMult || 0.65);
+  const ts = Math.hypot(targetVx, targetVz);
+  if (ts < 0.001) { // keys released: short glide to a stop
+    const a = 1 - Math.exp(-dtMs / (FLUID_STOP_TAU_MS * accelMult));
+    p.vx -= p.vx * a; p.vz -= p.vz * a;
+    if (Math.hypot(p.vx, p.vz) < 0.004) { p.vx = 0; p.vz = 0; }
+    return;
+  }
+  const ux = targetVx / ts, uz = targetVz / ts;
+  const par = p.vx * ux + p.vz * uz;
+  const sx = p.vx - ux * par, sz = p.vz - uz * par;
+  const tauPar = (par < 0 ? FLUID_REVERSE_TAU_MS : (par < ts ? ACCEL_TAU_MS : DECEL_TAU_MS * 0.8)) * accelMult;
+  const newPar = par + (ts - par) * (1 - Math.exp(-dtMs / tauPar));
+  const k = Math.exp(-dtMs / (FLUID_SIDE_TAU_MS * accelMult));
+  p.vx = ux * newPar + sx * k; p.vz = uz * newPar + sz * k;
+}
+
 // Body discipline: once a defender is right on a live dribbler he can't keep
 // running through him -- whatever part of his velocity would close the gap
 // faster than the handler is moving away gets shaved off (plus an optional
@@ -4209,7 +4234,7 @@ function updateHumanMovement(dtMs) {
   // move actually carries the player's body, not just the ball.
   targetVx += moveBurst.x;
   targetVz += moveBurst.z;
-  approachVelocity(human, targetVx, targetVz, dtMs);
+  approachVelocityFluid(human, targetVx, targetVz, dtMs);
 }
 
 // -------------------------------------------------------------------------
