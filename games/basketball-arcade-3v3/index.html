@@ -2841,8 +2841,24 @@ function onCallForBallPressed() {
 // felt sluggish (nearly 2/3 of a second of holding before anything mattered)
 // and punished a near-miss timing harder than it needed to.
 const SHOT_METER_DUR_MS = 620;
-const SHOT_METER_SWEET_START = 0.75; // fraction of the bar (0-1) where the green zone begins
-const SHOT_METER_SWEET_END = 0.835;
+// Dynamic green: the zone is centered at 0.80 and its width follows how contested the shot is
+// (defender in your face = tiny, wide open = generous). See updateMeterZone().
+const METER_CENTER = 0.80;
+const meterZone = { w: 0.15, s: METER_CENTER - 0.075, e: METER_CENTER + 0.075 };
+function meterZoneWidth(p) {
+  if (game.freeThrow) return 0.15;
+  let nd = Infinity;
+  getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o)); });
+  const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
+  return 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
+}
+function updateMeterZone(p, snap) {
+  const tw = meterZoneWidth(p);
+  meterZone.w = snap ? tw : meterZone.w + (tw - meterZone.w) * 0.2;
+  meterZone.s = METER_CENTER - meterZone.w / 2; meterZone.e = METER_CENTER + meterZone.w / 2;
+  const z = document.getElementById('shot-meter-zone');
+  z.style.left = (meterZone.s * 100) + '%'; z.style.width = (meterZone.w * 100) + '%';
+}
 const SHOT_METER_GOOD_WINDOW = 0.10; // this close outside the zone still counts as a decent release
 const SHOT_METER_PERFECT_BONUS = 0.32;
 const SHOT_METER_GOOD_BONUS = 0.08;
@@ -2875,8 +2891,8 @@ function shotRiseHeight(t, player) {
 }
 function shotFallDurFor(player) { return SHOT_FALL_DUR_MS * shotSpeedMult(player); }
 function shotMeterQuality(frac) {
-  if (frac >= SHOT_METER_SWEET_START && frac <= SHOT_METER_SWEET_END) return 'perfect';
-  const distOut = frac < SHOT_METER_SWEET_START ? SHOT_METER_SWEET_START - frac : frac - SHOT_METER_SWEET_END;
+  if (frac >= meterZone.s && frac <= meterZone.e) return 'perfect';
+  const distOut = frac < meterZone.s ? meterZone.s - frac : frac - meterZone.e;
   return distOut <= SHOT_METER_GOOD_WINDOW ? 'good' : 'bad';
 }
 const SHOT_METER_HOLD_MS = 650; // how long the needle stays frozen where you let go
@@ -2887,7 +2903,7 @@ function releaseShotMeter() {
   const frac = clamp(m.t / m.dur, 0, 1);
   const q = shotMeterQuality(frac);
   game.shotMeter = null;
-  shotMeterFreeze = { frac, q, early: frac < SHOT_METER_SWEET_START, until: performance.now() + SHOT_METER_HOLD_MS };
+  shotMeterFreeze = { frac, q, early: frac < meterZone.s, until: performance.now() + SHOT_METER_HOLD_MS };
   releaseShot(m.player, q);
 }
 // Starts the rise -- the jump itself -- the instant a shot is triggered.
@@ -2943,6 +2959,7 @@ function updateShotMeter(dtMs) {
     wrap.classList.add('hidden');
     return;
   }
+  updateMeterZone(m.player, false);
   m.t += dtMs;
   if (m.t >= m.dur) { releaseShotMeter(); wrap.classList.add('hidden'); return; }
   const frac = m.t / m.dur;
@@ -2953,8 +2970,8 @@ function updateShotMeter(dtMs) {
   else if (q === 'bad') wrap.classList.add('bad');
   document.getElementById('shot-meter-needle').style.left = (frac * 100) + '%';
 }
-document.getElementById('shot-meter-zone').style.left = (SHOT_METER_SWEET_START * 100) + '%';
-document.getElementById('shot-meter-zone').style.width = ((SHOT_METER_SWEET_END - SHOT_METER_SWEET_START) * 100) + '%';
+document.getElementById('shot-meter-zone').style.left = (meterZone.s * 100) + '%';
+document.getElementById('shot-meter-zone').style.width = ((meterZone.e - meterZone.s) * 100) + '%';
 
 function onActionPressed() {
   const p = controlledPlayer();
@@ -2985,6 +3002,7 @@ function onActionPressed() {
       showScreenCallout(postMove.label, 900);
     }
     game.shotMeter = { t: 0, dur: SHOT_METER_DUR_MS + (p.shotRiseDelay || 0), player: p };
+    updateMeterZone(p, true);
     playTone(340, 0.03);
     return;
   }
@@ -3181,7 +3199,8 @@ function endFight(f) {
   game.phase = 'live'; game.fight = null; fightMsg('', false);
   game.fightCooldownUntil = performance.now() + FIGHT_COOLDOWN_MS;
   [f.a, f.b].forEach((p) => { p.fouls = (p.fouls || 0) + 1; if (p.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1; else game.teamFoulsB = (game.teamFoulsB || 0) + 1; });
-  if (lose) lose.ankleDownTimer = ANKLE_DOWN_MS * 1.6;
+  if (lose && lose !== controlledPlayer()) lose.ankleDownTimer = ANKLE_DOWN_MS * 1.6;
+  { const h = controlledPlayer(); h.ankleDownTimer = 0; h.ankleGetUpTimer = 0; h.ankleStunTimer = 0; h.vx = 0; h.vz = 0; }
   showScreenCallout(win ? (win === controlledPlayer() ? 'YOU WON THE FIGHT · TECHNICALS ON BOTH' : win.name + ' WON · TECHNICALS ON BOTH') : 'DRAW · TECHNICALS ON BOTH', 2200);
   crowd.excite = 1;
 }
@@ -5089,8 +5108,8 @@ const CAM_STATE_ZOOM = {
   HALF_COURT: { back: 21, up: 11.8, look: 10 },
   TRANSITION: { back: 22, up: 12.4, look: 11 },
   FAST_BREAK: { back: 23.5, up: 13.4, look: 12.5 },
-  SHOT:       { back: 19.5, up: 10.8, look: 9 },
-  REBOUND:    { back: 20.5, up: 11.6, look: 8.5 },
+  SHOT:       { back: 20.8, up: 11.5, look: 9.5 },
+  REBOUND:    { back: 21, up: 11.8, look: 9 },
   DEAD_BALL:  { back: 22, up: 12.4, look: 8 },
   INBOUND:    { back: 22, up: 12.4, look: 8 },
 };
@@ -5177,7 +5196,7 @@ function updateCamera(dt) {
   game.camState = camSt;
   const CZ = CAM_STATE_ZOOM[camSt] || CAM_STATE_ZOOM.HALF_COURT;
   if (!game.camZ) game.camZ = Object.assign({}, CZ);
-  const zk = 1 - Math.exp(-dt / 260);
+  const zk = 1 - Math.exp(-dt / 600); // slow, calm zoom changes
   game.camZ.back += (CZ.back - game.camZ.back) * zk; game.camZ.up += (CZ.up - game.camZ.up) * zk; game.camZ.look += (CZ.look - game.camZ.look) * zk;
   // target = a blend of the ball, the player you control, and a look-ahead point -- not just the player
   const aimHoop = human.team === 'A' ? HOOP_A : HOOP_B;
@@ -5190,8 +5209,16 @@ function updateCamera(dt) {
   else if (camSt === 'INBOUND' && game.activeInbound) { const ib = game.activeInbound; hx = (ib.startX + ib.endX) / 2; hz = (ib.startZ + ib.endZ) / 2; }
   let tx = cb.x * 0.5 + handler.x * 0.3 + hx * 0.2, tz = cb.z * 0.5 + handler.z * 0.3 + hz * 0.2;
   if (game.freeThrow) { tx = focus.x; tz = focus.z; }
+  else { // never lose the player you control: keep him inside the frame (e.g. inbound then a long pass)
+    const rel = (human.x - tx) * cdx + (human.z - tz) * cdz;
+    const lat = -(human.x - tx) * cdz + (human.z - tz) * cdx;
+    let sh = 0, sl = 0;
+    if (rel < -8) sh = rel + 8; else if (rel > 13) sh = rel - 13;
+    if (lat < -8) sl = lat + 8; else if (lat > 8) sl = lat - 8;
+    tx += cdx * sh - cdz * sl; tz += cdz * sh + cdx * sl;
+  }
   if (!game.camTgt) game.camTgt = { x: tx, z: tz };
-  const tk = 1 - Math.exp(-dt / 130); game.camTgt.x += (tx - game.camTgt.x) * tk; game.camTgt.z += (tz - game.camTgt.z) * tk;
+  const tk = 1 - Math.exp(-dt / 190); game.camTgt.x += (tx - game.camTgt.x) * tk; game.camTgt.z += (tz - game.camTgt.z) * tk;
   const desiredPos = new THREE.Vector3(game.camTgt.x - cdx * game.camZ.back, game.camZ.up, game.camTgt.z - cdz * game.camZ.back);
   const desiredLook = new THREE.Vector3(game.camTgt.x + cdx * game.camZ.look, 3.0, game.camTgt.z + cdz * game.camZ.look);
 
