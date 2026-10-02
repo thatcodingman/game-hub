@@ -223,7 +223,7 @@
 <div id="menu-overlay" class="overlay">
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
-  <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS</div>
+  <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS &middot; OR THE LEAD WHEN THE CLOCK HITS 0:00</div>
   <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; F block &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Q screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="uni-pick" id="uni-pick">
     <div class="uni-row"><span class="lbl">YOUR UNIFORM</span><span id="uni-a-sw" class="uni-row"></span><span class="uni-name" id="uni-a-name"></span></div>
@@ -333,7 +333,8 @@ const THREE_CORNER_Z = 22;      // straight corner lines, 22 ft either side of t
 function isThreePt(x, z, hoop) { return Math.abs(z) >= THREE_CORNER_Z || Math.hypot(x - hoop.x, z - hoop.z) > THREE_PT_R; }
 const FT_LINE_DIST = 13.75;     // rim center to the free-throw line, ft
 const KEY_LEN = FT_LINE_DIST + (47 - 41); // baseline to the free-throw line (rim is 6 ft off the baseline)
-const MATCH_SECONDS = 150;
+const MATCH_SECONDS = 540; // 9:00 of live clock; first to 21 still ends it early. A tie at the buzzer goes to overtime.
+const OVERTIME_SECONDS = 90;
 const WIN_SCORE = 21; // first team to 21 wins outright, even if the clock hasn't run out
 const GRAVITY = 42; // units/s^2, for the loose-ball bounce
 const TEAM_A_COLOR = 0x38bdf8, TEAM_B_COLOR = 0xf97316;
@@ -1588,7 +1589,7 @@ function setCarrier(p) {
 const PASS_SPEED = 62;          // ft/s -- a crisp chest pass
 const PASS_CATCH_R = 2.0;       // how far off-target a receiver can still reach and secure it
 const PASS_INTERCEPT_R = 1.9;   // how close a defender's body has to be to the ball in flight
-const PASS_INTERCEPT_MULT = 0.45; // x defender's steal stat = pick-off chance
+const PASS_INTERCEPT_MULT = 0.22; // x defender's steal stat = pick-off chance
 const PASS_SCATTER_BASE = 3.0;
 // Human passes go where he's steering: hold an arrow toward a teammate and
 // that's who gets it. No direction held = teammate calling for it, else the
@@ -1751,7 +1752,7 @@ function attemptSteal(defender) {
   // A recent crossover makes the carrier much harder to strip for a short
   // window — that's the whole point of the move.
   const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
-  const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult * (isHumanDef ? 1 : 0.4);
+  const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult * (isHumanDef ? 1 : 0.22);
   if (Math.random() < chance) {
     playTone(300, 0.05);
     if (defender === controlledPlayer()) showScreenCallout('STOLEN!', 900);
@@ -2694,9 +2695,17 @@ window.addEventListener('keydown', (e) => {
   // Holding SPACE fires key-repeat events -- only the first real press counts,
   // otherwise a held shot would get "released" by the OS's autorepeat.
   if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') onPassPressed();
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+    if (!e.repeat) {
+      if (keysDown.has('KeyX') && controlledPlayer() === game.ball.carrier) tryLob(controlledPlayer()); // X already down: SHIFT makes it a lob
+      else { clearTimeout(game.shiftPassTimer); game.shiftPassTimer = setTimeout(() => { game.shiftPassTimer = null; onPassPressed(); }, 70); } // tiny grace so SHIFT+X can become a lob
+    }
+  }
   if (e.code === 'KeyF') onBlockPressed();
-  if (e.code === 'KeyX') onDunkPressed();
+  if (e.code === 'KeyX') {
+    if (game.shiftPassTimer) { clearTimeout(game.shiftPassTimer); game.shiftPassTimer = null; if (!e.repeat) tryLob(controlledPlayer()); } // SHIFT then X: lob
+    else onDunkPressed();
+  }
   if (e.code === 'ArrowUp' && !e.repeat) {
     const hp = controlledPlayer(), nowT = performance.now();
     if (hp && hp.postUpActive && game.ball.carrier === hp && nowT - (game.lastUpTap || 0) < 320) { startDropStep(hp); game.lastUpTap = 0; }
@@ -3500,16 +3509,16 @@ function lobSpotFor(p, r) {
 }
 function tryLob(p) {
   if (game.freeThrow || game.foulPending || game.activeInbound || p.checkupLocked || game.phase !== 'live') return;
+  if (game.ball.carrier !== p || p.shotPhase !== 'none' || p.dunk) return;
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
   const mates = getTeammates(p.team).filter((t) => t !== p && !(t.ankleDownTimer > 0) && !(t.ankleStunTimer > 0));
   if (!mates.length) return;
-  mates.sort((a, b) => dist2(a, hoop) - dist2(b, hoop));
-  const ready = mates.find((t) => dist2(t, hoop) <= LOB_RIM_RANGE);
-  if (ready && dist2(p, hoop) > 6) { throwLob(p, ready); return; }
-  const cutter = mates[0];
-  cutter.lobSpot = lobSpotFor(p, cutter); cutter.lobT = 1900;
-  showScreenCallout('CUTTING \u2014 PRESS X FOR THE LOB', 1100);
-  playTone(480, 0.04);
+  // Always available, even if nobody is cutting yet: it goes to the teammate you're pointing at (arrows), else the one closest to
+  // the rim, and he sprints to the landing spot while it's in the air. Throw it too early or too far and he may not get there.
+  const aim = aimDirFromKeys();
+  let r = aim ? pickPassTarget(p, aim) : null;
+  if (!r || r.dunk) { mates.sort((a, b) => dist2(a, hoop) - dist2(b, hoop)); r = mates[0]; }
+  throwLob(p, r);
 }
 function throwLob(p, r) {
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
@@ -3530,10 +3539,7 @@ function throwLob(p, r) {
   showScreenCallout('LOB!', 800);
   playTone(380, 0.05);
 }
-function onPassPressed() {
-  const p = controlledPlayer();
-  if (p.shotPhase !== 'none' || p.dunk) return; // already mid-shot, can't bail into a pass
-  if (game.ball.carrier !== p) return;
+function aimDirFromKeys() {
   // Aim with the arrows: same camera-relative mapping as movement.
   let ix = 0, iz = 0;
   if (keysDown.has('ArrowLeft')) ix -= 1;
@@ -3551,7 +3557,13 @@ function onPassPressed() {
     const wm = Math.hypot(wx, wz) || 1;
     aimDir = { x: wx / wm, z: wz / wm };
   }
-  attemptPass(p, aimDir);
+  return aimDir;
+}
+function onPassPressed() {
+  const p = controlledPlayer();
+  if (p.shotPhase !== 'none' || p.dunk) return; // already mid-shot, can't bail into a pass
+  if (game.ball.carrier !== p) return;
+  attemptPass(p, aimDirFromKeys());
 }
 function onBlockPressed() {
   const p = controlledPlayer();
@@ -4204,7 +4216,7 @@ function updateHelpAssignment(dtMs) {
 // ---- Pass deflections --------------------------------------------------------
 // A defender with a hand in the lane can knock a pass loose (or, rarely, snatch it). The human does it on purpose with SPACE
 // while a pass is in the air; AI defenders get a roll as the ball passes them.
-const DEFLECT_R = 4.0, PASS_DEFLECT_MULT = 0.35;
+const DEFLECT_R = 4.0, PASS_DEFLECT_MULT = 0.18;
 // Outcomes vary: a clean tip that sends it loose, a slap that dumps it near the floor, a bobble (the pass survives but
 // gets slower and sloppier), a tip back toward the defender's teammates, and only occasionally an outright pick.
 function deflectPass(o, forceGrab) {
@@ -4413,7 +4425,7 @@ function updateAI(p, dtMs) {
     if (game.help && game.help.helper === p && game.ball.carrier && game.ball.carrier !== mark) {
       moveToward(p, game.help.spot.x, game.help.spot.z, dtMs, 1.1); // sag into the lane to stunt at the drive
       const hc = game.ball.carrier;
-      if (dist2(p, hc) < STEAL_RANGE && Math.random() < 0.006) attemptSteal(p);
+      if (dist2(p, hc) < STEAL_RANGE && Math.random() < 0.0018) attemptSteal(p);
       return;
     }
     if (p.helpRecoverT > 0) p.helpRecoverT -= dtMs;
@@ -4483,7 +4495,7 @@ function updateAI(p, dtMs) {
           p.recklessCloseout = false; p.inDiscZone = false;
         }
       }
-      if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0045) {
+      if (game.ball.carrier === mark && dist2(p, mark) < STEAL_RANGE && Math.random() < 0.0015) {
         attemptSteal(p);
       }
       if (mark.shotPhase === 'rise' && dist2(p, mark) < BLOCK_RANGE && Math.random() < 0.028) {
@@ -6071,7 +6083,7 @@ function startMatch() {
 
 const MOVES_HELP = [
   ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
-  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X throws a high ALLEY-OOP LOB: the cutter leaps, catches it in the air and slams it if the pass is good and traffic is light. If nobody is near the rim, the first X sends one cutting (press X again)'],['Shot clock','24s; 14 after an offensive rebound']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X (or SHIFT+X) throws a high ALLEY-OOP LOB any time: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound']]],
   ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Q (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press Q again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
   ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['W','Swipe at a pass in the air: deflect, tip or pick it off'],['E','Block a shot in the air'],['Q','Switch the player you control (on defense)'],['Old keys','SPACE steal/deflect, F block, C plant, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
@@ -6102,7 +6114,10 @@ function frame(now) {
     // The clock stops on the whistle and stays stopped through free throws.
     if (!game.foulPending && !game.freeThrow) game.matchClock -= dtMs / 1000;
     tickShotClock(dtMs);
-    if (game.matchClock <= 0) { game.matchClock = 0; showMatchOver(); }
+    if (game.matchClock <= 0) {
+      if (game.scoreA === game.scoreB) { game.matchClock = OVERTIME_SECONDS; game.overtimes = (game.overtimes || 0) + 1; showScreenCallout('OVERTIME!', 1800); playTone(300, 0.1); }
+      else { game.matchClock = 0; showMatchOver(); }
+    }
     updateHUD();
 
     game.players.forEach((p) => {
