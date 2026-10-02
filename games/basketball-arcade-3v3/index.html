@@ -32,6 +32,8 @@
     100% { color: #F2F4F7; transform: scale(1); text-shadow: 0 1px 3px #000; }
   }
   #hud-clock { font-size: 12px; color: #94a3b8; margin-top: -2px; }
+  #hud-shotclock { font-size: 13px; font-weight: 800; color: #fbbf24; letter-spacing: 0.08em; }
+  #hud-shotclock.urgent { color: #ef4444; animation: pulse 0.5s ease-in-out infinite; }
   #hud-right { font-size: 11px; color: #94a3b8; text-shadow: 0 1px 3px #000; text-align: right; }
   @media (max-width: 640px) {
     #hud { flex-wrap: wrap; row-gap: 4px; }
@@ -189,9 +191,10 @@
   <div id="hud-center">
     <div id="hud-score">YOU 0 — 0 AI</div>
     <div id="hud-clock">2:30</div>
+    <div id="hud-shotclock">SHOT 24</div>
     <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; V defense arrows swap &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; V defense arrows swap &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos</div>
 </div>
 
 <div id="stamina-wrap">
@@ -1273,6 +1276,14 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   tag.position.set(0, (hipY + torsoLen + headR * 2 + 1.1) * bodyScale, 0);
   group.add(tag);
 
+  // stamina bar floating above the name tag (sprites always face the camera)
+  const stY = (hipY + torsoLen + headR * 2 + 1.1) * bodyScale + 0.95;
+  const stBg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x0b1220, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }));
+  stBg.center.set(0, 0.5); stBg.scale.set(2.2, 0.3, 1); stBg.position.set(-1.1, stY, 0); stBg.renderOrder = 998;
+  const stFill = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x34d399, transparent: true, depthTest: false, depthWrite: false }));
+  stFill.center.set(0, 0.5); stFill.scale.set(2.1, 0.2, 1); stFill.position.set(-1.05, stY, 0); stFill.renderOrder = 999;
+  group.add(stBg); group.add(stFill);
+  group.userData.stamBg = stBg; group.userData.stamFill = stFill;
   group.userData.gloves = gloves;
   group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP, elbowLP, elbowRP, spine };
   group.userData.rig = { thighLen, shinLen, legLen, bodyScale };
@@ -1400,7 +1411,7 @@ function makePlayer(team, posLabel) {
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
     postContestTimer: 0, postPrevWave: 0,
-    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200, bumpCd: 0, bumpDrag: 0, bumpT: 0, bumpDirX: 0, bumpDirZ: 0,
+    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200, comboT: 0, comboCount: 0, comboBonus: 0, comboSeq: [], bumpCd: 0, bumpDrag: 0, bumpT: 0, bumpDirX: 0, bumpDirZ: 0,
     markOverride: null, lateSwitchCheck: null, screenHangTimer: 0, screenHangDur: 1,
     // Dribble-move momentum: a real, sustained velocity push in the move's
     // direction (not just a one-frame nudge that the normal movement code
@@ -1466,6 +1477,7 @@ function startInboundPass(passer, receiver, durMs, isCheckup) {
 }
 
 function resetPositions(possessionTeam, isMatchStart) {
+  game.shotClock = 24; game.scTeam = null; game.scShot = false;
   game.shotMeter = null;
   game.activePass = null;
   game.activeShot = null;
@@ -1476,7 +1488,8 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0;
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
     p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1; p.handSwitchKind = 'front';
-    p.stamina = STAMINA_MAX; p.exhausted = false; p.turboActive = false;
+    if (isMatchStart) { p.stamina = STAMINA_MAX; p.exhausted = false; } else p.stamina = Math.min(STAMINA_MAX, p.stamina + STAMINA_MAX * 0.4); // partial recovery on dead balls
+    p.turboActive = false;
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
     p.checkupLocked = false; p.ballCallTimer = 0; p.ballCallCooldown = 0;
     p.markOverride = null; p.lateSwitchCheck = null; p.screenHangTimer = 0; // fresh possession, default matchups
@@ -1862,8 +1875,9 @@ function attemptShot(player, meterQuality) {
   if (game.freeThrow && game.freeThrow.shooter === player) { launchFreeThrow(player, meterQuality); return; }
 
   const opponents = getOpponents(player.team);
-  const nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
-  let acc = player.stats.shot;
+  let nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
+  if (player.stepBackT > 0) nearestDefDist += 2.6; // the step-back made room
+  let acc = player.stats.shot + (player.stepBackT > 0 ? 0.04 : 0);
   acc -= shotDistancePenalty(d);
   // Post moves: a drop-step hook shields the ball with the body (the contest
   // matters less); a turnaround fade is a tougher, off-balance look.
@@ -2318,6 +2332,27 @@ function startFreeThrows(shooter, count) {
   setCarrier(shooter);
   showScreenCallout('FREE THROW 1 OF ' + count, 1200);
 }
+// ---- Shot clock -----------------------------------------------------------------------------------
+// 24 s per possession; resets when the ball changes teams, drops to 14 after a missed shot the offense keeps,
+// pauses on dead balls / inbounds / shots in the air. Running out is a violation: other team's ball.
+const SHOT_CLOCK_S = 24, SHOT_CLOCK_REBOUND_S = 14;
+function tickShotClock(dtMs) {
+  if (game.shotClock === undefined) game.shotClock = SHOT_CLOCK_S;
+  const car = game.ball.carrier;
+  if (car && car.team !== game.scTeam) { game.scTeam = car.team; game.shotClock = SHOT_CLOCK_S; }
+  if (game.activeShot) { game.scShot = true; return; }
+  if (game.scShot) { game.scShot = false; if (game.shotClock < SHOT_CLOCK_REBOUND_S) game.shotClock = SHOT_CLOCK_REBOUND_S; }
+  if (game.activeInbound || game.foulPending || game.freeThrow || game.phase !== 'live') return;
+  if (!car && !game.activePass) return; // loose ball: paused until someone secures it
+  game.shotClock -= dtMs / 1000;
+  if (game.shotClock <= 0) {
+    const off = game.scTeam || game.possessionTeam || 'A';
+    game.shotClock = SHOT_CLOCK_S;
+    showScreenCallout('SHOT CLOCK VIOLATION', 1500);
+    playTone(150, 0.15);
+    resetPositions(off === 'A' ? 'B' : 'A');
+  }
+}
 function updateFreeThrow(dtMs) {
   const ft = game.freeThrow;
   const s = ft.shooter;
@@ -2600,6 +2635,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit1' || e.code === 'Numpad1') onCrossoverPressed();
   if (e.code === 'Digit2' || e.code === 'Numpad2') onBehindBackPressed();
   if (e.code === 'Digit3' || e.code === 'Numpad3') onHesitationPressed();
+  if (e.code === 'Digit4' || e.code === 'Numpad4') onSpinPressed();
+  if (e.code === 'Digit5' || e.code === 'Numpad5') onStepBackPressed();
 });
 window.addEventListener('keyup', (e) => {
   keysDown.delete(e.code); ctrlIgnore.delete(e.code);
@@ -2709,7 +2746,7 @@ function resolveScreenSwitch(screened, screener, chargeFrac) {
     // knocked off his line — slowed hard at contact, recovering over a
     // window that's longer the harder the screen was. Not a freeze; he's
     // still chasing, just late. That's what makes the late read matter.
-    screened.screenHangDur = screened.screenHangTimer = SCREEN_HANG_MIN_MS + SCREEN_HANG_EXTRA_MS * chargeFrac;
+    screened.screenHangDur = screened.screenHangTimer = (SCREEN_HANG_MIN_MS + SCREEN_HANG_EXTRA_MS * chargeFrac) * (screener.name === 'C' ? 1.5 : 1.15);
     screened.lateSwitchCheck = { t: 0, screener };
   }
 }
@@ -2850,6 +2887,7 @@ function meterZoneWidth(p) {
   if (game.freeThrow) return 0.15;
   let nd = Infinity;
   getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o)); });
+  if (p.stepBackT > 0) nd += 2.6; // wider green after a step-back
   const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
   return 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
 }
@@ -2913,7 +2951,7 @@ function releaseShotMeter() {
 function startShotRise(player, anyRange) {
   if (player.shotPhase !== 'none') return false; // already mid-shot
   if (player.actionCooldown > 0) return false;
-  if (game.activeInbound) return false; // no shooting until the ball is actually passed in
+  if (game.activeInbound || player.checkupLocked) return false; // no shooting until the ball is actually checked in / passed in
   const hoop = player.team === 'A' ? HOOP_A : HOOP_B;
   if (!anyRange && dist2(player, hoop) > MAX_SHOT_RANGE) return false;
   player.shotPhase = 'rise';
@@ -3434,7 +3472,7 @@ const AUTO_HAND_SWITCH_COOLDOWN_MS = 450;
 // own base flash rating -- behind-the-back is the showiest, hesitation the
 // most dependent on the defender actually biting.
 const ANKLE_BREAKER_RANGE = 3.4;
-const ANKLE_MOVE_BASE = { front: 0.4, behind: 0.52, hesitate: 0.44 };
+const ANKLE_MOVE_BASE = { front: 0.4, behind: 0.52, hesitate: 0.44, spin: 0.5, stepback: 0.28 };
 const ANKLE_STUN_MS = 700;
 const ANKLE_DOWN_MS = 1150;
 const ANKLE_GETUP_MS = 500;
@@ -3509,7 +3547,7 @@ function attemptAnkleBreaker(handler, moveKind) {
   const defAnchor = (defender.stats && defender.stats.strength) || 1;
   const skillDiff = clamp(handlerSkill - defSkill, -0.3, 0.3);
 
-  const baseP = ANKLE_MOVE_BASE[moveKind] || 0.45;
+  const baseP = (ANKLE_MOVE_BASE[moveKind] || 0.45) + (handler.comboBonus || 0);
   const triggerChance = clamp(baseP + skillDiff * 0.9, 0.05, 0.92);
   if (Math.random() >= triggerChance) return;
 
@@ -3531,10 +3569,34 @@ function attemptAnkleBreaker(handler, moveKind) {
   }
 }
 
+// ---- Dribble combos ---------------------------------------------------------------------------
+// Chain moves (1 crossover, 2 behind-the-back, 3 hesitation) inside COMBO_WINDOW_MS and the next one can
+// fire as soon as COMBO_MIN_GAP_MS after the last, instead of waiting out the full cooldown. Each link
+// builds a bonus (bigger for mixing different moves than spamming one): better ankle-breaker odds, a longer
+// steal-proof window, and a bigger chance the defender bites on a hesitation.
+const COMBO_WINDOW_MS = 1100, COMBO_MIN_GAP_MS = 260;
+const COMBO_NAMES = { xx: 'DOUBLE CROSS', xb: 'CROSS-BEHIND', xh: 'CROSS-HESI', bx: 'BEHIND-CROSS', bb: 'DOUBLE BEHIND', bh: 'BEHIND-HESI', hx: 'HESI-CROSS', hb: 'HESI-BEHIND', hh: 'DOUBLE HESI' };
+function moveReady(p) {
+  return p.moveCooldown <= 0 || (p.comboT > 0 && p.moveCooldown <= (p.moveCdTotal || MOVE_COOLDOWN_MS) - COMBO_MIN_GAP_MS);
+}
+function registerMove(p, kind, cd) {
+  p.moveCdTotal = cd; p.moveCooldown = cd;
+  const prev = p.comboT > 0 && p.comboSeq && p.comboSeq.length ? p.comboSeq[p.comboSeq.length - 1] : null;
+  if (prev) { p.comboCount++; p.comboSeq.push(kind); if (p.comboSeq.length > 6) p.comboSeq.shift(); }
+  else { p.comboCount = 1; p.comboSeq = [kind]; p.comboBonus = 0; }
+  p.comboT = COMBO_WINDOW_MS;
+  if (prev) {
+    p.comboBonus = Math.min(0.5, (p.comboBonus || 0) + (prev !== kind ? 0.16 : 0.04));
+    p.stealResistTimer += 140 * (p.comboCount - 1);
+    const CL = { x: 'CROSS', b: 'BEHIND', h: 'HESI', s: 'SPIN', t: 'STEP-BACK' };
+    const nm = prev === kind ? 'DOUBLE ' + CL[kind] : CL[prev] + '-' + CL[kind];
+    showScreenCallout(p.comboCount >= 3 ? nm + '  \u00d7' + p.comboCount + '!' : nm + '!', 800);
+  }
+}
 function onCrossoverPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
-  p.moveCooldown = MOVE_COOLDOWN_MS;
+  if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none') return;
+  registerMove(p, 'x', MOVE_COOLDOWN_MS);
   p.stealResistTimer = CROSSOVER_STEAL_RESIST_MS;
   const newSide = triggerHandSwitch(p, 'front', CROSSOVER_HAND_SWITCH_MS, true);
   applyMoveKick(p, CROSSOVER_KICK_MULT, newSide, CROSSOVER_HAND_SWITCH_MS + 200);
@@ -3549,9 +3611,9 @@ function onCrossoverPressed() {
 
 function onBehindBackPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
-  p.moveCooldown = BEHIND_COOLDOWN_MS;
-  p.stealResistTimer = BEHIND_STEAL_RESIST_MS;
+  if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none') return;
+  registerMove(p, 'b', BEHIND_COOLDOWN_MS);
+  p.stealResistTimer = BEHIND_STEAL_RESIST_MS + (p.stealResistTimer > 0 ? 0 : 0);
   const newSide = triggerHandSwitch(p, 'behind', BEHIND_HAND_SWITCH_MS, true);
   applyMoveKick(p, BEHIND_KICK_MULT, newSide, BEHIND_HAND_SWITCH_MS + 200);
   // Behind-the-back gets the same post-move blow-by as the crossover.
@@ -3560,12 +3622,70 @@ function onBehindBackPressed() {
   playTone(460, 0.05);
 }
 
+// ---- Spin move (4): a full 360 pivot off the defender, ending in a burst the way you spun. -------------
+// Moves away from the nearest defender (or the way you hold left/right). Fully steal-proof while spinning.
+const SPIN_MS = 460, SPIN_KICK_MULT = 0.62, SPIN_STEAL_RESIST_MS = 560;
+function onSpinPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none' || p.dunk) return;
+  registerMove(p, 's', 620);
+  const right = inputRight();
+  let side = 0;
+  if (keysDown.has('ArrowLeft')) side -= 1;
+  if (keysDown.has('ArrowRight')) side += 1;
+  if (!side) {
+    const d = defenderOf(p);
+    if (d) side = -(Math.sign((d.x - p.x) * right.x + (d.z - p.z) * right.z) || 1);
+    else side = p.handSide || 1;
+  }
+  p.stealResistTimer = Math.max(p.stealResistTimer, SPIN_STEAL_RESIST_MS);
+  triggerHandSwitch(p, 'front', SPIN_MS * 0.7, true);
+  applyMoveKick(p, SPIN_KICK_MULT, side, SPIN_MS + 120);
+  p.moveBoostTimer = SPIN_MS + MOVE_BOOST_MS;
+  p.moveKind = 'spin';
+  p.spinT = 0; p.spinStart = p.facing; p.spinDir = side >= 0 ? -1 : 1;
+  attemptAnkleBreaker(p, 'spin');
+  playTone(440, 0.06);
+}
+// ---- Step-back (5): hop backward away from the rim/defender to create space; a shot taken in the next
+// ~1.4 s gets a much weaker contest and a small accuracy bump. -----------------------------------------------
+const STEPBACK_MS = 330, STEPBACK_KICK_MULT = 0.75, STEPBACK_WINDOW_MS = 1400;
+function onStepBackPressed() {
+  const p = controlledPlayer();
+  if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none' || p.dunk) return;
+  registerMove(p, 't', 620);
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  let bx = p.x - hoop.x, bz = p.z - hoop.z; // away from the rim
+  const d = defenderOf(p);
+  if (d) { bx = p.x - d.x + bx * 0.5; bz = p.z - d.z + bz * 0.5; } // ...and away from him
+  const right = inputRight();
+  let lat = 0; if (keysDown.has('ArrowLeft')) lat -= 1; if (keysDown.has('ArrowRight')) lat += 1;
+  bx += right.x * lat * 0.7; bz += right.z * lat * 0.7;
+  const bm = Math.hypot(bx, bz) || 1;
+  p.moveBurstDirX = bx / bm; p.moveBurstDirZ = bz / bm;
+  p.moveBurstPeak = p.stats.speed * STEPBACK_KICK_MULT; p.moveBurstT = 0; p.moveBurstDur = STEPBACK_MS;
+  p.stealResistTimer = Math.max(p.stealResistTimer, 380);
+  p.moveKind = 'stepback'; p.stepBackT = STEPBACK_WINDOW_MS;
+  attemptAnkleBreaker(p, 'stepback');
+  showScreenCallout('STEP-BACK', 600);
+  playTone(380, 0.06);
+}
+const HESITATE_BITE_CHANCE = 0.10, HESITATE_BITE_MS = 750;
 function onHesitationPressed() {
   const p = controlledPlayer();
-  if (game.ball.carrier !== p || p.moveCooldown > 0 || p.shotPhase !== 'none') return;
-  p.moveCooldown = MOVE_COOLDOWN_MS;
+  if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none') return;
+  registerMove(p, 'h', MOVE_COOLDOWN_MS);
   p.hesitateTimer = HESITATE_TOTAL_MS;
   playTone(320, 0.05);
+  // The fake is worth something: each nearby AI defender has a 10% chance to bite, leaving the floor
+  // and getting stuck in the air / flat-footed for a beat while you blow by.
+  let bit = false;
+  getOpponents(p.team).forEach((o) => {
+    if (dist2(o, p) < 10 && Math.random() < HESITATE_BITE_CHANCE + (p.comboBonus || 0) * 0.5) {
+      o.bitTimer = HESITATE_BITE_MS; o.blockJumpTimer = BLOCK_JUMP_DUR_MS; bit = true;
+    }
+  });
+  if (bit) showScreenCallout('BITES ON THE FAKE!', 900);
 }
 
 const touchMove = { active: false, pointerId: null, base: null, vec: { x: 0, y: 0 } };
@@ -3799,6 +3919,7 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   // Controlling a live dribble is a touch slower than running free.
   if (game.ball.carrier === p) speed *= BALL_HANDLE_SPEED_MULT;
   speed *= extraMult;
+  if (p !== controlledPlayer()) speed *= 0.82 + 0.18 * clamp(p.stamina / (STAMINA_MAX * 0.4), 0, 1); // tired legs
   if (p.screenHangTimer > 0) speed *= 1 - SCREEN_HANG_SLOW * (p.screenHangTimer / p.screenHangDur);
   let targetVx = 0, targetVz = 0;
   if (d >= 0.6) { targetVx = dx / d * speed; targetVz = dz / d * speed; }
@@ -3806,6 +3927,9 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
 }
 
 function updateAI(p, dtMs) {
+  if (p.bitTimer > 0) { // bit on a hesitation fake: stuck for a beat
+    p.bitTimer -= dtMs; approachVelocity(p, 0, 0, dtMs); return;
+  }
   // Ankle-broken: down, getting up, or stumbling from a stun -- out of the
   // play entirely (no defense, no steal attempts) until he's back on his
   // feet. Takes priority over everything else below.
@@ -3867,7 +3991,7 @@ function updateAI(p, dtMs) {
         // gets in his way, the same way a real screen works.
         target.screenedTimer = SCREEN_CONTACT_FLASH_MS;
         const chargeFrac = clamp((asg.holdMs || 0) / SCREEN_HOLD_CHARGE_MS, 0, 1);
-        p.screenHoldTimer = SCREEN_FREEZE_MIN_MS + (SCREEN_FREEZE_MS - SCREEN_FREEZE_MIN_MS) * chargeFrac;
+        p.screenHoldTimer = (SCREEN_FREEZE_MIN_MS + (SCREEN_FREEZE_MS - SCREEN_FREEZE_MIN_MS) * chargeFrac) * (p.name === 'C' ? 1.45 : 1.15); // a center's pick is a wall
         playTone(220, 0.05);
         p.screenAssignment = null;
         showScreenCallout('SCREEN SET!', 1000);
@@ -3899,6 +4023,7 @@ function updateAI(p, dtMs) {
     }
     const d = dist2(p, oppHoop);
     if (canDunk(p) && Math.random() < 0.09) { startDunk(p); return; }
+    if (game.shotClock < 3.5 && d < MAX_SHOT_RANGE * 1.25 && Math.random() < 0.2) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; } // clock running out: put one up
     if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
     if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
     // A teammate calling for it gets fed much sooner than the normal
@@ -4705,6 +4830,11 @@ function applyShotPose(p, g, L, dt) {
 
 function updateHumanoidPose(p, dt) {
   const g = p.mesh;
+  if (g.userData.stamFill) {
+    const f = clamp(p.stamina / STAMINA_MAX, 0, 1);
+    g.userData.stamFill.scale.x = Math.max(0.001, 2.1 * f);
+    g.userData.stamFill.material.color.setHex(p.exhausted ? 0xef4444 : (f < 0.3 ? 0xf59e0b : 0x34d399));
+  }
   if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
   const L = g.userData.limbs;
   // Every pose starts from a neutral upper body and straight elbows, so no
@@ -4820,7 +4950,7 @@ function updateHumanoidPose(p, dt) {
   // in front of you. Without this, the lateral kick's own velocity would
   // spin the body to face sideways mid-sweep, which rotates the ball's
   // whole left/right reference frame and makes the crossover unreadable.
-  const facingLocked = p.handAnimT < 1;
+  const facingLocked = p.handAnimT < 1 || (p.spinT !== undefined && p.spinT < 1);
   const incoming = game.activePass && game.activePass.receiver === p ? game.activePass : null;
   if (incoming && incoming.t / incoming.dur > 0.25) {
     // Receiving a pass: square up to the ball so the hands can meet it.
@@ -4847,6 +4977,11 @@ function updateHumanoidPose(p, dt) {
   }
   if (speed > 0.02) {
     g.userData.animPhase += dt * 0.012 * (1 + speed * 3);
+  }
+  if (p.spinT !== undefined && p.spinT < 1) { // spin move: a full 360 over SPIN_MS
+    p.spinT = Math.min(1, p.spinT + dt / SPIN_MS);
+    const e = p.spinT * p.spinT * (3 - 2 * p.spinT);
+    p.facing = p.spinStart + p.spinDir * Math.PI * 2 * e;
   }
   g.rotation.y = p.facing;
 
@@ -4981,6 +5116,12 @@ function updateHumanoidPose(p, dt) {
   if (p.catchHoldT > 0 && game.ball.carrier === p) catchW = Math.max(catchW, Math.min(1, p.catchHoldT / 90));
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
+  // Step-back: lean away and hop as the burst plays.
+  if (p.moveKind === 'stepback' && p.moveBurstT !== undefined && p.moveBurstT < 1) {
+    const w2 = Math.sin(p.moveBurstT * Math.PI);
+    L.spine.rotation.x -= 0.38 * w2;
+    g.position.y += 0.35 * w2;
+  }
   // Body bump: shoulder into the contact, brace with the arms, a short lunge toward the other player.
   if (p.bumpT > 0) {
     p.bumpT = Math.max(0, p.bumpT - dt / 320);
@@ -5312,7 +5453,7 @@ function updateCamera(dt) {
   else if (fastBreak) camSt = 'FAST_BREAK';
   else if (game.camSwinging || camNow - (game.camFlipAt || 0) < 700) camSt = 'TRANSITION';
   game.camState = camSt;
-  const CZ = CAM_STATE_ZOOM[camSt] || CAM_STATE_ZOOM.HALF_COURT;
+  const CZ = game.freeThrow ? { back: 26, up: 14, look: 4 } : (CAM_STATE_ZOOM[camSt] || CAM_STATE_ZOOM.HALF_COURT); // free throws: pull back so the whole lane is in frame
   if (!game.camZ) game.camZ = Object.assign({}, CZ);
   const zk = 1 - Math.exp(-dt / 600); // slow, calm zoom changes
   game.camZ.back += (CZ.back - game.camZ.back) * zk; game.camZ.up += (CZ.up - game.camZ.up) * zk; game.camZ.look += (CZ.look - game.camZ.look) * zk;
@@ -5326,7 +5467,7 @@ function updateCamera(dt) {
   else if (camSt === 'REBOUND') { hx = aimHoop.x * 0.6 + cb.x * 0.4; hz = cb.z * 0.8; }
   else if (camSt === 'INBOUND' && game.activeInbound) { const ib = game.activeInbound; hx = (ib.startX + ib.endX) / 2; hz = (ib.startZ + ib.endZ) / 2; }
   let tx = cb.x * 0.5 + handler.x * 0.3 + hx * 0.2, tz = cb.z * 0.5 + handler.z * 0.3 + hz * 0.2;
-  if (game.freeThrow) { tx = focus.x; tz = focus.z; }
+  if (game.freeThrow) { const fh = game.freeThrow.hoop; tx = focus.x + (fh.x - focus.x) * 0.4; tz = focus.z + (fh.z - focus.z) * 0.4; }
   else { // never lose the player you control: keep him inside the frame (e.g. inbound then a long pass)
     const rel = (human.x - tx) * cdx + (human.z - tz) * cdz;
     const lat = -(human.x - tx) * cdz + (human.z - tz) * cdx;
@@ -5427,6 +5568,7 @@ function updateHUD() {
   }
   const mins = Math.floor(Math.max(0, game.matchClock) / 60);
   const secs = Math.floor(Math.max(0, game.matchClock) % 60);
+  { const sc = document.getElementById('hud-shotclock'); if (sc) { const v = Math.max(0, Math.ceil(game.shotClock === undefined ? 24 : game.shotClock)); sc.textContent = 'SHOT ' + v; sc.classList.toggle('urgent', v <= 5); } }
   document.getElementById('hud-clock').textContent = mins + ':' + String(secs).padStart(2, '0');
   redrawScoreboard(game.scoreA, game.scoreB, mins + ':' + String(secs).padStart(2, '0'));
   document.getElementById('hud-pos').textContent = controlledPlayer().name;
@@ -5542,12 +5684,15 @@ function frame(now) {
     { const w = game.fightWindow; const show = w && fightReady() && performance.now() < w.until; if (show) fightMsg('PRESS G TO CHALLENGE ' + w.target.name + ' TO A FIGHT', false); else if (!game.fight && fightUI && fightUI.wrap.style.display !== 'none') fightMsg('', false); if (w && performance.now() >= w.until) game.fightWindow = null; }
     // The clock stops on the whistle and stays stopped through free throws.
     if (!game.foulPending && !game.freeThrow) game.matchClock -= dtMs / 1000;
+    tickShotClock(dtMs);
     if (game.matchClock <= 0) { game.matchClock = 0; showMatchOver(); }
     updateHUD();
 
     game.players.forEach((p) => {
       if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
+      if (p.stepBackT > 0) p.stepBackT -= dtMs;
+      if (p.comboT > 0) { p.comboT -= dtMs; if (p.comboT <= 0 || game.ball.carrier !== p) { p.comboT = 0; p.comboCount = 0; p.comboBonus = 0; } }
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
       if (p.screenedTimer > 0) p.screenedTimer -= dtMs;
       if (p.screenHangTimer > 0) p.screenHangTimer -= dtMs;
@@ -5557,6 +5702,11 @@ function frame(now) {
       if (p.ballCallTimer > 0) p.ballCallTimer -= dtMs;
       if (p.ballCallCooldown > 0) p.ballCallCooldown -= dtMs;
       if (p.blockCooldown > 0) p.blockCooldown -= dtMs;
+      if (p !== controlledPlayer()) { // AI gets tired too: sustained sprinting drains, standing/walking recovers
+        const sp = Math.hypot(p.vx, p.vz);
+        if (sp > p.stats.speed * 0.7) p.stamina = Math.max(0, p.stamina - 5.5 * dtMs / 1000);
+        else p.stamina = Math.min(STAMINA_MAX, p.stamina + 6 * dtMs / 1000);
+      }
       if (p.blockJumpTimer > 0) p.blockJumpTimer -= dtMs;
       if (p.catchHoldT > 0) p.catchHoldT -= dtMs;
       // Push budget refills once contact has actually ended for a beat.
