@@ -66,6 +66,10 @@
   }
   #screen-callout.show { opacity: 1; }
 
+  #screen-follow { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 43; pointer-events: none; text-align: center; display: none; text-shadow: 0 2px 8px #000; }
+  #screen-follow .big { font-size: 34px; font-weight: 900; letter-spacing: .12em; color: #eab308; }
+  #screen-follow .sub { font-size: 13px; font-weight: 700; letter-spacing: .08em; color: #e2e8f0; }
+  #screen-follow.pop .big { color: #34d399; }
   #shot-contest-callout { text-align: center;
     position: fixed; top: 130px; left: 50%; transform: translateX(-50%);
     z-index: 42; pointer-events: none; font-size: 16px; font-weight: 800;
@@ -205,6 +209,8 @@
 <div id="screen-callout"></div>
 <div id="shot-contest-callout"></div>
 <div id="foul-banner"><div id="foul-banner-title">FOUL</div><div id="foul-banner-sub"></div></div>
+
+<div id="screen-follow"><div class="big">ROLL</div><div class="sub">PRESS Q TO POP</div></div>
 
 <div id="shot-meter-wrap" class="hidden">
   <div id="shot-meter-label">TIME IT!</div>
@@ -1696,10 +1702,19 @@ function updateActivePass(dtMs) {
       }
     }
   }
-  if (u >= 1 && ps.lob && Math.hypot(r.x - ps.lobX, r.z - ps.lobZ) < 5.5 && !(r.ankleDownTimer > 0)) {
-    game.activePass = null;
-    secureBall(r); r.lobT = 0; r.catchHoldT = 0;
-    startDunk(r, { alley: true }); // caught in the air and finished
+  // Lob: the receiver leaps as the ball descends and catches it at the top of his jump, then finishes.
+  if (ps.lob && !ps.jumped && ps.dur - ps.t <= 300 && Math.hypot(r.x - ps.lobX, r.z - ps.lobZ) < 4 && !(r.ankleDownTimer > 0) && !(r.ankleStunTimer > 0) && !r.dunk) {
+    ps.jumped = true; startDunk(r, { alley: true, air: true });
+  }
+  if (u >= 1 && ps.lob && ps.jumped && r.dunk && r.dunk.catchPending) {
+    game.activePass = null; r.lobT = 0;
+    secureBall(r); r.catchHoldT = 0; r.dunk.catchPending = false; // caught in the air
+    return;
+  }
+  if (u >= 1 && ps.lob && !ps.jumped && Math.hypot(r.x - ps.lobX, r.z - ps.lobZ) < 4 && !(r.ankleDownTimer > 0)) {
+    game.activePass = null; r.lobT = 0;
+    secureBall(r); r.catchHoldT = 0;
+    startDunk(r, { alley: true }); // late arrival: caught at the rim and finished
     return;
   }
   if (u >= 1) {
@@ -1981,7 +1996,7 @@ function resolveShot(shooter, made, isThree) {
   }
 }
 game.pickDunkStyle = (p) => pickDunkStyle(p, p.team === 'A' ? HOOP_A : HOOP_B, getOpponents(p.team)); game.canDunk = (p) => canDunk(p); game.startDunk = (p) => startDunk(p); game.popOffRim = (p) => popOffRim(p);
-game.deflectPass = (o, g) => deflectPass(o, g); game.tryDeflectPass = (p) => tryDeflectPass(p);
+game.chooseScreenPop = (p, c) => chooseScreenPop(p, c); game.deflectPass = (o, g) => deflectPass(o, g); game.tryDeflectPass = (p) => tryDeflectPass(p);
 game.resolveShot = resolveShot; // exposed for test instrumentation, matches prior debug convention
 
 // ---- Rebounding ---------------------------------------------------------------
@@ -2135,7 +2150,8 @@ function startDunk(p, opts) {
     fouler: (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(p, opps) : null,
   };
   if (contact && !p.dunk.fouler && Math.random() < 0.2) p.dunk.fouler = victim; // sometimes the contact is a whistle: and-one
-  if (opts.alley) { // he catches it already in the air: start the dunk mid-leap, fixing the start point so he doesn't teleport
+  if (opts.air) p.dunk.catchPending = true;
+  else if (opts.alley) { // he catches it already in the air: start the dunk mid-leap, fixing the start point so he doesn't teleport
     const d0 = p.dunk, e0 = 1 - (1 - 0.4 / DUNK_RELEASE_U) * (1 - 0.4 / DUNK_RELEASE_U);
     d0.t = d0.dur * 0.4; d0.sx = (p.x - d0.tx * e0) / (1 - e0); d0.sz = (p.z - d0.tz * e0) / (1 - e0);
   }
@@ -2190,7 +2206,12 @@ function stepDunk(p, dtMs) {
   p.x = lerp(d.sx, d.tx, e); p.z = lerp(d.sz, d.tz, e);
   p.vx = 0; p.vz = 0;
   p.facing = Math.atan2(d.hoop.x - p.x, d.hoop.z - p.z);
-  if (!d.released && u >= DUNK_RELEASE_U) { d.released = true; releaseDunk(p); }
+  if (d.catchPending && d.t > d.dur * DUNK_RELEASE_U) { // hanging in the air waiting on the ball
+    d.t = d.dur * DUNK_RELEASE_U - 1;
+    d.hang = (d.hang || 0) + dtMs;
+    if (d.hang > 500) { p.dunk = null; p.actionCooldown = 300; return; } // the lob never arrived
+  }
+  if (!d.released && u >= DUNK_RELEASE_U && !d.catchPending) { d.released = true; releaseDunk(p); }
   if (u >= 1) { p.dunk = null; p.actionCooldown = 300; }
 }
 function applyDunkPose(p, g, L, dt) {
@@ -2348,6 +2369,7 @@ function placeForFreeThrow(p, x, z, hoop) {
   p.postMove = null; p.shotRiseDelay = 0; p.postShot = false; p.postFade = false;
   p.hesitateTimer = 0; p.hesitateFakeAmt = 0; p.postUpActive = false;
   p.screenHoldTimer = 0; p.screenAssignment = null; p.turboActive = false;
+  p.followMode = null; p.followT = 0; p.screenContacted = false; p.popChoice = null; p.lobT = 0;
   p.ankleDownTimer = 0; p.ankleGetUpTimer = 0; p.ankleStunTimer = 0; p.ankleFallAmt = 0;
   p.moveBurstT = 1; p.handAnimT = 1;
 }
@@ -2666,7 +2688,7 @@ window.addEventListener('keydown', (e) => {
   const defCtx = defenseContext();
   // On defense: W deflect, E block, Q switch player (E/Q go back to switch/screen on offense).
   if (e.code === 'KeyE') { if (defCtx) { if (!e.repeat) onBlockPressed(); } else onSwitchPressed(); }
-  if (e.code === 'KeyQ') { if (defCtx) { if (!e.repeat) onSwitchPressed(); } else onScreenKeyDown(); }
+  if (e.code === 'KeyQ') { if (defCtx) { if (!e.repeat) onSwitchPressed(); } else if (e.repeat || !tryPopCall()) onScreenKeyDown(); }
   if (e.code === 'KeyW' && defCtx && !e.repeat) { const hp = controlledPlayer(); if (game.activePass) tryDeflectPass(hp); else airSwipe(hp); }
   if (e.code === 'KeyR') onCallForBallPressed();
   // Holding SPACE fires key-repeat events -- only the first real press counts,
@@ -2919,6 +2941,7 @@ function onScreenPressed(heldMs) {
   // hold lasts once the screener makes contact — a quick tap gives a short
   // screen, holding it the full charge time gives the max, SCREEN_FREEZE_MS.
   screener.screenAssignment = { target, timer: SCREEN_CALL_TIMEOUT_MS, holdMs: heldMs || 0 };
+  screener.followMode = 'roll'; screener.popChoice = null; screener.screenContacted = false; // rolls to the rim unless Q is pressed again (POP)
   p.screenCallCooldown = SCREEN_CALL_COOLDOWN_MS;
   playTone(260, 0.06);
   showScreenCallout('CALLING SCREEN…', 1400);
@@ -3492,13 +3515,17 @@ function throwLob(p, r) {
   const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
   const spot = lobSpotFor(p, r);
   const d = Math.hypot(spot.x - p.x, spot.z - p.z);
-  const dur = clamp(d / PASS_SPEED * 1000 * 1.9, 700, 1400);
+  const dur = clamp(d / PASS_SPEED * 1000 * 2.7, 1000, 1800); // real hang time
   const b = game.ball;
   b.carrier = null; b.inFlight = true; b.vx = b.vy = b.vz = 0;
   b.justReleasedBy = p; b.releaseLockTimer = dur + 120;
   r.lobSpot = spot; r.lobT = dur + 500;
+  // Thrower's accuracy: a good lob lands right on the spot; a bad one drifts and may be out of reach.
+  const passStat = (p.stats && p.stats.pass) || 0.65;
+  const sc = (1 - passStat) * 5.5 * clamp(d / 25, 0.6, 1.5);
+  const lx = spot.x + (Math.random() + Math.random() - 1) * sc, lz = spot.z + (Math.random() + Math.random() - 1) * sc;
   game.activePass = { passer: p, receiver: r, t: 0, dur, startX: p.x, startZ: p.z, startY: 4.2, offX: 0, offY: 0, offZ: 0,
-    arc: 2.2 + d * 0.05, rolled: new Set(), lob: true, lobX: spot.x, lobZ: spot.z };
+    arc: 5.5 + d * 0.07, rolled: new Set(), lob: true, lobX: lx, lobZ: lz, lobSpot: spot };
   p.checkupLocked = false;
   showScreenCallout('LOB!', 800);
   playTone(380, 0.05);
@@ -4038,6 +4065,75 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   approachVelocity(p, targetVx, targetVz, dtMs);
 }
 
+// ---- Screen follow-up: ROLL (automatic) or POP (press Q again while the screen is being set) --------------------
+// POP picks a spot that makes sense: weighted between a three, an elbow jumper and a top-of-the-key midrange, favoring
+// whichever is more open and the screener's own shooting, with randomness so it isn't the same spot every time.
+function chooseScreenPop(p, c) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, sgn = Math.sign(hoop.x) || 1;
+  const opps = getOpponents(p.team);
+  const sc = (p.stats && p.stats.scale) || 1;
+  // Centers pop mostly to the elbow / mid-range with the odd three; guards and wings take more threes.
+  const wt = sc >= 1.18 ? [0.2, 0.4, 0.4] : (sc >= 1.05 ? [0.32, 0.36, 0.32] : [0.45, 0.3, 0.25]);
+  const kinds = [
+    { k: 'three', label: 'POP TO THE 3!', w: wt[0] },
+    { k: 'elbow', label: 'POP TO THE ELBOW!', w: wt[1] },
+    { k: 'mid',   label: 'POP TO MID-RANGE!', w: wt[2] },
+  ];
+  // For each kind take the more open side, weight the kind by how open that spot is, then pick one at random by weight.
+  const opts = kinds.map((kd) => {
+    let best = null, bo = -1;
+    [-1, 1].forEach((side) => {
+      const a = 0.3 + Math.random() * 0.45;
+      const sp = popSpotFor(hoop, sgn, { k: kd.k, side, a });
+      const open = Math.min(...opps.map((o) => Math.hypot(o.x - sp.x, o.z - sp.z)));
+      const score = open + Math.random() * 3; // a little noise so it isn't always the same side
+      if (score > bo) { bo = score; best = { k: kd.k, side, a, label: kd.label, open }; }
+    });
+    return { ch: best, w: kd.w * clamp(best.open / 12, 0.5, 1.1) };
+  });
+  let r = Math.random() * opts.reduce((t, o) => t + o.w, 0);
+  for (const o of opts) { r -= o.w; if (r <= 0) return o.ch; }
+  return opts[opts.length - 1].ch;
+}
+function popSpotFor(hoop, sgn, ch) {
+  if (ch.k === 'three') return { x: hoop.x - sgn * 24.8 * Math.cos(ch.a), z: clamp(ch.side * 24.8 * Math.sin(ch.a), -20, 20) };
+  if (ch.k === 'elbow') return { x: hoop.x - sgn * 12.5, z: ch.side * 7 };
+  return { x: hoop.x - sgn * 17.5, z: ch.side * 2.5 };
+}
+function beginScreenerFollow(p) {
+  const mode = p.followMode, c = game.ball.carrier;
+  p.followMode = null; p.screenContacted = false;
+  if (!c || c.team !== p.team) return;
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, sgn = Math.sign(hoop.x) || 1;
+  if (mode === 'pop') {
+    const ch = p.popChoice || chooseScreenPop(p, c);
+    p.followSpot = popSpotFor(hoop, sgn, ch); p.followT = 3000;
+  } else {
+    p.followSpot = { x: hoop.x - sgn * 4.2, z: clamp(c.z * 0.3, -4, 4) }; p.followT = 2300;
+    showScreenCallout('ROLLING TO THE RIM', 900);
+  }
+}
+function tryPopCall() {
+  const h = controlledPlayer();
+  if (!h || game.ball.carrier !== h) return false;
+  const s = getTeammates(h.team).find((t) => t !== h && t.followMode === 'roll' && (t.screenAssignment || t.screenHoldTimer > 0 || t.screenContacted));
+  if (!s) return false;
+  s.followMode = 'pop'; s.popChoice = chooseScreenPop(s, h);
+  showScreenCallout(s.popChoice.label, 1100); playTone(520, 0.05);
+  return true;
+}
+function updateScreenFollowUI() {
+  const el = document.getElementById('screen-follow');
+  if (!el) return;
+  const h = controlledPlayer();
+  const s = h && game.ball.carrier === h && game.phase === 'live' ? getTeammates(h.team).find((t) => t !== h && t.followMode && (t.screenAssignment || t.screenHoldTimer > 0 || t.screenContacted)) : null;
+  if (!s) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const pop = s.followMode === 'pop';
+  el.className = pop ? 'pop' : '';
+  el.firstElementChild.textContent = pop ? (s.popChoice ? s.popChoice.label.replace('!', '') : 'POP') : 'ROLL';
+  el.lastElementChild.textContent = pop ? 'POPPING AFTER THE SCREEN' : 'AUTOMATIC \u2014 PRESS Q TO POP';
+}
 // ---- Help defense -----------------------------------------------------------
 // When the ball handler gets a step on his man (or backs down in the post) inside ~26 ft of the rim, ONE off-ball
 // defender -- the weak-side man, never the human's -- sags into the lane between the ball and the rim to stunt at him.
@@ -4216,6 +4312,7 @@ function updateAI(p, dtMs) {
         target.screenedTimer = SCREEN_CONTACT_FLASH_MS;
         const chargeFrac = clamp((asg.holdMs || 0) / SCREEN_HOLD_CHARGE_MS, 0, 1);
         p.screenHoldTimer = (SCREEN_FREEZE_MIN_MS + (SCREEN_FREEZE_MS - SCREEN_FREEZE_MIN_MS) * chargeFrac) * (p.name === 'C' ? 1.45 : 1.15); // a center's pick is a wall
+        p.screenContacted = true; p.followNotBefore = performance.now() + 750;
         playTone(220, 0.05);
         p.screenAssignment = null;
         showScreenCallout('SCREEN SET!', 1000);
@@ -4225,6 +4322,16 @@ function updateAI(p, dtMs) {
       }
       return;
     }
+  }
+  if (p.followMode && !p.screenAssignment && !(p.screenHoldTimer > 0)) {
+    if (p.screenContacted && performance.now() >= (p.followNotBefore || 0)) beginScreenerFollow(p);
+    else if (!p.screenContacted) p.followMode = null; // the screen never got set
+  }
+  if (p.followT > 0 && p.followSpot) { // rolling to the rim / popping out after the screen
+    p.followT -= dtMs;
+    if (!game.ball.carrier || game.ball.carrier.team !== p.team) p.followT = 0;
+    moveToward(p, p.followSpot.x, p.followSpot.z, dtMs, 1.25);
+    return;
   }
   if (p.lobT > 0 && p.lobSpot) { // cutting to the rim for an alley-oop
     p.lobT -= dtMs;
@@ -5964,9 +6071,9 @@ function startMatch() {
 
 const MOVES_HELP = [
   ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
-  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X throws an ALLEY-OOP LOB to a teammate near the rim, or sends one cutting first (press X again)'],['Shot clock','24s; 14 after an offensive rebound']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X throws a high ALLEY-OOP LOB: the cutter leaps, catches it in the air and slams it if the pass is good and traffic is light. If nobody is near the rim, the first X sends one cutting (press X again)'],['Shot clock','24s; 14 after an offensive rebound']]],
   ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
-  ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Q (hold)','Call a screen from your big']]],
+  ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Q (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press Q again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
   ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['W','Swipe at a pass in the air: deflect, tip or pick it off'],['E','Block a shot in the air'],['Q','Switch the player you control (on defense)'],['Old keys','SPACE steal/deflect, F block, C plant, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['PASSING & OTHER', [['SHIFT','Pass; aim with the arrows'],['G','Challenge to a fight at half court; Y / N to answer'],['Stamina bars','Sprinting and hands up drain it; rest to recover']]],
 ];
@@ -6110,6 +6217,7 @@ function frame(now) {
       // in which case he can absolutely bowl him over, and get whistled.
       if (!human.turboActive) applyDribblerDiscipline(human, PUSH_INTENT_SPEED * 0.8);
       updateShotMeter(dtMs);
+      updateScreenFollowUI();
       refreshAssignmentsForPossession();
       updateHelpAssignment(dtMs);
       game.players.forEach((p) => {
