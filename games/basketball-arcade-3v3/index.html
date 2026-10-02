@@ -45,11 +45,11 @@
     display: flex; align-items: center; gap: 8px;
   }
   #stamina-tag {
-    font-size: 10px; font-weight: 700; color: #94a3b8; letter-spacing: 0.06em;
+    font-size: 12px; min-width: 96px; font-weight: 700; color: #94a3b8; letter-spacing: 0.06em;
     text-shadow: 0 1px 3px #000;
   }
   #stamina-bar {
-    width: 120px; height: 9px; border-radius: 5px; overflow: hidden;
+    width: 210px; height: 14px; border-radius: 5px; overflow: hidden;
     background: rgba(242,244,247,0.16); border: 1px solid rgba(242,244,247,0.3);
   }
   #stamina-fill {
@@ -194,11 +194,11 @@
     <div id="hud-shotclock">SHOT 24</div>
     <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; V defense arrows swap &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; F block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Q screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos &middot; C plant to take a charge &middot; V hands up</div>
 </div>
 
 <div id="stamina-wrap">
-  <div id="stamina-tag">TURBO</div>
+  <div id="stamina-tag">STAMINA <span id="stamina-pct">100</span>%</div>
   <div id="stamina-bar"><div id="stamina-fill"></div></div>
 </div>
 
@@ -1279,9 +1279,9 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   // stamina bar floating above the name tag (sprites always face the camera)
   const stY = (hipY + torsoLen + headR * 2 + 1.1) * bodyScale + 0.95;
   const stBg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x0b1220, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }));
-  stBg.center.set(0, 0.5); stBg.scale.set(2.2, 0.3, 1); stBg.position.set(-1.1, stY, 0); stBg.renderOrder = 998;
+  stBg.center.set(0, 0.5); stBg.scale.set(2.8, 0.42, 1); stBg.position.set(-1.4, stY, 0); stBg.renderOrder = 998;
   const stFill = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x34d399, transparent: true, depthTest: false, depthWrite: false }));
-  stFill.center.set(0, 0.5); stFill.scale.set(2.1, 0.2, 1); stFill.position.set(-1.05, stY, 0); stFill.renderOrder = 999;
+  stFill.center.set(0, 0.5); stFill.scale.set(2.7, 0.32, 1); stFill.position.set(-1.35, stY, 0); stFill.renderOrder = 999;
   group.add(stBg); group.add(stFill);
   group.userData.stamBg = stBg; group.userData.stamFill = stFill;
   group.userData.gloves = gloves;
@@ -1875,7 +1875,7 @@ function attemptShot(player, meterQuality) {
   if (game.freeThrow && game.freeThrow.shooter === player) { launchFreeThrow(player, meterQuality); return; }
 
   const opponents = getOpponents(player.team);
-  let nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o)));
+  let nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o) - (o.handsUp ? 2.5 : 0)));
   if (player.stepBackT > 0) nearestDefDist += 2.6; // the step-back made room
   let acc = player.stats.shot + (player.stepBackT > 0 ? 0.04 : 0);
   acc -= shotDistancePenalty(d);
@@ -2234,7 +2234,7 @@ const FT_AI_HOLD_MS = 420;
 const FT_METER_PERFECT_BONUS = 0.16;
 const FT_METER_GOOD_BONUS = 0.04;
 const FT_METER_BAD_PENALTY = 0.30;
-const FOUL_LABEL = { push: 'BLOCKING FOUL', reach: 'REACH-IN FOUL', shooting: 'SHOOTING FOUL' };
+const FOUL_LABEL = { push: 'BLOCKING FOUL', reach: 'REACH-IN FOUL', shooting: 'SHOOTING FOUL', charge: 'CHARGING FOUL' };
 function teamLabel(team) { return team === 'A' ? 'YOU' : 'AI'; }
 function teamFouls(team) { return team === 'A' ? (game.teamFoulsA || 0) : (game.teamFoulsB || 0); }
 
@@ -2242,11 +2242,11 @@ function callFoul(fouler, fouled, kind, opts) {
   opts = opts || {};
   if (game.phase !== 'live' || game.foulPending || game.freeThrow) return;
   fightHook('foul', fouler, fouled, kind);
-  if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1;
-  else game.teamFoulsB = (game.teamFoulsB || 0) + 1;
+  if (kind !== 'charge') { if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1; else game.teamFoulsB = (game.teamFoulsB || 0) + 1; }
   fouler.fouls = (fouler.fouls || 0) + 1;
   let fts = 0, penalty;
   if (kind === 'shooting') { fts = opts.isThree ? 3 : 2; penalty = fts + ' FREE THROWS'; }
+  else if (kind === 'charge') { fts = 0; penalty = 'TURNOVER'; }
   else if (teamFouls(fouler.team) >= TEAM_FOUL_BONUS) { fts = 2; penalty = 'BONUS · 2 FREE THROWS'; }
   else penalty = 'SIDE OUT';
   // Whistle: everything live stops right where it is.
@@ -2611,7 +2611,6 @@ window.addEventListener('keydown', (e) => {
   keysDown.add(e.code);
   if (game.phase === 'fight') { fightKey(e); return; }
   if (e.code === 'KeyG' && !e.repeat) onFightChallengeKey();
-  if (e.code === 'KeyV' && !e.repeat && game.phase === 'live') { game.defSwap = game.defSwap === false; showScreenCallout(game.defSwap === false ? 'DEFENSE ARROWS: SCREEN (UP = AWAY FROM YOU)' : 'DEFENSE ARROWS: COURT (UP = TOWARD THEIR BASKET)', 1400); }
   if (game.phase !== 'live') return;
   // Dead ball (whistle / free throws): the only live input is the shooter's SPACE.
   if (game.foulPending || game.freeThrow) {
@@ -2886,7 +2885,7 @@ const meterZone = { w: 0.15, s: METER_CENTER - 0.075, e: METER_CENTER + 0.075 };
 function meterZoneWidth(p) {
   if (game.freeThrow) return 0.15;
   let nd = Infinity;
-  getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o)); });
+  getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o) - (o.handsUp ? 2.5 : 0)); });
   if (p.stepBackT > 0) nd += 2.6; // wider green after a step-back
   const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
   return 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
@@ -3642,7 +3641,7 @@ function onSpinPressed() {
 }
 // ---- Step-back (5): hop backward away from the rim/defender to create space; a shot taken in the next
 // ~1.4 s gets a much weaker contest and a small accuracy bump. -----------------------------------------------
-const STEPBACK_MS = 430, STEPBACK_PLANT_MS = 150, STEPBACK_KICK_MULT = 1.7, STEPBACK_WINDOW_MS = 1500;
+const STEPBACK_MS = 430, STEPBACK_PLANT_MS = 150, STEPBACK_KICK_MULT = 1.15, STEPBACK_WINDOW_MS = 1500;
 function onStepBackPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || !moveReady(p) || p.shotPhase !== 'none' || p.dunk) return;
@@ -3869,6 +3868,7 @@ function applyBodyContacts(dtMs) {
   for (let i = 0; i < P.length; i++) {
     const a = P[i];
     if (a.bumpCd > 0) a.bumpCd -= dtMs;
+    if (a.chargeCd > 0) a.chargeCd -= dtMs;
     if (a.bumpDrag > 0) { a.bumpDrag -= dtMs; const k = Math.exp(-dtMs / 1100); a.vx *= k; a.vz *= k; }
   }
   if (game.activeInbound || game.freeThrow || game.foulPending) return;
@@ -3895,6 +3895,12 @@ function applyBodyContacts(dtMs) {
       const turboK = off.turboActive ? 0.7 : 1;
       if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.55 + 0.6 * defEdge) * turboK; off.vx -= ox * cut; off.vz -= oz * cut; }
       if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.9 - 0.5 * defEdge); def.vx += ox * cut; def.vz += oz * cut; }
+      // Planted defender (hold C, stand still) vs a sprinting ball handler: chance of a charge
+      if (def === controlledPlayer() && (def.plantT || 0) >= 150 && game.ball.carrier === off && (offIn >= 0.3 || off.turboActive) && !(off.chargeCd > 0)) {
+        const chance = clamp(0.3 + (offIn - 0.3) * 1.2 + (off.turboActive ? 0.2 : 0) + (sDef - sOff) * 0.15, 0.15, 0.9);
+        off.chargeCd = 800;
+        if (Math.random() < chance) { callFoul(off, def, 'charge'); return; }
+      }
       if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1) {
         a.bumpCd = b.bumpCd = BUMP_CD_MS;
         const big = clamp(closing / 0.4, 0.5, 1.3);
@@ -4156,15 +4162,7 @@ const camForward = new THREE.Vector3(1, 0, 0);
 // direction) and the new view's mapping takes over.
 let ctrlLatch = null, ctrlLatchT = 0; // ONE shared mapping for every arrow while latched
 const ctrlIgnore = new Set(); // keys the game "let go of" for you: ignored until you physically release them
-// Defense arrows (court-relative up/down): on defense the camera looks the OTHER way (toward your own
-// basket), so by screen UP would be "back". With this on, UP always means toward the basket you attack
-// (forward) and DOWN means back, on offense AND defense, so possession flips never change what UP does.
-// Left/right stay screen-relative. Toggle with V.
-function defSwapActive() {
-  const h = controlledPlayer();
-  return game.defSwap !== false && h && game.camDir !== undefined && !game.freeThrow && game.camDir !== (h.team === 'A' ? 1 : -1);
-}
-function inputForward() { const f = ctrlLatch || camForward; return defSwapActive() ? f.clone().negate() : f; }
+function inputForward() { return ctrlLatch || camForward; }
 function inputRight() { const f = ctrlLatch || camForward; return new THREE.Vector3(-f.z, 0, f.x).setY(0).normalize(); }
 function autoReleaseArrows() {
   ctrlLatch = null;
@@ -4407,7 +4405,7 @@ function updateHumanMovement(dtMs) {
     const worldX = right.x * nx + fwd.x * nz;
     const worldZ = right.z * nx + fwd.z * nz;
     const carryMult = game.ball.carrier === human ? BALL_HANDLE_SPEED_MULT : 1;
-    const speed = human.stats.speed * speedMult * carryMult;
+    const speed = human.stats.speed * speedMult * carryMult * (human.handsUp ? 0.9 : 1);
     targetVx = worldX * speed * Math.min(mag, 1);
     targetVz = worldZ * speed * Math.min(mag, 1);
   }
@@ -4826,11 +4824,21 @@ function applyShotPose(p, g, L, dt) {
   }
 }
 
+// Defensive stance: whoever is guarding the ball handler up close stays squared up to him (instead of turning to face
+// his own running direction) with a lowered stance and arms out. Hands up (V) puts the arms straight up.
+function slideTarget(p) {
+  const c = game.ball.carrier;
+  if (!c || c.team === p.team || game.phase !== 'live' || game.freeThrow || game.foulPending) return null;
+  if (p.shotPhase !== 'none' || p.dunk || p.fight || p.postUpActive || p.ankleDownTimer > 0 || p.ankleStunTimer > 0) return null;
+  if (dist2(p, c) > 13) return null;
+  if (p === controlledPlayer() || defenderOf(c) === p) return c;
+  return null;
+}
 function updateHumanoidPose(p, dt) {
   const g = p.mesh;
   if (g.userData.stamFill) {
     const f = clamp(p.stamina / STAMINA_MAX, 0, 1);
-    g.userData.stamFill.scale.x = Math.max(0.001, 2.1 * f);
+    g.userData.stamFill.scale.x = Math.max(0.001, 2.7 * f);
     g.userData.stamFill.material.color.setHex(p.exhausted ? 0xef4444 : (f < 0.3 ? 0xf59e0b : 0x34d399));
   }
   if (g.userData.swingAmt === undefined) g.userData.swingAmt = 0;
@@ -4973,6 +4981,12 @@ function updateHumanoidPose(p, dt) {
     let diff = Math.atan2(hp.x - p.x, hp.z - p.z) - p.facing;
     diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     const maxTurn = TURN_RATE * 3 * dt;
+    p.facing += clamp(diff, -maxTurn, maxTurn);
+  } else if (slideTarget(p)) {
+    const c = slideTarget(p);
+    let diff = Math.atan2(c.x - p.x, c.z - p.z) - p.facing;
+    diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const maxTurn = TURN_RATE * 2.4 * dt;
     p.facing += clamp(diff, -maxTurn, maxTurn);
   } else if (speed > 0.02 && !facingLocked) {
     // Turn toward the movement direction at a limited rate (shortest-angle),
@@ -5124,6 +5138,12 @@ function updateHumanoidPose(p, dt) {
   if (p.catchHoldT > 0 && game.ball.carrier === p) catchW = Math.max(catchW, Math.min(1, p.catchHoldT / 90));
   if (catchW > 0.01) applyCatchReachOverlay(p, g, L, catchW);
 
+  // Defensive stance / hands up
+  if ((slideTarget(p) || p.handsUp) && !(p.blockJumpTimer > 0)) {
+    if (slideTarget(p)) { g.position.y -= 0.16; L.kneeLP.rotation.x += 0.3; L.kneeRP.rotation.x += 0.3; L.spine.rotation.x += 0.12; }
+    if (p.handsUp) { L.armLP.rotation.set(-2.75, 0, 0.22); L.armRP.rotation.set(-2.75, 0, -0.22); }
+    else { L.armLP.rotation.set(-0.5, 0, 0.95); L.armRP.rotation.set(-0.5, 0, -0.95); }
+  }
   // Step-back: lean away and hop as the burst plays.
   // Real step-back footwork: the lead (right) foot jabs out in front and plants to load the body, then it
   // drives off that foot, snapping it back to meet the trail foot as the body hops away from the defender.
@@ -5604,6 +5624,7 @@ function updateHUD() {
   if (staminaFillEl) {
     const pct = clamp(human.stamina / STAMINA_MAX, 0, 1);
     staminaFillEl.style.width = (pct * 100) + '%';
+    const pctEl = document.getElementById('stamina-pct'); if (pctEl) pctEl.textContent = Math.round(pct * 100);
     staminaFillEl.style.background = human.exhausted ? '#ef4444' : (pct < 0.3 ? '#f59e0b' : '#34d399');
   }
   const staminaWrapEl = document.getElementById('stamina-wrap');
@@ -5714,6 +5735,13 @@ function frame(now) {
       if (p.actionCooldown > 0) p.actionCooldown -= dtMs;
       if (p.moveCooldown > 0) p.moveCooldown -= dtMs;
       if (p.stepBackT > 0) p.stepBackT -= dtMs;
+      if (p === controlledPlayer()) {
+        const cdef = game.ball.carrier && game.ball.carrier.team !== p.team && game.phase === 'live' && !game.freeThrow && !game.foulPending;
+        const still = Math.hypot(p.vx, p.vz) < 0.07;
+        p.plantT = (cdef && keysDown.has('KeyC') && still) ? (p.plantT || 0) + dtMs : 0;
+        p.handsUp = !!(keysDown.has('KeyV') && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
+        if (p.handsUp) p.stamina = Math.max(0, p.stamina - 3 * dtMs / 1000);
+      }
       if (p.comboT > 0) { p.comboT -= dtMs; if (p.comboT <= 0 || game.ball.carrier !== p) { p.comboT = 0; p.comboCount = 0; p.comboBonus = 0; } }
       if (p.stealResistTimer > 0) p.stealResistTimer -= dtMs;
       if (p.screenedTimer > 0) p.screenedTimer -= dtMs;
