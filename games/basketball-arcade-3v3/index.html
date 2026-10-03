@@ -213,6 +213,7 @@
   .tbtn.on { background: rgba(125,211,252,0.35); border-color: #7dd3fc; color: #fff; }
   .tbtn.main { color: #7dd3fc; border-color: rgba(125,211,252,0.6); background: rgba(125,211,252,0.12); font-size: 12px; }
   .tbtn.moves { border-radius: 10px; color: #fbbf24; border-color: rgba(251,191,36,0.5); }
+  #aud-hint { display: none; position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 95; background: rgba(234,179,8,.95); color: #111; font-weight: 800; font-size: 12px; letter-spacing: .06em; padding: 6px 14px; border-radius: 999px; pointer-events: none; }
   #aud-ctl { position: fixed; left: 10px; top: 54px; z-index: 90; display: flex; gap: 6px; }
   #aud-ctl button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid #475569; background: rgba(15,23,42,.7); color: #7dd3fc; font-size: 15px; cursor: pointer; padding: 0; touch-action: manipulation; }
   #aud-ctl button.off { color: #64748b; text-decoration: line-through; opacity: .7; }
@@ -317,6 +318,7 @@
   </div>
 </div>
 
+<div id="aud-hint">TAP OR PRESS A KEY TO ENABLE SOUND</div>
 <div id="aud-ctl"><button id="aud-mus" type="button">♫</button><button id="aud-sfx" type="button">♪</button></div>
 
 <div id="locker">
@@ -3172,10 +3174,12 @@ function updateRef(dtMs) {
 // Audio: a self-contained synth engine (no files, no libraries). Sound effects + generative music with a theme per arena.
 // =========================================================================
 function audSave() { try { localStorage.setItem(AUDIO_KEY, JSON.stringify({ sfx: AUD.sfxOn, mus: AUD.musOn })); } catch (e) {} }
-function audInit() {
-  if (AUD.ctx) { if (AUD.ctx.state === 'suspended') AUD.ctx.resume().catch(() => {}); return; }
-  const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
-  let ctx; try { ctx = new C(); } catch (e) { return; }
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YQAAAAA=';
+let audSilentEl = null;
+function audCreate() {
+  if (AUD.ctx) return true;
+  const C = window.AudioContext || window.webkitAudioContext; if (!C) return false;
+  let ctx; try { ctx = new C(); } catch (e) { return false; }
   AUD.ctx = ctx;
   const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.connect(ctx.destination);
   AUD.master = ctx.createGain(); AUD.master.gain.value = 0.9; AUD.master.connect(comp);
@@ -3186,8 +3190,24 @@ function audInit() {
   AUD.noiseBuf = n;
   AUD.timer = setInterval(audSched, 30);
   audApplyVolumes(true);
+  return true;
 }
-['pointerdown', 'keydown', 'touchstart'].forEach((ev) => window.addEventListener(ev, audInit, { passive: true }));
+// Browsers (especially iOS Safari, which also mutes Web Audio when the ringer switch is on silent) only allow sound after a
+// real gesture. Called on every gesture until the context is actually running: creates/resumes it, plays a silent buffer,
+// and starts a silent <audio> element so iOS switches to the "playback" category.
+function audInit() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  if (!audCreate()) return;
+  const ctx = AUD.ctx;
+  if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  try { const src = ctx.createBufferSource(); src.buffer = ctx.createBuffer(1, 1, 22050); src.connect(ctx.destination); src.start(0); } catch (e) {}
+  if (!audSilentEl) { try { audSilentEl = new Audio(SILENT_WAV); audSilentEl.loop = true; audSilentEl.volume = 0.01; } catch (e) {} }
+  if (audSilentEl && audSilentEl.paused) { const p = audSilentEl.play(); if (p && p.catch) p.catch(() => {}); }
+  audRefreshButtons();
+}
+['pointerdown', 'pointerup', 'touchstart', 'touchend', 'click', 'keydown', 'mousedown'].forEach((ev) => window.addEventListener(ev, audInit, { passive: true, capture: true }));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && AUD.ctx && AUD.ctx.state !== 'running') AUD.ctx.resume().catch(() => {}); });
+setInterval(() => { const h = document.getElementById('aud-hint'); if (!h) return; const bad = !(AUD.ctx && AUD.ctx.state === 'running'); h.style.display = bad && (AUD.sfxOn || AUD.musOn) ? 'block' : 'none'; }, 600);
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 function aTone(bus, f, dur, type, vol, t0, f2, atk) {
   const c = AUD.ctx, o = c.createOscillator(), g = c.createGain();
@@ -3229,7 +3249,8 @@ const SFX_DEFS = {
 };
 const SFX_GAP = { dribble: 60, click: 40, thud: 80, catch: 80, swish: 120, clank: 120 };
 function sfx(name, vol) {
-  if (!AUD.ctx || !AUD.sfxOn || AUD.ctx.state !== 'running') return;
+  if (!AUD.ctx || !AUD.sfxOn) return;
+  if (AUD.ctx.state !== 'running') { AUD.ctx.resume().catch(() => {}); return; }
   const now = performance.now(), gap = SFX_GAP[name] || 0;
   if (gap && AUD.last[name] && now - AUD.last[name] < gap) return;
   AUD.last[name] = now;
