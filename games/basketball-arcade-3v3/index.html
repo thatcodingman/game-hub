@@ -198,7 +198,7 @@
     <div id="hud-shotclock">SHOT 24</div>
     <div id="hud-fouls">FOULS &nbsp;YOU 0 &middot; AI 0</div>
   </div>
-  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; C block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Z screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos &middot; <b>DEFENSE:</b> 1 hands up &middot; 2 plant (charge) &middot; 3 steal &middot; X deflect pass &middot; C block &middot; Z switch &middot; <b>X</b> dunk / lob</div>
+  <div id="hud-right" id="hud-hint">Arrows move &middot; SPACE shoot/steal &middot; C block &middot; SHIFT pass (aim w/ arrows) &middot; TAB turbo &middot; E switch &middot; Z screen &middot; hold A+D post up (steer with arrows) &middot; 1 crossover &middot; 2 behind-back &middot; 3 hesi &middot; 4 spin &middot; 5 step-back &middot; chain them for combos &middot; <b>DEFENSE:</b> 1 hands up &middot; 2 plant (charge) &middot; 3 steal &middot; X deflect pass &middot; C block &middot; Z switch &middot; <b>OFFENSE:</b> R call for ball &middot; Z screen (Z again = pop, C = wave off) &middot; <b>X</b> dunk / lob</div>
 </div>
 
 <div id="stamina-wrap">
@@ -224,7 +224,7 @@
   <h1>BASKETBALL ARCADE</h1>
   <div class="tagline">3v3 &middot; switch control &middot; you vs a full AI squad</div>
   <div class="win-msg" id="menu-win-msg">FIRST TO 21 WINS &middot; OR THE LEAD WHEN THE CLOCK HITS 0:00</div>
-  <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; C block &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; Z screen &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
+  <div class="rules" id="menu-rules">Arrow keys move &middot; SPACE shoot or steal &middot; C block &middot; SHIFT pass &middot; hold TAB to turbo &middot; E switch player &middot; R call for the ball &middot; Z screen (C waves it off) &middot; hold A+D to post up (steer with the arrows while posted) &middot; 1 crossover &middot; 2 behind-the-back &middot; 3 hesitation</div>
   <div class="uni-pick" id="uni-pick">
     <div class="uni-row"><span class="lbl">YOUR UNIFORM</span><span id="uni-a-sw" class="uni-row"></span><span class="uni-name" id="uni-a-name"></span></div>
     <div class="uni-row"><span class="lbl">AI UNIFORM</span><span id="uni-b-sw" class="uni-row"></span><span class="uni-name" id="uni-b-name"></span></div>
@@ -400,7 +400,7 @@ function randRange([lo, hi]) { return lo + Math.random() * (hi - lo); }
 // automatic defensive (blocking) foul. Dribbling only -- a shooter (and,
 // once they exist, a dunker) is never pushed by this rule; shooting contact
 // is judged separately as a shooting foul.
-const PUSH_FOUL_LIMIT = 2 / 12; // 2 inches, in feet
+const PUSH_FOUL_LIMIT = 6 / 12; // 6 inches of real shoving, in feet
 // Relative closing speed (units/frame, ~60fps) below which body contact is
 // just "walling up" -- the defender is held off, nobody moves the handler,
 // nothing is called. Above it, the defender is actually driving into him.
@@ -1462,10 +1462,10 @@ game.players = game.teamA.concat(game.teamB);
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Move stick to move · hold the right side to shoot (let go on green) or tap to steal'
-  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · drive at the rim + X to dunk · C block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · Z screen · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · drive at the rim + X to dunk · C block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · R call for ball · Z screen (C waves off) · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · hold right side to shoot, let go on green / tap to steal'
-  : 'Arrows move · hold SPACE shoot, let go on green / steal · X dunk (drive at rim) · C block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · Z screen · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · hold SPACE shoot, let go on green / steal · X dunk (drive at rim) · C block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · R call ball · Z screen (C wave off) · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -1840,8 +1840,25 @@ function shotDistancePenalty(d) {
   return pen;
 }
 // 0-100 how contested a shot is, from the nearest defender's distance (hands-up counts closer).
+// Effective contest distance: a defender only contests if he's between the shooter and the rim. One beside him counts
+// further away, one behind him (trailing the play) barely counts at all.
+function contestDist(p) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B;
+  const hx = hoop.x - p.x, hz = hoop.z - p.z, hd = Math.hypot(hx, hz) || 1;
+  let nd = Infinity;
+  getOpponents(p.team).forEach((o) => {
+    if (o.ankleDownTimer > 0 || o.ankleGetUpTimer > 0) return;
+    const dx = o.x - p.x, dz = o.z - p.z, d = Math.hypot(dx, dz) || 0.001;
+    const cos = (dx * hx + dz * hz) / (d * hd); // 1 = straight between him and the rim, -1 = behind him
+    let eff = d - (o.handsUp && cos > 0.3 ? 2.5 : 0);
+    eff += (1 - clamp(cos, 0, 1)) * 4 + (cos < 0 ? 4 : 0);
+    if (eff < nd) nd = eff;
+  });
+  if (p.stepBackT > 0) nd += 2.6; // the step-back made room
+  return nd;
+}
 function contestPct(nd) {
-  const lo = CONTEST_HEAVY_RANGE - 1.2, hi = CONTEST_OPEN_RANGE + 1;
+  const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_SLIGHT_RANGE + 1.5;
   return Math.round(100 * (1 - clamp((nd - lo) / (hi - lo), 0, 1)));
 }
 // Green-window scale by shot distance: normal inside the arc, shrinking out to a sliver at full court.
@@ -1871,19 +1888,24 @@ function meterRangeScale(d) {
 // doesn't stop the shot: it plays out, and a make is an AND-ONE (basket + 1
 // free throw), a miss is 2 free throws (3 if it was from deep).
 const SHOT_CONTACT_RANGE = PLAYER_R * 2 + 1.2; // ~4.2 ft
-const SHOT_FOUL_DRAPED = 0.10;
-const SHOT_FOUL_NEAR = 0.04;
+const SHOT_FOUL_DRAPED = 0.07;
+const SHOT_FOUL_NEAR = 0;
 const SHOT_FOUL_LUNGE = 0.9;
 const POST_SHOT_FOUL_BONUS = 0.05;
-const SHOT_FOUL_SLIDE_SPEED = 0.08; // closing slower than a normal defensive slide isn't a lunge
+const SHOT_FOUL_SLIDE_SPEED = 0.14; // closing slower than a normal defensive slide isn't a lunge
 const SHOT_FOUL_STRENGTH = 0.06;
-const SHOT_FOUL_MAX = 0.45;
+const SHOT_FOUL_MAX = 0.30;
+function foulCooling() { return performance.now() - (game.lastFoulAt || 0) < 6000; } // no whistle-fest: at most one non-charge foul per ~6 s
 function rollShotContactFoul(shooter, opponents) {
+  if (foulCooling()) return null;
   let best = null, bestChance = 0;
   opponents.forEach((o) => {
     if (o.ankleDownTimer > 0 || o.ankleGetUpTimer > 0 || o.ankleStunTimer > 0) return;
     const od = dist2(shooter, o);
     if (od > SHOT_CONTACT_RANGE) return;
+    // Only a defender in front of him (between him and the rim) can foul the shot; a trailing or side-by-side one can't.
+    const sh = shooter.team === 'A' ? HOOP_A : HOOP_B, rx = sh.x - shooter.x, rz = sh.z - shooter.z;
+    if (((o.x - shooter.x) * rx + (o.z - shooter.z) * rz) / ((od || 1) * (Math.hypot(rx, rz) || 1)) < 0.35) return;
     const ux = (shooter.x - o.x) / (od || 1), uz = (shooter.z - o.z) / (od || 1);
     const lunge = Math.max(0, o.vx * ux + o.vz * uz - SHOT_FOUL_SLIDE_SPEED);
     let ch = (od <= BODY_CONTACT_D + 0.3 ? SHOT_FOUL_DRAPED : SHOT_FOUL_NEAR) + lunge * SHOT_FOUL_LUNGE;
@@ -1895,6 +1917,7 @@ function rollShotContactFoul(shooter, opponents) {
   return best && Math.random() < bestChance ? best : null;
 }
 function callShootingFoulOnShot(fouler, shooter, isThree) {
+  game.lastFoulAt = performance.now();
   if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1;
   else game.teamFoulsB = (game.teamFoulsB || 0) + 1;
   fouler.fouls = (fouler.fouls || 0) + 1;
@@ -1932,8 +1955,7 @@ function attemptShot(player, meterQuality) {
   if (game.freeThrow && game.freeThrow.shooter === player) { launchFreeThrow(player, meterQuality); return; }
 
   const opponents = getOpponents(player.team);
-  let nearestDefDist = Math.min(...opponents.map((o) => dist2(player, o) - (o.handsUp ? 2.5 : 0)));
-  if (player.stepBackT > 0) nearestDefDist += 2.6; // the step-back made room
+  const nearestDefDist = contestDist(player);
   let acc = player.stats.shot + (player.stepBackT > 0 ? 0.04 : 0);
   acc -= shotDistancePenalty(d);
   // Post moves: a drop-step hook shields the ball with the body (the contest
@@ -2293,12 +2315,12 @@ function scoreFor(team, points, ctx) {
 //   5th team foul onward    -> BONUS: 2 free throws
 // =========================================================================
 const TEAM_FOUL_BONUS = 5;
-const REACH_FOUL_BASE = 0.10;
-const REACH_FOUL_MOVE_BONUS = 0.15;
-const BLOCK_FOUL_BASE = 0.035;  // straight up (verticality) is nearly always clean
-const BLOCK_FOUL_LUNGE = 1.1;   // per unit/frame of horizontal speed into the shooter
-const BLOCK_FOUL_TIGHT = 0.045; // extra if he's essentially inside the shooter's body
-const BLOCK_FOUL_MAX = 0.55;
+const REACH_FOUL_BASE = 0.04;
+const REACH_FOUL_MOVE_BONUS = 0.06;
+const BLOCK_FOUL_BASE = 0.02;  // straight up (verticality) is nearly always clean
+const BLOCK_FOUL_LUNGE = 0.8;   // per unit/frame of horizontal speed into the shooter
+const BLOCK_FOUL_TIGHT = 0.03; // extra if he's essentially inside the shooter's body
+const BLOCK_FOUL_MAX = 0.4;
 const FOUL_DEAD_BALL_MS = 1600; // whistle -> ref signal -> play resumes
 const FT_READY_MS = 1000;       // settle at the line before he can shoot
 const FT_BETWEEN_MS = 1100;     // ball comes back between attempts
@@ -2313,6 +2335,8 @@ function teamFouls(team) { return team === 'A' ? (game.teamFoulsA || 0) : (game.
 function callFoul(fouler, fouled, kind, opts) {
   opts = opts || {};
   if (game.phase !== 'live' || game.foulPending || game.freeThrow) return;
+  if (kind !== 'charge' && foulCooling()) return;
+  game.lastFoulAt = performance.now();
   fightHook('foul', fouler, fouled, kind);
   if (kind !== 'charge') { if (fouler.team === 'A') game.teamFoulsA = (game.teamFoulsA || 0) + 1; else game.teamFoulsB = (game.teamFoulsB || 0) + 1; }
   fouler.fouls = (fouler.fouls || 0) + 1;
@@ -2960,7 +2984,7 @@ function onScreenPressed(heldMs) {
   playTone(260, 0.06);
   showScreenCallout('CALLING SCREEN…', 1400);
 }
-const BALL_CALL_MS = 900; // how long you're actively "open and calling" for
+const BALL_CALL_MS = 2200; // how long you're actively "open and calling" for
 const BALL_CALL_COOLDOWN_MS = 1200;
 function onCallForBallPressed() {
   const p = controlledPlayer();
@@ -2990,9 +3014,7 @@ const METER_CENTER = 0.80;
 const meterZone = { w: 0.15, s: METER_CENTER - 0.075, e: METER_CENTER + 0.075 };
 function meterZoneWidth(p) {
   if (game.freeThrow) return 0.15;
-  let nd = Infinity;
-  getOpponents(p.team).forEach((o) => { if (!(o.ankleDownTimer > 0)) nd = Math.min(nd, dist2(p, o) - (o.handsUp ? 2.5 : 0)); });
-  if (p.stepBackT > 0) nd += 2.6; // wider green after a step-back
+  const nd = contestDist(p);
   const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
   const w = 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
   return Math.max(0.014, w * meterDistScale(dist2(p, p.team === 'A' ? HOOP_A : HOOP_B)));
@@ -4047,7 +4069,7 @@ function applyBodyContacts(dtMs) {
       const turboK = off.turboActive ? 0.7 : 1;
       if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.55 + 0.6 * defEdge) * turboK; off.vx -= ox * cut; off.vz -= oz * cut; }
       if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.9 - 0.5 * defEdge); def.vx += ox * cut; def.vz += oz * cut; }
-      // Planted defender (hold C, stand still) vs a sprinting ball handler: chance of a charge
+      // Planted defender (hold 2, stand still) vs a sprinting ball handler: chance of a charge
       if (def === controlledPlayer() && (def.plantT || 0) >= 40 && game.ball.carrier === off && (offIn >= 0.15 || off.turboActive) && !(off.chargeCd > 0)) {
         const chance = clamp(0.55 + (offIn - 0.3) * 1.2 + (off.turboActive ? 0.2 : 0) + (sDef - sOff) * 0.15, 0.4, 0.95);
         off.chargeCd = 450;
@@ -4173,6 +4195,13 @@ function aiCarrierDecision(p, d, oNear, hoop) {
     v *= 1 - dd / 110;
     if (v > bestV) { bestV = v; best = t; }
   });
+  // The human calling for it (R): get him the ball fast unless a defender is sitting right in the lane.
+  const caller = getTeammates(p.team).find((t) => t !== p && t === controlledPlayer() && t.ballCallTimer > 0 && !(t.ankleDownTimer > 0) && !t.dunk && t.shotPhase === 'none');
+  if (caller && dist2(p, caller) > 3 && p.aiHoldT > 200) {
+    const sx = caller.x - p.x, sz = caller.z - p.z, sl = sx * sx + sz * sz || 1;
+    const blocked = opps.some((o) => { const u = clamp(((o.x - p.x) * sx + (o.z - p.z) * sz) / sl, 0, 1); return Math.hypot(o.x - (p.x + sx * u), o.z - (p.z + sz * u)) < 2.0; });
+    if (!blocked || p.aiHoldT > 700) return { pass: caller };
+  }
   const moved = (game.ballMoves || 0) >= (game.bmNeed || 2) || game.shotClock < 8;
   if (d >= 9 && !moved && best && bestV > 0.25) return p.aiHoldT > 500 ? { pass: best } : null; // work the ball before a jumper
   if (shotV >= 0.36 && oNear >= 3.2 && bestV < shotV + 0.12) return 'shoot';
@@ -4486,6 +4515,7 @@ function updateAI(p, dtMs) {
     const d = dist2(p, oppHoop);
     if (!p._wasCarrier) { p._wasCarrier = true; p.aiHoldT = 0; p.aiDecT = 300 + Math.random() * 250; }
     p.aiHoldT += dtMs; p.aiDecT -= dtMs;
+    if (p.aiDecT > 90 && getTeammates(p.team).some((t) => t === controlledPlayer() && t !== p && t.ballCallTimer > 0)) p.aiDecT = 90; // he's calling for it: react now
     const oNear = nearestOppDist(p.x, p.z, p.team);
     if (canDunk(p) && Math.random() < 0.09) { startDunk(p); return; }
     // Unselfish decision tick: shoot only a good look, otherwise move it to the better shot (cutter, open shooter, give-and-go).
@@ -6197,11 +6227,11 @@ function startMatch() {
 }
 
 const MOVES_HELP = [
-  ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
-  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X (or SHIFT+X) throws a high ALLEY-OOP LOB any time: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound']]],
+  ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player (offense)'],['R','Call for the ball: your teammate with it passes to you right away unless a defender is sitting in the lane (the call lasts about 1.5s)']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot. Only a defender between you and the rim counts: one beside you counts less, one behind you barely counts'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X (or SHIFT+X) throws a high ALLEY-OOP LOB any time: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound']]],
   ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press C to WAVE IT OFF and isolate your man. Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
-  ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Old keys','SPACE steal/deflect, F block, C plant, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
+  ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul needs a defender in front of the shooter in contact, usually lunging into him; reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['PASSING & OTHER', [['SHIFT','Pass; aim with the arrows'],['G','Challenge to a fight at half court; Y / N to answer'],['Stamina bars','Sprinting and hands up drain it; rest to recover']]],
 ];
 (function () {
@@ -6497,6 +6527,7 @@ game.resolveDribblerContact = resolveDribblerContact;
 game.startFreeThrows = startFreeThrows;
 game.refState = refState;
 game.PUSH_FOUL_LIMIT = PUSH_FOUL_LIMIT;
+game.contestDist = contestDist; game.contestPct = contestPct;
 game.fightApi = { fightHook, startFight, onFightChallengeKey, startDropStep, openFightWindow, scheduleAiChallenge, answerChallenge, endFight };
 game.getCamDirSign = () => camDirSign;
 game.shotDistancePenalty = shotDistancePenalty;
