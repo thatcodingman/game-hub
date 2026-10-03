@@ -210,7 +210,7 @@
 <div id="shot-contest-callout"></div>
 <div id="foul-banner"><div id="foul-banner-title">FOUL</div><div id="foul-banner-sub"></div></div>
 
-<div id="screen-follow"><div class="big">ROLL</div><div class="sub">PRESS Q TO POP</div></div>
+<div id="screen-follow"><div class="big">ROLL</div><div class="sub">Z POP · C WAVE OFF</div></div>
 
 <div id="shot-meter-wrap" class="hidden">
   <div id="shot-meter-label">TIME IT!</div>
@@ -1567,6 +1567,7 @@ function setCarrier(p) {
   game.ball.justReleasedBy = null; game.ball.releaseLockTimer = 0;
   game.ball.vx = 0; game.ball.vy = 0; game.ball.vz = 0;
   p.ballCallTimer = 0; // got it — no longer calling for it
+  if (game.bmTeam !== p.team) { game.bmTeam = p.team; game.ballMoves = 0; game.bmNeed = 2 + (Math.random() < 0.5 ? 1 : 0); } // new possession: AI wants 2-3 passes before a non-rim shot
   // Possession only changes hands once someone actually secures the ball —
   // not during the null-carrier instant of a pass in flight, a missed shot,
   // or a contested loose ball. This is what the camera follows, so it holds
@@ -1619,9 +1620,12 @@ function pickPassTarget(player, aimDir) {
   });
   return best;
 }
-function attemptPass(player, aimDir) {
-  const receiver = pickPassTarget(player, aimDir);
+function attemptPass(player, aimDir, forced) {
+  const receiver = forced || pickPassTarget(player, aimDir);
   if (!receiver) return;
+  receiver.lastFrom = player;
+  maybeGiveAndGo(player, receiver);
+  game.ballMoves = (game.ballMoves || 0) + 1;
   const d = dist2(player, receiver);
   const dur = clamp(d / PASS_SPEED * 1000, 160, 900);
   // Thrower's error, triangular spread (small misses common, wild ones
@@ -2690,7 +2694,7 @@ window.addEventListener('keydown', (e) => {
   // On defense: X deflect, C block, Z switch player (Z is the screen call on offense).
   if (e.code === 'KeyE' && !defCtx) onSwitchPressed();
   if (e.code === 'KeyZ') { if (defCtx) { if (!e.repeat) onSwitchPressed(); } else if (e.repeat || !tryPopCall()) onScreenKeyDown(); }
-  if (e.code === 'KeyC' && !e.repeat) onBlockPressed();
+  if (e.code === 'KeyC' && !e.repeat) { if (defCtx || !cancelScreenCall()) onBlockPressed(); }
   if (e.code === 'KeyX' && defCtx && !e.repeat) { const hp = controlledPlayer(); if (game.activePass) tryDeflectPass(hp); else airSwipe(hp); }
   if (e.code === 'KeyR') onCallForBallPressed();
   // Holding SPACE fires key-repeat events -- only the first real press counts,
@@ -4135,6 +4139,112 @@ function tryPopCall() {
   showScreenCallout(s.popChoice.label, 1100); playTone(520, 0.05);
   return true;
 }
+
+// ---- Smarter off-ball offense: spot-ups, backdoor cuts, give-and-go, and unselfish ball handlers --------------------
+function nearestOppDist(x, z, team) {
+  let m = 99; getOpponents(team).forEach((o) => { const dd = Math.hypot(o.x - x, o.z - z); if (dd < m) m = dd; }); return m;
+}
+// How good a shot is from a spot, given the nearest defender (rim > open three/mid > contested anything).
+function aiSpotValue(x, z, hoop, nearOpp) {
+  const dd = Math.hypot(x - hoop.x, z - hoop.z);
+  let base;
+  if (dd < 9) base = 1.0; else if (dd < 17) base = 0.72; else if (!isThreePt(x, z, hoop)) base = 0.55;
+  else if (dd < 29) base = 0.58; else if (dd < MAX_SHOT_RANGE) base = 0.25; else base = 0.05;
+  return base * (0.25 + 0.75 * clamp((nearOpp - 1.5) / 5, 0, 1));
+}
+function aiCarrierDecision(p, d, oNear, hoop) {
+  const opps = getOpponents(p.team), now = performance.now();
+  const skill = (pl) => 0.75 + 0.5 * ((pl.stats && pl.stats.shot) || 0.5);
+  const shotV = aiSpotValue(p.x, p.z, hoop, oNear) * skill(p);
+  let best = null, bestV = 0;
+  getTeammates(p.team).forEach((t) => {
+    if (t === p || t.screenHoldTimer > 0 || t.screenAssignment || t.ankleDownTimer > 0 || t.ankleStunTimer > 0 || t.ankleGetUpTimer > 0 || t.dunk || t.shotPhase !== 'none') return;
+    const dd = dist2(p, t); if (dd < 4) return;
+    let v = aiSpotValue(t.x, t.z, hoop, nearestOppDist(t.x, t.z, p.team)) * skill(t);
+    const sx = t.x - p.x, sz = t.z - p.z, sl = sx * sx + sz * sz || 1;
+    for (const o of opps) { // a defender standing in the passing lane kills the look
+      const u = clamp(((o.x - p.x) * sx + (o.z - p.z) * sz) / sl, 0, 1);
+      if (Math.hypot(o.x - (p.x + sx * u), o.z - (p.z + sz * u)) < 2.4) { v *= 0.3; break; }
+    }
+    if (t.cutUntil > now || t.gngUntil > now) v *= 1.3; // cutting to the rim: lead him
+    if (t.ballCallTimer > 0) v *= 1.15;
+    if (p.gngRet === t && now < (p.gngRetUntil || 0)) v *= 1.4; // give-and-go: hit the cutter
+    else if (p.lastFrom === t) v *= 0.6; // no ping-pong with whoever just gave it up
+    v *= 1 - dd / 110;
+    if (v > bestV) { bestV = v; best = t; }
+  });
+  const moved = (game.ballMoves || 0) >= (game.bmNeed || 2) || game.shotClock < 8;
+  if (d >= 9 && !moved && best && bestV > 0.25) return p.aiHoldT > 500 ? { pass: best } : null; // work the ball before a jumper
+  if (shotV >= 0.36 && oNear >= 3.2 && bestV < shotV + 0.12) return 'shoot';
+  if (best && p.aiHoldT > 600 && bestV > shotV + 0.10 && bestV > 0.3) return { pass: best };
+  if (game.shotClock < 5 || p.aiHoldT > 5200) { // out of time: the best available option, not a stall
+    if (d < MAX_SHOT_RANGE * 1.2 && shotV >= bestV * 0.8) return 'shoot';
+    if (best && bestV > 0.2) return { pass: best };
+    if (d < MAX_SHOT_RANGE * 1.25) return 'shoot';
+  }
+  return null;
+}
+// Give-and-go: after a pass, an AI passer sometimes cuts to the rim and expects it right back.
+function maybeGiveAndGo(passer, receiver) {
+  const now = performance.now();
+  if (passer === controlledPlayer() || now < (game.isoUntil || 0) || now < (passer.gngCd || 0)) return;
+  const hoop = passer.team === 'A' ? HOOP_A : HOOP_B, d = dist2(passer, hoop);
+  if (d < 14 || d > 36 || Math.random() > 0.22) return;
+  passer.gngCd = now + 9000; passer.gngUntil = now + 1500; passer.gngRecv = receiver;
+  receiver.gngRet = passer; receiver.gngRetUntil = now + 2300;
+}
+const OB_SPOT_ANGLES = [-80, -60, -40, -20, 0, 20, 40, 60, 80].map((a) => a * Math.PI / 180);
+function pickSpot(p, iso) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, dirIn = hoop.x > 0 ? 1 : -1;
+  const mates = getTeammates(p.team).filter((t) => t !== p), carrier = game.ball.carrier, mark = defenderOf(p);
+  const R = (iso ? 26 : 24.8) + Math.random() * 1.2;
+  const cands = OB_SPOT_ANGLES.map((a) => ({ x: hoop.x - dirIn * R * Math.cos(a), z: clamp(R * Math.sin(a), -21.5, 21.5) }));
+  cands.push({ x: hoop.x - dirIn * 4, z: 21 }, { x: hoop.x - dirIn * 4, z: -21 }); // corners
+  let best = cands[0], bs = -1e9;
+  cands.forEach((c) => {
+    let sc = Math.random() * 3 - dist2(p, c) * 0.08;
+    mates.forEach((m) => { const mp = m.obSpot || m; const md = Math.hypot(mp.x - c.x, mp.z - c.z); sc += Math.min(md, 16) - (md < 9 ? (9 - md) * 3 : 0); });
+    if (carrier && carrier !== p) { const cd = Math.hypot(carrier.x - c.x, carrier.z - c.z); if (cd < 9) sc -= (9 - cd) * 2; }
+    if (mark) sc += Math.min(Math.hypot(mark.x - c.x, mark.z - c.z), 8) * 0.3;
+    if (sc > bs) { bs = sc; best = c; }
+  });
+  return best;
+}
+function aiOffBall(p, dtMs, oppHoop) {
+  const now = performance.now(), dirIn = oppHoop.x > 0 ? 1 : -1;
+  const iso = now < (game.isoUntil || 0); // user waved the screen off: clear out and let him go to work
+  if (p.gngUntil > now && !iso) { // give-and-go cut
+    p.ballCallTimer = Math.max(p.ballCallTimer || 0, 500);
+    moveToward(p, oppHoop.x - dirIn * 5, oppHoop.z + (p.z >= 0 ? 4 : -4), dtMs, 1.3); return;
+  }
+  if (p.cutUntil > now && !iso) { // backdoor cut
+    p.ballCallTimer = Math.max(p.ballCallTimer || 0, 500);
+    moveToward(p, oppHoop.x - dirIn * 4, oppHoop.z + (p.cutSide || 3), dtMs, 1.3); return;
+  }
+  p.obT = (p.obT || 0) - dtMs;
+  if (!p.obSpot || p.obT <= 0 || (iso && !p.obIso)) {
+    p.obIso = iso; p.obSpot = pickSpot(p, iso); p.obT = 1100 + Math.random() * 900;
+    // Backdoor: a defender is up in his jersey and he's within cutting range of the rim.
+    const carrier = game.ball.carrier, mk = defenderOf(p), hd = dist2(p, oppHoop);
+    if (!iso && carrier && carrier.team === p.team && carrier !== p && !carrier.checkupLocked && mk && now >= (p.cutCd || 0) && hd > 13 && hd < 34 && dist2(p, mk) < 7 && Math.random() < 0.3) {
+      p.cutUntil = now + 1400; p.cutCd = now + 7000; p.cutSide = p.z >= 0 ? 3 : -3; p.obSpot = null; p.obT = 0;
+    }
+  }
+  if (p.obSpot) moveToward(p, p.obSpot.x, p.obSpot.z, dtMs);
+}
+// Waving a screen off: the big man peels away and the AI clears out so the handler can isolate his man.
+function cancelScreenCall() {
+  const h = controlledPlayer();
+  if (!h || game.ball.carrier !== h) return false;
+  if (screenCharging) { screenCharging = false; showScreenCallout('SCREEN CANCELED', 700); return true; }
+  const s = getTeammates(h.team).find((t) => t !== h && (t.screenAssignment || t.screenHoldTimer > 0 || t.screenContacted || t.followMode));
+  if (!s) return false;
+  s.screenAssignment = null; s.screenHoldTimer = 0; s.screenContacted = false; s.followMode = null; s.popChoice = null; s.followT = 0; s.followSpot = null;
+  s.obSpot = null; s.obT = 0; s.cutUntil = 0;
+  game.isoUntil = performance.now() + 6000;
+  showScreenCallout('WAVED OFF — ISO!', 1100); playTone(300, 0.05);
+  return true;
+}
 function updateScreenFollowUI() {
   const el = document.getElementById('screen-follow');
   if (!el) return;
@@ -4145,7 +4255,7 @@ function updateScreenFollowUI() {
   const pop = s.followMode === 'pop';
   el.className = pop ? 'pop' : '';
   el.firstElementChild.textContent = pop ? (s.popChoice ? s.popChoice.label.replace('!', '') : 'POP') : 'ROLL';
-  el.lastElementChild.textContent = pop ? 'POPPING AFTER THE SCREEN' : 'AUTOMATIC \u2014 PRESS Q TO POP';
+  el.lastElementChild.textContent = pop ? 'POPPING AFTER THE SCREEN \u00b7 C WAVE OFF' : 'AUTOMATIC \u2014 Z POP \u00b7 C WAVE OFF';
 }
 // ---- Help defense -----------------------------------------------------------
 // When the ball handler gets a step on his man (or backs down in the post) inside ~26 ft of the rim, ONE off-ball
@@ -4359,6 +4469,8 @@ function updateAI(p, dtMs) {
   const ballTeam = game.ball.carrier ? game.ball.carrier.team : (game.activePass ? game.activePass.passer.team : null);
   const teamHasBall = ballTeam === p.team;
   const ballLoose = !game.ball.carrier && !game.ball.inFlight;
+  if (!isCarrier) p._wasCarrier = false;
+  if (!teamHasBall) { p.obSpot = null; p.cutUntil = 0; p.gngUntil = 0; }
   const myHoop = p.team === 'A' ? HOOP_B : HOOP_A;
   const oppHoop = p.team === 'A' ? HOOP_A : HOOP_B;
   p.postDefenseFacing = false; // only re-armed below, in the post-defense branch
@@ -4372,16 +4484,21 @@ function updateAI(p, dtMs) {
       return;
     }
     const d = dist2(p, oppHoop);
+    if (!p._wasCarrier) { p._wasCarrier = true; p.aiHoldT = 0; p.aiDecT = 300 + Math.random() * 250; }
+    p.aiHoldT += dtMs; p.aiDecT -= dtMs;
+    const oNear = nearestOppDist(p.x, p.z, p.team);
     if (canDunk(p) && Math.random() < 0.09) { startDunk(p); return; }
-    if (game.shotClock < 3.5 && d < MAX_SHOT_RANGE * 1.25 && Math.random() < 0.2) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; } // clock running out: put one up
-    if (d < MAX_SHOT_RANGE * 0.7 && Math.random() < 0.018) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
-    if (d < MAX_SHOT_RANGE && Math.random() < 0.006) { if (startShotRise(p)) p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
-    // A teammate calling for it gets fed much sooner than the normal
-    // occasional random pass.
-    const teammateWantsIt = getTeammates(p.team).some((t) => t !== p && t.ballCallTimer > 0);
-    const helped = game.help && game.help.helper && game.help.handler === p; // a helper sagged: kick it out to the open man
-    if (Math.random() < (teammateWantsIt ? 0.12 : (helped ? 0.04 : 0.01))) { attemptPass(p); return; }
-    moveToward(p, oppHoop.x, oppHoop.z + (game.players.indexOf(p) % 2 === 0 ? -6 : 6), dtMs);
+    // Unselfish decision tick: shoot only a good look, otherwise move it to the better shot (cutter, open shooter, give-and-go).
+    if (p.aiDecT <= 0) {
+      p.aiDecT = 260 + Math.random() * 200;
+      const act = aiCarrierDecision(p, d, oNear, oppHoop);
+      if (act === 'shoot') { if (startShotRise(p)) { p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; } }
+      else if (act && act.pass) { attemptPass(p, null, act.pass); return; }
+    }
+    // Drive while it's open; if a defender is glued to him near the rim, hold and probe sideways instead of forcing it.
+    const needMove = (game.ballMoves || 0) < (game.bmNeed || 2) && game.shotClock >= 8;
+    if ((d < 15 && oNear < 3.2) || (needMove && d < 22)) moveToward(p, p.x, clamp(p.z + (p.z >= 0 ? 8 : -8), -20, 20), dtMs, 0.6);
+    else moveToward(p, oppHoop.x, oppHoop.z + (game.players.indexOf(p) % 2 === 0 ? -6 : 6), dtMs);
   } else if (game.activeShot && !game.activeShot.isFreeThrow && !game.foulPending) {
     // Shot in the air: defenders BOX OUT (get between their man and the rim,
     // just on the inside shoulder), the shooter's teammates crash the glass.
@@ -4402,10 +4519,7 @@ function updateAI(p, dtMs) {
       }
     }
   } else if (teamHasBall) {
-    const teammates = getTeammates(p.team);
-    const slot = teammates.indexOf(p);
-    const spreadZ = myHoop === HOOP_B ? [-16, 0, 16][slot] : [16, 0, -16][slot];
-    moveToward(p, oppHoop.x - (oppHoop === HOOP_A ? 20 : -20), oppHoop.z + spreadZ, dtMs);
+    aiOffBall(p, dtMs, oppHoop);
   } else if (ballLoose) {
     const teammates = getTeammates(p.team);
     let closest = teammates[0], bestD = Infinity;
@@ -6086,7 +6200,7 @@ const MOVES_HELP = [
   ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player'],['R','Call for the ball']]],
   ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X (or SHIFT+X) throws a high ALLEY-OOP LOB any time: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound']]],
   ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
-  ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
+  ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press C to WAVE IT OFF and isolate your man. Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
   ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Old keys','SPACE steal/deflect, F block, C plant, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['PASSING & OTHER', [['SHIFT','Pass; aim with the arrows'],['G','Challenge to a fight at half court; Y / N to answer'],['Stamina bars','Sprinting and hands up drain it; rest to recover']]],
 ];
