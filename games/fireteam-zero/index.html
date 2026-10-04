@@ -228,6 +228,11 @@ wallSeg(1, WALL_H, 4, -29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
 wallSeg(1, WALL_H, 4, -22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
 box(1.6, 1.2, 2.4, -26, MAIN_Y + 0.6, -3, matCover); // cover block at choke mouth
 
+// Bridge: A-Choke floor (ends x=-22) to Mid floor (starts x=-10) — these did
+// not actually touch, leaving a 12-unit hole players would drop through
+// (especially sliding through it at speed). Mirrored on the B side below.
+floorSlab(12, 6, -16, MAIN_Y, -5, matFloor);
+
 // ---- MID (the Atrium centerpiece) ----
 floorSlab(20, 20, 0, MAIN_Y, 0, matFloor, { });
 // perimeter low walls / glass-curtain suggestion (open-ish, vertical focal space)
@@ -246,6 +251,7 @@ wallSeg(8, WALL_H, 1, 26, MAIN_Y + WALL_H/2, -8, matChokeWall);
 wallSeg(1, WALL_H, 4, 29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
 wallSeg(1, WALL_H, 4, 22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
 box(1.6, 1.2, 2.4, 26, MAIN_Y + 0.6, -3, matCover);
+floorSlab(12, 6, 16, MAIN_Y, -5, matFloor); // bridge: Mid (ends x=10) to B-Choke (starts x=22)
 
 // B-Long
 floorSlab(26, 7, 42, MAIN_Y, -5, matFloor);
@@ -259,13 +265,31 @@ wallSeg(16, WALL_H, 1, 58, MAIN_Y + WALL_H/2, 8, matWall);
 wallSeg(1, WALL_H, 16, 66, MAIN_Y + WALL_H/2, 0, matWall);
 
 // ---------------- STAIRS -> MEZZANINE (asymmetric per spec) ----------------
-// A-Stairs: SHORTER, dumps you in with less cover (per design note)
-for (let i = 0; i < 8; i++) {
-  box(4, 0.5, 2, -34, MAIN_Y + i * 0.75, 11 + i * 1.3, matMezz);
+// Both stairways previously started and ended in mid-air — neither end
+// actually touched a real floor (base wasn't on A-Long/B-Long's floor, and
+// the top landed outside the Mezzanine's x/z footprint entirely). Walking
+// up either one ran you straight off the end into the void. Rebuilt so
+// each stairway starts on real floor (A-Long/B-Long, z=-5) and ends inside
+// the Mezzanine's actual footprint (x:-20..20, z:11..17, top y=5.7).
+// A-Stairs: SHORTER/steeper (10 steps) — dumps you in with less cover.
+{
+  const steps = 10;
+  const startX = -34, startZ = -5, startY = MAIN_Y;
+  const endX = -17, endZ = 13, endY = MEZZ_Y + 0.2;
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    box(3.5, 0.5, 3.5, startX + (endX - startX) * t, startY + (endY - startY) * t, startZ + (endZ - startZ) * t, matMezz);
+  }
 }
-// B-Stairs: LONGER, opens with sightline straight down A-Long (rotate-punish)
-for (let i = 0; i < 12; i++) {
-  box(4, 0.5, 2, 34 - i * 0.3, MAIN_Y + i * 0.5, 11 + i * 1.1, matMezz);
+// B-Stairs: LONGER/shallower (14 steps) — opens with sightline down A-Long.
+{
+  const steps = 14;
+  const startX = 34, startZ = -5, startY = MAIN_Y;
+  const endX = 17, endZ = 13, endY = MEZZ_Y + 0.2;
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    box(3.5, 0.5, 3.5, startX + (endX - startX) * t, startY + (endY - startY) * t, startZ + (endZ - startZ) * t, matMezz);
+  }
 }
 
 // Mezzanine ring over Mid — broken railing (partial cover), connects A-Stairs to B-Stairs
@@ -286,6 +310,11 @@ beam2.userData.hp = 1;
 beamTargets.push(beam2);
 
 // ---------------- CONNECTOR -> LOWER HALL (flank route under Mid) ----------------
+// Bridge: A-Long floor (ends z=-8.5) to the A-Connector ramp's first step
+// (starts z=-14) — same unconnected-gap issue as the Mid/Choke seams above.
+floorSlab(6, 7, -46, MAIN_Y, -11, matFloor);
+floorSlab(6, 7, 46, MAIN_Y, -11, matFloor); // mirror for B-Connector
+
 // A-Connector ramp down
 for (let i = 0; i < 8; i++) {
   box(5, 0.5, 2, -46, MAIN_Y - i * 0.56, -14 - i * 1.2, matFloor);
@@ -582,7 +611,7 @@ function tryStartSlide() {
   // wherever the camera is currently facing, so pressing slide always
   // produces a visible burst instead of silently doing nothing — that
   // silent-no-op was the old bug.
-  const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)); // true camera-facing direction
   const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
   let dx = 0, dz = 0;
   if (keys['KeyW'] || keys['ArrowUp'])    { dx += forward.x; dz += forward.z; }
@@ -636,9 +665,30 @@ function resolveCollisions(nextPos) {
   return grounded;
 }
 
+// Horizontal (wall) collision — the original code only ever resolved
+// vertical landings, so there was nothing stopping the player from
+// clipping into or getting wedged inside a wall when moving fast
+// horizontally (exactly what a slide does). Thin floor/ramp slabs (under
+// 0.6 units tall) are skipped here on purpose — those should be walked
+// over, not treated as walls; resolveCollisions above already handles
+// standing on top of them.
+function collidesHorizontal(x, z, currentY) {
+  const feetY = currentY - player.height + 0.2;
+  const headY = currentY - 0.15;
+  const testBox = new THREE.Box3(
+    new THREE.Vector3(x - player.radius, feetY, z - player.radius),
+    new THREE.Vector3(x + player.radius, headY, z + player.radius)
+  );
+  for (const c of colliders) {
+    if (c.max.y - c.min.y < 0.6) continue; // thin floor/ramp slab, not a wall
+    if (testBox.intersectsBox(c)) return true;
+  }
+  return false;
+}
+
 function updatePlayer(dt) {
   // look direction
-  const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)); // true camera-facing direction
   const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
 
   let moveX = 0, moveZ = 0;
@@ -681,12 +731,27 @@ function updatePlayer(dt) {
   player.vel.y += GRAVITY * dt;
 
   const next = player.pos.clone();
-  next.x += player.vel.x * dt;
-  next.z += player.vel.z * dt;
+
+  // Resolve X and Z separately against walls so hitting one at an angle
+  // (very easy to do mid-slide) stops that axis cleanly and lets you keep
+  // sliding along the wall on the other axis, instead of freezing dead or
+  // tunneling through.
+  let testX = next.x + player.vel.x * dt;
+  if (collidesHorizontal(testX, next.z, player.pos.y)) { testX = next.x; player.vel.x = 0; }
+  next.x = testX;
+
+  let testZ = next.z + player.vel.z * dt;
+  if (collidesHorizontal(next.x, testZ, player.pos.y)) { testZ = next.z; player.vel.z = 0; }
+  next.z = testZ;
+
   next.y += player.vel.y * dt;
 
   player.onGround = resolveCollisions(next);
-  if (next.y < -30) { next.set(-58, 2, 0); player.vel.set(0,0,0); } // fell off map -> respawn A side
+  if (next.y < -30) {
+    next.set(-58, 2, 0);
+    player.vel.set(0, 0, 0);
+    player.isSliding = false; // reset so falling mid-slide can't leave you stuck sliding after respawn
+  }
 
   player.pos.copy(next);
 
