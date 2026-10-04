@@ -38,26 +38,73 @@
     background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 6px;
     z-index: 10; pointer-events: none; display: none;
   }
+  #slide-status {
+    position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%);
+    color: #4dd2ff; font-family: monospace; font-size: 16px; font-weight: bold;
+    letter-spacing: 0.1em; text-shadow: 0 0 6px rgba(77,210,255,0.8);
+    z-index: 10; pointer-events: none; opacity: 0; transition: opacity 0.1s;
+  }
+  /* ---- Touch controls (shown only on touch devices without a real mouse) ---- */
+  #touch-joystick-zone {
+    position: fixed; left: 0; bottom: 0; width: 45%; height: 45%;
+    z-index: 15; display: none; touch-action: none;
+  }
+  #touch-look-zone {
+    position: fixed; right: 0; bottom: 0; width: 55%; height: 70%;
+    z-index: 14; display: none; touch-action: none;
+  }
+  #joystick-base {
+    position: absolute; width: 110px; height: 110px; border-radius: 50%;
+    background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
+  }
+  #joystick-knob {
+    position: absolute; width: 50px; height: 50px; border-radius: 50%;
+    background: rgba(255,255,255,0.35); left: 30px; top: 30px;
+    pointer-events: none;
+  }
+  .touch-btn {
+    position: fixed; z-index: 16; display: none;
+    width: 66px; height: 66px; border-radius: 50%;
+    background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.3);
+    color: #fff; font-family: monospace; font-size: 11px; font-weight: bold;
+    align-items: center; justify-content: center; text-align: center; line-height: 1.2;
+    user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  #btn-jump      { right: 110px; bottom: 150px; }
+  #btn-slide     { right: 30px;  bottom: 150px; }
+  #btn-walljump  { right: 110px; bottom: 70px; }
+  #btn-shoot     { right: 30px;  bottom: 70px; background: rgba(255,80,80,0.18); }
 </style>
 </head>
 <body>
 
 <div id="crosshair"></div>
 <div id="callout"></div>
-<div id="beam-prompt">LEFT CLICK — SHOOT SUPPORT BEAM (collapses Mezzanine)</div>
+<div id="beam-prompt">SHOOT — SUPPORT BEAM (collapses Mezzanine)</div>
+<div id="slide-status">SLIDING</div>
 <div id="hud">
-  WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)<br>
-  Q/E lean · Mouse look · Click to lock pointer<br>
+  <span id="controls-line">WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)</span><br>
+  <span id="look-line">Q/E lean · Mouse look · Click to lock pointer</span><br>
   <span id="pos">pos: -</span>
 </div>
 <div id="blocker">
   <h1>FIRETEAM ZERO</h1>
-  <p>
+  <p id="blocker-text">
     Map: Atrium — geometry blockout for movement/TTK playtesting. Not the
     final art pass, purely about whether the paths, chokes, and verticality
     feel right. Click to start.
   </p>
 </div>
+
+<!-- Touch controls — only switched on for touch devices with no real mouse -->
+<div id="touch-joystick-zone">
+  <div id="joystick-base"><div id="joystick-knob"></div></div>
+</div>
+<div id="touch-look-zone"></div>
+<div class="touch-btn" id="btn-jump">JUMP</div>
+<div class="touch-btn" id="btn-slide">SLIDE</div>
+<div class="touch-btn" id="btn-walljump">WALL<br>JUMP</div>
+<div class="touch-btn" id="btn-shoot">SHOOT</div>
 
 <script type="importmap">
 {
@@ -297,12 +344,21 @@ const player = {
   sprintMul: 1.0, // base automatic sprint; slide below is the burst
   isSliding: false,
   slideTimer: 0,
+  slideDir: new THREE.Vector3(0, 0, 1), // locked in at slide start, held for the whole slide
   lean: 0, // -1 (left/Q) .. +1 (right/E)
   leanTarget: 0,
 };
 
 camera.position.copy(player.pos);
 camera.position.y += player.height;
+
+// ======================================================
+// INPUT DEVICE DETECTION
+// A "fine" pointer (mouse/trackpad) vs a coarse-only (touch) or absent
+// pointer get genuinely different control schemes, not just a relabeled HUD.
+// ======================================================
+const hasMouse = window.matchMedia && window.matchMedia('(pointer: fine)').matches;
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
 const keys = {};
 window.addEventListener('keydown', (e) => { keys[e.code] = true; handleKeyDown(e); });
@@ -313,26 +369,68 @@ function handleKeyDown(e) {
   if (e.code === 'KeyC') tryWallJump();
 }
 
-document.getElementById('blocker').addEventListener('click', () => {
-  document.body.requestPointerLock();
-});
-document.addEventListener('pointerlockchange', () => {
-  const blocker = document.getElementById('blocker');
-  blocker.style.display = document.pointerLockElement ? 'none' : 'flex';
-});
-document.addEventListener('mousemove', (e) => {
-  if (!document.pointerLockElement) return;
-  const sens = 0.0022;
-  player.yaw -= e.movementX * sens;
-  player.pitch -= e.movementY * sens;
-  player.pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, player.pitch));
+// ---------- Blocker: always dismiss on click, regardless of what happens
+// to pointer lock next. A sandboxed preview pane or a touch device can
+// silently refuse/skip pointer lock, and the old code only hid the blocker
+// from inside the pointerlockchange event — if that event never fires,
+// the blocker was stuck forever. Hiding it directly on click fixes that
+// for every device, mouse or not. ----------
+const blockerEl = document.getElementById('blocker');
+blockerEl.addEventListener('click', () => {
+  blockerEl.style.display = 'none';
+  if (hasMouse) {
+    // Pointer lock only makes sense with a real mouse. If the environment
+    // blocks it (sandboxed iframe, etc.) we silently fall back to
+    // click-and-drag look further down — no error shown to the player.
+    document.body.requestPointerLock().catch(() => {});
+  }
 });
 
-// Shooting the support beams (raycast on click)
+if (hasMouse) {
+  document.addEventListener('pointerlockchange', () => {
+    // Only re-show the blocker if we HAD control and lost it (Esc) — not
+    // on first load, since we already hid it on click above.
+    if (!document.pointerLockElement && blockerEl.style.display === 'none') {
+      blockerEl.style.display = 'flex';
+    }
+  });
+}
+
+// ---------- Look controls ----------
+// Mouse users: pointer-lock mouse-look, with a click-and-drag fallback for
+// environments that won't grant pointer lock at all.
+// No-mouse users: drag-to-look works via touch directly (see touch block
+// below); keyboard-only fallback turns with Left/Right arrows.
+let isDragLooking = false;
+let lastDragX = 0, lastDragY = 0;
+
+function applyLook(dx, dy) {
+  const sens = 0.0022;
+  player.yaw -= dx * sens;
+  player.pitch -= dy * sens;
+  player.pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, player.pitch));
+}
+
+if (hasMouse) {
+  document.addEventListener('mousemove', (e) => {
+    if (document.pointerLockElement) {
+      applyLook(e.movementX, e.movementY);
+    } else if (isDragLooking) {
+      applyLook(e.clientX - lastDragX, e.clientY - lastDragY);
+      lastDragX = e.clientX; lastDragY = e.clientY;
+    }
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || document.pointerLockElement) return;
+    isDragLooking = true;
+    lastDragX = e.clientX; lastDragY = e.clientY;
+  });
+  document.addEventListener('mouseup', () => { isDragLooking = false; });
+}
+
+// Shooting the support beams (raycast from screen center / crosshair)
 const raycaster = new THREE.Raycaster();
-document.addEventListener('mousedown', (e) => {
-  if (!document.pointerLockElement) return;
-  if (e.button !== 0) return;
+function fireShot() {
   raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
   const hits = raycaster.intersectObjects(beamTargets, false);
   if (hits.length > 0 && hits[0].distance < 40) {
@@ -341,7 +439,119 @@ document.addEventListener('mousedown', (e) => {
       collapseMezzanine(beamHit);
     }
   }
-});
+}
+if (hasMouse) {
+  document.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    fireShot();
+  });
+}
+
+// ======================================================
+// TOUCH CONTROLS — virtual joystick (move) + drag zone (look) + action
+// buttons. Switched on whenever there's no real mouse; most no-mouse
+// devices are touchscreens with no physical keys at all, so this is the
+// primary control path for them (arrow-key support below covers the rare
+// keyboard-but-no-mouse case, e.g. some TV/kiosk browsers).
+// ======================================================
+const touchMove = { x: 0, z: 0 }; // x = strafe, z = forward(-1)/back(+1)
+
+if (!hasMouse) {
+  const joyZone = document.getElementById('touch-joystick-zone');
+  const joyBase = document.getElementById('joystick-base');
+  const joyKnob = document.getElementById('joystick-knob');
+  const lookZone = document.getElementById('touch-look-zone');
+  const btnJump = document.getElementById('btn-jump');
+  const btnSlide = document.getElementById('btn-slide');
+  const btnWallJump = document.getElementById('btn-walljump');
+  const btnShoot = document.getElementById('btn-shoot');
+
+  if (isTouch) {
+    [joyZone, lookZone, btnJump, btnSlide, btnWallJump, btnShoot].forEach(el => {
+      el.style.display = el === lookZone || el === joyZone ? 'block' : 'flex';
+    });
+
+    let joyActive = false, joyTouchId = null, joyCenterX = 0, joyCenterY = 0;
+    const JOY_RADIUS = 55;
+
+    joyZone.addEventListener('touchstart', (e) => {
+      const t = e.changedTouches[0];
+      joyActive = true; joyTouchId = t.identifier;
+      joyCenterX = t.clientX; joyCenterY = t.clientY;
+      joyBase.style.left = (joyCenterX - 55) + 'px';
+      joyBase.style.top = (joyCenterY - 55) + 'px';
+      e.preventDefault();
+    }, { passive: false });
+
+    joyZone.addEventListener('touchmove', (e) => {
+      if (!joyActive) return;
+      for (const t of e.changedTouches) {
+        if (t.identifier !== joyTouchId) continue;
+        let dx = t.clientX - joyCenterX;
+        let dy = t.clientY - joyCenterY;
+        const dist = Math.min(JOY_RADIUS, Math.hypot(dx, dy));
+        const ang = Math.atan2(dy, dx);
+        dx = Math.cos(ang) * dist; dy = Math.sin(ang) * dist;
+        joyKnob.style.left = (55 + dx - 25) + 'px';
+        joyKnob.style.top = (55 + dy - 25) + 'px';
+        touchMove.x = dx / JOY_RADIUS;
+        touchMove.z = dy / JOY_RADIUS;
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    function endJoy(e) {
+      joyActive = false; touchMove.x = 0; touchMove.z = 0;
+      joyKnob.style.left = '30px'; joyKnob.style.top = '30px';
+      e.preventDefault();
+    }
+    joyZone.addEventListener('touchend', endJoy, { passive: false });
+    joyZone.addEventListener('touchcancel', endJoy, { passive: false });
+
+    let lookTouchId = null, lastLookX = 0, lastLookY = 0;
+    lookZone.addEventListener('touchstart', (e) => {
+      const t = e.changedTouches[0];
+      lookTouchId = t.identifier;
+      lastLookX = t.clientX; lastLookY = t.clientY;
+      e.preventDefault();
+    }, { passive: false });
+    lookZone.addEventListener('touchmove', (e) => {
+      for (const t of e.changedTouches) {
+        if (t.identifier !== lookTouchId) continue;
+        applyLook((t.clientX - lastLookX) * 1.6, (t.clientY - lastLookY) * 1.6);
+        lastLookX = t.clientX; lastLookY = t.clientY;
+      }
+      e.preventDefault();
+    }, { passive: false });
+    lookZone.addEventListener('touchend', (e) => { lookTouchId = null; e.preventDefault(); }, { passive: false });
+
+    btnJump.addEventListener('touchstart', (e) => { keys['Space'] = true; e.preventDefault(); }, { passive: false });
+    btnJump.addEventListener('touchend', (e) => { keys['Space'] = false; e.preventDefault(); }, { passive: false });
+    btnSlide.addEventListener('touchstart', (e) => { tryStartSlide(); e.preventDefault(); }, { passive: false });
+    btnWallJump.addEventListener('touchstart', (e) => { tryWallJump(); e.preventDefault(); }, { passive: false });
+    btnShoot.addEventListener('touchstart', (e) => { fireShot(); e.preventDefault(); }, { passive: false });
+  }
+}
+
+// ---------- HUD text: reflect the actual active control scheme ----------
+(function setHudText() {
+  const controlsLine = document.getElementById('controls-line');
+  const lookLine = document.getElementById('look-line');
+  const blockerText = document.getElementById('blocker-text');
+  if (hasMouse) {
+    controlsLine.textContent = 'WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)';
+    lookLine.textContent = 'Q/E lean · Mouse look · Click to lock pointer';
+    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
+  } else if (isTouch) {
+    controlsLine.textContent = 'Left stick: move · JUMP / SLIDE / WALL JUMP / SHOOT buttons';
+    lookLine.textContent = 'Drag right side of screen to look · Tap to start';
+    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Tap to start.';
+  } else {
+    controlsLine.textContent = 'ARROW KEYS move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)';
+    lookLine.textContent = 'No mouse detected — look is keyboard-limited';
+    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
+  }
+})();
 
 function collapseMezzanine(beamMesh) {
   beamMesh.userData.hp = 0;
@@ -367,6 +577,28 @@ const WALLJUMP_RANGE = 2.2;
 
 function tryStartSlide() {
   if (!player.onGround || player.isSliding) return;
+  // Lock in a direction NOW, from whatever input is active at this instant
+  // (WASD, arrows, or the touch stick). If nothing is held, default to
+  // wherever the camera is currently facing, so pressing slide always
+  // produces a visible burst instead of silently doing nothing — that
+  // silent-no-op was the old bug.
+  const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  let dx = 0, dz = 0;
+  if (keys['KeyW'] || keys['ArrowUp'])    { dx += forward.x; dz += forward.z; }
+  if (keys['KeyS'] || keys['ArrowDown'])  { dx -= forward.x; dz -= forward.z; }
+  if (keys['KeyA'] || keys['ArrowLeft'])  { dx -= right.x;   dz -= right.z; }
+  if (keys['KeyD'] || keys['ArrowRight']) { dx += right.x;   dz += right.z; }
+  if (Math.abs(touchMove.x) > 0.1 || Math.abs(touchMove.z) > 0.1) {
+    dx = right.x * touchMove.x - forward.x * touchMove.z;
+    dz = right.z * touchMove.x - forward.z * touchMove.z;
+  }
+  const len = Math.hypot(dx, dz);
+  if (len > 0.01) {
+    player.slideDir.set(dx / len, 0, dz / len);
+  } else {
+    player.slideDir.set(forward.x, 0, forward.z); // no input held — slide the way you're facing
+  }
   player.isSliding = true;
   player.slideTimer = SLIDE_DURATION;
 }
@@ -410,23 +642,31 @@ function updatePlayer(dt) {
   const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
 
   let moveX = 0, moveZ = 0;
-  if (keys['KeyW']) { moveX += forward.x; moveZ += forward.z; }
-  if (keys['KeyS']) { moveX -= forward.x; moveZ -= forward.z; }
-  if (keys['KeyA']) { moveX -= right.x; moveZ -= right.z; }
-  if (keys['KeyD']) { moveX += right.x; moveZ += right.z; }
+  if (keys['KeyW'] || keys['ArrowUp'])    { moveX += forward.x; moveZ += forward.z; }
+  if (keys['KeyS'] || keys['ArrowDown'])  { moveX -= forward.x; moveZ -= forward.z; }
+  if (keys['KeyA'] || keys['ArrowLeft'])  { moveX -= right.x; moveZ -= right.z; }
+  if (keys['KeyD'] || keys['ArrowRight']) { moveX += right.x; moveZ += right.z; }
+  // Touch stick contributes on top of keyboard input
+  moveX += right.x * touchMove.x - forward.x * touchMove.z;
+  moveZ += right.z * touchMove.x - forward.z * touchMove.z;
 
   const len = Math.hypot(moveX, moveZ);
-  if (len > 0) { moveX /= len; moveZ /= len; }
+  if (len > 1) { moveX /= len; moveZ /= len; }
 
-  let speed = player.speed;
   if (player.isSliding) {
+    // Committed burst: direction was locked in at slide start (tryStartSlide),
+    // so it holds for the whole slide regardless of what's held afterward —
+    // this is what makes the slide actually move you even if you tap the
+    // slide key without also holding a movement key.
     player.slideTimer -= dt;
-    speed = SLIDE_SPEED * (player.slideTimer / SLIDE_DURATION + 0.3);
+    const speed = SLIDE_SPEED * (player.slideTimer / SLIDE_DURATION + 0.3);
+    player.vel.x = player.slideDir.x * speed;
+    player.vel.z = player.slideDir.z * speed;
     if (player.slideTimer <= 0) player.isSliding = false;
+  } else {
+    player.vel.x = moveX * player.speed;
+    player.vel.z = moveZ * player.speed;
   }
-
-  player.vel.x = moveX * speed;
-  player.vel.z = moveZ * speed;
 
   if (keys['Space'] && player.onGround) {
     player.vel.y = JUMP_SPEED;
@@ -451,7 +691,9 @@ function updatePlayer(dt) {
   player.pos.copy(next);
 
   camera.position.copy(player.pos);
-  camera.position.y += player.height;
+  // Crouch-dip during a slide so it's visually obvious something is
+  // happening, not just a silent speed-stat change.
+  camera.position.y += player.height - (player.isSliding ? 0.5 : 0);
   camera.rotation.order = 'YXZ';
   camera.rotation.y = player.yaw;
   camera.rotation.x = player.pitch;
@@ -464,9 +706,11 @@ function updatePlayer(dt) {
 const posEl = document.getElementById('pos');
 const calloutEl = document.getElementById('callout');
 const beamPromptEl = document.getElementById('beam-prompt');
+const slideStatusEl = document.getElementById('slide-status');
 
 function updateHud() {
   posEl.textContent = `pos: ${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
+  slideStatusEl.style.opacity = player.isSliding ? '1' : '0';
   let current = null, bestDist = Infinity;
   for (const z of calloutZones) {
     const y = z.y ?? 0;
