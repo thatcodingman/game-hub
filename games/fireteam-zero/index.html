@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fireteam Zero — Atrium (Blockout)</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #crosshair {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.9);
+    pointer-events: none; z-index: 10;
+    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }
+  #hud {
+    position: fixed; bottom: 16px; left: 16px; color: #eee; font-family: monospace;
+    font-size: 13px; background: rgba(0,0,0,0.5); padding: 10px 14px; border-radius: 6px;
+    line-height: 1.6; z-index: 10; pointer-events: none;
+  }
+  #callout {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    color: #ffd24d; font-family: monospace; font-size: 14px; font-weight: bold;
+    background: rgba(0,0,0,0.5); padding: 6px 16px; border-radius: 6px;
+    z-index: 10; pointer-events: none;
+  }
+  #blocker {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; color: #fff; font-family: monospace; text-align: center;
+    z-index: 20; cursor: pointer;
+  }
+  #blocker h1 { margin-bottom: 8px; }
+  #blocker p { color: #aaa; max-width: 480px; line-height: 1.6; }
+  #beam-prompt {
+    position: fixed; top: 60%; left: 50%; transform: translate(-50%, -50%);
+    color: #ff6b4d; font-family: monospace; font-size: 15px; font-weight: bold;
+    background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 6px;
+    z-index: 10; pointer-events: none; display: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="crosshair"></div>
+<div id="callout"></div>
+<div id="beam-prompt">LEFT CLICK — SHOOT SUPPORT BEAM (collapses Mezzanine)</div>
+<div id="hud">
+  WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)<br>
+  Q/E lean · Mouse look · Click to lock pointer<br>
+  <span id="pos">pos: -</span>
+</div>
+<div id="blocker">
+  <h1>FIRETEAM ZERO</h1>
+  <p>
+    Map: Atrium — geometry blockout for movement/TTK playtesting. Not the
+    final art pass, purely about whether the paths, chokes, and verticality
+    feel right. Click to start.
+  </p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   ATRIUM BLOCKOUT
+   Symmetric small-map FPS layout:
+   Team A Spawn -- A-Long -- A-Choke -- MID -- B-Choke -- B-Long -- Team B Spawn
+                 \-A-Stairs-MEZZANINE-B-Stairs-/   (height route over mid)
+                 \-A-Connector--Lower Hall--B-Connector-/  (flank route under)
+   Lower Hall has two scaffolding wall-jump spots straight up into Mid.
+   Escalator in Mid is a second, slower climbable vertical route.
+   Mezzanine has a shootable support beam that collapses part of its floor.
+   ============================================================ */
+
+// ---------- Basic scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a22);
+scene.fog = new THREE.Fog(0x1a1a22, 30, 110);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- Lighting (flat, neutral — just enough to read geometry) ----------
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444455, 1.1);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+sun.position.set(20, 40, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -60;
+sun.shadow.camera.right = 60;
+sun.shadow.camera.top = 60;
+sun.shadow.camera.bottom = -60;
+scene.add(sun);
+
+// ---------- Materials (color-coded by zone for blockout clarity) ----------
+const matFloor      = new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 });
+const matWall       = new THREE.MeshStandardMaterial({ color: 0x3d3d47, roughness: 0.95 });
+const matChokeWall  = new THREE.MeshStandardMaterial({ color: 0x5a4a3d, roughness: 0.9 }); // warm = choke
+const matCover      = new THREE.MeshStandardMaterial({ color: 0x4a5a4a, roughness: 0.9 }); // green = hard cover
+const matMezz       = new THREE.MeshStandardMaterial({ color: 0x4a4a6a, roughness: 0.85 }); // blue = mezzanine
+const matScaffold   = new THREE.MeshStandardMaterial({ color: 0xaa6633, roughness: 0.7 });  // orange = wall-jump route
+const matEscalator  = new THREE.MeshStandardMaterial({ color: 0x777788, roughness: 0.6, metalness: 0.3 });
+const matBeam       = new THREE.MeshStandardMaterial({ color: 0xcc4433, roughness: 0.6 });  // red = destructible
+const matSpawnA     = new THREE.MeshStandardMaterial({ color: 0x3355aa, roughness: 0.9 });
+const matSpawnB     = new THREE.MeshStandardMaterial({ color: 0xaa3333, roughness: 0.9 });
+
+// ---------- Helpers ----------
+const colliders = []; // AABB solids for player collision
+const zoneLabels = []; // { box: THREE.Box3, name }
+const beamTargets = []; // destructible support beams
+
+function box(w, h, d, x, y, z, mat, { collide = true, zone = null, castShadow = true } = {}) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = castShadow;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  const bbox = new THREE.Box3().setFromObject(mesh);
+  if (collide) colliders.push(bbox);
+  if (zone) zoneLabels.push({ box: bbox, name: zone });
+  return mesh;
+}
+
+function floorSlab(w, d, x, y, z, mat = matFloor) {
+  return box(w, 0.4, d, x, y, z, mat, { collide: true, castShadow: false });
+}
+
+function wallSeg(w, h, d, x, y, z, mat = matWall) {
+  return box(w, h, d, x, y, z, mat);
+}
+
+// ======================================================
+// LAYOUT CONSTANTS
+// Map runs along X axis: -X = Team A side, +X = Team B side, 0 = center of Mid.
+// Z axis: 0 = main floor centerline. Lower Hall is below (Y negative-ish),
+// Mezzanine is above (Y positive), both run parallel to main floor.
+// ======================================================
+
+const WALL_H = 6;
+const MAIN_Y = 0;       // main floor level
+const LOWER_Y = -4.5;   // lower hall level (reached by stairs/ramp, not drop)
+const MEZZ_Y = 5.5;     // mezzanine level
+
+// ---------------- MAIN FLOOR SPINE ----------------
+
+// Team A Spawn (far -X)
+floorSlab(16, 16, -58, MAIN_Y, 0, matSpawnA);
+wallSeg(16, WALL_H, 1, -58, MAIN_Y + WALL_H/2, -8, matWall);
+wallSeg(16, WALL_H, 1, -58, MAIN_Y + WALL_H/2, 8, matWall);
+wallSeg(1, WALL_H, 16, -66, MAIN_Y + WALL_H/2, 0, matWall);
+
+// A-Long (rifle sightline toward mid)
+floorSlab(26, 7, -42, MAIN_Y, -5, matFloor);
+wallSeg(26, WALL_H, 1, -42, MAIN_Y + WALL_H/2, -8.5, matWall);
+wallSeg(26, WALL_H, 1, -42, MAIN_Y + WALL_H/2, -1.5, matWall);
+
+// A-Choke (tight doorway into Mid, hard cover both sides)
+floorSlab(8, 6, -26, MAIN_Y, -5, matFloor);
+wallSeg(8, WALL_H, 1, -26, MAIN_Y + WALL_H/2, -8, matChokeWall);
+wallSeg(1, WALL_H, 4, -29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
+wallSeg(1, WALL_H, 4, -22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
+box(1.6, 1.2, 2.4, -26, MAIN_Y + 0.6, -3, matCover); // cover block at choke mouth
+
+// ---- MID (the Atrium centerpiece) ----
+floorSlab(20, 20, 0, MAIN_Y, 0, matFloor, { });
+// perimeter low walls / glass-curtain suggestion (open-ish, vertical focal space)
+wallSeg(20, 1.2, 1, 0, MAIN_Y + 0.6, -10, matCover);
+wallSeg(20, 1.2, 1, 0, MAIN_Y + 0.6, 10, matCover);
+// central dead escalator (climbable second vertical route into Mezzanine — slow, exposed)
+const escalator = box(4, 0.6, 14, 2, MAIN_Y + 0.3, 2, matEscalator, { collide: false });
+for (let i = 0; i < 10; i++) {
+  box(4, 0.5, 1.2, 2, MAIN_Y + 0.3 + i * 0.5, -5 + i * 1.3, matEscalator, { zone: i === 9 ? 'escalator-top' : null });
+}
+// mid pillar (central cover / camp spot the mezzanine is meant to punish)
+box(2, 5, 2, -1, MAIN_Y + 2.5, 6, matCover, { zone: 'mid-pillar' });
+
+floorSlab(8, 6, 26, MAIN_Y, -5, matFloor); // B-Choke mirrors A-Choke
+wallSeg(8, WALL_H, 1, 26, MAIN_Y + WALL_H/2, -8, matChokeWall);
+wallSeg(1, WALL_H, 4, 29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
+wallSeg(1, WALL_H, 4, 22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
+box(1.6, 1.2, 2.4, 26, MAIN_Y + 0.6, -3, matCover);
+
+// B-Long
+floorSlab(26, 7, 42, MAIN_Y, -5, matFloor);
+wallSeg(26, WALL_H, 1, 42, MAIN_Y + WALL_H/2, -8.5, matWall);
+wallSeg(26, WALL_H, 1, 42, MAIN_Y + WALL_H/2, -1.5, matWall);
+
+// Team B Spawn
+floorSlab(16, 16, 58, MAIN_Y, 0, matSpawnB);
+wallSeg(16, WALL_H, 1, 58, MAIN_Y + WALL_H/2, -8, matWall);
+wallSeg(16, WALL_H, 1, 58, MAIN_Y + WALL_H/2, 8, matWall);
+wallSeg(1, WALL_H, 16, 66, MAIN_Y + WALL_H/2, 0, matWall);
+
+// ---------------- STAIRS -> MEZZANINE (asymmetric per spec) ----------------
+// A-Stairs: SHORTER, dumps you in with less cover (per design note)
+for (let i = 0; i < 8; i++) {
+  box(4, 0.5, 2, -34, MAIN_Y + i * 0.75, 11 + i * 1.3, matMezz);
+}
+// B-Stairs: LONGER, opens with sightline straight down A-Long (rotate-punish)
+for (let i = 0; i < 12; i++) {
+  box(4, 0.5, 2, 34 - i * 0.3, MAIN_Y + i * 0.5, 11 + i * 1.1, matMezz);
+}
+
+// Mezzanine ring over Mid — broken railing (partial cover), connects A-Stairs to B-Stairs
+floorSlab(40, 6, 0, MEZZ_Y, 14, matMezz, { zone: 'mezzanine' });
+wallSeg(40, 0.9, 0.5, 0, MEZZ_Y + 0.45, 11, matMezz); // broken railing overlooking mid (low = partial cover only)
+// gap in mezzanine floor near mid-facing edge — "can fall through if careless"
+// (visualized as a thinner inset slab; collider intentionally omitted over the gap)
+floorSlab(6, 2, 0, MEZZ_Y, 9.5, null, { collide: false }); // visual gap marker, no mesh (left empty intentionally)
+
+// Shootable support beam — collapses mezzanine floor section when destroyed
+const beam = box(0.6, 5, 0.6, -10, MEZZ_Y - 2.5, 14, matBeam, { zone: 'support-beam' });
+beam.userData.isSupportBeam = true;
+beam.userData.hp = 1;
+beamTargets.push(beam);
+const beam2 = box(0.6, 5, 0.6, 10, MEZZ_Y - 2.5, 14, matBeam);
+beam2.userData.isSupportBeam = true;
+beam2.userData.hp = 1;
+beamTargets.push(beam2);
+
+// ---------------- CONNECTOR -> LOWER HALL (flank route under Mid) ----------------
+// A-Connector ramp down
+for (let i = 0; i < 8; i++) {
+  box(5, 0.5, 2, -46, MAIN_Y - i * 0.56, -14 - i * 1.2, matFloor);
+}
+// B-Connector ramp down
+for (let i = 0; i < 8; i++) {
+  box(5, 0.5, 2, 46, MAIN_Y - i * 0.56, -14 - i * 1.2, matFloor);
+}
+// Lower Hall spine (low ceiling, close-quarters)
+floorSlab(70, 6, 0, LOWER_Y, -22, matFloor, { zone: 'lower-hall' });
+wallSeg(70, 3.2, 1, 0, LOWER_Y + 1.6, -25, matWall);
+wallSeg(70, 3.2, 1, 0, LOWER_Y + 1.6, -19, matWall);
+// low ceiling slab over Lower Hall (reinforces CQB feel)
+box(70, 0.5, 6, 0, LOWER_Y + 3.4, -22, matWall, { castShadow: false });
+
+// Scaffolding wall-jump routes: Lower Hall -> Mid (two spots, loud per design note)
+function scaffold(x) {
+  for (let i = 0; i < 9; i++) {
+    box(1.4, 0.3, 1.4, x, LOWER_Y + 1 + i * 1.05, -22 + i * 0.4, matScaffold, {
+      zone: i === 8 ? 'scaffold-top' : null
+    });
+  }
+}
+scaffold(-9);
+scaffold(9);
+
+// ======================================================
+// CALLOUT ZONES (for HUD label + later gameplay triggers e.g. footstep volume)
+// ======================================================
+const calloutZones = [
+  { name: 'TEAM A SPAWN', cx: -58, cz: 0, r: 12 },
+  { name: 'A-LONG', cx: -42, cz: -5, r: 15 },
+  { name: 'A-CHOKE', cx: -26, cz: -5, r: 6 },
+  { name: 'MID', cx: 0, cz: 0, r: 13 },
+  { name: 'B-CHOKE', cx: 26, cz: -5, r: 6 },
+  { name: 'B-LONG', cx: 42, cz: -5, r: 15 },
+  { name: 'TEAM B SPAWN', cx: 58, cz: 0, r: 12 },
+  { name: 'MEZZANINE', cx: 0, cz: 14, r: 22, y: MEZZ_Y },
+  { name: 'LOWER HALL', cx: 0, cz: -22, r: 35, y: LOWER_Y },
+  { name: 'A-CONNECTOR', cx: -46, cz: -18, r: 8 },
+  { name: 'B-CONNECTOR', cx: 46, cz: -18, r: 8 },
+];
+
+// ======================================================
+// FIRST-PERSON CONTROLLER
+// ======================================================
+const player = {
+  pos: new THREE.Vector3(-58, 2, 0),
+  vel: new THREE.Vector3(0, 0, 0),
+  yaw: 0,
+  pitch: 0,
+  onGround: true,
+  height: 1.8,
+  radius: 0.4,
+  speed: 9,
+  sprintMul: 1.0, // base automatic sprint; slide below is the burst
+  isSliding: false,
+  slideTimer: 0,
+  lean: 0, // -1 (left/Q) .. +1 (right/E)
+  leanTarget: 0,
+};
+
+camera.position.copy(player.pos);
+camera.position.y += player.height;
+
+const keys = {};
+window.addEventListener('keydown', (e) => { keys[e.code] = true; handleKeyDown(e); });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function handleKeyDown(e) {
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') tryStartSlide();
+  if (e.code === 'KeyC') tryWallJump();
+}
+
+document.getElementById('blocker').addEventListener('click', () => {
+  document.body.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  const blocker = document.getElementById('blocker');
+  blocker.style.display = document.pointerLockElement ? 'none' : 'flex';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!document.pointerLockElement) return;
+  const sens = 0.0022;
+  player.yaw -= e.movementX * sens;
+  player.pitch -= e.movementY * sens;
+  player.pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, player.pitch));
+});
+
+// Shooting the support beams (raycast on click)
+const raycaster = new THREE.Raycaster();
+document.addEventListener('mousedown', (e) => {
+  if (!document.pointerLockElement) return;
+  if (e.button !== 0) return;
+  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
+  const hits = raycaster.intersectObjects(beamTargets, false);
+  if (hits.length > 0 && hits[0].distance < 40) {
+    const beamHit = hits[0].object;
+    if (beamHit.userData.isSupportBeam && beamHit.userData.hp > 0) {
+      collapseMezzanine(beamHit);
+    }
+  }
+});
+
+function collapseMezzanine(beamMesh) {
+  beamMesh.userData.hp = 0;
+  beamMesh.material = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1 });
+  beamMesh.position.y -= 4; // visually drop the beam as "collapsed"
+  // Remove a chunk of the mezzanine floor collider near that beam (denies the position)
+  const idx = colliders.findIndex(c => Math.abs((c.max.x + c.min.x)/2 - beamMesh.position.x) < 6 && c.min.y > 4.5);
+  // simple approach: shrink the mezzanine zone bbox in that half so player collision drops through
+  colliders.forEach((c, i) => {
+    if (c.min.y > MEZZ_Y - 0.5 && c.max.y < MEZZ_Y + 1 &&
+        Math.sign((c.max.x + c.min.x)/2) === Math.sign(beamMesh.position.x)) {
+      c.min.y -= 100; c.max.y -= 100; // move collider out of the way = hole in floor
+    }
+  });
+}
+
+// ---------- Movement / collision ----------
+const GRAVITY = -28;
+const JUMP_SPEED = 9.5;
+const SLIDE_SPEED = 15;
+const SLIDE_DURATION = 0.55;
+const WALLJUMP_RANGE = 2.2;
+
+function tryStartSlide() {
+  if (!player.onGround || player.isSliding) return;
+  player.isSliding = true;
+  player.slideTimer = SLIDE_DURATION;
+}
+
+function tryWallJump() {
+  // near a scaffold zone? pop upward (loud — would trigger an audio cue in the real build)
+  const near = zoneLabels.find(z =>
+    (z.name === 'scaffold-top' || z.name === 'escalator-top') &&
+    player.pos.distanceTo(new THREE.Vector3(
+      (z.box.min.x + z.box.max.x) / 2, player.pos.y, (z.box.min.z + z.box.max.z) / 2
+    )) < 6
+  );
+  if (near || !player.onGround) {
+    player.vel.y = JUMP_SPEED * 0.9;
+    player.onGround = false;
+  }
+}
+
+function resolveCollisions(nextPos) {
+  const playerBox = new THREE.Box3(
+    new THREE.Vector3(nextPos.x - player.radius, nextPos.y - player.height, nextPos.z - player.radius),
+    new THREE.Vector3(nextPos.x + player.radius, nextPos.y + 0.2, nextPos.z + player.radius)
+  );
+  let grounded = false;
+  for (const c of colliders) {
+    if (!playerBox.intersectsBox(c)) continue;
+    // simple vertical resolve: if falling onto top of a box, snap to its top
+    const overlapTop = c.max.y - (nextPos.y - player.height);
+    if (overlapTop > 0 && overlapTop < 1.2 && player.vel.y <= 0) {
+      nextPos.y = c.max.y + player.height;
+      player.vel.y = 0;
+      grounded = true;
+    }
+  }
+  return grounded;
+}
+
+function updatePlayer(dt) {
+  // look direction
+  const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+
+  let moveX = 0, moveZ = 0;
+  if (keys['KeyW']) { moveX += forward.x; moveZ += forward.z; }
+  if (keys['KeyS']) { moveX -= forward.x; moveZ -= forward.z; }
+  if (keys['KeyA']) { moveX -= right.x; moveZ -= right.z; }
+  if (keys['KeyD']) { moveX += right.x; moveZ += right.z; }
+
+  const len = Math.hypot(moveX, moveZ);
+  if (len > 0) { moveX /= len; moveZ /= len; }
+
+  let speed = player.speed;
+  if (player.isSliding) {
+    player.slideTimer -= dt;
+    speed = SLIDE_SPEED * (player.slideTimer / SLIDE_DURATION + 0.3);
+    if (player.slideTimer <= 0) player.isSliding = false;
+  }
+
+  player.vel.x = moveX * speed;
+  player.vel.z = moveZ * speed;
+
+  if (keys['Space'] && player.onGround) {
+    player.vel.y = JUMP_SPEED;
+    player.onGround = false;
+  }
+
+  // lean
+  player.leanTarget = keys['KeyQ'] ? -1 : (keys['KeyE'] ? 1 : 0);
+  player.lean += (player.leanTarget - player.lean) * Math.min(1, dt * 8);
+
+  // gravity
+  player.vel.y += GRAVITY * dt;
+
+  const next = player.pos.clone();
+  next.x += player.vel.x * dt;
+  next.z += player.vel.z * dt;
+  next.y += player.vel.y * dt;
+
+  player.onGround = resolveCollisions(next);
+  if (next.y < -30) { next.set(-58, 2, 0); player.vel.set(0,0,0); } // fell off map -> respawn A side
+
+  player.pos.copy(next);
+
+  camera.position.copy(player.pos);
+  camera.position.y += player.height;
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = player.yaw;
+  camera.rotation.x = player.pitch;
+  camera.rotation.z = player.lean * -0.12; // lean tilt
+  camera.position.x += right.x * player.lean * 0.6;
+  camera.position.z += right.z * player.lean * 0.6;
+}
+
+// ---------- HUD ----------
+const posEl = document.getElementById('pos');
+const calloutEl = document.getElementById('callout');
+const beamPromptEl = document.getElementById('beam-prompt');
+
+function updateHud() {
+  posEl.textContent = `pos: ${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
+  let current = null, bestDist = Infinity;
+  for (const z of calloutZones) {
+    const y = z.y ?? 0;
+    const d = Math.hypot(player.pos.x - z.cx, player.pos.z - z.cz) + Math.abs(player.pos.y - y) * 0.5;
+    if (d < z.r && d < bestDist) { bestDist = d; current = z.name; }
+  }
+  calloutEl.textContent = current || '';
+
+  // beam prompt visibility
+  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
+  const hits = raycaster.intersectObjects(beamTargets, false);
+  beamPromptEl.style.display = (hits.length > 0 && hits[0].distance < 10 && hits[0].object.userData.hp > 0) ? 'block' : 'none';
+}
+
+// ---------- Render loop ----------
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta());
+  updatePlayer(dt);
+  updateHud();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
