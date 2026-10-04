@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Fireteam Zero — Atrium (Blockout)</title>
 <style>
   html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
@@ -10,13 +10,12 @@
   #crosshair {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.9);
-    pointer-events: none; z-index: 10;
-    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    pointer-events: none; z-index: 10; box-shadow: 0 0 2px rgba(0,0,0,0.8);
   }
   #hud {
     position: fixed; bottom: 16px; left: 16px; color: #eee; font-family: monospace;
     font-size: 13px; background: rgba(0,0,0,0.5); padding: 10px 14px; border-radius: 6px;
-    line-height: 1.6; z-index: 10; pointer-events: none;
+    line-height: 1.6; z-index: 10; pointer-events: none; max-width: 90vw;
   }
   #callout {
     position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
@@ -28,10 +27,10 @@
     position: fixed; inset: 0; background: rgba(0,0,0,0.85);
     display: flex; align-items: center; justify-content: center;
     flex-direction: column; color: #fff; font-family: monospace; text-align: center;
-    z-index: 20; cursor: pointer;
+    z-index: 20; cursor: pointer; padding: 20px;
   }
   #blocker h1 { margin-bottom: 8px; }
-  #blocker p { color: #aaa; max-width: 480px; line-height: 1.6; }
+  #blocker p { color: #aaa; max-width: 520px; line-height: 1.6; }
   #beam-prompt {
     position: fixed; top: 60%; left: 50%; transform: translate(-50%, -50%);
     color: #ff6b4d; font-family: monospace; font-size: 15px; font-weight: bold;
@@ -44,759 +43,593 @@
     letter-spacing: 0.1em; text-shadow: 0 0 6px rgba(77,210,255,0.8);
     z-index: 10; pointer-events: none; opacity: 0; transition: opacity 0.1s;
   }
-  /* ---- Touch controls (shown only on touch devices without a real mouse) ---- */
-  #touch-joystick-zone {
-    position: fixed; left: 0; bottom: 0; width: 45%; height: 45%;
-    z-index: 15; display: none; touch-action: none;
-  }
-  #touch-look-zone {
-    position: fixed; right: 0; bottom: 0; width: 55%; height: 70%;
-    z-index: 14; display: none; touch-action: none;
-  }
-  #joystick-base {
-    position: absolute; width: 110px; height: 110px; border-radius: 50%;
-    background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
-  }
-  #joystick-knob {
-    position: absolute; width: 50px; height: 50px; border-radius: 50%;
-    background: rgba(255,255,255,0.35); left: 30px; top: 30px;
-    pointer-events: none;
-  }
+  /* ---- Touch controls (shown only for touch devices with no mouse) ---- */
+  #touch-joystick-zone { position: fixed; left: 0; bottom: 0; width: 45%; height: 45%; z-index: 15; display: none; touch-action: none; }
+  #touch-look-zone { position: fixed; right: 0; bottom: 0; width: 55%; height: 70%; z-index: 14; display: none; touch-action: none; }
+  #joystick-base { position: absolute; width: 110px; height: 110px; border-radius: 50%; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25); left: 30px; bottom: 30px; }
+  #joystick-knob { position: absolute; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.35); left: 30px; top: 30px; pointer-events: none; }
   .touch-btn {
-    position: fixed; z-index: 16; display: none;
-    width: 66px; height: 66px; border-radius: 50%;
+    position: fixed; z-index: 16; display: none; width: 66px; height: 66px; border-radius: 50%;
     background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.3);
     color: #fff; font-family: monospace; font-size: 11px; font-weight: bold;
     align-items: center; justify-content: center; text-align: center; line-height: 1.2;
     user-select: none; -webkit-user-select: none; touch-action: none;
   }
-  #btn-jump      { right: 110px; bottom: 150px; }
-  #btn-slide     { right: 30px;  bottom: 150px; }
-  #btn-walljump  { right: 110px; bottom: 70px; }
-  #btn-shoot     { right: 30px;  bottom: 70px; background: rgba(255,80,80,0.18); }
+  #btn-jump { right: 110px; bottom: 150px; }
+  #btn-slide { right: 30px; bottom: 150px; }
+  #btn-boost { right: 110px; bottom: 70px; }
+  #btn-shoot { right: 30px; bottom: 70px; background: rgba(255,80,80,0.18); }
 </style>
 </head>
 <body>
 
 <div id="crosshair"></div>
 <div id="callout"></div>
-<div id="beam-prompt">SHOOT — SUPPORT BEAM (collapses Mezzanine)</div>
+<div id="beam-prompt">SHOOT — SUPPORT BEAM (collapses that half of the Mezzanine)</div>
 <div id="slide-status">SLIDING</div>
 <div id="hud">
-  <span id="controls-line">WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)</span><br>
-  <span id="look-line">Q/E lean · Mouse look · Click to lock pointer</span><br>
+  <span id="controls-line"></span><br>
+  <span id="look-line"></span><br>
   <span id="pos">pos: -</span>
 </div>
 <div id="blocker">
-  <h1>FIRETEAM ZERO</h1>
-  <p id="blocker-text">
-    Map: Atrium — geometry blockout for movement/TTK playtesting. Not the
-    final art pass, purely about whether the paths, chokes, and verticality
-    feel right. Click to start.
-  </p>
+  <h1 id="blocker-title">FIRETEAM ZERO</h1>
+  <p id="blocker-text"></p>
 </div>
 
-<!-- Touch controls — only switched on for touch devices with no real mouse -->
-<div id="touch-joystick-zone">
-  <div id="joystick-base"><div id="joystick-knob"></div></div>
-</div>
+<div id="touch-joystick-zone"><div id="joystick-base"><div id="joystick-knob"></div></div></div>
 <div id="touch-look-zone"></div>
 <div class="touch-btn" id="btn-jump">JUMP</div>
 <div class="touch-btn" id="btn-slide">SLIDE</div>
-<div class="touch-btn" id="btn-walljump">WALL<br>JUMP</div>
+<div class="touch-btn" id="btn-boost">AIR<br>BOOST</div>
 <div class="touch-btn" id="btn-shoot">SHOOT</div>
 
 <script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
-  }
-}
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
 </script>
 <script type="module">
 import * as THREE from 'three';
 
 /* ============================================================
-   ATRIUM BLOCKOUT
-   Symmetric small-map FPS layout:
-   Team A Spawn -- A-Long -- A-Choke -- MID -- B-Choke -- B-Long -- Team B Spawn
-                 \-A-Stairs-MEZZANINE-B-Stairs-/   (height route over mid)
-                 \-A-Connector--Lower Hall--B-Connector-/  (flank route under)
-   Lower Hall has two scaffolding wall-jump spots straight up into Mid.
-   Escalator in Mid is a second, slower climbable vertical route.
-   Mezzanine has a shootable support beam that collapses part of its floor.
+   FIRETEAM ZERO — ATRIUM (geometry blockout)
+
+   The whole map is solid boxes plus ONE big "ground" block with the
+   tunnel / ramps / scaffold bays carved out of it. Everything walkable
+   is physically connected and everything else is solid, so there are no
+   floating floor islands to fall between and no open edges to walk off.
+
+   Top-down (X = west/east, Z = north/south; team A left, team B right):
+
+     z=+15  spawnA | A-stairs lane > A-STAIRS ^ MEZZANINE (y=5) ^ B-STAIRS < lane | spawnB
+                     (solid mass)          MID room, open to the sky
+     z=  0  spawnA = A-LONG = A-CHOKE ======== MID ======== B-CHOKE = B-LONG = spawnB
+                     (solid mass)     scaffold bays (jump-climb up from the tunnel)
+     z=-15  ramp v ======= LOWER HALL tunnel (y=-5, runs under everything) ======= v ramp
    ============================================================ */
 
-// ---------- Basic scene ----------
+// ---------- Scene ----------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a22);
-scene.fog = new THREE.Fog(0x1a1a22, 30, 110);
+scene.fog = new THREE.Fog(0x1a1a22, 40, 130);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.rotation.order = 'YXZ';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 document.body.appendChild(renderer.domElement);
-
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---------- Lighting (flat, neutral — just enough to read geometry) ----------
-const hemi = new THREE.HemisphereLight(0xffffff, 0x444455, 1.1);
-scene.add(hemi);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x555566, 1.5));
 const sun = new THREE.DirectionalLight(0xffffff, 0.6);
-sun.position.set(20, 40, 10);
+sun.position.set(20, 60, 10);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -60;
-sun.shadow.camera.right = 60;
-sun.shadow.camera.top = 60;
-sun.shadow.camera.bottom = -60;
+Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 40, bottom: -40, far: 200 });
 scene.add(sun);
 
-// ---------- Materials (color-coded by zone for blockout clarity) ----------
-const matFloor      = new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 });
-const matWall       = new THREE.MeshStandardMaterial({ color: 0x3d3d47, roughness: 0.95 });
-const matChokeWall  = new THREE.MeshStandardMaterial({ color: 0x5a4a3d, roughness: 0.9 }); // warm = choke
-const matCover      = new THREE.MeshStandardMaterial({ color: 0x4a5a4a, roughness: 0.9 }); // green = hard cover
-const matMezz       = new THREE.MeshStandardMaterial({ color: 0x4a4a6a, roughness: 0.85 }); // blue = mezzanine
-const matScaffold   = new THREE.MeshStandardMaterial({ color: 0xaa6633, roughness: 0.7 });  // orange = wall-jump route
-const matEscalator  = new THREE.MeshStandardMaterial({ color: 0x777788, roughness: 0.6, metalness: 0.3 });
-const matBeam       = new THREE.MeshStandardMaterial({ color: 0xcc4433, roughness: 0.6 });  // red = destructible
-const matSpawnA     = new THREE.MeshStandardMaterial({ color: 0x3355aa, roughness: 0.9 });
-const matSpawnB     = new THREE.MeshStandardMaterial({ color: 0xaa3333, roughness: 0.9 });
+// ---------- Materials (color-coded by function) ----------
+const M = (c, r = 0.9, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+const matFloor = M(0x6a6a7c), matWall = M(0x54545f, 0.95), matChoke = M(0x6e5a48);
+const matCover = M(0x4a5a4a), matMezz = M(0x4a4a6a, 0.85), matScaffold = M(0xaa6633, 0.7);
+const matEscalator = M(0x777788, 0.6, 0.3), matBeam = M(0xcc4433, 0.6);
+const matSpawnA = M(0x3355aa), matSpawnB = M(0xaa3333);
 
-// ---------- Helpers ----------
-const colliders = []; // AABB solids for player collision
-const zoneLabels = []; // { box: THREE.Box3, name }
-const beamTargets = []; // destructible support beams
+// ---------- Solid world ----------
+const colliders = [];       // { x0,y0,z0,x1,y1,z1, mesh, tag }
+const WALL_H = 12;          // tall enough that nobody can jump out of the map
 
-function box(w, h, d, x, y, z, mat, { collide = true, zone = null, castShadow = true } = {}) {
-  const geo = new THREE.BoxGeometry(w, h, d);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = castShadow;
+function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat);
+  mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  mesh.castShadow = opts.shadow !== false;
   mesh.receiveShadow = true;
   scene.add(mesh);
-  const bbox = new THREE.Box3().setFromObject(mesh);
-  if (collide) colliders.push(bbox);
-  if (zone) zoneLabels.push({ box: bbox, name: zone });
-  return mesh;
+  const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || null };
+  if (opts.collide !== false) colliders.push(c);
+  return c;
 }
 
-function floorSlab(w, d, x, y, z, mat = matFloor) {
-  return box(w, 0.4, d, x, y, z, mat, { collide: true, castShadow: false });
+// Pieces of box `a` left over after cutting box `b` out of it.
+function subtract(a, b) {
+  if (b.x0 >= a.x1 || b.x1 <= a.x0 || b.y0 >= a.y1 || b.y1 <= a.y0 || b.z0 >= a.z1 || b.z1 <= a.z0) return [a];
+  const out = [], r = { ...a };
+  if (b.x0 > r.x0) { out.push({ ...r, x1: b.x0 }); r.x0 = b.x0; }
+  if (b.x1 < r.x1) { out.push({ ...r, x0: b.x1 }); r.x1 = b.x1; }
+  if (b.y0 > r.y0) { out.push({ ...r, y1: b.y0 }); r.y0 = b.y0; }
+  if (b.y1 < r.y1) { out.push({ ...r, y0: b.y1 }); r.y1 = b.y1; }
+  if (b.z0 > r.z0) { out.push({ ...r, z1: b.z0 }); r.z0 = b.z0; }
+  if (b.z1 < r.z1) { out.push({ ...r, z0: b.z1 }); r.z1 = b.z1; }
+  return out;
 }
 
-function wallSeg(w, h, d, x, y, z, mat = matWall) {
-  return box(w, h, d, x, y, z, mat);
-}
-
-// ======================================================
-// LAYOUT CONSTANTS
-// Map runs along X axis: -X = Team A side, +X = Team B side, 0 = center of Mid.
-// Z axis: 0 = main floor centerline. Lower Hall is below (Y negative-ish),
-// Mezzanine is above (Y positive), both run parallel to main floor.
-// ======================================================
-
-const WALL_H = 6;
-const MAIN_Y = 0;       // main floor level
-const LOWER_Y = -4.5;   // lower hall level (reached by stairs/ramp, not drop)
-const MEZZ_Y = 5.5;     // mezzanine level
-
-// ---------------- MAIN FLOOR SPINE ----------------
-
-// Team A Spawn (far -X)
-floorSlab(16, 16, -58, MAIN_Y, 0, matSpawnA);
-wallSeg(16, WALL_H, 1, -58, MAIN_Y + WALL_H/2, -8, matWall);
-wallSeg(16, WALL_H, 1, -58, MAIN_Y + WALL_H/2, 8, matWall);
-wallSeg(1, WALL_H, 16, -66, MAIN_Y + WALL_H/2, 0, matWall);
-
-// A-Long (rifle sightline toward mid)
-floorSlab(26, 7, -42, MAIN_Y, -5, matFloor);
-wallSeg(26, WALL_H, 1, -42, MAIN_Y + WALL_H/2, -8.5, matWall);
-wallSeg(26, WALL_H, 1, -42, MAIN_Y + WALL_H/2, -1.5, matWall);
-
-// A-Choke (tight doorway into Mid, hard cover both sides)
-floorSlab(8, 6, -26, MAIN_Y, -5, matFloor);
-wallSeg(8, WALL_H, 1, -26, MAIN_Y + WALL_H/2, -8, matChokeWall);
-wallSeg(1, WALL_H, 4, -29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
-wallSeg(1, WALL_H, 4, -22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
-box(1.6, 1.2, 2.4, -26, MAIN_Y + 0.6, -3, matCover); // cover block at choke mouth
-
-// Bridge: A-Choke floor (ends x=-22) to Mid floor (starts x=-10) — these did
-// not actually touch, leaving a 12-unit hole players would drop through
-// (especially sliding through it at speed). Mirrored on the B side below.
-floorSlab(12, 6, -16, MAIN_Y, -5, matFloor);
-
-// ---- MID (the Atrium centerpiece) ----
-floorSlab(20, 20, 0, MAIN_Y, 0, matFloor, { });
-// perimeter low walls / glass-curtain suggestion (open-ish, vertical focal space)
-wallSeg(20, 1.2, 1, 0, MAIN_Y + 0.6, -10, matCover);
-wallSeg(20, 1.2, 1, 0, MAIN_Y + 0.6, 10, matCover);
-// central dead escalator (climbable second vertical route into Mezzanine — slow, exposed)
-const escalator = box(4, 0.6, 14, 2, MAIN_Y + 0.3, 2, matEscalator, { collide: false });
-for (let i = 0; i < 10; i++) {
-  box(4, 0.5, 1.2, 2, MAIN_Y + 0.3 + i * 0.5, -5 + i * 1.3, matEscalator, { zone: i === 9 ? 'escalator-top' : null });
-}
-// mid pillar (central cover / camp spot the mezzanine is meant to punish)
-box(2, 5, 2, -1, MAIN_Y + 2.5, 6, matCover, { zone: 'mid-pillar' });
-
-floorSlab(8, 6, 26, MAIN_Y, -5, matFloor); // B-Choke mirrors A-Choke
-wallSeg(8, WALL_H, 1, 26, MAIN_Y + WALL_H/2, -8, matChokeWall);
-wallSeg(1, WALL_H, 4, 29.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
-wallSeg(1, WALL_H, 4, 22.5, MAIN_Y + WALL_H/2, -4, matChokeWall);
-box(1.6, 1.2, 2.4, 26, MAIN_Y + 0.6, -3, matCover);
-floorSlab(12, 6, 16, MAIN_Y, -5, matFloor); // bridge: Mid (ends x=10) to B-Choke (starts x=22)
-
-// B-Long
-floorSlab(26, 7, 42, MAIN_Y, -5, matFloor);
-wallSeg(26, WALL_H, 1, 42, MAIN_Y + WALL_H/2, -8.5, matWall);
-wallSeg(26, WALL_H, 1, 42, MAIN_Y + WALL_H/2, -1.5, matWall);
-
-// Team B Spawn
-floorSlab(16, 16, 58, MAIN_Y, 0, matSpawnB);
-wallSeg(16, WALL_H, 1, 58, MAIN_Y + WALL_H/2, -8, matWall);
-wallSeg(16, WALL_H, 1, 58, MAIN_Y + WALL_H/2, 8, matWall);
-wallSeg(1, WALL_H, 16, 66, MAIN_Y + WALL_H/2, 0, matWall);
-
-// ---------------- STAIRS -> MEZZANINE (asymmetric per spec) ----------------
-// Both stairways previously started and ended in mid-air — neither end
-// actually touched a real floor (base wasn't on A-Long/B-Long's floor, and
-// the top landed outside the Mezzanine's x/z footprint entirely). Walking
-// up either one ran you straight off the end into the void. Rebuilt so
-// each stairway starts on real floor (A-Long/B-Long, z=-5) and ends inside
-// the Mezzanine's actual footprint (x:-20..20, z:11..17, top y=5.7).
-// A-Stairs: SHORTER/steeper (10 steps) — dumps you in with less cover.
-{
-  const steps = 10;
-  const startX = -34, startZ = -5, startY = MAIN_Y;
-  const endX = -17, endZ = 13, endY = MEZZ_Y + 0.2;
-  for (let i = 0; i < steps; i++) {
-    const t = i / (steps - 1);
-    box(3.5, 0.5, 3.5, startX + (endX - startX) * t, startY + (endY - startY) * t, startZ + (endZ - startZ) * t, matMezz);
-  }
-}
-// B-Stairs: LONGER/shallower (14 steps) — opens with sightline down A-Long.
-{
-  const steps = 14;
-  const startX = 34, startZ = -5, startY = MAIN_Y;
-  const endX = 17, endZ = 13, endY = MEZZ_Y + 0.2;
-  for (let i = 0; i < steps; i++) {
-    const t = i / (steps - 1);
-    box(3.5, 0.5, 3.5, startX + (endX - startX) * t, startY + (endY - startY) * t, startZ + (endZ - startZ) * t, matMezz);
-  }
-}
-
-// Mezzanine ring over Mid — broken railing (partial cover), connects A-Stairs to B-Stairs
-floorSlab(40, 6, 0, MEZZ_Y, 14, matMezz, { zone: 'mezzanine' });
-wallSeg(40, 0.9, 0.5, 0, MEZZ_Y + 0.45, 11, matMezz); // broken railing overlooking mid (low = partial cover only)
-// gap in mezzanine floor near mid-facing edge — "can fall through if careless"
-// (visualized as a thinner inset slab; collider intentionally omitted over the gap)
-floorSlab(6, 2, 0, MEZZ_Y, 9.5, null, { collide: false }); // visual gap marker, no mesh (left empty intentionally)
-
-// Shootable support beam — collapses mezzanine floor section when destroyed
-const beam = box(0.6, 5, 0.6, -10, MEZZ_Y - 2.5, 14, matBeam, { zone: 'support-beam' });
-beam.userData.isSupportBeam = true;
-beam.userData.hp = 1;
-beamTargets.push(beam);
-const beam2 = box(0.6, 5, 0.6, 10, MEZZ_Y - 2.5, 14, matBeam);
-beam2.userData.isSupportBeam = true;
-beam2.userData.hp = 1;
-beamTargets.push(beam2);
-
-// ---------------- CONNECTOR -> LOWER HALL (flank route under Mid) ----------------
-// Bridge: A-Long floor (ends z=-8.5) to the A-Connector ramp's first step
-// (starts z=-14) — same unconnected-gap issue as the Mid/Choke seams above.
-floorSlab(6, 7, -46, MAIN_Y, -11, matFloor);
-floorSlab(6, 7, 46, MAIN_Y, -11, matFloor); // mirror for B-Connector
-
-// A-Connector ramp down
-for (let i = 0; i < 8; i++) {
-  box(5, 0.5, 2, -46, MAIN_Y - i * 0.56, -14 - i * 1.2, matFloor);
-}
-// B-Connector ramp down
-for (let i = 0; i < 8; i++) {
-  box(5, 0.5, 2, 46, MAIN_Y - i * 0.56, -14 - i * 1.2, matFloor);
-}
-// Lower Hall spine (low ceiling, close-quarters)
-floorSlab(70, 6, 0, LOWER_Y, -22, matFloor, { zone: 'lower-hall' });
-wallSeg(70, 3.2, 1, 0, LOWER_Y + 1.6, -25, matWall);
-wallSeg(70, 3.2, 1, 0, LOWER_Y + 1.6, -19, matWall);
-// low ceiling slab over Lower Hall (reinforces CQB feel)
-box(70, 0.5, 6, 0, LOWER_Y + 3.4, -22, matWall, { castShadow: false });
-
-// Scaffolding wall-jump routes: Lower Hall -> Mid (two spots, loud per design note)
-function scaffold(x) {
-  for (let i = 0; i < 9; i++) {
-    box(1.4, 0.3, 1.4, x, LOWER_Y + 1 + i * 1.05, -22 + i * 0.4, matScaffold, {
-      zone: i === 8 ? 'scaffold-top' : null
-    });
-  }
-}
-scaffold(-9);
-scaffold(9);
-
-// ======================================================
-// CALLOUT ZONES (for HUD label + later gameplay triggers e.g. footstep volume)
-// ======================================================
-const calloutZones = [
-  { name: 'TEAM A SPAWN', cx: -58, cz: 0, r: 12 },
-  { name: 'A-LONG', cx: -42, cz: -5, r: 15 },
-  { name: 'A-CHOKE', cx: -26, cz: -5, r: 6 },
-  { name: 'MID', cx: 0, cz: 0, r: 13 },
-  { name: 'B-CHOKE', cx: 26, cz: -5, r: 6 },
-  { name: 'B-LONG', cx: 42, cz: -5, r: 15 },
-  { name: 'TEAM B SPAWN', cx: 58, cz: 0, r: 12 },
-  { name: 'MEZZANINE', cx: 0, cz: 14, r: 22, y: MEZZ_Y },
-  { name: 'LOWER HALL', cx: 0, cz: -22, r: 35, y: LOWER_Y },
-  { name: 'A-CONNECTOR', cx: -46, cz: -18, r: 8 },
-  { name: 'B-CONNECTOR', cx: 46, cz: -18, r: 8 },
+// ---------- THE GROUND: one solid block, lower areas carved out ----------
+let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
+const cuts = [
+  { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // Lower Hall tunnel (4m headroom; main floor is its ceiling)
+  { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },   // A connector ramp pit (open to the spawn room above)
+  { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },     // B connector ramp pit
+  { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },     // west scaffold bay (tunnel -> Mid)
+  { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },       // east scaffold bay
 ];
+for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
+for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matFloor);
+
+// ---------- Perimeter: sealed all the way round ----------
+addSolid(-55, -6, -16, 55, WALL_H, -15, matWall);   // south
+addSolid(-55, -6, 15, 55, WALL_H, 16, matWall);     // north
+addSolid(-55, -6, -16, -54, WALL_H, 16, matWall);   // west
+addSolid(54, -6, -16, 55, WALL_H, 16, matWall);     // east
+
+// ---------- Connector ramps down into the Lower Hall (0.5m treads = walkable) ----------
+for (let i = 0; i < 9; i++) {
+  addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matFloor);
+  addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matFloor);
+}
+
+// ---------- Scaffold bays: 6 treads of ~0.83m — you have to JUMP each one ----------
+function bay(xa, xb) {
+  for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matScaffold);
+}
+bay(-10, -5);
+bay(5, 10);
+
+// ---------- One team's side, written for A (negative X) and mirrored for B ----------
+function buildSide(sgn) {
+  const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
+    const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
+    return addSolid(a, y0, z0, b, y1, z1, mat, o);
+  };
+  // Wall between spawn room and the lanes. Doors: Long z[-3,3], Stairs z[9,15]
+  S(-42, -15, -41, -3, 0, WALL_H, matWall);
+  S(-42, 3, -41, 9, 0, WALL_H, matWall);
+  // Solid masses that carve out the lanes
+  S(-41, -15, -15, -3, 0, WALL_H, matWall);   // south of Long
+  S(-41, 3, -15, 9, 0, WALL_H, matWall);      // between Long and the Stairs lane
+  // Choke: 3m doorway at the end of Long
+  S(-19, -3, -15, -1.5, 0, WALL_H, matChoke);
+  S(-19, 1.5, -15, 3, 0, WALL_H, matChoke);
+  // Hard cover just inside Mid, off the main sightline
+  S(-12.5, 1.2, -11, 2.8, 0, 1.2, matCover);
+  // Stairs up to the Mezzanine: 10 treads, 0.5m rise each (auto step-up)
+  for (let i = 0; i < 10; i++) S(-27 + 1.2 * i, 9, -27 + 1.2 * (i + 1), 15, 0, 0.5 * (i + 1), matMezz);
+  // Spawn room cover
+  S(-50, 8, -48, 10, 0, 1.2, matCover);
+  S(-47, -7, -45, -5, 0, 1.2, matCover);
+  // Team-colored spawn pad (visual only)
+  const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
+  addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA : matSpawnB, { collide: false, shadow: false });
+}
+buildSide(-1);
+buildSide(1);
+
+// Deliberate asymmetry: B-Long gets one extra low crate that A-Long doesn't have
+addSolid(30, 0, 1.5, 32, 1.2, 3, matCover);
+
+// ---------- MID ----------
+addSolid(-1, 0, 3, 1, 5, 5, matCover);                    // central pillar
+addSolid(-8, 0, 1, -5, 1.2, 2, matCover);                 // low covers
+addSolid(6, 0, 1, 9, 1.2, 2, matCover);
+addSolid(-2, 0, -8, 2, 1.2, -6.8, matCover);
+for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matEscalator);   // dead escalator -> Mezzanine
+
+// ---------- MEZZANINE (two halves, each held up by a shootable red support beam) ----------
+addSolid(-15, 4.4, 9, 0, 5.0, 15, matMezz, { tag: 'mezzW' });
+addSolid(0, 4.4, 9, 15, 5.0, 15, matMezz, { tag: 'mezzE' });
+addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matBeam, { tag: 'beamW' });
+addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matBeam, { tag: 'beamE' });
+for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) {      // broken railing: partial cover only
+  addSolid(a, 5, 9, b, 5.9, 9.4, matMezz, { tag: a < 0 ? 'mezzW' : 'mezzE' });
+}
 
 // ======================================================
-// FIRST-PERSON CONTROLLER
+// PLAYER + PHYSICS
+//   player.pos is the FEET position. Walls block; floors/steps up to
+//   STEP high are walked up automatically; anything taller needs a jump.
 // ======================================================
-const player = {
-  pos: new THREE.Vector3(-58, 2, 0),
-  vel: new THREE.Vector3(0, 0, 0),
-  yaw: 0,
-  pitch: 0,
-  onGround: true,
-  height: 1.8,
-  radius: 0.4,
-  speed: 9,
-  sprintMul: 1.0, // base automatic sprint; slide below is the burst
-  isSliding: false,
-  slideTimer: 0,
-  slideDir: new THREE.Vector3(0, 0, 1), // locked in at slide start, held for the whole slide
-  lean: 0, // -1 (left/Q) .. +1 (right/E)
-  leanTarget: 0,
+const HEIGHT = 1.8, EYE = 1.65, RADIUS = 0.35, STEP = 0.6;
+const SPEED = 7, GRAVITY = -24, JUMP = 8.6, BOOST = 7.5;
+const SLIDE_SPEED = 13, SLIDE_TIME = 0.55, SLIDE_COOLDOWN = 0.5;
+const PITCH_MAX = Math.PI / 2 - 0.05;
+
+const SPAWNS = {
+  A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2]],
+  B: [[50, 0], [48, 3], [50, 6], [47, -2]],
 };
 
-camera.position.copy(player.pos);
-camera.position.y += player.height;
+const player = {
+  pos: new THREE.Vector3(), vel: new THREE.Vector3(),
+  yaw: 0, pitch: 0, onGround: false, airBoosts: 1,
+  isSliding: false, slideTimer: 0, slideCooldown: 0, slideDir: new THREE.Vector3(0, 0, -1),
+  lean: 0,
+};
+
+function respawn(team = 'A') {
+  const [x, z] = SPAWNS[team][Math.floor(Math.random() * SPAWNS[team].length)];
+  player.pos.set(x, 0, z);
+  player.vel.set(0, 0, 0);
+  // Always spawn facing the Long door (never staring at a wall)
+  const doorX = team === 'A' ? -41.5 : 41.5;
+  player.yaw = Math.atan2(-(doorX - x), -(0 - z));
+  player.pitch = 0;
+  player.isSliding = false; player.onGround = true; player.airBoosts = 1;
+}
+respawn('A');
+
+const forwardVec = () => new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+const rightVec = () => new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+
+const overlapsXZ = (c, x, z) => x + RADIUS > c.x0 && x - RADIUS < c.x1 && z + RADIUS > c.z0 && z - RADIUS < c.z1;
+
+// Would standing at (x,z) with feet at `feet` put us inside a wall?
+function blockedAt(x, z, feet) {
+  const lo = feet + STEP, hi = feet + HEIGHT;
+  for (const c of colliders) if (c.y1 > lo && c.y0 < hi && overlapsXZ(c, x, z)) return true;
+  return false;
+}
+// Highest surface under (x,z) that is no higher than maxTop.
+function groundAt(x, z, maxTop) {
+  let best = -Infinity;
+  for (const c of colliders) if (c.y1 <= maxTop && c.y1 > best && overlapsXZ(c, x, z)) best = c.y1;
+  return best;
+}
+// Lowest underside between our head and where it's heading.
+function ceilingAt(x, z, head, newHead) {
+  let best = Infinity;
+  for (const c of colliders) if (c.y0 >= head - 0.001 && c.y0 < newHead && c.y0 < best && overlapsXZ(c, x, z)) best = c.y0;
+  return best;
+}
+
+// Safety net: if we're ever somehow inside geometry, pop out instead of freezing forever.
+function unstick() {
+  for (let r = 0.25; r <= 3; r += 0.25) {
+    for (let a = 0; a < 16; a++) {
+      const x = player.pos.x + Math.cos(a / 16 * Math.PI * 2) * r;
+      const z = player.pos.z + Math.sin(a / 16 * Math.PI * 2) * r;
+      if (!blockedAt(x, z, player.pos.y) && groundAt(x, z, player.pos.y + STEP) > -Infinity) {
+        player.pos.x = x; player.pos.z = z; return;
+      }
+    }
+  }
+  respawn('A');
+}
 
 // ======================================================
-// INPUT DEVICE DETECTION
-// A "fine" pointer (mouse/trackpad) vs a coarse-only (touch) or absent
-// pointer get genuinely different control schemes, not just a relabeled HUD.
+// INPUT: device detection, keyboard, mouse/trackpad, touch
 // ======================================================
-const hasMouse = window.matchMedia && window.matchMedia('(pointer: fine)').matches;
+let hasMouse = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches);   // mouse OR laptop trackpad
 const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+let lastTouchTime = -1e9;
 
 const keys = {};
-window.addEventListener('keydown', (e) => { keys[e.code] = true; handleKeyDown(e); });
-window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+const touchMove = { x: 0, z: 0 };       // stick: x = strafe, z = back(+)/forward(-)
+const clearKeys = () => { for (const k in keys) keys[k] = false; touchMove.x = touchMove.z = 0; };
 
-function handleKeyDown(e) {
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') tryStartSlide();
-  if (e.code === 'KeyC') tryWallJump();
-}
-
-// ---------- Blocker: always dismiss on click, regardless of what happens
-// to pointer lock next. A sandboxed preview pane or a touch device can
-// silently refuse/skip pointer lock, and the old code only hid the blocker
-// from inside the pointerlockchange event — if that event never fires,
-// the blocker was stuck forever. Hiding it directly on click fixes that
-// for every device, mouse or not. ----------
 const blockerEl = document.getElementById('blocker');
-blockerEl.addEventListener('click', () => {
-  blockerEl.style.display = 'none';
-  if (hasMouse) {
-    // Pointer lock only makes sense with a real mouse. If the environment
-    // blocks it (sandboxed iframe, etc.) we silently fall back to
-    // click-and-drag look further down — no error shown to the player.
-    document.body.requestPointerLock().catch(() => {});
-  }
-});
+const blockerVisible = () => blockerEl.style.display !== 'none';
+let pointerLocked = false, lockWasHeld = false;
 
-if (hasMouse) {
-  document.addEventListener('pointerlockchange', () => {
-    // Only re-show the blocker if we HAD control and lost it (Esc) — not
-    // on first load, since we already hid it on click above.
-    if (!document.pointerLockElement && blockerEl.style.display === 'none') {
-      blockerEl.style.display = 'flex';
-    }
-  });
+function wishDir() {
+  const f = forwardVec(), r = rightVec();
+  let fwd = 0, side = 0;
+  if (keys['KeyW'] || keys['ArrowUp']) fwd += 1;
+  if (keys['KeyS'] || keys['ArrowDown']) fwd -= 1;
+  if (keys['KeyD'] || keys['ArrowRight']) side += 1;
+  if (keys['KeyA'] || keys['ArrowLeft']) side -= 1;
+  fwd += -touchMove.z; side += touchMove.x;
+  const w = new THREE.Vector3(f.x * fwd + r.x * side, 0, f.z * fwd + r.z * side);
+  if (w.length() > 1) w.normalize();
+  return w;
 }
 
-// ---------- Look controls ----------
-// Mouse users: pointer-lock mouse-look, with a click-and-drag fallback for
-// environments that won't grant pointer lock at all.
-// No-mouse users: drag-to-look works via touch directly (see touch block
-// below); keyboard-only fallback turns with Left/Right arrows.
-let isDragLooking = false;
-let lastDragX = 0, lastDragY = 0;
+function tryStartSlide() {
+  if (!player.onGround || player.isSliding || player.slideCooldown > 0) return;
+  const w = wishDir();
+  // Direction is locked in at the moment of the slide; with no input held, slide where you're facing.
+  player.slideDir.copy(w.lengthSq() > 0.01 ? w.normalize() : forwardVec());
+  player.isSliding = true;
+  player.slideTimer = SLIDE_TIME;
+}
+
+function airBoost() {            // one extra mid-air kick per jump (resets on landing)
+  if (player.onGround || player.airBoosts <= 0) return;
+  player.airBoosts--;
+  player.vel.y = Math.max(player.vel.y, BOOST);
+}
 
 function applyLook(dx, dy) {
-  const sens = 0.0022;
-  player.yaw -= dx * sens;
-  player.pitch -= dy * sens;
-  player.pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, player.pitch));
+  if (!isFinite(dx) || !isFinite(dy)) return;
+  dx = Math.max(-300, Math.min(300, dx)); dy = Math.max(-300, Math.min(300, dy));   // swallow browser spike glitches
+  player.yaw -= dx * 0.0022;
+  player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - dy * 0.0022));
 }
 
-if (hasMouse) {
-  document.addEventListener('mousemove', (e) => {
-    if (document.pointerLockElement) {
-      applyLook(e.movementX, e.movementY);
-    } else if (isDragLooking) {
-      applyLook(e.clientX - lastDragX, e.clientY - lastDragY);
-      lastDragX = e.clientX; lastDragY = e.clientY;
-    }
-  });
-  document.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || document.pointerLockElement) return;
-    isDragLooking = true;
-    lastDragX = e.clientX; lastDragY = e.clientY;
-  });
-  document.addEventListener('mouseup', () => { isDragLooking = false; });
-}
-
-// Shooting the support beams (raycast from screen center / crosshair)
+// ---- shooting (the red support beams) ----
 const raycaster = new THREE.Raycaster();
-function fireShot() {
-  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
-  const hits = raycaster.intersectObjects(beamTargets, false);
-  if (hits.length > 0 && hits[0].distance < 40) {
-    const beamHit = hits[0].object;
-    if (beamHit.userData.isSupportBeam && beamHit.userData.hp > 0) {
-      collapseMezzanine(beamHit);
-    }
+const _dir = new THREE.Vector3();
+function aimedBeam(maxDist) {
+  camera.getWorldDirection(_dir);
+  raycaster.set(camera.position, _dir);
+  raycaster.far = maxDist;
+  const hit = raycaster.intersectObjects(colliders.map(c => c.mesh), false)[0];   // walls block shots too
+  if (!hit) return null;
+  const c = colliders.find(c => c.mesh === hit.object);
+  return c && c.tag && c.tag.startsWith('beam') ? c : null;
+}
+function collapse(side) {        // 'W' | 'E' — removes that half of the Mezzanine and its beam
+  for (let i = colliders.length - 1; i >= 0; i--) {
+    const c = colliders[i];
+    if (c.tag === 'mezz' + side || c.tag === 'beam' + side) { scene.remove(c.mesh); colliders.splice(i, 1); }
   }
 }
-if (hasMouse) {
-  document.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    fireShot();
-  });
+function fireShot() {
+  if (blockerVisible()) return;
+  const b = aimedBeam(40);
+  if (b) collapse(b.tag.slice(4));
 }
 
-// ======================================================
-// TOUCH CONTROLS — virtual joystick (move) + drag zone (look) + action
-// buttons. Switched on whenever there's no real mouse; most no-mouse
-// devices are touchscreens with no physical keys at all, so this is the
-// primary control path for them (arrow-key support below covers the rare
-// keyboard-but-no-mouse case, e.g. some TV/kiosk browsers).
-// ======================================================
-const touchMove = { x: 0, z: 0 }; // x = strafe, z = forward(-1)/back(+1)
+// ---- start / pause overlay ----
+function startGame() {
+  blockerEl.style.display = 'none';
+  clearKeys();
+  if (hasMouse) {
+    try {
+      const p = document.body.requestPointerLock && document.body.requestPointerLock();
+      if (p && p.catch) p.catch(() => {});       // Safari returns nothing; Chrome returns a promise
+    } catch (e) { /* no pointer lock available — drag-to-look still works */ }
+  }
+}
+function showPaused() {
+  clearKeys();
+  document.getElementById('blocker-title').textContent = 'PAUSED';
+  document.getElementById('blocker-text').textContent = hasMouse ? 'Click (or press Enter) to resume.' : 'Tap or press Enter to resume.';
+  blockerEl.style.display = 'flex';
+}
+blockerEl.addEventListener('click', startGame);
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = !!document.pointerLockElement;
+  if (pointerLocked) lockWasHeld = true;
+  else if (lockWasHeld) { lockWasHeld = false; showPaused(); }
+});
 
-if (!hasMouse) {
+// ---- keyboard ----
+const GAME_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
+window.addEventListener('keydown', (e) => {
+  if (GAME_KEYS.has(e.code)) e.preventDefault();       // never scroll the page
+  if (blockerVisible()) { if (e.code === 'Enter' || e.code === 'Space') startGame(); return; }
+  const fresh = !keys[e.code];
+  keys[e.code] = true;
+  if (!fresh) return;
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') tryStartSlide();
+  if (e.code === 'KeyC') airBoost();
+  if (e.code === 'KeyF' || e.code === 'Enter') fireShot();
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+window.addEventListener('blur', clearKeys);                                   // never leave a key "stuck" down
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
+
+// ---- mouse / trackpad ----
+let dragLook = false, dragDist = 0, lastX = 0, lastY = 0;
+document.addEventListener('mousemove', (e) => {
+  if (!hasMouse && performance.now() - lastTouchTime > 800 && (e.movementX || e.movementY)) {
+    hasMouse = true; applyInputMode();                 // a real mouse showed up — switch modes live
+  }
+  if (blockerVisible()) return;
+  if (pointerLocked) applyLook(e.movementX || 0, e.movementY || 0);
+  else if (dragLook) {
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    dragDist += Math.abs(dx) + Math.abs(dy);
+    applyLook(dx, dy); lastX = e.clientX; lastY = e.clientY;
+  }
+});
+document.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || blockerVisible()) return;
+  if (pointerLocked) fireShot();
+  else { dragLook = true; dragDist = 0; lastX = e.clientX; lastY = e.clientY; }
+});
+document.addEventListener('mouseup', () => {
+  if (dragLook && dragDist < 4) fireShot();            // a plain click (no drag) shoots when pointer lock isn't available
+  dragLook = false;
+});
+
+// ---- touch ----
+window.addEventListener('touchstart', () => { lastTouchTime = performance.now(); }, { passive: true });
+(function setupTouch() {
   const joyZone = document.getElementById('touch-joystick-zone');
   const joyBase = document.getElementById('joystick-base');
   const joyKnob = document.getElementById('joystick-knob');
   const lookZone = document.getElementById('touch-look-zone');
-  const btnJump = document.getElementById('btn-jump');
-  const btnSlide = document.getElementById('btn-slide');
-  const btnWallJump = document.getElementById('btn-walljump');
-  const btnShoot = document.getElementById('btn-shoot');
+  const R = 55;
+  let joyId = null, cx = 0, cy = 0, lookId = null, lx = 0, ly = 0;
+  const find = (e, id) => { for (const t of e.changedTouches) if (t.identifier === id) return t; return null; };
 
-  if (isTouch) {
-    [joyZone, lookZone, btnJump, btnSlide, btnWallJump, btnShoot].forEach(el => {
-      el.style.display = el === lookZone || el === joyZone ? 'block' : 'flex';
-    });
+  joyZone.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches[0]; joyId = t.identifier;
+    const r = joyBase.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
+    e.preventDefault();
+  }, { passive: false });
+  joyZone.addEventListener('touchmove', (e) => {
+    const t = find(e, joyId); if (!t) return;
+    let dx = t.clientX - cx, dy = t.clientY - cy;
+    const d = Math.min(R, Math.hypot(dx, dy)), a = Math.atan2(dy, dx);
+    dx = Math.cos(a) * d; dy = Math.sin(a) * d;
+    joyKnob.style.left = (30 + dx) + 'px'; joyKnob.style.top = (30 + dy) + 'px';
+    touchMove.x = dx / R; touchMove.z = dy / R;
+    e.preventDefault();
+  }, { passive: false });
+  const endJoy = (e) => {
+    joyId = null; touchMove.x = touchMove.z = 0;
+    joyKnob.style.left = '30px'; joyKnob.style.top = '30px'; e.preventDefault();
+  };
+  joyZone.addEventListener('touchend', endJoy, { passive: false });
+  joyZone.addEventListener('touchcancel', endJoy, { passive: false });
 
-    let joyActive = false, joyTouchId = null, joyCenterX = 0, joyCenterY = 0;
-    const JOY_RADIUS = 55;
+  lookZone.addEventListener('touchstart', (e) => { const t = e.changedTouches[0]; lookId = t.identifier; lx = t.clientX; ly = t.clientY; e.preventDefault(); }, { passive: false });
+  lookZone.addEventListener('touchmove', (e) => {
+    const t = find(e, lookId); if (!t) return;
+    applyLook((t.clientX - lx) * 1.6, (t.clientY - ly) * 1.6); lx = t.clientX; ly = t.clientY; e.preventDefault();
+  }, { passive: false });
+  lookZone.addEventListener('touchend', (e) => { lookId = null; e.preventDefault(); }, { passive: false });
 
-    joyZone.addEventListener('touchstart', (e) => {
-      const t = e.changedTouches[0];
-      joyActive = true; joyTouchId = t.identifier;
-      joyCenterX = t.clientX; joyCenterY = t.clientY;
-      joyBase.style.left = (joyCenterX - 55) + 'px';
-      joyBase.style.top = (joyCenterY - 55) + 'px';
-      e.preventDefault();
-    }, { passive: false });
-
-    joyZone.addEventListener('touchmove', (e) => {
-      if (!joyActive) return;
-      for (const t of e.changedTouches) {
-        if (t.identifier !== joyTouchId) continue;
-        let dx = t.clientX - joyCenterX;
-        let dy = t.clientY - joyCenterY;
-        const dist = Math.min(JOY_RADIUS, Math.hypot(dx, dy));
-        const ang = Math.atan2(dy, dx);
-        dx = Math.cos(ang) * dist; dy = Math.sin(ang) * dist;
-        joyKnob.style.left = (55 + dx - 25) + 'px';
-        joyKnob.style.top = (55 + dy - 25) + 'px';
-        touchMove.x = dx / JOY_RADIUS;
-        touchMove.z = dy / JOY_RADIUS;
-      }
-      e.preventDefault();
-    }, { passive: false });
-
-    function endJoy(e) {
-      joyActive = false; touchMove.x = 0; touchMove.z = 0;
-      joyKnob.style.left = '30px'; joyKnob.style.top = '30px';
-      e.preventDefault();
-    }
-    joyZone.addEventListener('touchend', endJoy, { passive: false });
-    joyZone.addEventListener('touchcancel', endJoy, { passive: false });
-
-    let lookTouchId = null, lastLookX = 0, lastLookY = 0;
-    lookZone.addEventListener('touchstart', (e) => {
-      const t = e.changedTouches[0];
-      lookTouchId = t.identifier;
-      lastLookX = t.clientX; lastLookY = t.clientY;
-      e.preventDefault();
-    }, { passive: false });
-    lookZone.addEventListener('touchmove', (e) => {
-      for (const t of e.changedTouches) {
-        if (t.identifier !== lookTouchId) continue;
-        applyLook((t.clientX - lastLookX) * 1.6, (t.clientY - lastLookY) * 1.6);
-        lastLookX = t.clientX; lastLookY = t.clientY;
-      }
-      e.preventDefault();
-    }, { passive: false });
-    lookZone.addEventListener('touchend', (e) => { lookTouchId = null; e.preventDefault(); }, { passive: false });
-
-    btnJump.addEventListener('touchstart', (e) => { keys['Space'] = true; e.preventDefault(); }, { passive: false });
-    btnJump.addEventListener('touchend', (e) => { keys['Space'] = false; e.preventDefault(); }, { passive: false });
-    btnSlide.addEventListener('touchstart', (e) => { tryStartSlide(); e.preventDefault(); }, { passive: false });
-    btnWallJump.addEventListener('touchstart', (e) => { tryWallJump(); e.preventDefault(); }, { passive: false });
-    btnShoot.addEventListener('touchstart', (e) => { fireShot(); e.preventDefault(); }, { passive: false });
-  }
-}
-
-// ---------- HUD text: reflect the actual active control scheme ----------
-(function setHudText() {
-  const controlsLine = document.getElementById('controls-line');
-  const lookLine = document.getElementById('look-line');
-  const blockerText = document.getElementById('blocker-text');
-  if (hasMouse) {
-    controlsLine.textContent = 'WASD move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)';
-    lookLine.textContent = 'Q/E lean · Mouse look · Click to lock pointer';
-    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
-  } else if (isTouch) {
-    controlsLine.textContent = 'Left stick: move · JUMP / SLIDE / WALL JUMP / SHOOT buttons';
-    lookLine.textContent = 'Drag right side of screen to look · Tap to start';
-    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Tap to start.';
-  } else {
-    controlsLine.textContent = 'ARROW KEYS move · SPACE jump · SHIFT slide · C wall-jump (near scaffolding)';
-    lookLine.textContent = 'No mouse detected — look is keyboard-limited';
-    blockerText.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
-  }
+  const press = (id, down, up) => {
+    const el = document.getElementById(id);
+    el.addEventListener('touchstart', (e) => { down(); e.preventDefault(); }, { passive: false });
+    if (up) { el.addEventListener('touchend', (e) => { up(); e.preventDefault(); }, { passive: false }); el.addEventListener('touchcancel', up); }
+  };
+  press('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
+  press('btn-slide', tryStartSlide);
+  press('btn-boost', airBoost);
+  press('btn-shoot', fireShot);
 })();
 
-function collapseMezzanine(beamMesh) {
-  beamMesh.userData.hp = 0;
-  beamMesh.material = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1 });
-  beamMesh.position.y -= 4; // visually drop the beam as "collapsed"
-  // Remove a chunk of the mezzanine floor collider near that beam (denies the position)
-  const idx = colliders.findIndex(c => Math.abs((c.max.x + c.min.x)/2 - beamMesh.position.x) < 6 && c.min.y > 4.5);
-  // simple approach: shrink the mezzanine zone bbox in that half so player collision drops through
-  colliders.forEach((c, i) => {
-    if (c.min.y > MEZZ_Y - 0.5 && c.max.y < MEZZ_Y + 1 &&
-        Math.sign((c.max.x + c.min.x)/2) === Math.sign(beamMesh.position.x)) {
-      c.min.y -= 100; c.max.y -= 100; // move collider out of the way = hole in floor
-    }
-  });
-}
-
-// ---------- Movement / collision ----------
-const GRAVITY = -28;
-const JUMP_SPEED = 9.5;
-const SLIDE_SPEED = 15;
-const SLIDE_DURATION = 0.55;
-const WALLJUMP_RANGE = 2.2;
-
-function tryStartSlide() {
-  if (!player.onGround || player.isSliding) return;
-  // Lock in a direction NOW, from whatever input is active at this instant
-  // (WASD, arrows, or the touch stick). If nothing is held, default to
-  // wherever the camera is currently facing, so pressing slide always
-  // produces a visible burst instead of silently doing nothing — that
-  // silent-no-op was the old bug.
-  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)); // true camera-facing direction
-  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
-  let dx = 0, dz = 0;
-  if (keys['KeyW'] || keys['ArrowUp'])    { dx += forward.x; dz += forward.z; }
-  if (keys['KeyS'] || keys['ArrowDown'])  { dx -= forward.x; dz -= forward.z; }
-  if (keys['KeyA'] || keys['ArrowLeft'])  { dx -= right.x;   dz -= right.z; }
-  if (keys['KeyD'] || keys['ArrowRight']) { dx += right.x;   dz += right.z; }
-  if (Math.abs(touchMove.x) > 0.1 || Math.abs(touchMove.z) > 0.1) {
-    dx = right.x * touchMove.x - forward.x * touchMove.z;
-    dz = right.z * touchMove.x - forward.z * touchMove.z;
-  }
-  const len = Math.hypot(dx, dz);
-  if (len > 0.01) {
-    player.slideDir.set(dx / len, 0, dz / len);
+// ---- HUD text + touch UI follow whichever device is actually in use ----
+function applyInputMode() {
+  const touchUI = !hasMouse && isTouch;
+  for (const id of ['touch-joystick-zone', 'touch-look-zone']) document.getElementById(id).style.display = touchUI ? 'block' : 'none';
+  for (const id of ['btn-jump', 'btn-slide', 'btn-boost', 'btn-shoot']) document.getElementById(id).style.display = touchUI ? 'flex' : 'none';
+  const controls = document.getElementById('controls-line'), look = document.getElementById('look-line'), text = document.getElementById('blocker-text');
+  if (hasMouse) {
+    controls.textContent = 'WASD or Arrows move · SPACE jump · SHIFT slide · C air-boost · Q/E lean';
+    look.textContent = 'Mouse / trackpad to look (click to capture, Esc to release) · Click or F to shoot';
+    text.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
+  } else if (touchUI) {
+    controls.textContent = 'Left stick: move · JUMP / SLIDE / AIR BOOST / SHOOT buttons';
+    look.textContent = 'Drag the right side of the screen to look';
+    text.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Tap to start.';
   } else {
-    player.slideDir.set(forward.x, 0, forward.z); // no input held — slide the way you're facing
-  }
-  player.isSliding = true;
-  player.slideTimer = SLIDE_DURATION;
-}
-
-function tryWallJump() {
-  // near a scaffold zone? pop upward (loud — would trigger an audio cue in the real build)
-  const near = zoneLabels.find(z =>
-    (z.name === 'scaffold-top' || z.name === 'escalator-top') &&
-    player.pos.distanceTo(new THREE.Vector3(
-      (z.box.min.x + z.box.max.x) / 2, player.pos.y, (z.box.min.z + z.box.max.z) / 2
-    )) < 6
-  );
-  if (near || !player.onGround) {
-    player.vel.y = JUMP_SPEED * 0.9;
-    player.onGround = false;
+    controls.textContent = 'ARROWS move · SPACE jump · SHIFT slide · C air-boost · Q/E lean';
+    look.textContent = 'No mouse detected — LOOK with J / L (turn) and I / K (up / down) · F or Enter to shoot';
+    text.textContent = 'Map: Atrium — geometry blockout. No mouse detected: arrows move, J/L/I/K look. Press Enter to start.';
   }
 }
+applyInputMode();
 
-function resolveCollisions(nextPos) {
-  const playerBox = new THREE.Box3(
-    new THREE.Vector3(nextPos.x - player.radius, nextPos.y - player.height, nextPos.z - player.radius),
-    new THREE.Vector3(nextPos.x + player.radius, nextPos.y + 0.2, nextPos.z + player.radius)
-  );
-  let grounded = false;
-  for (const c of colliders) {
-    if (!playerBox.intersectsBox(c)) continue;
-    // simple vertical resolve: if falling onto top of a box, snap to its top
-    const overlapTop = c.max.y - (nextPos.y - player.height);
-    if (overlapTop > 0 && overlapTop < 1.2 && player.vel.y <= 0) {
-      nextPos.y = c.max.y + player.height;
-      player.vel.y = 0;
-      grounded = true;
-    }
-  }
-  return grounded;
-}
-
-// Horizontal (wall) collision — the original code only ever resolved
-// vertical landings, so there was nothing stopping the player from
-// clipping into or getting wedged inside a wall when moving fast
-// horizontally (exactly what a slide does). Thin floor/ramp slabs (under
-// 0.6 units tall) are skipped here on purpose — those should be walked
-// over, not treated as walls; resolveCollisions above already handles
-// standing on top of them.
-function collidesHorizontal(x, z, currentY) {
-  const feetY = currentY - player.height + 0.2;
-  const headY = currentY - 0.15;
-  const testBox = new THREE.Box3(
-    new THREE.Vector3(x - player.radius, feetY, z - player.radius),
-    new THREE.Vector3(x + player.radius, headY, z + player.radius)
-  );
-  for (const c of colliders) {
-    if (c.max.y - c.min.y < 0.6) continue; // thin floor/ramp slab, not a wall
-    if (testBox.intersectsBox(c)) return true;
-  }
-  return false;
-}
-
+// ======================================================
+// FRAME UPDATE
+// ======================================================
 function updatePlayer(dt) {
-  // look direction
-  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)); // true camera-facing direction
-  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  // Keyboard look (the way to turn when there's no mouse)
+  const LOOK = 2.2;
+  if (keys['KeyJ']) player.yaw += LOOK * dt;
+  if (keys['KeyL']) player.yaw -= LOOK * dt;
+  if (keys['KeyI']) player.pitch = Math.min(PITCH_MAX, player.pitch + LOOK * 0.7 * dt);
+  if (keys['KeyK']) player.pitch = Math.max(-PITCH_MAX, player.pitch - LOOK * 0.7 * dt);
 
-  let moveX = 0, moveZ = 0;
-  if (keys['KeyW'] || keys['ArrowUp'])    { moveX += forward.x; moveZ += forward.z; }
-  if (keys['KeyS'] || keys['ArrowDown'])  { moveX -= forward.x; moveZ -= forward.z; }
-  if (keys['KeyA'] || keys['ArrowLeft'])  { moveX -= right.x; moveZ -= right.z; }
-  if (keys['KeyD'] || keys['ArrowRight']) { moveX += right.x; moveZ += right.z; }
-  // Touch stick contributes on top of keyboard input
-  moveX += right.x * touchMove.x - forward.x * touchMove.z;
-  moveZ += right.z * touchMove.x - forward.z * touchMove.z;
+  if (blockedAt(player.pos.x, player.pos.z, player.pos.y)) unstick();
 
-  const len = Math.hypot(moveX, moveZ);
-  if (len > 1) { moveX /= len; moveZ /= len; }
-
+  // Horizontal velocity: normal walking, or a committed slide burst
+  player.slideCooldown = Math.max(0, player.slideCooldown - dt);
   if (player.isSliding) {
-    // Committed burst: direction was locked in at slide start (tryStartSlide),
-    // so it holds for the whole slide regardless of what's held afterward —
-    // this is what makes the slide actually move you even if you tap the
-    // slide key without also holding a movement key.
     player.slideTimer -= dt;
-    const speed = SLIDE_SPEED * (player.slideTimer / SLIDE_DURATION + 0.3);
-    player.vel.x = player.slideDir.x * speed;
-    player.vel.z = player.slideDir.z * speed;
-    if (player.slideTimer <= 0) player.isSliding = false;
+    const k = Math.max(0, player.slideTimer / SLIDE_TIME);
+    const sp = SPEED * 0.9 + (SLIDE_SPEED - SPEED * 0.9) * k;       // burst that eases back down
+    player.vel.x = player.slideDir.x * sp;
+    player.vel.z = player.slideDir.z * sp;
+    if (player.slideTimer <= 0) { player.isSliding = false; player.slideCooldown = SLIDE_COOLDOWN; }
   } else {
-    player.vel.x = moveX * player.speed;
-    player.vel.z = moveZ * player.speed;
+    const w = wishDir();
+    player.vel.x = w.x * SPEED;
+    player.vel.z = w.z * SPEED;
   }
 
-  if (keys['Space'] && player.onGround) {
-    player.vel.y = JUMP_SPEED;
+  const wasGround = player.onGround;
+  if (keys['Space'] && player.onGround) { player.vel.y = JUMP; player.onGround = false; }
+
+  // Move one axis at a time so walls are slid along instead of stuck to
+  const nx = player.pos.x + player.vel.x * dt;
+  if (!blockedAt(nx, player.pos.z, player.pos.y)) player.pos.x = nx; else player.vel.x = 0;
+  const nz = player.pos.z + player.vel.z * dt;
+  if (!blockedAt(player.pos.x, nz, player.pos.y)) player.pos.z = nz; else player.vel.z = 0;
+
+  // Vertical: gravity, landing, stepping up/down small steps, head bumps
+  player.vel.y += GRAVITY * dt;
+  const newY = player.pos.y + player.vel.y * dt;
+  if (player.vel.y <= 0) {
+    const g = groundAt(player.pos.x, player.pos.z, player.pos.y + STEP);
+    if (g > -Infinity && (newY <= g + 1e-4 || (wasGround && player.pos.y - g <= STEP))) {
+      player.pos.y = g; player.vel.y = 0; player.onGround = true; player.airBoosts = 1;
+    } else { player.pos.y = newY; player.onGround = false; }
+  } else {
+    const ceil = ceilingAt(player.pos.x, player.pos.z, player.pos.y + HEIGHT, newY + HEIGHT);
+    if (ceil < Infinity) { player.pos.y = ceil - HEIGHT - 0.001; player.vel.y = 0; } else player.pos.y = newY;
     player.onGround = false;
   }
 
-  // lean
-  player.leanTarget = keys['KeyQ'] ? -1 : (keys['KeyE'] ? 1 : 0);
-  player.lean += (player.leanTarget - player.lean) * Math.min(1, dt * 8);
-
-  // gravity
-  player.vel.y += GRAVITY * dt;
-
-  const next = player.pos.clone();
-
-  // Resolve X and Z separately against walls so hitting one at an angle
-  // (very easy to do mid-slide) stops that axis cleanly and lets you keep
-  // sliding along the wall on the other axis, instead of freezing dead or
-  // tunneling through.
-  let testX = next.x + player.vel.x * dt;
-  if (collidesHorizontal(testX, next.z, player.pos.y)) { testX = next.x; player.vel.x = 0; }
-  next.x = testX;
-
-  let testZ = next.z + player.vel.z * dt;
-  if (collidesHorizontal(next.x, testZ, player.pos.y)) { testZ = next.z; player.vel.z = 0; }
-  next.z = testZ;
-
-  next.y += player.vel.y * dt;
-
-  player.onGround = resolveCollisions(next);
-  if (next.y < -30) {
-    next.set(-58, 2, 0);
-    player.vel.set(0, 0, 0);
-    player.isSliding = false; // reset so falling mid-slide can't leave you stuck sliding after respawn
-  }
-
-  player.pos.copy(next);
-
-  camera.position.copy(player.pos);
-  // Crouch-dip during a slide so it's visually obvious something is
-  // happening, not just a silent speed-stat change.
-  camera.position.y += player.height - (player.isSliding ? 0.5 : 0);
-  camera.rotation.order = 'YXZ';
-  camera.rotation.y = player.yaw;
-  camera.rotation.x = player.pitch;
-  camera.rotation.z = player.lean * -0.12; // lean tilt
-  camera.position.x += right.x * player.lean * 0.6;
-  camera.position.z += right.z * player.lean * 0.6;
+  player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
+  if (player.pos.y < -9) respawn('A');       // can't happen on a sealed map, but never leave anyone falling forever
 }
 
-// ---------- HUD ----------
-const posEl = document.getElementById('pos');
-const calloutEl = document.getElementById('callout');
-const beamPromptEl = document.getElementById('beam-prompt');
-const slideStatusEl = document.getElementById('slide-status');
+function updateCamera() {
+  const r = rightVec();
+  camera.position.set(
+    player.pos.x + r.x * player.lean * 0.4,
+    player.pos.y + (player.isSliding ? 0.95 : EYE),
+    player.pos.z + r.z * player.lean * 0.4
+  );
+  camera.rotation.set(player.pitch, player.yaw, -player.lean * 0.12);
+}
 
-function updateHud() {
+function zoneName(x, y, z) {
+  const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
+  if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'SCAFFOLD';
+  if (y < -2) return ax > 42 ? side + '-CONNECTOR' : 'LOWER HALL';
+  if (y > 4.2) return ax <= 15 ? 'MEZZANINE' : side + '-STAIRS';
+  if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
+  if (z > 9 && ax >= 15) return side + '-STAIRS';
+  if (ax >= 27) return side + '-LONG';
+  if (ax >= 15) return side + '-CHOKE';
+  return 'MID';
+}
+
+const posEl = document.getElementById('pos'), calloutEl = document.getElementById('callout');
+const beamPromptEl = document.getElementById('beam-prompt'), slideEl = document.getElementById('slide-status');
+function updateHud(frame) {
   posEl.textContent = `pos: ${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
-  slideStatusEl.style.opacity = player.isSliding ? '1' : '0';
-  let current = null, bestDist = Infinity;
-  for (const z of calloutZones) {
-    const y = z.y ?? 0;
-    const d = Math.hypot(player.pos.x - z.cx, player.pos.z - z.cz) + Math.abs(player.pos.y - y) * 0.5;
-    if (d < z.r && d < bestDist) { bestDist = d; current = z.name; }
-  }
-  calloutEl.textContent = current || '';
-
-  // beam prompt visibility
-  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
-  const hits = raycaster.intersectObjects(beamTargets, false);
-  beamPromptEl.style.display = (hits.length > 0 && hits[0].distance < 10 && hits[0].object.userData.hp > 0) ? 'block' : 'none';
+  calloutEl.textContent = zoneName(player.pos.x, player.pos.y, player.pos.z);
+  slideEl.style.opacity = player.isSliding ? '1' : '0';
+  if (frame % 6 === 0) beamPromptEl.style.display = aimedBeam(12) ? 'block' : 'none';
 }
 
-// ---------- Render loop ----------
+// Test/debug hook (lets automated checks drive the real game loop)
+window.__fz = {
+  player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
+  teleport(x, y, z, yaw = 0) { player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.yaw = yaw; player.pitch = 0; player.isSliding = false; player.onGround = false; },
+};
+
 const clock = new THREE.Clock();
+let frame = 0;
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
-  updatePlayer(dt);
-  updateHud();
+  if (!window.__fzPause) updatePlayer(dt);
+  updateCamera();
+  updateHud(frame++);
   renderer.render(scene, camera);
 }
 animate();
