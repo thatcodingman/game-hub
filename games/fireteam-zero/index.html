@@ -10,8 +10,9 @@
   #crosshair {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.9);
-    pointer-events: none; z-index: 10; box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    pointer-events: none; z-index: 13; box-shadow: 0 0 2px rgba(0,0,0,0.8);
   }
+  #crosshair.hit { width: 14px; height: 14px; background: #ff4d4d; }
   #hud {
     position: fixed; bottom: 16px; left: 16px; color: #eee; font-family: monospace;
     font-size: 13px; background: rgba(0,0,0,0.5); padding: 10px 14px; border-radius: 6px;
@@ -43,22 +44,12 @@
     letter-spacing: 0.1em; text-shadow: 0 0 6px rgba(77,210,255,0.8);
     z-index: 10; pointer-events: none; opacity: 0; transition: opacity 0.1s;
   }
-  /* ---- Touch controls (shown only for touch devices with no mouse) ---- */
-  #touch-joystick-zone { position: fixed; left: 0; bottom: 0; width: 45%; height: 45%; z-index: 15; display: none; touch-action: none; }
-  #touch-look-zone { position: fixed; right: 0; bottom: 0; width: 55%; height: 70%; z-index: 14; display: none; touch-action: none; }
-  #joystick-base { position: absolute; width: 110px; height: 110px; border-radius: 50%; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25); left: 30px; bottom: 30px; }
-  #joystick-knob { position: absolute; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.35); left: 30px; top: 30px; pointer-events: none; }
-  .touch-btn {
-    position: fixed; z-index: 16; display: none; width: 66px; height: 66px; border-radius: 50%;
-    background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.3);
-    color: #fff; font-family: monospace; font-size: 11px; font-weight: bold;
-    align-items: center; justify-content: center; text-align: center; line-height: 1.2;
-    user-select: none; -webkit-user-select: none; touch-action: none;
+  /* live map diagram (press M to resize / hide) */
+  #map {
+    position: fixed; top: 56px; left: 16px; z-index: 12;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 8px; pointer-events: none;
   }
-  #btn-jump { right: 110px; bottom: 150px; }
-  #btn-slide { right: 30px; bottom: 150px; }
-  #btn-boost { right: 110px; bottom: 70px; }
-  #btn-shoot { right: 30px; bottom: 70px; background: rgba(255,80,80,0.18); }
 </style>
 </head>
 <body>
@@ -67,6 +58,7 @@
 <div id="callout"></div>
 <div id="beam-prompt">SHOOT — SUPPORT BEAM (collapses that half of the Mezzanine)</div>
 <div id="slide-status">SLIDING</div>
+<canvas id="map"></canvas>
 <div id="hud">
   <span id="controls-line"></span><br>
   <span id="look-line"></span><br>
@@ -76,13 +68,6 @@
   <h1 id="blocker-title">FIRETEAM ZERO</h1>
   <p id="blocker-text"></p>
 </div>
-
-<div id="touch-joystick-zone"><div id="joystick-base"><div id="joystick-knob"></div></div></div>
-<div id="touch-look-zone"></div>
-<div class="touch-btn" id="btn-jump">JUMP</div>
-<div class="touch-btn" id="btn-slide">SLIDE</div>
-<div class="touch-btn" id="btn-boost">AIR<br>BOOST</div>
-<div class="touch-btn" id="btn-shoot">SHOOT</div>
 
 <script type="importmap">
 { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -114,6 +99,7 @@ scene.fog = new THREE.Fog(0x1a1a22, 40, 130);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.rotation.order = 'YXZ';
+scene.add(camera);                                   // in the scene so the gun (a camera child) renders
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -140,6 +126,8 @@ const matFloor = M(0x6a6a7c), matWall = M(0x54545f, 0.95), matChoke = M(0x6e5a48
 const matCover = M(0x4a5a4a), matMezz = M(0x4a4a6a, 0.85), matScaffold = M(0xaa6633, 0.7);
 const matEscalator = M(0x777788, 0.6, 0.3), matBeam = M(0xcc4433, 0.6);
 const matSpawnA = M(0x3355aa), matSpawnB = M(0xaa3333);
+// Every solid gets a tag from its material so the map diagram can draw the real geometry
+const MAT_TAG = new Map([[matWall, 'wall'], [matChoke, 'choke'], [matCover, 'cover'], [matFloor, 'floor'], [matScaffold, 'scaffold'], [matEscalator, 'escalator']]);
 
 // ---------- Solid world ----------
 const colliders = [];       // { x0,y0,z0,x1,y1,z1, mesh, tag }
@@ -151,7 +139,7 @@ function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
   mesh.castShadow = opts.shadow !== false;
   mesh.receiveShadow = true;
   scene.add(mesh);
-  const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || null };
+  const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || MAT_TAG.get(mat) || (mat === matMezz ? 'stairs' : null) };
   if (opts.collide !== false) colliders.push(c);
   return c;
 }
@@ -189,8 +177,8 @@ addSolid(54, -6, -16, 55, WALL_H, 16, matWall);     // east
 
 // ---------- Connector ramps down into the Lower Hall (0.5m treads = walkable) ----------
 for (let i = 0; i < 9; i++) {
-  addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matFloor);
-  addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matFloor);
+  addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matFloor, { tag: 'ramp' });
+  addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matFloor, { tag: 'ramp' });
 }
 
 // ---------- Scaffold bays: 6 treads of ~0.83m — you have to JUMP each one ----------
@@ -321,15 +309,15 @@ function unstick() {
 }
 
 // ======================================================
-// INPUT: device detection, keyboard, mouse/trackpad, touch
+// INPUT — this is a mouse-aim shooter: WASD moves, mouse / MacBook trackpad
+// looks, CLICK shoots (hold for automatic fire).
 // ======================================================
 let hasMouse = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches);   // mouse OR laptop trackpad
-const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 let lastTouchTime = -1e9;
 
 const keys = {};
-const touchMove = { x: 0, z: 0 };       // stick: x = strafe, z = back(+)/forward(-)
-const clearKeys = () => { for (const k in keys) keys[k] = false; touchMove.x = touchMove.z = 0; };
+let mouseHeld = false, fireCooldown = 0;
+const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; };
 
 const blockerEl = document.getElementById('blocker');
 const blockerVisible = () => blockerEl.style.display !== 'none';
@@ -342,7 +330,6 @@ function wishDir() {
   if (keys['KeyS'] || keys['ArrowDown']) fwd -= 1;
   if (keys['KeyD'] || keys['ArrowRight']) side += 1;
   if (keys['KeyA'] || keys['ArrowLeft']) side -= 1;
-  fwd += -touchMove.z; side += touchMove.x;
   const w = new THREE.Vector3(f.x * fwd + r.x * side, 0, f.z * fwd + r.z * side);
   if (w.length() > 1) w.normalize();
   return w;
@@ -370,9 +357,15 @@ function applyLook(dx, dy) {
   player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - dy * 0.0022));
 }
 
-// ---- shooting (the red support beams) ----
+// ---- shooting: click = shoot, hold = auto-fire (or hold F) ----
 const raycaster = new THREE.Raycaster();
-const _dir = new THREE.Vector3();
+const _dir = new THREE.Vector3(), _v = new THREE.Vector3();
+const SHOT_RANGE = 120, FIRE_INTERVAL = 0.1;               // 600 rounds / minute
+const stats = { shots: 0, beamsHit: 0 };
+const collapsedSides = new Set();
+const crosshairEl = document.getElementById('crosshair');
+let hitT = 0;
+
 function aimedBeam(maxDist) {
   camera.getWorldDirection(_dir);
   raycaster.set(camera.position, _dir);
@@ -387,48 +380,147 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
     const c = colliders[i];
     if (c.tag === 'mezz' + side || c.tag === 'beam' + side) { scene.remove(c.mesh); colliders.splice(i, 1); }
   }
+  collapsedSides.add(side);
+  mapDirty = true;
 }
+
+// Viewmodel: a simple gun fixed to the camera, always drawn on top of the world
+const gun = new THREE.Group();
+{
+  const gm = new THREE.MeshStandardMaterial({ color: 0x2e303a, roughness: 0.45, metalness: 0.5, depthTest: false });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.5), gm); body.position.set(0, 0, -0.25);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.32), gm); barrel.position.set(0, 0.025, -0.62);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.16, 0.1), gm); grip.position.set(0, -0.12, -0.12); grip.rotation.x = 0.25;
+  gun.add(body, barrel, grip);
+  gun.traverse(o => { o.renderOrder = 999; o.frustumCulled = false; });
+}
+const GUN_REST = new THREE.Vector3(0.26, -0.24, -0.5);
+gun.scale.setScalar(0.6);
+gun.position.copy(GUN_REST);
+camera.add(gun);
+const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.025, -0.8); gun.add(muzzle);
+const flashLight = new THREE.PointLight(0xffd9a0, 0, 14); flashLight.position.set(0.2, -0.05, -0.9); camera.add(flashLight);
+let gunKick = 0, flashT = 0;
+
+// Short-lived visual effects (tracers + impact sparks)
+const effects = [];
+const sparkGeo = new THREE.SphereGeometry(0.14, 8, 6);
+function addTracer(from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from.clone(), to.clone()]);
+  const mat = new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.95 });
+  const line = new THREE.Line(geo, mat); line.frustumCulled = false; scene.add(line);
+  effects.push({ obj: line, life: 0.07, max: 0.07 });
+}
+function addSpark(p) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffd24d, transparent: true, opacity: 1 });
+  const m = new THREE.Mesh(sparkGeo, mat); m.position.copy(p); scene.add(m);
+  effects.push({ obj: m, life: 0.18, max: 0.18, grow: true });
+}
+function updateEffects(dt) {
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const e = effects[i]; e.life -= dt;
+    if (e.life <= 0) {
+      scene.remove(e.obj);
+      if (e.obj.geometry !== sparkGeo) e.obj.geometry.dispose();
+      e.obj.material.dispose(); effects.splice(i, 1); continue;
+    }
+    e.obj.material.opacity = e.life / e.max;
+    if (e.grow) e.obj.scale.setScalar(1 + (1 - e.life / e.max) * 1.5);
+  }
+  gunKick = Math.max(0, gunKick - dt * 9);
+  gun.position.set(GUN_REST.x, GUN_REST.y + gunKick * 0.01, GUN_REST.z + gunKick * 0.07);
+  gun.rotation.x = gunKick * 0.08;
+  flashT = Math.max(0, flashT - dt); flashLight.intensity = flashT > 0 ? 3 : 0;
+  if (hitT > 0) { hitT -= dt; if (hitT <= 0) crosshairEl.classList.remove('hit'); }
+}
+
+// Tiny synthesized gunshot (no audio files needed)
+let audioCtx = null;
+function ensureAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* no audio — the game still works */ }
+}
+function playShot() {
+  if (!audioCtx) return;
+  try {
+    const t = audioCtx.currentTime, len = 0.09;
+    const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * len), audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const filt = audioCtx.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 1800; filt.Q.value = 0.7;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.22;
+    src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination); src.start(t);
+    const o = audioCtx.createOscillator(), og = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.08);
+    og.gain.setValueAtTime(0.3, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t + 0.1);
+  } catch (e) { /* ignore */ }
+}
+
 function fireShot() {
   if (blockerVisible()) return;
-  const b = aimedBeam(40);
-  if (b) collapse(b.tag.slice(4));
+  camera.updateMatrixWorld(true);
+  camera.getWorldDirection(_dir);
+  raycaster.set(camera.position, _dir);
+  raycaster.far = SHOT_RANGE;
+  const hit = raycaster.intersectObjects(colliders.map(c => c.mesh), false)[0];
+  const end = hit ? hit.point.clone() : camera.position.clone().addScaledVector(_dir, SHOT_RANGE);
+  muzzle.getWorldPosition(_v);
+  addTracer(_v, end);
+  if (hit) addSpark(hit.point);
+  stats.shots++;
+  gunKick = 1; flashT = 0.05; playShot();
+  if (hit) {
+    const c = colliders.find(c => c.mesh === hit.object);
+    if (c && c.tag && c.tag.startsWith('beam')) {
+      stats.beamsHit++; collapse(c.tag.slice(4));
+      crosshairEl.classList.add('hit'); hitT = 0.15;
+    }
+  }
 }
+function tryFire() { if (fireCooldown <= 0) { fireShot(); fireCooldown = FIRE_INTERVAL; } }
 
 // ---- start / pause overlay ----
 function startGame() {
+  if (!hasMouse) return;                                  // this game needs a mouse / trackpad
   blockerEl.style.display = 'none';
   clearKeys();
-  if (hasMouse) {
-    try {
-      const p = document.body.requestPointerLock && document.body.requestPointerLock();
-      if (p && p.catch) p.catch(() => {});       // Safari returns nothing; Chrome returns a promise
-    } catch (e) { /* no pointer lock available — drag-to-look still works */ }
-  }
+  ensureAudio();
+  try {
+    const p = document.body.requestPointerLock && document.body.requestPointerLock();
+    if (p && p.catch) p.catch(() => {});                  // Safari returns nothing; Chrome returns a promise
+  } catch (e) { /* no pointer lock available — click-drag look still works */ }
 }
 function showPaused() {
   clearKeys();
   document.getElementById('blocker-title').textContent = 'PAUSED';
-  document.getElementById('blocker-text').textContent = hasMouse ? 'Click (or press Enter) to resume.' : 'Tap or press Enter to resume.';
+  document.getElementById('blocker-text').textContent = 'Click (or press Enter) to resume.';
   blockerEl.style.display = 'flex';
 }
 blockerEl.addEventListener('click', startGame);
+blockerEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && !hasMouse) { hasMouse = true; applyInputMode(); }   // a real mouse / trackpad click proves one exists
+});
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = !!document.pointerLockElement;
   if (pointerLocked) lockWasHeld = true;
-  else if (lockWasHeld) { lockWasHeld = false; showPaused(); }
+  else { mouseHeld = false; if (lockWasHeld) { lockWasHeld = false; showPaused(); } }
 });
 
 // ---- keyboard ----
 const GAME_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
 window.addEventListener('keydown', (e) => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();       // never scroll the page
+  if (e.code === 'KeyM') { if (!e.repeat) cycleMap(); return; }
   if (blockerVisible()) { if (e.code === 'Enter' || e.code === 'Space') startGame(); return; }
   const fresh = !keys[e.code];
   keys[e.code] = true;
   if (!fresh) return;
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') tryStartSlide();
   if (e.code === 'KeyC') airBoost();
-  if (e.code === 'KeyF' || e.code === 'Enter') fireShot();
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 window.addEventListener('blur', clearKeys);                                   // never leave a key "stuck" down
@@ -436,6 +528,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) clear
 
 // ---- mouse / trackpad ----
 let dragLook = false, dragDist = 0, lastX = 0, lastY = 0;
+window.addEventListener('touchstart', () => { lastTouchTime = performance.now(); }, { passive: true });
 document.addEventListener('mousemove', (e) => {
   if (!hasMouse && performance.now() - lastTouchTime > 800 && (e.movementX || e.movementY)) {
     hasMouse = true; applyInputMode();                 // a real mouse showed up — switch modes live
@@ -450,97 +543,214 @@ document.addEventListener('mousemove', (e) => {
 });
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || blockerVisible()) return;
-  if (pointerLocked) fireShot();
+  if (pointerLocked) { mouseHeld = true; tryFire(); }                     // click = shoot, hold = auto-fire
   else { dragLook = true; dragDist = 0; lastX = e.clientX; lastY = e.clientY; }
 });
 document.addEventListener('mouseup', () => {
-  if (dragLook && dragDist < 4) fireShot();            // a plain click (no drag) shoots when pointer lock isn't available
+  mouseHeld = false;
+  if (dragLook && dragDist < 4) tryFire();                                // pointer lock unavailable: a plain click still shoots
   dragLook = false;
 });
 
-// ---- touch ----
-window.addEventListener('touchstart', () => { lastTouchTime = performance.now(); }, { passive: true });
-(function setupTouch() {
-  const joyZone = document.getElementById('touch-joystick-zone');
-  const joyBase = document.getElementById('joystick-base');
-  const joyKnob = document.getElementById('joystick-knob');
-  const lookZone = document.getElementById('touch-look-zone');
-  const R = 55;
-  let joyId = null, cx = 0, cy = 0, lookId = null, lx = 0, ly = 0;
-  const find = (e, id) => { for (const t of e.changedTouches) if (t.identifier === id) return t; return null; };
-
-  joyZone.addEventListener('touchstart', (e) => {
-    const t = e.changedTouches[0]; joyId = t.identifier;
-    const r = joyBase.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
-    e.preventDefault();
-  }, { passive: false });
-  joyZone.addEventListener('touchmove', (e) => {
-    const t = find(e, joyId); if (!t) return;
-    let dx = t.clientX - cx, dy = t.clientY - cy;
-    const d = Math.min(R, Math.hypot(dx, dy)), a = Math.atan2(dy, dx);
-    dx = Math.cos(a) * d; dy = Math.sin(a) * d;
-    joyKnob.style.left = (30 + dx) + 'px'; joyKnob.style.top = (30 + dy) + 'px';
-    touchMove.x = dx / R; touchMove.z = dy / R;
-    e.preventDefault();
-  }, { passive: false });
-  const endJoy = (e) => {
-    joyId = null; touchMove.x = touchMove.z = 0;
-    joyKnob.style.left = '30px'; joyKnob.style.top = '30px'; e.preventDefault();
-  };
-  joyZone.addEventListener('touchend', endJoy, { passive: false });
-  joyZone.addEventListener('touchcancel', endJoy, { passive: false });
-
-  lookZone.addEventListener('touchstart', (e) => { const t = e.changedTouches[0]; lookId = t.identifier; lx = t.clientX; ly = t.clientY; e.preventDefault(); }, { passive: false });
-  lookZone.addEventListener('touchmove', (e) => {
-    const t = find(e, lookId); if (!t) return;
-    applyLook((t.clientX - lx) * 1.6, (t.clientY - ly) * 1.6); lx = t.clientX; ly = t.clientY; e.preventDefault();
-  }, { passive: false });
-  lookZone.addEventListener('touchend', (e) => { lookId = null; e.preventDefault(); }, { passive: false });
-
-  const press = (id, down, up) => {
-    const el = document.getElementById(id);
-    el.addEventListener('touchstart', (e) => { down(); e.preventDefault(); }, { passive: false });
-    if (up) { el.addEventListener('touchend', (e) => { up(); e.preventDefault(); }, { passive: false }); el.addEventListener('touchcancel', up); }
-  };
-  press('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
-  press('btn-slide', tryStartSlide);
-  press('btn-boost', airBoost);
-  press('btn-shoot', fireShot);
-})();
-
-// ---- HUD text + touch UI follow whichever device is actually in use ----
+// ---- HUD text + the "needs a mouse" gate ----
 function applyInputMode() {
-  const touchUI = !hasMouse && isTouch;
-  for (const id of ['touch-joystick-zone', 'touch-look-zone']) document.getElementById(id).style.display = touchUI ? 'block' : 'none';
-  for (const id of ['btn-jump', 'btn-slide', 'btn-boost', 'btn-shoot']) document.getElementById(id).style.display = touchUI ? 'flex' : 'none';
-  const controls = document.getElementById('controls-line'), look = document.getElementById('look-line'), text = document.getElementById('blocker-text');
+  document.getElementById('controls-line').textContent = 'WASD / Arrows move · SPACE jump · SHIFT slide · C air-boost · Q/E lean · M map size';
+  document.getElementById('look-line').textContent = 'Mouse / trackpad: LOOK · CLICK: shoot (hold = auto-fire) · Esc: pause';
+  const title = document.getElementById('blocker-title'), text = document.getElementById('blocker-text');
   if (hasMouse) {
-    controls.textContent = 'WASD or Arrows move · SPACE jump · SHIFT slide · C air-boost · Q/E lean';
-    look.textContent = 'Mouse / trackpad to look (click to capture, Esc to release) · Click or F to shoot';
-    text.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Click to start.';
-  } else if (touchUI) {
-    controls.textContent = 'Left stick: move · JUMP / SLIDE / AIR BOOST / SHOOT buttons';
-    look.textContent = 'Drag the right side of the screen to look';
-    text.textContent = 'Map: Atrium — geometry blockout for movement/TTK playtesting. Tap to start.';
+    title.textContent = 'FIRETEAM ZERO';
+    text.textContent = 'Map: Atrium — blockout for movement/TTK playtesting. Move with WASD, aim with the mouse or trackpad, click to shoot. Click to start.';
   } else {
-    controls.textContent = 'ARROWS move · SPACE jump · SHIFT slide · C air-boost · Q/E lean';
-    look.textContent = 'No mouse detected — LOOK with J / L (turn) and I / K (up / down) · F or Enter to shoot';
-    text.textContent = 'Map: Atrium — geometry blockout. No mouse detected: arrows move, J/L/I/K look. Press Enter to start.';
+    title.textContent = 'MOUSE OR TRACKPAD REQUIRED';
+    text.textContent = 'Fireteam Zero is a mouse-aim shooter. Open it on a computer with a mouse or a MacBook trackpad.';
   }
 }
 applyInputMode();
 
 // ======================================================
+// MAP DIAGRAM — live top-down plan + side-view height strip. M cycles large -> small -> off.
+// Drawn from the same colliders the physics uses, so it is exactly what's there
+// (a collapsed Mezzanine half disappears from the map too).
+// ======================================================
+const mapCanvas = document.getElementById('map');
+const mctx = mapCanvas.getContext('2d');
+const staticMap = document.createElement('canvas');
+const WB = { x0: -55, x1: 55, z0: -16, z1: 16 };          // world rectangle shown
+const Y_TOP = 7, Y_BOT = -6;                              // side-view height range
+const MAP_ORDER = [1, 2, 0];                              // 1 = large, 2 = small, 0 = hidden
+let mapMode = 1, mapDirty = true, ML = null;
+
+function layoutMap() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const big = mapMode === 1;
+  const fit = Math.floor((0.5 * window.innerHeight - 126) / 0.362);          // keep the large map above the crosshair on short screens
+  const W = Math.min(window.innerWidth - 32, big ? Math.max(340, Math.min(820, fit)) : 340);
+  const s = W / (WB.x1 - WB.x0);                          // px per world unit (plan)
+  const sy = s * 0.6;                                     // vertical scale of the side view
+  const head = 22, planH = Math.round((WB.z1 - WB.z0) * s);
+  const sideH = big ? Math.round((Y_TOP - Y_BOT) * sy) : 0;
+  const sideTop = head + planH + 20;
+  const H = big ? sideTop + sideH + 8 : head + planH + 6;
+  ML = { dpr, big, W, H, s, sy, head, planH, sideTop, sideH };
+  for (const c of [mapCanvas, staticMap]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  mapCanvas.style.width = W + 'px'; mapCanvas.style.height = H + 'px';
+  mapDirty = true;
+}
+const mx = (x) => (x - WB.x0) * ML.s;
+const mz = (z) => ML.head + (WB.z1 - z) * ML.s;           // +Z is up on the map
+const my = (y) => ML.sideTop + (Y_TOP - y) * ML.sy;
+
+function cycleMap() {
+  mapMode = MAP_ORDER[(MAP_ORDER.indexOf(mapMode) + 1) % MAP_ORDER.length];
+  mapCanvas.style.display = mapMode === 0 ? 'none' : 'block';
+  if (mapMode) layoutMap();
+}
+
+function drawStaticMap() {
+  const g = staticMap.getContext('2d');
+  const { dpr, big, W, H, s, head, planH, sideTop, sideH } = ML;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = 'rgba(10,12,18,0.86)'; g.fillRect(0, 0, W, H);                  // panel background (slightly see-through)
+  const R = (x0, z0, x1, z1) => [mx(x0), mz(z1), (x1 - x0) * s, (z1 - z0) * s];
+  const font = (px) => `bold ${px}px ui-monospace, Menlo, Consolas, monospace`;
+  const label = (txt, x, z, px = big ? 10 : 7, color = '#fff') => {
+    g.font = font(px); g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineWidth = 3; g.lineJoin = 'round'; g.strokeStyle = 'rgba(0,0,0,0.8)'; g.strokeText(txt, mx(x), mz(z));
+    g.fillStyle = color; g.fillText(txt, mx(x), mz(z));
+  };
+  const by = (tag, fn) => { for (const c of colliders) if (c.tag === tag) fn(c, R(c.x0, c.z0, c.x1, c.z1)); };
+
+  // header: title + legend
+  g.fillStyle = '#e8eaf5'; g.font = font(big ? 12 : 9); g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.fillText('ATRIUM · LIVE MAP', 8, head / 2);
+  if (big && W >= 700) {
+    let lx = 168;
+    for (const [name, fill, stroke] of [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
+      ['mezzanine', 'rgba(106,120,255,0.55)', '#9aa6ff'], ['lower hall', 'rgba(47,209,200,0.55)', '#2fd1c8'],
+      ['climb', '#ff963c'], ['shoot', '#ff5a3c']]) {
+      g.fillStyle = fill; g.fillRect(lx, head / 2 - 5, 10, 10);
+      if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.strokeRect(lx + 0.5, head / 2 - 4.5, 9, 9); }
+      g.font = font(10); g.textAlign = 'left'; g.fillStyle = '#b9bdd0'; g.fillText(name, lx + 14, head / 2);
+      lx += 14 + g.measureText(name).width + 14;
+    }
+  }
+
+  // plan: floor, spawn pads, stairs/escalator, cover, mezzanine, walls, then the Lower Hall shown through the floor
+  g.fillStyle = '#12141b'; g.fillRect(0, head, W, planH);
+  g.fillStyle = '#4a4d5e'; g.fillRect(...R(-54, -15, 54, 15));
+  g.fillStyle = 'rgba(70,110,230,0.55)'; g.fillRect(...R(-52, -4, -44, 4));
+  g.fillStyle = 'rgba(230,70,70,0.55)'; g.fillRect(...R(44, -4, 52, 4));
+  by('stairs', (c, r) => { g.fillStyle = `hsl(228,45%,${28 + c.y1 * 7}%)`; g.fillRect(...r); });
+  by('escalator', (c, r) => { g.fillStyle = `hsl(220,12%,${34 + c.y1 * 6}%)`; g.fillRect(...r); });
+  by('cover', (c, r) => { g.fillStyle = c.y1 > 3 ? '#86c086' : '#5f8a5f'; g.fillRect(...r); });
+  for (const c of colliders) {
+    if (c.tag !== 'mezzW' && c.tag !== 'mezzE') continue;
+    const r = R(c.x0, c.z0, c.x1, c.z1);
+    if (c.y1 < 5.5) { g.fillStyle = 'rgba(106,120,255,0.45)'; g.fillRect(...r); g.strokeStyle = '#9aa6ff'; g.lineWidth = 1.5; g.strokeRect(...r); }
+    else { g.fillStyle = '#c9d0ff'; g.fillRect(...r); }                       // broken railing
+  }
+  for (const side of collapsedSides) {
+    g.setLineDash([4, 3]); g.strokeStyle = '#ff5a3c'; g.lineWidth = 1.5;
+    g.strokeRect(...(side === 'W' ? R(-15, 9, 0, 15) : R(0, 9, 15, 15))); g.setLineDash([]);
+    label('COLLAPSED', side === 'W' ? -7.5 : 7.5, 12, big ? 9 : 6, '#ff8a70');
+  }
+  by('wall', (c, r) => { g.fillStyle = '#0d0e13'; g.fillRect(...r); g.strokeStyle = '#a7adc8'; g.lineWidth = 1; g.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1); });
+  by('choke', (c, r) => { g.fillStyle = '#8a6a48'; g.fillRect(...r); g.strokeStyle = '#d9b184'; g.lineWidth = 1; g.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1); });
+  g.fillStyle = 'rgba(47,209,200,0.18)'; g.fillRect(...R(-52, -15, 52, -9));     // Lower Hall: tunnel + the two ramp pits, under the floor
+  by('ramp', (c, r) => { g.fillStyle = `rgba(47,209,200,${0.25 + 0.5 * (1 + c.y1 / 5)})`; g.fillRect(...r); });   // ramps: bright = shallow, dark = deep
+  by('scaffold', (c, r) => { g.fillStyle = `rgba(255,150,60,${0.3 + 0.6 * (c.y1 + 5) / 5})`; g.fillRect(...r); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 1; g.strokeRect(...r); });
+  g.setLineDash([5, 4]); g.strokeStyle = '#2fd1c8'; g.lineWidth = 1.5; g.strokeRect(...R(-52, -15, 52, -9)); g.setLineDash([]);
+  for (const c of colliders) {
+    if (!c.tag || !c.tag.startsWith('beam')) continue;
+    const r = R(c.x0, c.z0, c.x1, c.z1);
+    g.fillStyle = '#ff5a3c'; g.fillRect(r[0] - 1, r[1] - 1, r[2] + 2, r[3] + 2);
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.strokeRect(r[0] - 1, r[1] - 1, r[2] + 2, r[3] + 2);
+  }
+
+  // plan labels
+  const small = big ? 8 : 6;
+  label('SPAWN A', -48, 0); label('SPAWN B', 48, 0);
+  label('A-LONG', -30, 0); label('B-LONG', 30, 0);
+  label('CHOKE', -17, 0, small); label('CHOKE', 17, 0, small);
+  label('MID', 0, -3);
+  label('A-STAIRS ▶', -21, 12, small); label('B-STAIRS ◀', 21, 12, small);
+  label('MEZZANINE', 0, 12, big ? 9 : 6);
+  label(big ? 'LOWER HALL — tunnel under the floor (y −5)' : 'LOWER HALL', 0, -12);
+  label('DOWN ▶', -47, -12, small); label('◀ DOWN', 47, -12, small);
+  label('CLIMB', -7.5, -6, small); label('CLIMB', 7.5, -6, small);
+  label('ESC ▲', 3.5, 4, small);
+
+  // side view: height at each x (large map only)
+  if (big) {
+    g.fillStyle = '#e8eaf5'; g.font = font(11); g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillText('SIDE VIEW · height at each x', 8, sideTop - 10);
+    g.fillStyle = '#12141b'; g.fillRect(0, sideTop, W, sideH);
+    const poly = (pts, fill, stroke) => {
+      g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(mx(x), my(y)) : g.moveTo(mx(x), my(y))); g.closePath();
+      if (fill) { g.fillStyle = fill; g.fill(); }
+      if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.stroke(); }
+    };
+    poly([[-54, 0], [54, 0], [54, -6], [-54, -6]], '#3a3d4c');                       // solid ground
+    poly([[-42, -1], [42, -1], [42, -5], [-42, -5]], '#0b0c11');                     // lower hall tunnel
+    poly([[-52, 0], [-42, 0], [-42, -5], [-43, -5], [-52, -0.5]], '#0b0c11');        // A ramp pit
+    poly([[52, 0], [42, 0], [42, -5], [43, -5], [52, -0.5]], '#0b0c11');             // B ramp pit
+    for (const bx of [-10, 5]) poly([[bx, 0], [bx + 5, 0], [bx + 5, -5], [bx, -5]], 'rgba(255,150,60,0.25)', '#ff963c');   // climb shafts
+    poly([[-27, 0], [-15, 5], [-15, 0]], '#4a5db0'); poly([[27, 0], [15, 5], [15, 0]], '#4a5db0');                       // mezzanine stairs
+    poly([[-1, 0], [1, 0], [1, 5], [-1, 5]], '#86c086');                                                                 // mid pillar
+    for (const [side, x0, x1, bx] of [['W', -15, 0, -8], ['E', 0, 15, 8]]) {
+      if (colliders.some(c => c.tag === 'mezz' + side)) {
+        poly([[x0, 4.4], [x1, 4.4], [x1, 5], [x0, 5]], '#6a78ff');
+        g.strokeStyle = '#ff5a3c'; g.lineWidth = 2; g.beginPath(); g.moveTo(mx(bx), my(0)); g.lineTo(mx(bx), my(4.4)); g.stroke();   // support beam
+      } else {
+        g.setLineDash([4, 3]); g.strokeStyle = '#ff5a3c'; g.lineWidth = 1.5; g.strokeRect(mx(x0), my(5), (x1 - x0) * s, 0.6 * ML.sy); g.setLineDash([]);
+      }
+    }
+    g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 1.5;                                                          // main floor line (gaps = ramp pits + climb shafts)
+    for (const [a, b] of [[-54, -52], [-42, -10], [-5, 5], [10, 42], [52, 54]]) { g.beginPath(); g.moveTo(mx(a), my(0)); g.lineTo(mx(b), my(0)); g.stroke(); }
+    g.font = font(9); g.textAlign = 'left'; g.textBaseline = 'alphabetic'; g.fillStyle = '#9aa0b8';
+    for (const [y, t] of [[5, 'y 5  mezzanine'], [0, 'y 0  main floor'], [-5, 'y −5  lower hall']]) g.fillText(t, 6, my(y) - 4);
+  }
+}
+
+function drawMap() {
+  if (!mapMode) return;
+  if (mapDirty) { drawStaticMap(); mapDirty = false; }
+  const { dpr, big, s } = ML;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  mctx.drawImage(staticMap, 0, 0);
+  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const y = player.pos.y;
+  const lvl = y < -2 ? ['LOWER HALL', '47,209,200'] : y > 4 ? ['MEZZANINE', '143,155,255'] : ['MAIN FLOOR', '255,210,77'];
+  const col = `rgb(${lvl[1]})`;
+  const px = mx(player.pos.x), pz = mz(player.pos.z);
+  const ax = -Math.sin(player.yaw), ay = Math.cos(player.yaw);                 // facing, in map space (+Z is up)
+  const half = Math.atan(Math.tan(camera.fov * Math.PI / 360) * camera.aspect), ang = Math.atan2(ay, ax);
+  mctx.beginPath(); mctx.moveTo(px, pz); mctx.arc(px, pz, 15 * s, ang - half, ang + half); mctx.closePath();
+  mctx.fillStyle = `rgba(${lvl[1]},0.22)`; mctx.fill();                       // what you can currently see
+  const r = big ? 5 : 4;
+  mctx.strokeStyle = col; mctx.lineWidth = 2; mctx.beginPath(); mctx.moveTo(px, pz); mctx.lineTo(px + ax * r * 3, pz + ay * r * 3); mctx.stroke();
+  mctx.fillStyle = col; mctx.strokeStyle = '#000'; mctx.lineWidth = 1.5;
+  mctx.beginPath(); mctx.arc(px, pz, r, 0, Math.PI * 2); mctx.fill(); mctx.stroke();
+
+  mctx.font = `bold ${big ? 11 : 8}px ui-monospace, Menlo, Consolas, monospace`; mctx.textAlign = 'right'; mctx.textBaseline = 'middle';
+  const t = `${lvl[0]} · y ${y.toFixed(1)}`;
+  mctx.lineWidth = 3; mctx.lineJoin = 'round'; mctx.strokeStyle = 'rgba(0,0,0,0.8)'; mctx.strokeText(t, ML.W - 8, ML.head + 11);
+  mctx.fillStyle = col; mctx.fillText(t, ML.W - 8, ML.head + 11);
+  if (big) {
+    mctx.fillStyle = col; mctx.strokeStyle = '#000'; mctx.lineWidth = 1.5;
+    mctx.beginPath(); mctx.arc(px, my(y + 0.9), 4, 0, Math.PI * 2); mctx.fill(); mctx.stroke();
+  }
+}
+layoutMap();
+window.addEventListener('resize', () => { if (mapMode) layoutMap(); });
+
+// ======================================================
 // FRAME UPDATE
 // ======================================================
 function updatePlayer(dt) {
-  // Keyboard look (the way to turn when there's no mouse)
-  const LOOK = 2.2;
-  if (keys['KeyJ']) player.yaw += LOOK * dt;
-  if (keys['KeyL']) player.yaw -= LOOK * dt;
-  if (keys['KeyI']) player.pitch = Math.min(PITCH_MAX, player.pitch + LOOK * 0.7 * dt);
-  if (keys['KeyK']) player.pitch = Math.max(-PITCH_MAX, player.pitch - LOOK * 0.7 * dt);
-
   if (blockedAt(player.pos.x, player.pos.z, player.pos.y)) unstick();
 
   // Horizontal velocity: normal walking, or a committed slide burst
@@ -619,6 +829,8 @@ function updateHud(frame) {
 // Test/debug hook (lets automated checks drive the real game loop)
 window.__fz = {
   player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
+  fire: fireShot, stats, effects,
+  map: { mode: () => mapMode, cycle: cycleMap, draw: drawMap, layout: () => ML, xy: (x, z) => [mx(x), mz(z)] },
   teleport(x, y, z, yaw = 0) { player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.yaw = yaw; player.pitch = 0; player.isSliding = false; player.onGround = false; },
 };
 
@@ -628,8 +840,12 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
   if (!window.__fzPause) updatePlayer(dt);
+  fireCooldown = Math.max(0, fireCooldown - dt);
+  if (!blockerVisible() && (mouseHeld || keys['KeyF'])) tryFire();           // auto-fire while the button is held
   updateCamera();
+  updateEffects(dt);
   updateHud(frame++);
+  drawMap();
   renderer.render(scene, camera);
 }
 animate();
