@@ -1109,11 +1109,28 @@ function updateViewmodel(dt) {
 }
 
 // ---- start / pause overlay ----
+// Mac Chromium sometimes drops pointer lock on its own — losing window focus (Cmd-Tab, a
+// notification, a second monitor click), or re-requesting it too soon after an Escape-triggered
+// exit (Chrome enforces a short cooldown there and silently no-ops the request instead of
+// rejecting it or firing pointerlockchange). Either way the page ends up "unlocked" with no
+// event to react to, so relockPointer() is called from every real user gesture we get while the
+// game is running and unlocked — it's cheap to call even when already locked or not needed yet.
+let lastLockAttempt = -1e9;
+function relockPointer() {
+  if (!hasMouse || pointerLocked || blockerVisible() || player.dead) return;
+  if (realT - lastLockAttempt < 0.2) return;                // don't hammer the API every mousemove tick
+  lastLockAttempt = realT;
+  try {
+    const p = document.body.requestPointerLock && document.body.requestPointerLock();
+    if (p && p.catch) p.catch(() => {});                    // Safari returns nothing; Chrome returns a promise
+  } catch (e) { /* no pointer lock available — click-drag look still works */ }
+}
 function startGame() {
   if (!hasMouse) return;                                  // this game needs a mouse / trackpad
   blockerEl.style.display = 'none';
   clearKeys();
   ensureAudio();
+  lastLockAttempt = realT;
   try {
     const p = document.body.requestPointerLock && document.body.requestPointerLock();
     if (p && p.catch) p.catch(() => {});                  // Safari returns nothing; Chrome returns a promise
@@ -1207,6 +1224,7 @@ window.addEventListener('keydown', (e) => {
     if ((e.code === 'Enter' || e.code === 'Space') && hasMouse) { if (!match.started || match.over) startMatch(match.mode); startGame(); }
     return;
   }
+  relockPointer();                                        // a keypress is a user gesture too — try to restore mouse-look
   if (e.code === 'KeyR') startReload();
   if (e.code === 'Digit1') equip(0);
   if (e.code === 'Digit2') equip(1);
@@ -1218,7 +1236,16 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') airBoost();
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; if (e.code === 'Tab') showTab(false); if (e.code === 'KeyF') triggerReady = true; });
-window.addEventListener('blur', clearKeys);                                   // never leave a key "stuck" down
+window.addEventListener('blur', () => {
+  clearKeys();
+  // Losing window focus (Cmd-Tab, a notification, clicking a second monitor) is the #1 cause of
+  // pointer lock silently dropping on Mac. The browser usually exits the lock itself when this
+  // happens, but pointerlockchange firing is not guaranteed to be instant or even guaranteed at
+  // all on every Mac/Chromium build, which is what left players stuck in a half-unlocked state
+  // (mouse not driving the camera, no pause screen telling them why). Pausing immediately on blur
+  // closes that gap — worst case pointerlockchange also fires and showPaused() just runs twice.
+  if (!blockerVisible() && match.started && !match.over) showPaused();
+});
 document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
 
 // ---- mouse / trackpad ----
@@ -1238,6 +1265,7 @@ document.addEventListener('mousemove', (e) => {
 });
 document.addEventListener('mousedown', (e) => {
   if (blockerVisible()) return;
+  relockPointer();                                                        // any click is a user gesture — try to restore proper mouse-look
   if (e.button === 2) { adsHeld = true; return; }                          // right-click (two-finger click on a trackpad) = aim
   if (e.button !== 0) return;
   triggerReady = true;
@@ -2689,6 +2717,7 @@ window.__fz = {
   setBotWeapon, vm: gun, HIP, vmCam, vmScene, applyProfileLoadout, finishMatchXP, matchXP: () => ({ matchXP, matchLog, streak }), camoSet: (k) => { camo = k; applyCamo(); },
   setPrimary: (k) => { profile.primary = k; applyProfileLoadout(); }, ads: (v) => { adsHeld = v; }, triggerReset: () => { triggerReady = true; },
   settings, saveSettings, DPR_FIX, isMacChromium,
+  get pointerLocked() { return pointerLocked; }, relockPointer, get lockWasHeld() { return lockWasHeld; },
   // fast headless simulation (no rendering): runs the match for `sec` seconds of game time
   sim(sec, dt = 1 / 30) { for (let t = 0; t < sec && !match.over; t += dt) { updateMatch(dt); updateEffects(dt); } return { ...match.score }; },
   // killstreaks
