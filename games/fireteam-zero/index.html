@@ -73,6 +73,37 @@
   #hpbar i { display: block; height: 100%; width: 100%; background: #6fe08a; }
   #ammo { font-size: 22px; font-weight: bold; } #ammo small { font-size: 13px; color: #aaa; }
   #reload { color: #ffd24d; font-size: 12px; height: 14px; }
+  #streakbar {
+    position: fixed; left: 16px; bottom: 16px; z-index: 10; display: none; color: #e8eaf0; min-width: 190px;
+    background: linear-gradient(135deg, rgba(10,12,18,0.82), rgba(10,12,18,0.6));
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+    padding: 7px 11px 9px; border-top: 2px solid #3a3f52;
+  }
+  #streaklabel { font-size: 10px; letter-spacing: 0.12em; color: #6d7488; display: flex; justify-content: space-between; }
+  #streaklabel b { color: #fff; font-size: 15px; letter-spacing: 0; font-weight: 700; }
+  #streakpips { display: flex; gap: 2px; margin: 5px 0 4px; }
+  #streakpips i {
+    display: block; flex: 1; height: 4px; background: #2a2d38; clip-path: polygon(0 0, 100% 0, 85% 100%, 0% 100%);
+  }
+  #streakpips i.done { background: #ffd24d; }
+  #streaknext { font-size: 10px; color: #6d7488; letter-spacing: 0.03em; min-height: 12px; }
+  #streaknext b { color: #7fa9ff; font-weight: 700; }
+  #streakactive { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-height: 0; }
+  #streakactive span {
+    font-size: 10px; letter-spacing: 0.04em; padding: 2px 6px 2px 5px; background: rgba(255,255,255,0.06);
+    border-left: 2px solid var(--c, #8fe3a8); color: #d6d9e4;
+  }
+  #ksbanner {
+    position: fixed; top: 16px; left: 50%; z-index: 15; opacity: 0; color: #fff;
+    transform: translateX(-50%) translateY(-8px); transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+    background: linear-gradient(90deg, rgba(8,9,14,0.95), rgba(8,9,14,0.75));
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+    padding: 8px 22px 8px 14px; border-left: 3px solid var(--c, #ff9a5a); box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  #ksbanner.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #ksbanner .eyebrow { font-size: 9px; letter-spacing: 0.22em; color: #6d7488; }
+  #ksbanner b { display: block; font-size: 19px; letter-spacing: 0.1em; color: var(--c, #ff9a5a); line-height: 1.3; }
+  #ksbanner span { color: #9aa0b8; font-size: 11px; letter-spacing: 0.02em; }
   #hitmark { position: fixed; top: 50%; left: 50%; width: 24px; height: 24px; transform: translate(-50%, -50%); z-index: 14; opacity: 0; color: #fff; }
   #hitmark::before, #hitmark::after {
     content: ''; position: absolute; left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; background: currentColor;
@@ -162,6 +193,8 @@
 <div id="xppops" class="ui"></div>
 <div id="banner" class="ui"></div>
 <div id="vitals" class="ui"><div id="wname">VANTA AR</div><div id="hpnum">100 <small>HP</small></div><div id="hpbar"><i></i></div><div id="ammo">30 <small>/ ∞</small></div><div id="reload"></div></div>
+<div id="streakbar" class="ui"><div id="streaklabel">KILLSTREAK <b id="streaknum">0</b></div><div id="streakpips"></div><div id="streaknext"></div><div id="streakactive"></div></div>
+<div id="ksbanner" class="ui"></div>
 <div id="hitmark" class="ui"></div>
 <div id="vignette" class="ui"></div>
 <div id="dmgdir" class="ui"><i></i></div>
@@ -1062,7 +1095,7 @@ function updateViewmodel(dt) {
   vmFlash.position.set(x, y + 0.04, z + vmInfo.muzzleZ);
   recoilPitch -= recoilPitch * Math.min(1, dt * 4); recoilYaw -= recoilYaw * Math.min(1, dt * 4);
   if (realT - lastFireReal > 0.15 || !mouseHeld) spray = Math.max(0, spray - dt * 12);
-  if (reloadT > 0) { reloadT -= dt; if (reloadT <= 0) { reloadT = 0; ammo = curW.mag; } }
+  if (reloadT > 0) { reloadT -= dt * (gameTime < adrenUntil ? 1.4 : 1); if (reloadT <= 0) { reloadT = 0; ammo = curW.mag; } }
   const fov = 75 + (w.adsFov - 75) * e;
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
   const scoped = !!w.scope && adsT > 0.9 && !player.dead;
@@ -1393,12 +1426,12 @@ function drawMap() {
   mctx.drawImage(staticMap, 0, 0);
   mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // teammates always; enemies only while someone on your team can see them (radar-style)
+  // teammates always; enemies only while someone on your team can see them (radar-style) — or during Intel Ping / Blackout
   if (match.started && match.mode === 'tdm') {
-    const rr = big ? 4 : 3;
+    const rr = big ? 4 : 3, reconActive = gameTime < reconUntil;
     for (const b of bots) {
       const ally = b.team === player.team;
-      if (!ally && (b.dead || gameTime - b.spottedT > 1.2)) continue;
+      if (!ally && (b.dead || (gameTime - b.spottedT > 1.2 && !reconActive))) continue;
       const bx = mx(b.pos.x), bz = mz(b.pos.z);
       if (b.dead) {
         mctx.strokeStyle = '#7fa9ff'; mctx.lineWidth = 2; mctx.beginPath();
@@ -1411,6 +1444,24 @@ function drawMap() {
     }
   }
 
+  if (fmArmed) {                                                     // Fire Mission: pending strike marker, ticking down to impact
+    const fx = mx(fmX), fz = mz(fmZ), pulse = 3 + 3 * Math.abs(Math.sin(gameTime * 10));
+    mctx.strokeStyle = '#ff7a2f'; mctx.lineWidth = 2; mctx.beginPath(); mctx.arc(fx, fz, (big ? 7 : 5) + pulse, 0, Math.PI * 2); mctx.stroke();
+    mctx.fillStyle = '#ff7a2f'; mctx.beginPath(); mctx.arc(fx, fz, big ? 3 : 2.2, 0, Math.PI * 2); mctx.fill();
+  }
+  if (turret) {                                                      // Sentry Turret marker
+    const tx = mx(turret.pos.x), tz = mz(turret.pos.z);
+    mctx.fillStyle = turret.team === player.team ? '#5b8cff' : '#ff4545'; mctx.strokeStyle = '#000'; mctx.lineWidth = 1.5;
+    mctx.beginPath(); mctx.moveTo(tx, tz - 4); mctx.lineTo(tx + 4, tz + 3); mctx.lineTo(tx - 4, tz + 3); mctx.closePath(); mctx.fill(); mctx.stroke();
+  }
+  for (const d of dogs) {                                            // Attack Dog markers
+    const dx = mx(d.pos.x), dz = mz(d.pos.z);
+    mctx.fillStyle = '#c9a36a'; mctx.strokeStyle = '#000'; mctx.lineWidth = 1; mctx.beginPath(); mctx.arc(dx, dz, 2.5, 0, Math.PI * 2); mctx.fill(); mctx.stroke();
+  }
+  if (heli) {                                                        // Gunship marker
+    const hx = mx(heli.mesh.position.x), hz = mz(heli.mesh.position.z);
+    mctx.strokeStyle = '#6fd1ff'; mctx.lineWidth = 2; mctx.beginPath(); mctx.arc(hx, hz, big ? 5 : 3.5, 0, Math.PI * 2); mctx.stroke();
+  }
   const y = player.pos.y;
   const lvl = y < -2 ? ['LOWER HALL', '47,209,200'] : y > 4 ? ['MEZZANINE', '143,155,255'] : ['MAIN FLOOR', '255,210,77'];
   const col = `rgb(${lvl[1]})`;
@@ -1464,7 +1515,7 @@ function updatePlayer(dt) {
     slideJumpCancel = true; player.isSliding = false; player.slideCooldown = SLIDE_COOLDOWN;
   }
   // Horizontal velocity: normal walking, a committed slide burst, or (mid-air) strafing
-  if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT), dt);
+  if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT) * (gameTime < adrenUntil ? 1.15 : 1), dt);
   updateMantle(player);
   integrate(player, dt, keys['Space']);
   player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
@@ -1732,7 +1783,7 @@ for (const team of ['A', 'B']) {
       hp: MAX_HP, dead: true, kills: 0, deaths: 0, spawnProt: 0, respawnT: 0, lastHurt: -1e9, lastAttacker: null, lastShotT: -1e9,
       wk: 'ar', w: WEAPONS.ar, ammo: 30, reloadT: 0, fireCd: 0, burstLeft: 0, sprayN: 0, aimMul: 2, aimHead: false,
       target: null, targetVisible: false, engageT: 0, react: 0.4, lastSeenPos: new THREE.Vector3(), lastSeenT: -1e9, freshFight: false,
-      huntPos: null, huntT: -1e9, ignoreUntil: -1e9, retreatUntil: -1e9, huntGoal: false, path: null, pi: 0, goal: -1, holdT: 0, holdYaw: 0, smoothT: 0,
+      huntPos: null, huntT: -1e9, ignoreUntil: -1e9, retreatUntil: -1e9, flashedUntil: -1e9, huntGoal: false, path: null, pi: 0, goal: -1, holdT: 0, holdYaw: 0, smoothT: 0,
       strafeDir: 1, strafeT: 0, thinkT: 0, stuckPos: new THREE.Vector3(), stuckClock: 0, stuckN: 0, spottedT: -1e9, fall: 0, walk: Math.random() * 6, climbJump: false,
       dmgBy: new Map(),
     };
@@ -1762,7 +1813,7 @@ function spawnActor(a) {
   const [x, z] = pickSpawn(a.team, a);
   placeAt(a, x, z, a.team);
   a.spawnProt = SPAWN_PROT; a.lastAttacker = null; a.lastHurt = -1e9; a.dmgBy = new Map();
-  if (a.isPlayer) { resetWeapons(); streak = 0; return; }
+  if (a.isPlayer) { resetWeapons(); streak = 0; resetKillstreaks(); return; }
   if (Math.random() < 0.3) setBotWeapon(a, pickBotWeapon());           // bots change class now and then, like players do
   a.ammo = a.w.mag; a.reloadT = 0; a.target = null; a.targetVisible = false; a.huntPos = null; a.huntGoal = false; a.retreatUntil = -1e9;
   a.path = null; a.goal = -1; a.holdT = rand(0, 0.6); a.fall = 0; a.inner.rotation.set(0, 0, 0); a.inner.position.y = 0;
@@ -1799,6 +1850,218 @@ let streak = 0, matchXP = 0, matchLog = {}, levelsGained = 0;
 const xppopsEl = document.getElementById('xppops'), bannerEl = document.getElementById('banner');
 let bannerT = 0;
 function showBanner(html, t = 2.6) { bannerEl.innerHTML = html; bannerEl.style.opacity = '1'; bannerT = t; }
+
+// ======================================================
+// KILLSTREAKS — raw kill streak (COD-style, resets on death). 10 escalating tiers.
+//   `streak` (declared above) already increments on kill and zeroes on death; killTier
+//   just tracks how far through KILLSTREAKS the current life has claimed.
+// ======================================================
+let killTier = 0;
+let resistUntil = -1e9, resistAmt = 0;          // Flak Vest / Juggernaut / Blackout: % incoming damage reduced
+let adrenUntil = -1e9;                           // Adrenaline: move speed + reload speed
+let reconUntil = -1e9;                           // Intel Ping / Blackout: enemies always shown on map
+let ghostUntil = -1e9;                           // Ghost Protocol: untargetable + unseeable by bots (reuses the `ghost` flag)
+let fmArmed = false, fmX = 0, fmY = 0, fmZ = 0, fmAt = -1e9;   // Fire Mission: armed aim-point + delayed detonation time
+let turret = null;                               // Sentry Turret entity (survives the player's death, see below)
+const ksBannerEl = document.getElementById('ksbanner');
+let ksBannerT = 0;
+function showKsBanner(name, desc, color) {
+  ksBannerEl.style.setProperty('--c', color);
+  ksBannerEl.innerHTML = `<div class="eyebrow">KILLSTREAK EARNED</div><b>${name}</b><span>${desc}</span>`;
+  ksBannerEl.classList.remove('show'); void ksBannerEl.offsetWidth; ksBannerEl.classList.add('show');
+  ksBannerT = 2.4;
+  playTone(520, 0.1, 0.14, 'sawtooth', 300); setTimeout(() => playTone(780, 0.16, 0.12, 'triangle', 1180), 90);
+}
+function aimPoint(maxDist = 40) {                // where the player's crosshair hits the world right now
+  camera.getWorldDirection(_dir);
+  raycaster.set(camera.position, _dir);
+  raycaster.far = maxDist;
+  const hit = raycaster.intersectObjects(colliders.map(c => c.mesh), false)[0];
+  const end = camera.position.clone().addScaledVector(_dir, hit ? hit.distance : maxDist);
+  return end;
+}
+const KILLSTREAKS = [
+  { n: 2,  name: 'INTEL PING',     desc: 'Enemies revealed on map · 6s',            color: '#4fc3ff',
+    fn: () => { reconUntil = gameTime + 6; } },
+  { n: 3,  name: 'FIELD RESUPPLY', desc: 'Ammo refilled',                          color: '#ffd24d',
+    fn: () => { slotAmmo[0] = WEAPONS[loadout.primary].mag; slotAmmo[1] = WEAPONS[loadout.secondary].mag; ammo = curW.mag; reloadT = 0; } },
+  { n: 4,  name: 'ADRENALINE',     desc: '+15% move speed, faster reload · 10s',   color: '#6fe08a',
+    fn: () => { adrenUntil = gameTime + 10; } },
+  { n: 5,  name: 'FLAK VEST',      desc: '-25% incoming damage · 12s',             color: '#7fa9ff',
+    fn: () => { resistUntil = gameTime + 12; resistAmt = 0.25; } },
+  { n: 6,  name: 'GHOST PROTOCOL', desc: 'Untargetable by enemies · 6s',           color: '#b388ff',
+    fn: () => { ghostUntil = gameTime + 6; } },
+  { n: 7,  name: 'FLASHBANG CALL', desc: 'Blinds enemies near your crosshair',     color: '#fff1a8',
+    fn: () => {
+      const p = aimPoint(30);
+      for (const b of bots) {
+        if (b.team === player.team || b.dead) continue;
+        if (Math.hypot(b.pos.x - p.x, b.pos.z - p.z) < 9) { b.flashedUntil = gameTime + 4; b.huntPos = p.clone(); b.huntT = gameTime; b.huntGoal = false; }
+      }
+    } },
+  { n: 8,  name: 'SENTRY TURRET',  desc: 'Deploys an autonomous turret · 20s',     color: '#ff9a5a',
+    fn: () => { deployTurret(); } },
+  { n: 9,  name: 'JUGGERNAUT',     desc: 'Heavy armor, +100 HP · 12s',             color: '#ff5a5a',
+    fn: () => { resistUntil = gameTime + 12; resistAmt = 0.4; player.hp = 200; } },
+  { n: 10, name: 'FIRE MISSION',   desc: 'Marks your aim point for an airburst',   color: '#ff7a2f',
+    fn: () => { const p = aimPoint(45); fmArmed = true; fmX = p.x; fmY = p.y; fmZ = p.z; fmAt = gameTime + 1.5; } },
+  { n: 12, name: 'BLACKOUT',       desc: 'Full ammo, -50% dmg, +20% speed, full recon · 10s', color: '#ff3b3b',
+    fn: () => {
+      resistUntil = gameTime + 10; resistAmt = 0.5; adrenUntil = gameTime + 10; reconUntil = gameTime + 10;
+      slotAmmo[0] = WEAPONS[loadout.primary].mag; slotAmmo[1] = WEAPONS[loadout.secondary].mag; ammo = curW.mag; reloadT = 0;
+    } },
+  { n: 18, name: 'ATTACK DOGS',    desc: 'Releases 2 dogs that harass nearby enemies · 15s', color: '#c9a36a',
+    fn: () => { spawnDogs(); } },
+  { n: 22, name: 'GUNSHIP',        desc: 'Circles overhead, strafes exposed enemies · 20s',  color: '#6fd1ff',
+    fn: () => { spawnHeli(); } },
+];
+function awardKillstreakTier() {
+  if (match.mode !== 'tdm') return;
+  while (killTier < KILLSTREAKS.length && streak >= KILLSTREAKS[killTier].n) {
+    const t = KILLSTREAKS[killTier];
+    t.fn(); showKsBanner(t.name, t.desc, t.color);
+    killTier++;
+  }
+}
+function resetKillstreaks() {
+  killTier = 0; resistUntil = -1e9; resistAmt = 0; adrenUntil = -1e9; reconUntil = -1e9; ghostUntil = -1e9;
+  fmArmed = false; fmAt = -1e9; removeTurret(); removeDogs(); removeHeli();
+}
+function deployTurret() {
+  removeTurret();
+  const f = forwardVec();
+  const tpos = new THREE.Vector3(player.pos.x + f.x * 1.2, player.pos.y + 0.9, player.pos.z + f.z * 1.2);
+  const teamColor = player.team === 'A' ? 0x5b8cff : 0xff4545;
+  const mesh = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.16, 10), new THREE.MeshStandardMaterial({ color: 0x2a2d35, metalness: 0.6, roughness: 0.4 }));
+  const body = new THREE.Mesh(boxGeo(0.22, 0.2, 0.3), new THREE.MeshStandardMaterial({ color: teamColor, emissive: teamColor, emissiveIntensity: 0.35, metalness: 0.5, roughness: 0.4 }));
+  body.position.y = 0.2;
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8), new THREE.MeshStandardMaterial({ color: 0x15161b, metalness: 0.7, roughness: 0.3 }));
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.2, -0.35);
+  mesh.add(base, body, barrel);
+  mesh.position.copy(tpos); mesh.rotation.y = player.yaw;
+  scene.add(mesh);
+  turret = { pos: tpos, team: player.team, name: 'SENTRY', kills: 0, deaths: 0, mesh, barrel, fireCd: 0, until: gameTime + 20 };
+}
+function removeTurret() {
+  if (turret) { scene.remove(turret.mesh); turret = null; }
+}
+const TURRET_RANGE = 16, TURRET_DMG = 14, TURRET_INTERVAL = 0.45;
+function updateTurret(dt) {
+  if (!turret) return;
+  if (gameTime >= turret.until) { removeTurret(); return; }
+  turret.fireCd -= dt;
+  let best = null, bestD = TURRET_RANGE;
+  for (const e of activeActors()) {
+    if (e.team === turret.team || e.dead) continue;
+    const d = Math.hypot(e.pos.x - turret.pos.x, e.pos.z - turret.pos.z, e.pos.y - turret.pos.y);
+    if (d > bestD) continue;
+    const o = turret.pos, dir = new THREE.Vector3(e.pos.x - o.x, e.pos.y + 1 - o.y, e.pos.z - o.z).normalize();
+    if (rayWorld(o, dir, d) < d - 0.05) continue;    // wall in the way
+    best = e; bestD = d;
+  }
+  if (best) {
+    turret.mesh.lookAt(best.pos.x, turret.pos.y, best.pos.z);
+    if (turret.fireCd <= 0) {
+      turret.fireCd = TURRET_INTERVAL;
+      const from = turret.pos.clone(), to = new THREE.Vector3(best.pos.x, best.pos.y + 1, best.pos.z);
+      addTracer(from, to); addSpark(to, 0xff3b3b);
+      applyDamage(best, TURRET_DMG, turret, 'body');
+    }
+  }
+}
+
+// ---- Attack Dogs (18 kills): 2 weak, fast mobile units. They just pick the nearest visible enemy and
+// nip at it — low damage, short bite range, no pathfinding (deliberately a minor, easy-to-dodge nuisance,
+// not a real threat) — and expire on their own timer. ----
+let dogs = [];
+const DOG_SPEED = SPEED * 1.3, DOG_DMG = 5, DOG_BITE_RANGE = 1.6, DOG_BITE_INTERVAL = 0.8, DOG_LIFE = 15;
+function spawnDogs() {
+  removeDogs();
+  const f = forwardVec(), r = rightVec();
+  for (const side of [-1, 1]) {
+    const pos = new THREE.Vector3(player.pos.x + f.x * 1.5 + r.x * side * 0.8, 0.3, player.pos.z + f.z * 1.5 + r.z * side * 0.8);
+    const mesh = new THREE.Group();
+    const body = new THREE.Mesh(boxGeo(0.5, 0.28, 0.22), new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.8 }));
+    const head = new THREE.Mesh(boxGeo(0.18, 0.16, 0.16), new THREE.MeshStandardMaterial({ color: 0x3a2d20, roughness: 0.8 }));
+    head.position.set(0, 0.04, -0.3);
+    const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 5), new THREE.MeshBasicMaterial({ color: 0xff3b3b }));
+    eye1.position.set(0.06, 0.05, -0.37);
+    const eye2 = eye1.clone(); eye2.position.x = -0.06;
+    mesh.add(body, head, eye1, eye2);
+    mesh.position.copy(pos);
+    scene.add(mesh);
+    dogs.push({ team: player.team, name: 'ATTACK DOG', kills: 0, deaths: 0, pos, mesh, biteCd: 0, until: gameTime + DOG_LIFE });
+  }
+}
+function removeDogs() { for (const d of dogs) scene.remove(d.mesh); dogs = []; }
+function updateDogs(dt) {
+  if (!dogs.length) return;
+  dogs = dogs.filter(d => gameTime < d.until);
+  for (const d of dogs) {
+    d.biteCd -= dt;
+    let best = null, bestD = 22;
+    for (const e of activeActors()) {
+      if (e.team === d.team || e.dead) continue;
+      const dist = Math.hypot(e.pos.x - d.pos.x, e.pos.z - d.pos.z);
+      if (dist < bestD) { best = e; bestD = dist; }
+    }
+    if (best) {
+      const dx = best.pos.x - d.pos.x, dz = best.pos.z - d.pos.z, len = Math.hypot(dx, dz) || 1;
+      if (bestD > DOG_BITE_RANGE) {
+        d.pos.x += dx / len * DOG_SPEED * dt; d.pos.z += dz / len * DOG_SPEED * dt;
+      } else if (d.biteCd <= 0) {
+        d.biteCd = DOG_BITE_INTERVAL;
+        applyDamage(best, DOG_DMG, d, 'body');
+        playTone(220, 0.06, 0.08, 'square', 140);
+      }
+      d.mesh.rotation.y = Math.atan2(dx, dz);
+    }
+    d.mesh.position.copy(d.pos);
+  }
+  if (!dogs.length) removeDogs();
+}
+
+// ---- Gunship (22 kills): circles above Mid, occasionally strafes an exposed enemy for modest damage.
+// Can only see actors above the Lower Hall (y > -2) — it's in the sky, not underground. Weak, infrequent. ----
+let heli = null;
+const HELI_RADIUS = 15, HELI_HEIGHT = 9, HELI_SPEED = 0.6, HELI_DMG = 10, HELI_INTERVAL = 3;
+function spawnHeli() {
+  removeHeli();
+  const mesh = new THREE.Group();
+  const body = new THREE.Mesh(boxGeo(1.1, 0.4, 0.4), new THREE.MeshStandardMaterial({ color: 0x2a2d35, metalness: 0.5, roughness: 0.4 }));
+  const tail = new THREE.Mesh(boxGeo(0.9, 0.15, 0.15), new THREE.MeshStandardMaterial({ color: 0x2a2d35, metalness: 0.5, roughness: 0.4 }));
+  tail.position.set(-0.95, 0.1, 0);
+  const rotor = new THREE.Mesh(boxGeo(2.6, 0.03, 0.12), new THREE.MeshStandardMaterial({ color: 0x15161b }));
+  rotor.position.y = 0.25;
+  mesh.add(body, tail, rotor);
+  scene.add(mesh);
+  heli = {
+    team: player.team, name: 'GUNSHIP', kills: 0, deaths: 0, mesh, rotor, ang: Math.random() * Math.PI * 2, fireCd: 1.5, until: gameTime + 20,
+    get pos() { return this.mesh.position; },   // so applyDamage's att.pos.clone() (used when the victim can't see its attacker) works
+  };
+}
+function removeHeli() { if (heli) { scene.remove(heli.mesh); heli = null; } }
+function updateHeli(dt) {
+  if (!heli) return;
+  if (gameTime >= heli.until) { removeHeli(); return; }
+  heli.ang += HELI_SPEED * dt;
+  heli.mesh.position.set(Math.cos(heli.ang) * HELI_RADIUS, HELI_HEIGHT, Math.sin(heli.ang) * HELI_RADIUS);
+  heli.mesh.rotation.y = heli.ang + Math.PI / 2;
+  heli.rotor.rotation.y += dt * 40;
+  heli.fireCd -= dt;
+  if (heli.fireCd <= 0) {
+    heli.fireCd = HELI_INTERVAL;
+    const targets = activeActors().filter(e => e.team !== player.team && !e.dead && e.pos.y > -2);
+    if (targets.length) {
+      const t = targets[Math.floor(Math.random() * targets.length)];
+      const from = heli.mesh.position.clone(), to = new THREE.Vector3(t.pos.x, t.pos.y + 1, t.pos.z);
+      addTracer(from, to); addSpark(to, 0xff9a5a);
+      applyDamage(t, HELI_DMG, heli, 'body');
+      playTone(140, 0.2, 0.1, 'sawtooth', 90);
+    }
+  }
+}
 function showXpPop(text, gold) {
   const d = document.createElement('div'); d.textContent = text; if (gold) d.className = 'gold';
   xppopsEl.appendChild(d); setTimeout(() => d.remove(), 1400);
@@ -1847,8 +2110,9 @@ function awardKillXP(v, att, head) {
     grantXP(XP.kill + (head ? XP.headshot : 0), head ? 'HEADSHOT KILL' : 'KILL');
     if (streak === 3) grantXP(XP.streak3, '3 STREAK'); else if (streak === 5) grantXP(XP.streak5, '5 STREAK'); else if (streak >= 7) grantXP(XP.streak7, streak + ' STREAK');
     profile.kills++;
+    awardKillstreakTier();
   } else if (v.dmgBy && v.dmgBy.has(player) && gameTime - v.dmgBy.get(player) < 6) grantXP(XP.assist, 'ASSIST');
-  if (v === player) streak = 0;
+  if (v === player) { streak = 0; resetKillstreaks(); }
 }
 function finishMatchXP() {
   if (match.mode !== 'tdm') return;
@@ -1886,6 +2150,7 @@ function addKillfeed(killer, victim, head) {
 }
 function applyDamage(v, amount, att, part) {
   if (v.dead || v.spawnProt > 0 || match.over || v.team === att.team) return null;
+  if (v === player && gameTime < resistUntil) amount *= (1 - resistAmt);   // Flak Vest / Juggernaut / Blackout
   v.hp -= amount; v.lastHurt = gameTime; v.lastAttacker = att;
   if (v.dmgBy) v.dmgBy.set(att, gameTime);
   if (v === player) hurtFeedback(att);
@@ -1909,7 +2174,7 @@ function killActor(v, att, head) {
 }
 function endMatch() {
   if (match.over) return;
-  match.over = true; mouseHeld = false; adsHeld = false;
+  match.over = true; mouseHeld = false; adsHeld = false; removeTurret(); removeDogs(); removeHeli();
   showTab(false);
   finishMatchXP();
   lockWasHeld = false;
@@ -1922,7 +2187,7 @@ function startMatch(mode) {
   restoreMezz();
   killfeedEl.innerHTML = '';
   for (const a of allActors) { a.kills = 0; a.deaths = 0; }
-  streak = 0; matchXP = 0; matchLog = {}; levelsGained = 0;
+  streak = 0; matchXP = 0; matchLog = {}; levelsGained = 0; resetKillstreaks();
   applyProfileLoadout();
   for (const b of bots) {
     if (mode === 'tdm') spawnActor(b);
@@ -1934,6 +2199,7 @@ function startMatch(mode) {
   document.getElementById('pos').style.display = tdm ? 'none' : '';
   document.getElementById('scorebar').style.display = tdm ? 'flex' : 'none';
   document.getElementById('vitals').style.display = tdm ? 'block' : 'none';
+  document.getElementById('streakbar').style.display = tdm ? 'block' : 'none';
   if (tdm && mapMode === 1) cycleMap();                // fighting: start with the compact map
   if (!tdm && mapMode !== 1) { while (mapMode !== 1) cycleMap(); }
 }
@@ -2146,6 +2412,7 @@ function updateBot(b, dt) {
   if (tgt) {
     // ---- fighting ----
     b.engageT += dt; b.aimMul = Math.max(1, b.aimMul - dt * 1.6);
+    if (gameTime < b.flashedUntil) b.aimMul = Math.max(b.aimMul, 5);   // Flashbang Call: can't settle their aim
     const ay = tgt.pos.y + (b.aimHead ? (tgt.isSliding ? 0.95 : 1.62) : (tgt.isSliding ? 0.6 : 1.12));
     const dx = tgt.pos.x - b.pos.x, dy = ay - (b.pos.y + BOT_EYE), dz = tgt.pos.z - b.pos.z, hd = Math.hypot(dx, dz);
     lookYaw = yawTo(dx, dz); pitch = Math.atan2(dy, hd);
@@ -2312,11 +2579,24 @@ function updateMatch(dt) {
     if (player.respawnT <= 0) spawnActor(player);
   } else {
     player.spawnProt = Math.max(0, player.spawnProt - dt);
-    if (gameTime - player.lastHurt > 5) player.hp = Math.min(MAX_HP, player.hp + 20 * dt);
+    if (player.hp < MAX_HP && gameTime - player.lastHurt > 5) player.hp = Math.min(MAX_HP, player.hp + 20 * dt);     // Juggernaut's overheal decays only once it's actually hurt below MAX_HP
+    player.ghost = gameTime < ghostUntil;
   }
   for (const b of bots) {
     updateBot(b, dt);
     if (!b.dead && gameTime - b.lastHurt > 5) b.hp = Math.min(MAX_HP, b.hp + 20 * dt);
+  }
+  updateTurret(dt); updateDogs(dt); updateHeli(dt);
+  if (fmArmed && gameTime >= fmAt) {
+    fmArmed = false;
+    const R = 6.5;
+    for (const e of activeActors()) {
+      if (e.team === player.team || e.dead) continue;
+      const d = Math.hypot(e.pos.x - fmX, e.pos.y - fmY, e.pos.z - fmZ);
+      if (d > R) continue;
+      applyDamage(e, Math.round(130 * (1 - d / R)), player, 'body');
+    }
+    addSpark(new THREE.Vector3(fmX, fmY, fmZ), 0xff7a2f);
   }
   // soft push-apart so nobody stands inside anybody else
   const live = allActors.filter(a => !a.dead);
@@ -2346,8 +2626,10 @@ function updateMatch(dt) {
 const sa = document.getElementById('sa'), sb = document.getElementById('sb'), clockEl = document.getElementById('clock');
 const hpnumEl = document.getElementById('hpnum'), hpbarEl = document.querySelector('#hpbar i'), ammoEl = document.getElementById('ammo'), reloadEl = document.getElementById('reload');
 const wnameEl = document.getElementById('wname');
+const streaknumEl = document.getElementById('streaknum'), streaknextEl = document.getElementById('streaknext'), streakactiveEl = document.getElementById('streakactive');
 function updateMatchHud(dt) {
   bannerT -= dt; if (bannerT <= 0) bannerEl.style.opacity = '0';
+  ksBannerT -= dt; if (ksBannerT <= 0) ksBannerEl.classList.remove('show');
   wnameEl.textContent = curW.name + (slot ? '' : ` · ${curW.cls}`);
   hitmarkT = Math.max(0, hitmarkT - dt); hitmarkEl.style.opacity = hitmarkT > 0 ? '1' : '0';
   hurtT = Math.max(0, hurtT - dt); dmgDirT = Math.max(0, dmgDirT - dt);
@@ -2358,7 +2640,7 @@ function updateMatchHud(dt) {
   const s = Math.ceil(match.timeLeft); clockEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const hp = Math.max(0, Math.ceil(player.hp));
   hpnumEl.innerHTML = `${hp} <small>HP</small>`;
-  hpbarEl.style.width = hp + '%'; hpbarEl.style.background = hp > 60 ? '#6fe08a' : hp > 30 ? '#ffd24d' : '#ff5a5a';
+  hpbarEl.style.width = Math.min(100, hp) + '%'; hpbarEl.style.background = hp > 150 ? '#8fe3ff' : hp > 60 ? '#6fe08a' : hp > 30 ? '#ffd24d' : '#ff5a5a';
   ammoEl.innerHTML = `${ammo} <small>/ ∞</small>`;
   reloadEl.textContent = reloadT > 0 ? 'RELOADING…' : ammo <= 5 ? 'R to reload' : '';
   vignetteEl.style.opacity = String(Math.max(hurtT / 0.35 * 0.8, player.dead ? 0.5 : hp < 35 ? 0.35 : 0));
@@ -2371,6 +2653,27 @@ function updateMatchHud(dt) {
   deathEl.style.display = player.dead ? 'block' : 'none';
   protectEl.style.display = player.spawnProt > 0 && !player.dead ? 'block' : 'none';
   if (tabOpen && Math.floor(gameTime * 4) !== Math.floor((gameTime - dt) * 4)) tabEl.innerHTML = boardHTML();
+  updateStreakHud();
+}
+const streakpipsEl = document.getElementById('streakpips');
+for (const t of KILLSTREAKS) {   // build once — one pip per tier, filled in as killTier advances
+  const i = document.createElement('i'); i.title = `${t.name} @ ${t.n}`; streakpipsEl.appendChild(i);
+}
+function updateStreakHud() {
+  streaknumEl.textContent = streak;
+  for (let i = 0; i < streakpipsEl.children.length; i++) streakpipsEl.children[i].classList.toggle('done', i < killTier);
+  const next = KILLSTREAKS[killTier];
+  streaknextEl.innerHTML = next ? `next: <b>${next.name}</b> @ ${next.n} kills` : 'all streaks claimed this life';
+  const active = [];
+  if (gameTime < reconUntil) active.push(['RECON', '#4fc3ff']);
+  if (gameTime < adrenUntil) active.push(['ADRENALINE', '#6fe08a']);
+  if (gameTime < resistUntil) active.push(['ARMORED', '#ff5a5a']);
+  if (player.ghost) active.push(['GHOST', '#b388ff']);
+  if (turret) active.push(['SENTRY UP', '#ff9a5a']);
+  if (dogs.length) active.push(['DOGS OUT', '#c9a36a']);
+  if (heli) active.push(['GUNSHIP UP', '#6fd1ff']);
+  if (fmArmed) active.push(['FIRE MISSION INBOUND', '#ff7a2f']);
+  streakactiveEl.innerHTML = active.map(([label, c]) => `<span style="--c:${c}">${label}</span>`).join('');
 }
 
 // Test/debug hook (lets automated checks drive the real game loop)
@@ -2388,6 +2691,25 @@ window.__fz = {
   settings, saveSettings, DPR_FIX, isMacChromium,
   // fast headless simulation (no rendering): runs the match for `sec` seconds of game time
   sim(sec, dt = 1 / 30) { for (let t = 0; t < sec && !match.over; t += dt) { updateMatch(dt); updateEffects(dt); } return { ...match.score }; },
+  // killstreaks
+  killstreaks: {
+    tiers: KILLSTREAKS, award: awardKillstreakTier, reset: resetKillstreaks, hud: updateStreakHud,
+    state: () => ({
+      streak, killTier, resistUntil, resistAmt, adrenUntil, reconUntil, ghostUntil, fmArmed, fmX, fmY, fmZ, fmAt,
+      turret: turret ? { pos: { x: turret.pos.x, y: turret.pos.y, z: turret.pos.z }, team: turret.team, until: turret.until } : null,
+      dogs: dogs.map(d => ({ pos: { x: d.pos.x, y: d.pos.y, z: d.pos.z }, until: d.until })),
+      heli: heli ? { pos: { x: heli.mesh.position.x, y: heli.mesh.position.y, z: heli.mesh.position.z }, until: heli.until } : null,
+    }),
+    set: (k, v) => {
+      if (k === 'streak') streak = v; else if (k === 'killTier') killTier = v;
+      else if (k === 'resistUntil') resistUntil = v; else if (k === 'resistAmt') resistAmt = v;
+      else if (k === 'adrenUntil') adrenUntil = v; else if (k === 'reconUntil') reconUntil = v;
+      else if (k === 'ghostUntil') ghostUntil = v; else if (k === 'fmArmed') fmArmed = v;
+      else if (k === 'fmAt') fmAt = v;
+    },
+    deployTurret, removeTurret, updateTurret, aimPoint,
+    spawnDogs, removeDogs, updateDogs, spawnHeli, removeHeli, updateHeli,
+  },
 };
 
 const clock = new THREE.Clock();
