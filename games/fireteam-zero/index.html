@@ -105,6 +105,12 @@
   #menu button small { display: block; font-weight: normal; font-size: 11px; color: #aaa; margin-top: 3px; }
   #menu button.sel { border-color: #ffd24d; color: #ffd24d; }
   #menu .diff button { padding: 6px 12px; font-size: 12px; }
+  #sensrow { font-size: 12px; color: #aaa; }
+  #sensrow span { font-weight: bold; }
+  #sensrow input[type=range] { width: 140px; accent-color: #ffd24d; }
+  #sensVal { min-width: 44px; color: #ffd24d; font-weight: bold; }
+  #invertBtn { padding: 6px 12px; font-size: 11px; }
+  #invertBtn.sel { border-color: #ffd24d; color: #ffd24d; }
   #board { margin-top: 10px; }
   #blocker { overflow-y: auto; justify-content: safe center; }
   #crosshair.ads { width: 5px; height: 5px; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; }
@@ -175,6 +181,12 @@
     <div class="row" id="camos"></div>
     <div class="row diff">BOTS:
       <button data-diff="easy">EASY</button><button data-diff="normal">NORMAL</button><button data-diff="hard">HARD</button>
+    </div>
+    <div class="row" id="sensrow">
+      <span>SENSITIVITY</span>
+      <input type="range" id="sensSlider" min="0.2" max="3" step="0.05" value="1">
+      <span id="sensVal">1.00x</span>
+      <button data-invert="1" id="invertBtn">INVERT Y</button>
     </div>
   </div>
   <div id="board"></div>
@@ -356,6 +368,7 @@ for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) {      // broken 
 const HEIGHT = 1.8, EYE = 1.65, RADIUS = 0.35, STEP = 0.6;
 const SPEED = 7, GRAVITY = -24, JUMP = 8.6, BOOST = 7.5;
 const SLIDE_SPEED = 13, SLIDE_TIME = 0.55, SLIDE_COOLDOWN = 0.5;
+const AIR_ACCEL = 42, AIR_SPEED_MUL = 1.35, AIR_DRAG = 0.15;     // quake-style air strafing: redirect/gain speed mid-air, capped so it's a skill bonus not a speed hack
 const PITCH_MAX = Math.PI / 2 - 0.05;
 
 // ---- combat tuning (medium TTK: 5 body shots / 3 headshots with the rifle) ----
@@ -445,6 +458,20 @@ function applyHorizontal(b, w, speed, dt) {
     b.vel.x = b.slideDir.x * sp;
     b.vel.z = b.slideDir.z * sp;
     if (b.slideTimer <= 0) { b.isSliding = false; b.slideCooldown = SLIDE_COOLDOWN; }
+  } else if (!b.onGround && w.lengthSq() > 0.0001) {
+    // Air strafing (player only — bots only reach this fn while sliding): with a direction held,
+    // velocity isn't snapped to input, it's *redirected* toward it, so turning the mouse while
+    // holding A/D mid-air lets you carry and build speed, CS/Quake-style, instead of just falling
+    // in a straight line. Letting go of all movement keys falls back to the instant-stop below, so
+    // releasing input mid-air behaves exactly as it always has.
+    const cap = speed * AIR_SPEED_MUL;
+    const cur = b.vel.x * w.x + b.vel.z * w.z;                    // current speed along wish dir
+    const add = Math.min(AIR_ACCEL * dt, Math.max(0, cap - cur));
+    b.vel.x += add * w.x; b.vel.z += add * w.z;
+    const drag = Math.max(0, 1 - AIR_DRAG * dt);
+    b.vel.x *= drag; b.vel.z *= drag;
+    const sp = Math.hypot(b.vel.x, b.vel.z);
+    if (sp > cap) { const k = cap / sp; b.vel.x *= k; b.vel.z *= k; }   // hard cap so it stays a bonus, not a glitch
   } else {
     b.vel.x = w.x * speed;
     b.vel.z = w.z * speed;
@@ -487,6 +514,7 @@ let mouseHeld = false, fireCooldown = 0;
 const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; adsHeld = false; };
 
 const blockerEl = document.getElementById('blocker');
+const sensSlider = document.getElementById('sensSlider'), sensVal = document.getElementById('sensVal'), invertBtn = document.getElementById('invertBtn');
 const blockerVisible = () => blockerEl.style.display !== 'none';
 let pointerLocked = false, lockWasHeld = false;
 
@@ -517,12 +545,31 @@ function airBoost() {            // one extra mid-air kick per jump (resets on l
   player.vel.y = Math.max(player.vel.y, BOOST);
 }
 
+// ---- look settings: sensitivity + invert, saved per-browser ----
+const SETTINGS_KEY = 'fz_settings_v1';
+function loadSettings() {
+  try { return Object.assign({ sens: 1, invertY: false }, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); }
+  catch { return { sens: 1, invertY: false }; }
+}
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
+const settings = loadSettings();
+
+// Chromium on macOS has a long-standing bug (crbug.com/907309): on a Retina/HiDPI screen it
+// reports pointer-lock movementX/Y in *device* pixels instead of CSS pixels, so aiming ends up
+// roughly devicePixelRatio-times too fast and twitchy versus the same mouse/trackpad on Windows
+// or in Firefox. Correct for it only where it actually happens (Mac + Chrome-family + HiDPI).
+const isMacChromium = /Mac/.test(navigator.platform || navigator.userAgent)
+  && /Chrome|Chromium|CriOS/.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
+const DPR_FIX = (isMacChromium && window.devicePixelRatio > 1) ? window.devicePixelRatio : 1;
+
 function applyLook(dx, dy) {
   if (!isFinite(dx) || !isFinite(dy)) return;
   dx = Math.max(-300, Math.min(300, dx)); dy = Math.max(-300, Math.min(300, dy));   // swallow browser spike glitches
-  const sens = 0.0022 * camera.fov / 75;                 // slower while zoomed in
+  dx /= DPR_FIX; dy /= DPR_FIX;
+  const sens = 0.0022 * (camera.fov / 75) * settings.sens;   // slower while zoomed in, scaled by user sensitivity
   player.yaw -= dx * sens;
-  player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - dy * sens));
+  const dyS = settings.invertY ? -dy : dy;
+  player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - dyS * sens));
 }
 
 // ---- shooting: click = shoot, hold = auto-fire (or hold F) ----
@@ -931,11 +978,19 @@ function renderMenu() {
     const has = profile.camos.includes(k), req = c.phase ? 'Phase ' + ROMAN[c.phase] : c.level ? 'Level ' + c.level : '';
     return `<button data-camo="${k}" class="${camo === k ? 'sel' : ''} ${has ? '' : 'locked'}" title="${c.name}${has ? '' : ' — unlocks at ' + req}" style="background:#${c.color.toString(16).padStart(6, '0')}"></button>`;
   }).join('');
+  sensSlider.value = settings.sens; sensVal.textContent = settings.sens.toFixed(2) + 'x';
+  invertBtn.classList.toggle('sel', settings.invertY);
 }
+sensSlider.addEventListener('input', () => {
+  settings.sens = +sensSlider.value; sensVal.textContent = settings.sens.toFixed(2) + 'x'; saveSettings();
+});
+for (const ev of ['click', 'pointerdown', 'mousedown']) sensSlider.addEventListener(ev, (e) => e.stopPropagation());
 blockerEl.addEventListener('click', (e) => {
   if (!hasMouse) return;
+  if (e.target.closest && e.target.closest('#sensrow')) return;     // dragging the slider shouldn't start the match
   const btn = e.target.closest && e.target.closest('button');
   if (btn && btn.dataset.diff) { diffKey = btn.dataset.diff; renderMenu(); return; }      // just picks bot skill
+  if (btn && btn.dataset.invert) { settings.invertY = !settings.invertY; saveSettings(); renderMenu(); return; }
   if (btn && btn.dataset.weapon) {                                                          // pick a class (or spend a token on a locked one)
     const k = btn.dataset.weapon;
     if (isUnlocked(k)) profile.primary = k;
@@ -1246,8 +1301,14 @@ window.addEventListener('resize', () => { if (mapMode) layoutMap(); });
 function updatePlayer(dt) {
   if (player.dead) { player.vel.set(0, 0, 0); return; }
   if (blockedAt(player.pos.x, player.pos.z, player.pos.y)) unstick(player);
-  // Horizontal velocity: normal walking, or a committed slide burst
-  applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT), dt);
+  // Slide-cancel: jumping out of a slide keeps the slide's speed and launches it into the
+  // air-strafe system above, instead of snapping back down to walk speed.
+  let slideJumpCancel = false;
+  if (player.isSliding && keys['Space'] && player.onGround) {
+    slideJumpCancel = true; player.isSliding = false; player.slideCooldown = SLIDE_COOLDOWN;
+  }
+  // Horizontal velocity: normal walking, a committed slide burst, or (mid-air) strafing
+  if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT), dt);
   integrate(player, dt, keys['Space']);
   player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
   if (player.pos.y < -9) respawn(player.team);       // can't happen on a sealed map, but never leave anyone falling forever
@@ -2153,6 +2214,7 @@ window.__fz = {
   WEAPONS, profile, grantXP, enterPhase, equip, isUnlocked, xpToNext, renderMenu, syncBotMesh, coverNode, walkableLine,
   setBotWeapon, vm: gun, HIP, vmCam, vmScene, applyProfileLoadout, finishMatchXP, matchXP: () => ({ matchXP, matchLog, streak }), camoSet: (k) => { camo = k; applyCamo(); },
   setPrimary: (k) => { profile.primary = k; applyProfileLoadout(); }, ads: (v) => { adsHeld = v; }, triggerReset: () => { triggerReady = true; },
+  settings, saveSettings, DPR_FIX, isMacChromium,
   // fast headless simulation (no rendering): runs the match for `sec` seconds of game time
   sim(sec, dt = 1 / 30) { for (let t = 0; t < sec && !match.over; t += dt) { updateMatch(dt); updateEffects(dt); } return { ...match.score }; },
 };
