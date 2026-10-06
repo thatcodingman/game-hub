@@ -1298,6 +1298,21 @@ window.addEventListener('resize', () => { if (mapMode) layoutMap(); });
 // ======================================================
 // FRAME UPDATE
 // ======================================================
+const MANTLE_HEIGHT = 2.2;    // ledges/short walls up to this tall can be climbed with one jump
+// Mantle / auto-climb: jumping toward a ledge too tall to just walk up (but short enough to vault)
+// automatically spends your air-boost to finish the climb, same trick the bots already use to get
+// up the scaffold. So a scaffold-style stair run is one jump instead of a jump per tread, and
+// jumping at any short wall or crate now actually gets you over it.
+function updateMantle(b) {
+  const f = forwardVec();
+  const ax = b.pos.x + f.x * 0.55, az = b.pos.z + f.z * 0.55;
+  if (b.onGround) {
+    b.mantleReady = blockedAt(ax, az, b.pos.y) && groundAt(ax, az, b.pos.y + MANTLE_HEIGHT) > b.pos.y + STEP;
+  } else if (b.mantleReady && b.vel.y < 1 && b.airBoosts > 0 && blockedAt(ax, az, b.pos.y)) {
+    b.airBoosts--; b.vel.y = Math.max(b.vel.y, BOOST); b.mantleReady = false;
+  }
+}
+
 function updatePlayer(dt) {
   if (player.dead) { player.vel.set(0, 0, 0); return; }
   if (blockedAt(player.pos.x, player.pos.z, player.pos.y)) unstick(player);
@@ -1309,6 +1324,7 @@ function updatePlayer(dt) {
   }
   // Horizontal velocity: normal walking, a committed slide burst, or (mid-air) strafing
   if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT), dt);
+  updateMantle(player);
   integrate(player, dt, keys['Space']);
   player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
   if (player.pos.y < -9) respawn(player.team);       // can't happen on a sealed map, but never leave anyone falling forever
@@ -1497,6 +1513,7 @@ function nearestNode(p, needSight = true) {
 const TEAM_HEX = { A: 0x3d7bff, B: 0xff4545 };
 const BOT_NAMES = { A: ['Kestrel', 'Vox', 'Mako'], B: ['Rook', 'Jinx', 'Talon', 'Ghost'] };
 const matSkin = M(0xd9b38c), matBotGun = M(0x2a2c34, 0.5, 0.4), matBotDark = M(0x16171c, 0.5, 0.5), matLegs = M(0x2a2c33), matBoots = M(0x15161a);
+const matPads = M(0x1d1e24, 0.75, 0.15), matBelt = M(0x131319, 0.8), matGaiter = M(0x24252b, 0.85);
 const allyTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d');
@@ -1506,21 +1523,33 @@ const allyTex = (() => {
 })();
 function makeBotMesh(team) {
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
-  const tm = M(TEAM_HEX[team], 0.7), tmDark = M(new THREE.Color(TEAM_HEX[team]).multiplyScalar(0.45).getHex(), 0.85);
+  const tm = M(TEAM_HEX[team], 0.6), tmDark = M(new THREE.Color(TEAM_HEX[team]).multiplyScalar(0.45).getHex(), 0.8);
+  const tmGlow = new THREE.MeshStandardMaterial({ color: TEAM_HEX[team], emissive: TEAM_HEX[team], emissiveIntensity: 0.9, roughness: 0.4 });
   const mk = (parent, w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
   // legs pivot at the hip so they can swing
   const legs = [-0.12, 0.12].map(x => {
     const hip = new THREE.Group(); hip.position.set(x, 0.8, 0); inner.add(hip);
-    mk(hip, 0.2, 0.72, 0.24, matLegs, 0, -0.36, 0); mk(hip, 0.21, 0.1, 0.3, matBoots, 0, -0.75, -0.03);
+    mk(hip, 0.19, 0.44, 0.22, matLegs, 0, -0.16, 0);                                   // thigh
+    mk(hip, 0.2, 0.32, 0.23, matLegs, 0, -0.56, 0);                                    // shin
+    mk(hip, 0.135, 0.09, 0.13, matPads, 0, -0.38, 0.11);                               // knee pad
+    mk(hip, 0.21, 0.1, 0.3, matBoots, 0, -0.75, -0.03);                                // boot
     return hip;
   });
   const torso = new THREE.Group(); torso.position.y = 0.8; inner.add(torso);          // waist pivot
-  mk(torso, 0.56, 0.66, 0.32, tm, 0, 0.33, 0);
-  mk(torso, 0.5, 0.34, 0.37, tmDark, 0, 0.4, 0);                                      // vest
+  mk(torso, 0.46, 0.2, 0.3, matGaiter, 0, 0.1, 0);                                     // narrow waist
+  mk(torso, 0.1, 0.22, 0.32, matBelt, 0, 0.21, 0);                                     // belt line
+  mk(torso, 0.58, 0.5, 0.32, tm, 0, 0.42, 0);                                          // chest (broader than waist)
+  mk(torso, 0.52, 0.26, 0.37, tmDark, 0, 0.47, 0.01);                                  // plate carrier
+  mk(torso, 0.62, 0.1, 0.33, matPads, 0, 0.65, 0);                                     // shoulder yoke
+  for (const sx of [-0.33, 0.33]) mk(torso, 0.16, 0.12, 0.3, matPads, sx, 0.68, 0);     // shoulder pads
+  for (const px of [-0.1, 0.1]) mk(torso, 0.1, 0.11, 0.06, matBotDark, px, 0.45, -0.2); // chest rig pouches
   const head = new THREE.Group(); head.position.y = 0.8; torso.add(head);             // neck pivot
-  mk(head, 0.28, 0.28, 0.28, matSkin, 0, 0.02, 0);
-  mk(head, 0.31, 0.12, 0.31, tm, 0, 0.17, 0);                                         // helmet
-  mk(head, 0.22, 0.06, 0.03, matBotDark, 0, 0.05, -0.15);                             // visor
+  mk(head, 0.16, 0.08, 0.16, matSkin, 0, -0.1, 0);                                     // neck
+  mk(head, 0.24, 0.1, 0.24, matGaiter, 0, -0.03, 0);                                   // balaclava collar
+  mk(head, 0.26, 0.24, 0.26, matSkin, 0, 0.1, 0);                                      // face (slimmer than old head box)
+  mk(head, 0.29, 0.14, 0.29, tm, 0, 0.23, 0);                                          // helmet shell
+  mk(head, 0.3, 0.05, 0.3, matBotDark, 0, 0.15, 0);                                    // helmet brim
+  mk(head, 0.24, 0.05, 0.03, tmGlow, 0, 0.09, -0.135);                                 // glowing visor strip
   const aim = new THREE.Group(); aim.position.set(0, 0.56, 0); torso.add(aim);         // shoulders: pitches with the aim
   if (team === 'A') {
     const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: allyTex, depthTest: false, transparent: true }));
