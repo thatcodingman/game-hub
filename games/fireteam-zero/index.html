@@ -530,8 +530,9 @@ const WALL_RUN_MIN_SPEED = 3.5;             // need real momentum, not just drif
 const WALL_RUN_SPEED = SPEED * 1.3;         // speed held while attached
 const WALL_RUN_GRAVITY_MUL = 0.16;          // almost-zero fall while attached, not a full float
 const WALL_RUN_COOLDOWN = 0.3;              // can't immediately re-grab right after detaching
-const WALL_RUN_CHARGE_MAX = 1.6;            // total wall-run "fuel" you get per ground touch, in seconds
-const WALL_JUMP_UP = JUMP * 0.95, WALL_JUMP_OUT = 6.5;
+const WALL_RUN_CHARGE_MAX = 0.6;            // total wall-run "fuel" you get per ground touch, in seconds — a quick kick along the wall, not a climb
+const WALL_JUMP_LIMIT = 1;                  // only the FIRST wall-jump per ground touch gets the big boost — stops chaining jump+regrab to climb out of the map
+const WALL_JUMP_UP = JUMP * 0.95, WALL_JUMP_OUT = 6.5, WALL_JUMP_UNBOOSTED_UP = 2.5;
 
 // ---- combat tuning (medium TTK: 5 body shots / 3 headshots with the rifle) ----
 const MAX_HP = 100, RESPAWN_TIME = 3.5, SPAWN_PROT = 1.5;          // weapon damage lives in WEAPONS below
@@ -553,7 +554,7 @@ const player = {
   yaw: 0, pitch: 0, onGround: false, airBoosts: 1,
   isSliding: false, slideTimer: 0, slideCooldown: 0, slideDir: new THREE.Vector3(0, 0, -1),
   lean: 0,
-  wallRunning: false, wallNormal: null, wallRunT: 0, wallCooldown: 0, wallTilt: 0, wallCharge: 0,
+  wallRunning: false, wallNormal: null, wallRunT: 0, wallCooldown: 0, wallTilt: 0, wallCharge: 0, wallJumpsUsed: 0,
   hp: MAX_HP, dead: false, kills: 0, deaths: 0, spawnProt: 0, respawnT: 0, lastHurt: -1e9, lastAttacker: null, lastShotT: -1e9,
 };
 
@@ -565,7 +566,7 @@ function placeAt(a, x, z, team) {
   a.yaw = Math.atan2(-(doorX - x), -(0 - z));
   a.pitch = 0;
   a.isSliding = false; a.onGround = true; a.airBoosts = 1;
-  a.wallRunning = false; a.wallNormal = null; a.wallRunT = 0; a.wallCooldown = 0; a.wallTilt = 0; a.wallCharge = WALL_RUN_CHARGE_MAX;
+  a.wallRunning = false; a.wallNormal = null; a.wallRunT = 0; a.wallCooldown = 0; a.wallTilt = 0; a.wallCharge = WALL_RUN_CHARGE_MAX; a.wallJumpsUsed = 0;
   a.hp = MAX_HP; a.dead = false;
 }
 function respawn(team = 'A') {
@@ -609,7 +610,7 @@ function unstick(b = player) {
       }
     }
   }
-  if (b === player) respawn(player.team); else spawnActor(b);
+  spawnActor(b);   // couldn't find a free spot nearby — full respawn, same path as a normal death (spawn protection, weapon/killstreak reset included)
 }
 
 // Shared movement for the player AND the bots (same rules for everyone).
@@ -689,7 +690,7 @@ function wallSide(b) {
 function updateWallRun(dt) {
   const b = player;
   b.wallCooldown = Math.max(0, b.wallCooldown - dt);
-  if (b.onGround) b.wallCharge = WALL_RUN_CHARGE_MAX;        // the only way to refuel — can't just wait it off mid-air
+  if (b.onGround) { b.wallCharge = WALL_RUN_CHARGE_MAX; b.wallJumpsUsed = 0; }   // the only way to refuel — can't just wait it off mid-air
 
   if (b.wallRunning) {
     const n = b.wallNormal;
@@ -705,8 +706,16 @@ function updateWallRun(dt) {
       b.vel.x = tx * dir * WALL_RUN_SPEED;
       b.vel.z = tz * dir * WALL_RUN_SPEED;
       if (keys['Space']) {
-        b.vel.x += n.nx * WALL_JUMP_OUT; b.vel.z += n.nz * WALL_JUMP_OUT; b.vel.y = WALL_JUMP_UP;
-        b.wallRunning = false; b.wallCooldown = WALL_RUN_COOLDOWN; b.airBoosts = 1;
+        // Only the first wall-jump since your last ground touch gets the real boost + air-boost
+        // refresh. Any further one (re-grabbing a wall after already using it) just peels you off
+        // the wall with a small outward hop — enough not to get stuck on it, not enough to chain
+        // height. That's what was letting a player climb wall-jump after wall-jump up and out of
+        // the map.
+        const boosted = b.wallJumpsUsed < WALL_JUMP_LIMIT;
+        b.vel.x += n.nx * WALL_JUMP_OUT; b.vel.z += n.nz * WALL_JUMP_OUT;
+        b.vel.y = boosted ? WALL_JUMP_UP : Math.max(b.vel.y, WALL_JUMP_UNBOOSTED_UP);
+        if (boosted) { b.wallJumpsUsed++; b.airBoosts = 1; }
+        b.wallRunning = false; b.wallCooldown = WALL_RUN_COOLDOWN;
       }
     }
   } else if (!b.onGround && !b.isSliding && b.wallCooldown <= 0 && b.wallCharge > 0.05) {
@@ -2701,7 +2710,12 @@ function updateMatch(dt) {
     if (player.respawnT <= 0) spawnActor(player);
   } else {
     player.spawnProt = Math.max(0, player.spawnProt - dt);
-    if (player.hp < MAX_HP && gameTime - player.lastHurt > 5) player.hp = Math.min(MAX_HP, player.hp + 20 * dt);     // Juggernaut's overheal decays only once it's actually hurt below MAX_HP
+    if (player.hp > MAX_HP) {
+      // Juggernaut's 200hp overheal is meant to be temporary (tied to its 12s resist window), not
+      // permanent for the rest of the life — it used to just sit there forever once the buff ended
+      // since the old regen branch below only fired while hp was BELOW MAX_HP.
+      if (gameTime >= resistUntil) player.hp = Math.max(MAX_HP, player.hp - 40 * dt);
+    } else if (player.hp < MAX_HP && gameTime - player.lastHurt > 5) player.hp = Math.min(MAX_HP, player.hp + 20 * dt);
     player.ghost = gameTime < ghostUntil;
   }
   for (const b of bots) {
