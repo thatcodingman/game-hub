@@ -324,6 +324,7 @@ const matFloor = M(0x6a6a7c), matWall = M(0x54545f, 0.95), matChoke = M(0x6e5a48
 const matCover = M(0x4a5a4a), matMezz = M(0x4a4a6a, 0.85), matScaffold = M(0xaa6633, 0.7);
 const matEscalator = M(0x777788, 0.6, 0.3), matBeam = M(0xcc4433, 0.6);
 const matSpawnA = M(0x3355aa), matSpawnB = M(0xaa3333);
+const matRail = M(0x2a2b30, 0.6, 0.4);   // dark metal trim — handrails, tread nosing, structural accents
 // Every solid gets a tag from its material so the map diagram can draw the real geometry
 const MAT_TAG = new Map([[matWall, 'wall'], [matChoke, 'choke'], [matCover, 'cover'], [matFloor, 'floor'], [matScaffold, 'scaffold'], [matEscalator, 'escalator']]);
 
@@ -405,8 +406,31 @@ function buildSide(sgn) {
   // below, alongside the rest of that lane's conduit/rib/sconce dressing, so they read as one piece.
   // Hard cover just inside Mid, off the main sightline
   S(-12.5, 1.2, -11, 2.8, 0, 1.2, matCover);
-  // Stairs up to the Mezzanine: 10 treads, 0.5m rise each (auto step-up)
-  for (let i = 0; i < 10; i++) S(-27 + 1.2 * i, 9, -27 + 1.2 * (i + 1), 15, 0, 0.5 * (i + 1), matMezz);
+  // Stairs up to the Mezzanine: 20 shallower treads (0.25m rise / 0.6m run each) — the old 0.5m
+  // rise was too close to the auto-step limit (STEP=0.6), so running up at an angle or at speed
+  // could out-climb it and force a jump. Same total rise/run, just a gentler, more reliable climb.
+  const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
+  for (let i = 0; i < STAIR_N; i++) {
+    S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matMezz);
+    if (i % 2 === 1) S(-27 + STAIR_RUN * i, 9.05, -27 + STAIR_RUN * i + 0.05, 14.95, 0, STAIR_RISE * (i + 1), matRail, { collide: false, tag: 'stairs' });   // tread-nosing accent line
+  }
+  // Handrails: both sides of the stairwell are already fully walled in (no fall risk), so this is
+  // pure finish — posts + a sloped rail following the tread line instead of bare walls.
+  {
+    const railLen = Math.hypot(12.0, 5.0), railAngle = Math.atan2(5.0, 12.0) * (sgn === -1 ? 1 : -1);
+    const railMidX = sgn === -1 ? -21 : 21;
+    for (const rz of [9.35, 14.65]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(railLen, 0.07, 0.07), matRail);
+      rail.position.set(railMidX, 0.95 + 2.5, rz);
+      rail.rotation.z = railAngle;
+      rail.castShadow = true; scene.add(rail);
+      for (let i = 0; i <= 4; i++) {
+        const px = sgn === -1 ? -27 + 12 * (i / 4) : 27 - 12 * (i / 4), py0 = STAIR_RISE * STAIR_N * (i / 4);
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.95, 0.06), matRail);
+        post.position.set(px, py0 + 0.475, rz); post.castShadow = true; scene.add(post);
+      }
+    }
+  }
   // Spawn room cover
   S(-50, 8, -48, 10, 0, 1.2, matCover);
   S(-47, -7, -45, -5, 0, 1.2, matCover);
@@ -605,6 +629,7 @@ const player = {
   lean: 0,
   wallRunning: false, wallNormal: null, wallRunT: 0, wallCooldown: 0, wallTilt: 0, wallCharge: 0, wallJumpsUsed: 0,
   hp: MAX_HP, dead: false, kills: 0, deaths: 0, spawnProt: 0, respawnT: 0, lastHurt: -1e9, lastAttacker: null, lastShotT: -1e9,
+  stepDist: 0,
 };
 
 function placeAt(a, x, z, team) {
@@ -616,7 +641,7 @@ function placeAt(a, x, z, team) {
   a.pitch = 0;
   a.isSliding = false; a.onGround = true; a.airBoosts = 1;
   a.wallRunning = false; a.wallNormal = null; a.wallRunT = 0; a.wallCooldown = 0; a.wallTilt = 0; a.wallCharge = WALL_RUN_CHARGE_MAX; a.wallJumpsUsed = 0;
-  a.hp = MAX_HP; a.dead = false;
+  a.hp = MAX_HP; a.dead = false; a.stepDist = 0;
 }
 function respawn(team = 'A') {
   const [x, z] = SPAWNS[team][Math.floor(Math.random() * SPAWNS[team].length)];
@@ -640,6 +665,12 @@ function groundAt(x, z, maxTop) {
   let best = -Infinity;
   for (const c of colliders) if (c.y1 <= maxTop && c.y1 > best && overlapsXZ(c, x, z)) best = c.y1;
   return best;
+}
+// Tag of whatever's directly underfoot (close to feet height) — used to pick a footstep sound.
+function surfaceTagAt(x, z, feet) {
+  let best = -Infinity, tag = null;
+  for (const c of colliders) if (c.y1 <= feet + 0.05 && c.y1 > best && overlapsXZ(c, x, z)) { best = c.y1; tag = c.tag; }
+  return tag;
 }
 // Lowest underside between our head and where it's heading.
 function ceilingAt(x, z, head, newHead) {
@@ -1125,6 +1156,29 @@ function playTone(freq, dur, vol = 0.15, type = 'square', freq2 = null) {   // h
     if (freq2) o.frequency.exponentialRampToValueAtTime(freq2, t + dur);
     g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + dur + 0.02);
+  } catch (e) { /* ignore */ }
+}
+// Footstep: a short filtered noise burst, pitched/colored by what's underfoot — a soft thud on the
+// floor, a brighter metallic tick on the stairs/scaffold/mezzanine.
+let stepBuf = null;
+function playFootstep(tag) {
+  if (!audioCtx) return;
+  try {
+    const t = audioCtx.currentTime, len = 0.05;
+    if (!stepBuf) {
+      stepBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * len), audioCtx.sampleRate);
+      const d = stepBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+    }
+    const metallic = tag === 'stairs' || tag === 'scaffold';
+    const src = audioCtx.createBufferSource(); src.buffer = stepBuf;
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = metallic ? 'highpass' : 'lowpass';
+    filt.frequency.value = (metallic ? 1600 : 500) + Math.random() * 300;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(metallic ? 0.1 : 0.07, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + len);
+    src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination); src.start(t);
   } catch (e) { /* ignore */ }
 }
 
@@ -1699,6 +1753,15 @@ function updatePlayer(dt) {
   updateWallRun(dt);                 // may override vel.x/z to hug a wall, or kick off it on Space
   integrate(player, dt, keys['Space'] && !player.wallRunning);
   player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
+  // Footsteps: tick off distance traveled while grounded (not sliding) rather than a flat timer, so
+  // sprinting steps faster than a slow walk, with a brighter sound on stairs/scaffold than floor.
+  if (player.onGround && !player.isSliding) {
+    player.stepDist += Math.hypot(player.vel.x, player.vel.z) * dt;
+    if (player.stepDist >= 2.0) {
+      player.stepDist = 0;
+      playFootstep(surfaceTagAt(player.pos.x, player.pos.z, player.pos.y));
+    }
+  } else player.stepDist = Math.min(player.stepDist, 1.0);   // airborne: don't let distance bank up into an instant step on landing
   if (player.pos.y < -9) respawn(player.team);       // can't happen on a sealed map, but never leave anyone falling forever
 }
 
