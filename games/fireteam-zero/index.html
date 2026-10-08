@@ -840,7 +840,10 @@ let lastTouchTime = -1e9;
 
 const keys = {};
 let mouseHeld = false, fireCooldown = 0;
-const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; adsHeld = false; };
+// Alt-Tab / a notification / clicking a second monitor fires 'blur' without ever sending the in-page
+// keyup for whatever was held — including Tab itself, which otherwise leaves the scoreboard stuck open
+// on screen after focus returns, since nothing else ever calls showTab(false) for it.
+const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; adsHeld = false; showTab(false); };
 
 const blockerEl = document.getElementById('blocker');
 const sensSlider = document.getElementById('sensSlider'), sensVal = document.getElementById('sensVal'), invertBtn = document.getElementById('invertBtn');
@@ -1026,7 +1029,7 @@ function makeGunModel(key, body, dark, accent = dark) {
     box(0.05, 0.14, 0.07, 0, -0.07, 0.0, dark, 0.2);          // grip
     box(0.012, 0.03, 0.01, 0, 0.065, 0.03, accent);           // hammer
     box(0.015, 0.02, 0.015, 0, 0.06, -0.18, dark);            // front sight
-    return { group: g, muzzleZ: -0.2, sightY: 0.065, hand: 0, pistol: true };
+    return { group: g, muzzleZ: -0.2, sightY: 0.065, hand: 0, pistol: true, opticMeshes: [] };
   }
   box(0.085, 0.11, s.len, 0, 0, -s.len / 2 + 0.08);                              // receiver
   box(s.bw, s.bw, s.barrel, 0, 0.02, -s.len + 0.08 - s.barrel / 2, dark);        // barrel
@@ -1053,12 +1056,17 @@ function makeGunModel(key, body, dark, accent = dark) {
   }
   if (s.brake) box(0.06, 0.06, 0.05, 0, 0.02, -s.len + 0.08 - s.barrel - 0.03, accent);  // sniper muzzle brake
   if (s.belt) for (let i = 0; i < 4; i++) box(0.02, 0.02, 0.02, 0.06 - i * 0.02, -0.08, -0.22, accent);  // LMG belt links
-  let sightY = 0.06;
-  if (s.optic === 'dot') { box(0.05, 0.055, 0.08, 0, 0.085, -0.05, dark); sightY = 0.1; }
-  else if (s.optic === 'scope') { box(0.055, 0.055, 0.22, 0, 0.1, -0.08, dark); sightY = 0.1; }
-  else if (s.optic === 'big') { box(0.07, 0.07, 0.34, 0, 0.11, -0.1, dark); box(0.072, 0.02, 0.06, 0, 0.145, -0.1, accent); sightY = 0.11; }
-  else box(0.015, 0.02, 0.015, 0, 0.055, -s.len - s.barrel + 0.1, dark);        // bead sight
-  return { group: g, muzzleZ: -s.len + 0.08 - s.barrel, sightY, hand: s.hand };
+  let sightY = 0.06, opticMeshes = [];
+  // The optic housing is solid (opaque) geometry — great for the hip-fire silhouette, but once ADS
+  // pulls the gun up to the camera it would sit right in front of the lens and block the view, like
+  // looking at the back of a block instead of through it. We hand these meshes back so updateViewmodel
+  // can hide them the instant you start aiming — the CSS reticle (#crosshair / #scope) takes over as
+  // the actual "glass", and it never obstructs anything.
+  if (s.optic === 'dot') { opticMeshes.push(box(0.05, 0.055, 0.08, 0, 0.085, -0.05, dark)); sightY = 0.1; }
+  else if (s.optic === 'scope') { opticMeshes.push(box(0.055, 0.055, 0.22, 0, 0.1, -0.08, dark)); sightY = 0.1; }
+  else if (s.optic === 'big') { opticMeshes.push(box(0.07, 0.07, 0.34, 0, 0.11, -0.1, dark), box(0.072, 0.02, 0.06, 0, 0.145, -0.1, accent)); sightY = 0.11; }
+  else box(0.015, 0.02, 0.015, 0, 0.055, -s.len - s.barrel + 0.1, dark);        // bead sight (small, never blocks — stays visible through ADS)
+  return { group: g, muzzleZ: -s.len + 0.08 - s.barrel, sightY, hand: s.hand, opticMeshes };
 }
 // a box stretched between two points (forearms)
 function limb(p0, p1, t, mat) {
@@ -1322,6 +1330,9 @@ function updateViewmodel(dt) {
   if (player.isSliding) { rz += 0.22; y -= 0.03; }
   if (!player.onGround) y += Math.max(-0.03, Math.min(0.03, -player.vel.y * 0.003)) * (1 - e);
   gun.position.set(x, y, z); gun.rotation.set(rx, VM_YAW * (1 - e), rz);
+  // Hide the optic's solid housing as soon as aiming starts — otherwise it rides up right in front of
+  // the camera and blocks the shot. The CSS reticle/scope overlay below is the real "see-through" sight.
+  for (const m of vmInfo.opticMeshes) m.visible = adsT <= 0.02;
   flashT = Math.max(0, flashT - dt);
   flashLight.intensity = flashT > 0 ? 3 : 0; vmFlash.intensity = flashT > 0 ? 3 : 0;
   vmFlash.position.set(x, y + 0.04, z + vmInfo.muzzleZ);
@@ -1895,7 +1906,9 @@ function hitboxes(a) {
 function actorHit(shooter, o, d, maxT) {
   let best = null;
   for (const a of activeActors()) {
-    if (a === shooter || a.dead || a.ghost || a.team === shooter.team) continue;
+    // Spawn-protected actors can't take damage (see applyDamage), so they must not block the ray either —
+    // otherwise a protected teammate standing in front acts as a free bullet shield for whoever's behind them.
+    if (a === shooter || a.dead || a.ghost || a.team === shooter.team || a.spawnProt > 0) continue;
     for (const [part, ...b] of hitboxes(a)) {
       const t = rayBox(o.x, o.y, o.z, d.x, d.y, d.z, ...b);
       if (t < maxT && (!best || t < best.t)) best = { actor: a, part, t };
@@ -2342,7 +2355,16 @@ function updateHeli(dt) {
   heli.fireCd -= dt;
   if (heli.fireCd <= 0) {
     heli.fireCd = HELI_INTERVAL;
-    const targets = activeActors().filter(e => e.team !== player.team && !e.dead && e.pos.y > -2);
+    // "Exposed" per its own description means actually visible from the sky, not just above the Lower
+    // Hall cutoff — without a real line-of-sight check (same as the Sentry Turret below) it could strafe
+    // someone standing fully indoors under a roof.
+    const o = heli.mesh.position;
+    const targets = activeActors().filter(e => {
+      if (e.team === player.team || e.dead || e.pos.y <= -2) return false;
+      const dir = new THREE.Vector3(e.pos.x - o.x, e.pos.y + 1 - o.y, e.pos.z - o.z), d = dir.length();
+      dir.divideScalar(d);
+      return rayWorld(o, dir, d) >= d - 0.05;
+    });
     if (targets.length) {
       const t = targets[Math.floor(Math.random() * targets.length)];
       const from = heli.mesh.position.clone(), to = new THREE.Vector3(t.pos.x, t.pos.y + 1, t.pos.z);
@@ -3034,13 +3056,17 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
   const running = !blockerVisible();
-  if (!window.__fzPause) updatePlayer(dt);
+  // The pause/menu screen (Escape, lost pointer lock, match-over results) is meant to freeze the game —
+  // but only updateMatch was ever gated on `running`. The player's own physics (gravity, slide timer,
+  // fall death) and viewmodel (ADS, reload countdown) kept ticking underneath the menu, so you could
+  // resume mid-air, mid-slide, or with a reload that silently finished while the menu was up.
+  if (running && !window.__fzPause) updatePlayer(dt);
   fireCooldown = Math.max(0, fireCooldown - dt);
   if (running && (mouseHeld || keys['KeyF'])) tryFire();           // auto-fire while the button is held
   if (running && !window.__fzPause && match.started && match.mode === 'tdm' && !match.over) updateMatch(dt);
   for (const b of bots) syncBotMesh(b, dt);
   updateCamera();
-  updateEffects(dt);
+  if (running) updateEffects(dt);
   updateHud(frame++);
   updateMatchHud(dt);
   drawMap();
