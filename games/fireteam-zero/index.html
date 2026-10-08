@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Fireteam Zero — Atrium (Blockout)</title>
+<title>Fireteam Zero — Atrium</title>
 <style>
   :root {
     --panel-bg: linear-gradient(135deg, rgba(10,12,18,0.82), rgba(10,12,18,0.6));
@@ -316,15 +316,15 @@ import * as THREE from 'three';
 
 // ---------- Scene ----------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1a22);
-scene.fog = new THREE.Fog(0x1a1a22, 40, 130);
+scene.background = new THREE.Color(0x201f2a);
+scene.fog = new THREE.Fog(0x2a2632, 40, 130);
 
 // Warm skylight glow fading up into blue sky, seen through the open roof over Mid/Mezzanine —
 // the "Atrium" the map is named for.
 (function makeSkyDome() {
   const geo = new THREE.SphereGeometry(300, 16, 12);
   const pos = geo.attributes.position, colors = [];
-  const top = new THREE.Color(0x4f7fb8), mid = new THREE.Color(0xffd9a0), low = new THREE.Color(0x1a1a22);
+  const top = new THREE.Color(0x5e8fd4), mid = new THREE.Color(0xffc988), low = new THREE.Color(0x241f2c);
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const t = THREE.MathUtils.clamp((pos.getY(i) / 300 + 1) / 2, 0, 1);
@@ -353,21 +353,60 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x555566, 1.5));
-const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+scene.add(new THREE.HemisphereLight(0xaec6ff, 0x4a4030, 1.45));
+const sun = new THREE.DirectionalLight(0xffdfb0, 0.85);
 sun.position.set(20, 60, 10);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 40, bottom: -40, far: 200 });
 scene.add(sun);
+// Cool rim/fill light from the opposite side — cheap 2-point lighting so shadow faces read as
+// blue-grey steel instead of going flat black, and surfaces pick up some contrast between them.
+const fill = new THREE.DirectionalLight(0x7fa8d9, 0.3);
+fill.position.set(-25, 30, -35);
+scene.add(fill);
 
 // ---------- Materials (color-coded by function) ----------
 const M = (c, r = 0.9, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
-const matFloor = M(0x6a6a7c), matWall = M(0x54545f, 0.95), matChoke = M(0x6e5a48);
-const matCover = M(0x4a5a4a), matMezz = M(0x4a4a6a, 0.85), matScaffold = M(0xaa6633, 0.7);
-const matEscalator = M(0x777788, 0.6, 0.3), matBeam = M(0xcc4433, 0.6);
-const matSpawnA = M(0x3355aa), matSpawnB = M(0xaa3333);
-const matRail = M(0x2a2b30, 0.6, 0.4);   // dark metal trim — handrails, tread nosing, structural accents
+
+// Small procedural canvas textures so the big flat floor/wall slabs read as built surfaces (seams,
+// grime, panel lines) instead of a single flat "blockout" color. Repeat is rescaled per-solid in
+// addSolid() below so panel size stays roughly consistent regardless of how big a given box is.
+function makeSurfaceTexture({ base, speck, line, lines = 2, size = 128 }) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const g = cv.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, size, size);
+  for (let i = 0; i < 180; i++) {
+    g.fillStyle = Math.random() < 0.6 ? speck : 'rgba(255,255,255,0.04)';
+    const r = Math.random() * 1.8 + 0.3;
+    g.beginPath(); g.arc(Math.random() * size, Math.random() * size, r, 0, Math.PI * 2); g.fill();
+  }
+  g.strokeStyle = line; g.lineWidth = 1.5;
+  const step = size / lines;
+  for (let i = 1; i < lines; i++) {
+    g.beginPath(); g.moveTo(i * step, 0); g.lineTo(i * step, size); g.stroke();
+    g.beginPath(); g.moveTo(0, i * step); g.lineTo(size, i * step); g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+const floorTex = makeSurfaceTexture({ base: '#7a6f5d', speck: 'rgba(20,15,8,0.22)', line: 'rgba(10,8,4,0.3)', lines: 2 });
+const wallTex = makeSurfaceTexture({ base: '#4a5160', speck: 'rgba(8,10,16,0.3)', line: 'rgba(4,5,9,0.4)', lines: 1 });
+// Clone+retile a textured base material to roughly match a given solid's footprint so panels don't
+// stretch or shrink wildly between a huge floor slab and a short wall segment.
+function tiledMat(base, tex, w, h, tile = 3) {
+  const m = base.clone(); m.color.set(0xffffff);
+  const t = tex.clone(); t.needsUpdate = true;
+  t.repeat.set(Math.max(1, Math.round(w / tile)), Math.max(1, Math.round(h / tile)));
+  m.map = t;
+  return m;
+}
+const matFloor = M(0x8a8070), matWall = M(0x4a5160, 0.95), matChoke = M(0x82684d);
+const matCover = M(0x44583f), matMezz = M(0x40497a, 0.85), matScaffold = M(0xb56e2e, 0.7);
+const matEscalator = M(0x7b8698, 0.6, 0.3), matBeam = M(0xe0552f, 0.55);
+const matSpawnA = M(0x3a66c8), matSpawnB = M(0xcc3a3a);
+const matRail = M(0x24262c, 0.6, 0.4);   // dark metal trim — handrails, tread nosing, structural accents
 // Every solid gets a tag from its material so the map diagram can draw the real geometry
 const MAT_TAG = new Map([[matWall, 'wall'], [matChoke, 'choke'], [matCover, 'cover'], [matFloor, 'floor'], [matScaffold, 'scaffold'], [matEscalator, 'escalator']]);
 
@@ -376,7 +415,13 @@ const colliders = [];       // { x0,y0,z0,x1,y1,z1, mesh, tag }
 const WALL_H = 12;          // tall enough that nobody can jump out of the map
 
 function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat);
+  // Floors and walls get a per-solid retiled texture clone (see tiledMat); every other tagged
+  // material (cover, scaffold, spawn pads, beams...) stays a flat color on purpose — those are
+  // smaller, already-colorful accent pieces where a seam texture would just add visual noise.
+  let useMat = mat;
+  if (mat === matFloor) useMat = tiledMat(matFloor, floorTex, x1 - x0, z1 - z0);
+  else if (mat === matWall) useMat = tiledMat(matWall, wallTex, Math.max(x1 - x0, z1 - z0), y1 - y0);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), useMat);
   mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
   mesh.castShadow = opts.shadow !== false;
   mesh.receiveShadow = true;
@@ -867,23 +912,28 @@ let lastTouchTime = -1e9;
 
 const keys = {};
 
-// ---- rebindable keyboard controls ----
-// Every action below maps to one KeyboardEvent.code, read through settings.binds (never a literal
-// code) by isDown() and by every keydown/keyup check further down — that's what makes every one of
-// these remappable from the settings panel. Arrow keys (movement) and the mouse (look/shoot/ADS) are
-// left as fixed, always-on extras rather than part of the rebind table.
+// ---- rebindable controls (keyboard + mouse buttons) ----
+// Every action below maps to one value, read through settings.binds (never a literal code/button) by
+// isDown() and by every keydown/keyup/mousedown/mouseup check further down — that's what makes every
+// one of these remappable from the settings panel. A keyboard action's value is a KeyboardEvent.code
+// string ('KeyW'); a mouse action's value is a MouseEvent.button number (0/1/2/…) — BIND_KIND says
+// which, so the capture flow and the on-screen label know how to read/show it. Arrow keys (movement)
+// and mouse look are left as fixed, always-on extras rather than part of the rebind table.
 const DEFAULT_BINDS = {
   forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
   jump: 'Space', slide: 'ShiftLeft', leanLeft: 'KeyQ', leanRight: 'KeyE',
   reload: 'KeyR', ads: 'KeyV', fire: 'KeyF', airBoost: 'KeyC',
   equip1: 'Digit1', equip2: 'Digit2', map: 'KeyM', scoreboard: 'Tab',
+  mouseFire: 0, mouseAds: 2,
 };
 const BIND_LABELS = {
   forward: 'Move Forward', back: 'Move Backward', left: 'Move Left', right: 'Move Right',
   jump: 'Jump / Wall-Jump', slide: 'Slide', leanLeft: 'Lean Left', leanRight: 'Lean Right',
-  reload: 'Reload', ads: 'Aim (ADS)', fire: 'Fire (hold)', airBoost: 'Air Boost',
+  reload: 'Reload', ads: 'Aim (ADS, key)', fire: 'Fire (key, hold)', airBoost: 'Air Boost',
   equip1: 'Equip Primary', equip2: 'Equip Sidearm', map: 'Toggle Map', scoreboard: 'Scoreboard',
+  mouseFire: 'Shoot (mouse)', mouseAds: 'Aim (mouse)',
 };
+const BIND_KIND = { mouseFire: 'mouse', mouseAds: 'mouse' };   // everything else in BIND_LABELS is 'key'
 const isDown = (action) => !!keys[settings.binds[action]];
 const KEY_LABELS = {
   Space: 'SPACE', ShiftLeft: 'SHIFT', ShiftRight: 'R SHIFT', ControlLeft: 'CTRL', ControlRight: 'R CTRL',
@@ -897,6 +947,10 @@ function keyLabel(code) {
   if (code.startsWith('Arrow')) return code.slice(5);
   return KEY_LABELS[code] || code;
 }
+const MOUSE_LABELS = { 0: 'LEFT CLICK', 1: 'MIDDLE CLICK', 2: 'RIGHT CLICK', 3: 'MOUSE 4', 4: 'MOUSE 5' };
+function mouseLabel(btn) { return btn === null || btn === undefined ? '—' : (MOUSE_LABELS[btn] || `MOUSE ${btn}`); }
+// Single label function the settings panel and HUD use regardless of an action's kind.
+const bindLabel = (action) => BIND_KIND[action] === 'mouse' ? mouseLabel(settings.binds[action]) : keyLabel(settings.binds[action]);
 let mouseHeld = false, fireCooldown = 0;
 // Alt-Tab / a notification / clicking a second monitor fires 'blur' without ever sending the in-page
 // keyup for whatever was held — including Tab itself, which otherwise leaves the scoreboard stuck open
@@ -1482,8 +1536,9 @@ function renderMenu() {
   if (showSettings) {
     document.getElementById('keybinds').innerHTML = Object.keys(BIND_LABELS).map(a => {
       const capturing = bindCapture === a, code = settings.binds[a];
-      const label = capturing ? 'PRESS A KEY…' : keyLabel(code);
-      return `<div class="bindrow"><span>${BIND_LABELS[a]}</span><button type="button" data-bind="${a}" class="${capturing ? 'capturing' : code ? '' : 'unbound'}">${label}</button></div>`;
+      const unbound = code === undefined || code === null;               // note: mouse button 0 (left-click) is a valid bind, not "unbound"
+      const label = capturing ? (BIND_KIND[a] === 'mouse' ? 'CLICK A BUTTON…' : 'PRESS A KEY…') : bindLabel(a);
+      return `<div class="bindrow"><span>${BIND_LABELS[a]}</span><button type="button" data-bind="${a}" class="${capturing ? 'capturing' : unbound ? 'unbound' : ''}">${label}</button></div>`;
     }).join('');
   }
   if (!menuReady) return;
@@ -1571,16 +1626,22 @@ const GAME_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'S
 let bindCapture = null;
 function startBindCapture(action) { bindCapture = action; renderMenu(); }
 function finishBindCapture(code) {
+  // Note: code can legitimately be 0 (left mouse button) — never test it with a bare `!code`.
   const action = bindCapture; bindCapture = null;
-  if (!action || !code || code === 'Escape') { renderMenu(); return; }   // Escape cancels, binds nothing
-  // Swap, don't double-bind: if this key was already doing something else, that action goes back to
-  // "unbound" rather than silently firing alongside the one you just set.
+  if (!action || code === undefined || code === null || code === 'Escape') { renderMenu(); return; }   // Escape cancels, binds nothing
+  // Swap, don't double-bind: if this key/button was already doing something else, that action goes back
+  // to "unbound" rather than silently firing alongside the one you just set.
   for (const a of Object.keys(settings.binds)) if (a !== action && settings.binds[a] === code) settings.binds[a] = null;
   settings.binds[action] = code;
   saveSettings(); applyInputMode(); renderMenu();
 }
 window.addEventListener('keydown', (e) => {
-  if (bindCapture) { e.preventDefault(); finishBindCapture(e.code); return; }
+  if (bindCapture) {
+    // A mouse-kind bind only listens for Escape here — any other key shouldn't abort it, since the
+    // player still needs to click/press the actual mouse button to finish capturing it.
+    if (BIND_KIND[bindCapture] === 'mouse') { if (e.code === 'Escape') { e.preventDefault(); finishBindCapture('Escape'); } return; }
+    e.preventDefault(); finishBindCapture(e.code); return;
+  }
   if (GAME_KEYS.has(e.code)) e.preventDefault();       // never scroll the page
   if (e.code === settings.binds.map) { if (!e.repeat) cycleMap(); return; }
   if (e.code === 'Tab') e.preventDefault();             // always block the browser's own tab-focus cycling…
@@ -1633,16 +1694,18 @@ document.addEventListener('mousemove', (e) => {
   }
 });
 document.addEventListener('mousedown', (e) => {
+  if (bindCapture && BIND_KIND[bindCapture] === 'mouse') { e.preventDefault(); finishBindCapture(e.button); return; }
   if (blockerVisible()) return;
   relockPointer();                                                        // any click is a user gesture — try to restore proper mouse-look
-  if (e.button === 2) { adsHeld = true; return; }                          // right-click (two-finger click on a trackpad) = aim
-  if (e.button !== 0) return;
+  if (e.button === settings.binds.mouseAds) { adsHeld = true; return; }    // right-click by default (two-finger click on a trackpad) = aim
+  if (e.button !== settings.binds.mouseFire) return;
   triggerReady = true;
   if (pointerLocked) { mouseHeld = true; tryFire(); }                     // click = shoot, hold = auto-fire
   else { dragLook = true; dragDist = 0; lastX = e.clientX; lastY = e.clientY; }
 });
 document.addEventListener('mouseup', (e) => {
-  if (e.button === 2) { adsHeld = false; return; }
+  if (e.button === settings.binds.mouseAds) { adsHeld = false; return; }
+  if (e.button !== settings.binds.mouseFire) return;
   mouseHeld = false; triggerReady = true;
   if (dragLook && dragDist < 4) tryFire();                                // pointer lock unavailable: a plain click still shoots
   dragLook = false;
@@ -1657,7 +1720,7 @@ function applyInputMode() {
     `WASD / Arrows move · ${bl('jump')} jump (or kick off a wall-run) · ${bl('slide')} slide · run at a wall airborne to wall-run · `
     + `${bl('airBoost')} air-boost · ${bl('leanLeft')}/${bl('leanRight')} lean · ${bl('reload')} reload · 1/2 or wheel: swap · ${bl('map')} map · ${bl('scoreboard')} scores`;
   document.getElementById('look-line').textContent =
-    `Mouse / trackpad: LOOK · CLICK: shoot (hold = auto-fire) · RIGHT-CLICK / ${bl('ads')}: aim · Esc: pause`;
+    `Mouse / trackpad: LOOK · ${bindLabel('mouseFire')} / ${bl('fire')}: shoot (hold = auto-fire) · ${bindLabel('mouseAds')} / ${bl('ads')}: aim · Esc: pause`;
   const title = document.getElementById('blocker-title'), text = document.getElementById('blocker-text');
   renderMenu();
   if (hasMouse) {
