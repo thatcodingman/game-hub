@@ -2130,6 +2130,7 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   group.add(stBg); group.add(stFill);
   group.userData.stamBg = stBg; group.userData.stamFill = stFill;
   group.userData.gloves = gloves;
+  group.userData.hands = [handL, handR];
   group.userData.limbs = { legLP, legRP, kneeLP, kneeRP, armLP, armRP, elbowLP, elbowRP, spine, ankleLP, ankleRP };
   group.userData.rig = { thighLen, shinLen, legLen, bodyScale };
   group.userData.animPhase = Math.random() * Math.PI * 2;
@@ -6528,6 +6529,7 @@ function updateHumanoidPose(p, dt) {
   const L = g.userData.limbs;
   L.ankleLP.rotation.set(0, 0, 0); L.ankleRP.rotation.set(0, 0, 0);
   if (g.userData.pelvis) g.userData.pelvis.rotation.x = 0;
+  if (g.userData.hands) g.userData.hands.forEach((h) => h.rotation.set(0, 0, 0));
   // Every pose starts from a neutral upper body and straight elbows, so no
   // pose can leave a lean or a bent elbow stuck on after it ends (the same
   // stale-axis trap the limb z-rotations fell into before).
@@ -6744,17 +6746,27 @@ function updateHumanoidPose(p, dt) {
 
   const fakeAmt = p.hesitateFakeAmt || 0;
   // Arms pump opposite the legs with elbows held near 90 degrees, closing as each hand drives forward (sprint technique).
-  const armAmp = clamp((pL.fwd - pR.fwd) * 0.5 * (0.8 + 0.35 * kf), -0.85, 0.85);   // symmetric opposite-to-legs pump
+  // Human arm swing: eased (arms lag the legs a touch instead of tracking them perfectly), a little different on every player,
+  // hands tuck toward the midline on the forward swing, elbows stay loose around 90 degrees and relax when slowing down.
+  if (g.userData.seed === undefined) g.userData.seed = Math.random() * 6.28;
+  const sd = g.userData.seed, tt = performance.now() * 0.001;
+  const armT = clamp((pL.fwd - pR.fwd) * 0.5 * (0.62 + 0.3 * kf), -0.62, 0.62) * (0.92 + 0.16 * Math.sin(sd));
+  g.userData.armA = (g.userData.armA || 0) + (armT - (g.userData.armA || 0)) * Math.min(1, dt / 55);
+  const armAmp = g.userData.armA;
   const aSwL = bl(0, armAmp), aSwR = bl(0, -armAmp);
-  const elbowBendL = -(0.28 + wB * (0.15 + 0.95 * kf) + 0.3 * Math.max(0, -aSwL) * wB);
-  const elbowBendR = -(0.28 + wB * (0.15 + 0.95 * kf) + 0.3 * Math.max(0, -aSwR) * wB);
+  const elbBase = 0.38 + wB * (0.3 + 0.7 * kf);
+  const elbowBendL = -(elbBase + 0.28 * Math.max(0, -aSwL) * wB + 0.05 * Math.sin(tt * 3.1 + sd) * wB);
+  const elbowBendR = -(elbBase + 0.28 * Math.max(0, -aSwR) * wB + 0.05 * Math.sin(tt * 2.7 + sd * 2) * wB);
+  const tuckL = -0.07 + Math.max(0, -aSwL) * 0.22 * wB, tuckR = 0.07 - Math.max(0, -aSwR) * 0.22 * wB;
+  if (g.userData.hands) { const hf = 0.12 + 0.2 * kf * wB;   // relaxed wrists, slight flex as the hand drives up
+    g.userData.hands[0].rotation.set(-hf, 0.1, 0.06); g.userData.hands[1].rotation.set(-hf, -0.1, -0.06); }
   if (fakeAmt > 0) {
     armLP.rotation.set(lerp(aSwL, -0.6, fakeAmt), 0, lerp(-0.08, 0, fakeAmt));
     armRP.rotation.set(lerp(aSwR, -2.0, fakeAmt), 0, lerp(0.08, -0.35, fakeAmt));
     L.elbowLP.rotation.x = lerp(elbowBendL, -0.15, fakeAmt);
     L.elbowRP.rotation.x = lerp(elbowBendR, -1.1, fakeAmt);
   } else {
-    armLP.rotation.set(aSwL, 0, -0.08); armRP.rotation.set(aSwR, 0, 0.08);
+    armLP.rotation.set(aSwL, 0, tuckL); armRP.rotation.set(aSwR, 0, tuckR);
     L.elbowLP.rotation.x = elbowBendL;
     L.elbowRP.rotation.x = elbowBendR;
   }
@@ -6902,9 +6914,10 @@ function applyDribbleArm(p, g, L) {
   g.rotation.y = p.facing; g.updateMatrixWorld(true);
   _coTarget.set(b.x, b.y + BALL_R * 0.5, b.z);
   L.spine.worldToLocal(_coTarget);
+  { const dT = g.userData.dT || (g.userData.dT = _coTarget.clone()); dT.lerp(_coTarget, 0.4); _coTarget.copy(dT); }   // eased, so the hand doesn't jitter with every bounce
   const sh = left ? L.armLP : L.armRP, el = left ? L.elbowLP : L.elbowRP;
   _coPole.set(left ? -0.7 : 0.7, -0.2, -0.6);
-  solveArmIK(sh, el, _coTarget, _coPole, 0.9);
+  solveArmIK(sh, el, _coTarget, _coPole, 0.85);
   // off arm keeps pumping with the stride; standing still it hangs relaxed and slightly bent (no frozen raised guard arm)
   { const off = left ? L.armRP : L.armLP, offE = left ? L.elbowRP : L.elbowLP, idle = 1 - (g.userData.wB || 0);
     off.rotation.x = lerp(off.rotation.x, -0.25, idle * 0.9); offE.rotation.x = lerp(offE.rotation.x, -0.55, idle * 0.9); }
