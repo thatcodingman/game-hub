@@ -2000,7 +2000,7 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
   spine.add(numBack);
   // pelvis block of the shorts + waistband
   const pelvis = new THREE.Mesh(sculptLathe([[0.02, -0.24], [0.30, -0.2], [0.38, -0.08], [0.4, 0.06], [0.36, 0.22], [0.34, 0.26], [0.1, 0.28]], 26, 1.62, 1.0, 0, Math.PI * 2, 4), shortsMat);
-  pelvis.castShadow = true; pelvis.position.set(0, hipY - 0.0, 0); body.add(pelvis);
+  pelvis.castShadow = true; pelvis.position.set(0, hipY - 0.0, 0); body.add(pelvis); group.userData.pelvis = pelvis;
 
   // arms: delt -> bicep -> elbow -> forearm -> wrist, hanging to mid-thigh
   const ARM_LEN = 2.2;
@@ -6353,7 +6353,7 @@ function applyPostDefenseOverlay(p, g, L, dt, w) {
 
   // Legs: staggered, low, both feet planted (knees solved per leg), with
   // short choppy steps layered in while he's being moved.
-  const Dbody = 0.62 - drive * 0.16 + give * 0.05 + swipe * 0.06;
+  const Dbody = 0.4 - drive * 0.1 + give * 0.04 + swipe * 0.04;
   const H = rig.legLen - Dbody;
   const leadIsLeft = barSide < 0; // forearm-side foot leads
   const leadA = -0.68 - drive * 0.1, braceA = 0.12 + drive * 0.12;
@@ -6371,7 +6371,7 @@ function applyPostDefenseOverlay(p, g, L, dt, w) {
   // Spine: chest into the back, forearm shoulder turned in, hips battling
   // side to side, dipping toward the ball on a swipe. p.rock carries the
   // spring-driven absorb/recover from hits.
-  const lean = 0.3 + drive * 0.16 - give * 0.05 + swipe * 0.1 + p.rock;
+  const lean = 0.16 + drive * 0.1 - give * 0.04 + swipe * 0.06 + p.rock;
   const twist = -barSide * 0.2 + ballSide * swipe * 0.12;
   const roll = Math.sin(ph * 0.5) * 0.04 - ballSide * swipe * 0.14;
   L.spine.rotation.set(lean * w, twist * w, roll * w);
@@ -6527,6 +6527,7 @@ function updateHumanoidPose(p, dt) {
   if (p.__hold) return;
   const L = g.userData.limbs;
   L.ankleLP.rotation.set(0, 0, 0); L.ankleRP.rotation.set(0, 0, 0);
+  if (g.userData.pelvis) g.userData.pelvis.rotation.x = 0;
   // Every pose starts from a neutral upper body and straight elbows, so no
   // pose can leave a lean or a bent elbow stuck on after it ends (the same
   // stale-axis trap the limb z-rotations fell into before).
@@ -6706,7 +6707,7 @@ function updateHumanoidPose(p, dt) {
   if (vW > 0.0015) g.userData.gaitU = ((g.userData.gaitU || 0) + dt * ds * vW / (2 * S)) % 1;
   const u0 = g.userData.gaitU || 0;
   const wB = clamp(amt / 0.2, 0, 1); g.userData.wB = wB;
-  const H0 = rig.legLen * (0.99 - 0.04 * kf), Bd = 0.04 + 0.09 * kf;
+  const H0 = rig.legLen * (0.995 - 0.02 * kf), Bd = 0.03 + 0.05 * kf;
   const H = H0 - Bd * (0.5 + 0.5 * Math.cos(4 * Math.PI * (u0 - ds / 2)));   // hips lowest at mid-stance, highest in flight
   const readyKnee = 0.16;
   const legPose = (u) => {
@@ -6734,7 +6735,7 @@ function updateHumanoidPose(p, dt) {
   g.userData.hipDrop = bl(0, rig.legLen - H) * rig.bodyScale;
 
   // Upper body: forward lean grows with speed, shoulders counter-rotate against the hips, banking into turns.
-  const lean = 0.01 + 0.11 * kf * wB;   // stay tall: a slight sprint lean only, never a hunch
+  const lean = 0.0 + 0.06 * kf * wB;   // stay tall: a slight sprint lean only, never a hunch
   const twist = (pL.fwd - pR.fwd) * 0.13 * wB;
   const sway = Math.sin(u0 * Math.PI * 2) * 0.05 * wB;
   { const pf = g.userData.pf === undefined ? p.facing : g.userData.pf; let dF = ((p.facing - pf + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI; g.userData.pf = p.facing;
@@ -6831,8 +6832,8 @@ function updateHumanoidPose(p, dt) {
   // Drop step: load into the pivot foot, lead leg drives out toward the rim, shoulder and ball shield the defender.
   if (p.dropStep) {
     const ds = p.dropStep, k = clamp(ds.t / ds.dur, 0, 1), e = Math.sin(k * Math.PI);
-    g.position.y -= 0.3 * e;
-    L.spine.rotation.x += 0.3 * e; L.spine.rotation.y += 0.45 * e * (ds.mz >= 0 ? 1 : -1);
+    g.position.y -= 0.18 * e;
+    L.spine.rotation.x += 0.15 * e; L.spine.rotation.y += 0.45 * e * (ds.mz >= 0 ? 1 : -1);
     L.legRP.rotation.x = -1.05 * e; L.kneeRP.rotation.x = 0.6 * e;
     L.legLP.rotation.x = 0.35 * e; L.kneeLP.rotation.x = Math.max(L.kneeLP.rotation.x, 0.55 * e);
     L.armLP.rotation.set(-0.9 * e, 0, 0.5 * e); L.elbowLP.rotation.x = -0.8 * e; // off arm out to ward off the defender
@@ -6840,19 +6841,19 @@ function updateHumanoidPose(p, dt) {
   // Planted: wide low brace, arms folded across the chest, chin tucked -- waiting to take the hit.
   if (p.bracing && !(p.blockJumpTimer > 0) && !(p.swipeT > 0)) {
     const w = clamp((p.plantT || 0) / 120 + 0.5, 0.5, 1);
-    g.position.y -= 0.3 * w;
-    L.kneeLP.rotation.x += 0.55 * w; L.kneeRP.rotation.x += 0.55 * w;
-    L.legLP.rotation.x -= 0.25 * w; L.legRP.rotation.x -= 0.25 * w;
-    L.spine.rotation.x += 0.14 * w;
+    g.position.y -= 0.16 * w;
+    L.kneeLP.rotation.x += 0.32 * w; L.kneeRP.rotation.x += 0.32 * w;
+    L.legLP.rotation.x -= 0.14 * w; L.legRP.rotation.x -= 0.14 * w;
+    L.spine.rotation.x += 0.05 * w;
     L.armLP.rotation.set(-0.95 * w, 0, -1.0 * w); L.armRP.rotation.set(-0.95 * w, 0, 1.0 * w);
     L.elbowLP.rotation.x = -1.9 * w; L.elbowRP.rotation.x = -1.9 * w;
   }
   // Steal swipe: lunge in and sweep the lead hand across the ball.
   if (p.swipeT > 0 && !(p.blockJumpTimer > 0)) {
     const k = clamp(1 - p.swipeT / 320, 0, 1), e = Math.sin(k * Math.PI);
-    g.position.y -= 0.18 * e;
-    L.spine.rotation.x += 0.3 * e;
-    L.kneeLP.rotation.x += 0.4 * e; L.kneeRP.rotation.x += 0.4 * e;
+    g.position.y -= 0.1 * e;
+    L.spine.rotation.x += 0.14 * e;
+    L.kneeLP.rotation.x += 0.25 * e; L.kneeRP.rotation.x += 0.25 * e;
     const sw = p.swipeSide || 1, sweep = (k - 0.5) * 1.3 * sw;
     const A = sw > 0 ? L.armRP : L.armLP, B = sw > 0 ? L.armLP : L.armRP, EA = sw > 0 ? L.elbowRP : L.elbowLP;
     A.rotation.set(-1.45 * Math.min(1, e * 1.6), 0, sweep * -1 * sw * 0 + sweep);
@@ -6888,10 +6889,12 @@ function updateHumanoidPose(p, dt) {
     const e = Math.sin(Math.min(1, p.bumpT) * Math.PI * 0.5);
     const cross = Math.sin(p.facing) * p.bumpDirZ - Math.cos(p.facing) * p.bumpDirX;
     L.spine.rotation.z += (cross > 0 ? -1 : 1) * 0.16 * e;
-    L.spine.rotation.x += 0.16 * e;
+    L.spine.rotation.x += 0.07 * e;
     L.armLP.rotation.x = Math.min(L.armLP.rotation.x, -0.5 * e - 0.2); L.armRP.rotation.x = Math.min(L.armRP.rotation.x, -0.5 * e - 0.2);
     g.position.x += p.bumpDirX * 0.35 * e; g.position.z += p.bumpDirZ * 0.35 * e;
   }
+  // the shorts/pelvis follow the torso lean so the rear never pokes out behind a leaning body
+  if (g.userData.pelvis) g.userData.pelvis.rotation.x = L.spine.rotation.x * 0.85;
 }
 
 function applyDribbleArm(p, g, L) {
