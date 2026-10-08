@@ -165,6 +165,24 @@
   #sensVal { min-width: 44px; color: #ffd24d; font-weight: bold; }
   #invertBtn { padding: 6px 12px; font-size: 11px; }
   #invertBtn.sel { border-color: #ffd24d; color: #ffd24d; }
+  #menu-settings { display: flex; flex-direction: column; gap: 12px; align-items: center; width: 100%; }
+  #keybinds {
+    display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 6px 18px;
+    max-width: 460px; margin: 4px auto 0;
+  }
+  .bindrow {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 12px; color: #aaa;
+  }
+  .bindrow button {
+    font-family: inherit; cursor: pointer; border-radius: 6px; border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.06); color: #fff; padding: 5px 10px; font-size: 12px; font-weight: bold;
+    min-width: 78px;
+  }
+  .bindrow button:hover { background: rgba(255,255,255,0.14); }
+  .bindrow button.capturing { border-color: #ffd24d; color: #ffd24d; animation: bindpulse 0.9s ease-in-out infinite; }
+  .bindrow button.unbound { color: #777; font-weight: normal; font-style: italic; }
+  @keyframes bindpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   #board { margin-top: 10px; }
   #blocker { overflow-y: auto; justify-content: safe center; }
   #crosshair.ads { width: 5px; height: 5px; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; }
@@ -247,18 +265,27 @@
     <div class="row">
       <button data-mode="tdm">TEAM DEATHMATCH<small>you + 3 bots vs 4 bots · first to 40</small></button>
       <button data-mode="roam">FREE ROAM<small>walk the map, no bots</small></button>
+      <button data-settings-toggle="1" id="settingsToggleBtn" type="button">⚙ SETTINGS</button>
     </div>
-    <div id="profile-card"></div>
-    <div class="row" id="loadout"></div>
-    <div class="row" id="camos"></div>
-    <div class="row diff">BOTS:
-      <button data-diff="easy">EASY</button><button data-diff="normal">NORMAL</button><button data-diff="hard">HARD</button>
+    <div id="menu-main">
+      <div id="profile-card"></div>
+      <div class="row" id="loadout"></div>
+      <div class="row" id="camos"></div>
+      <div class="row diff">BOTS:
+        <button data-diff="easy">EASY</button><button data-diff="normal">NORMAL</button><button data-diff="hard">HARD</button>
+      </div>
     </div>
-    <div class="row" id="sensrow">
-      <span>SENSITIVITY</span>
-      <input type="range" id="sensSlider" min="0.2" max="3" step="0.05" value="1">
-      <span id="sensVal">1.00x</span>
-      <button data-invert="1" id="invertBtn">INVERT Y</button>
+    <div id="menu-settings" style="display:none">
+      <div class="row" id="sensrow">
+        <span>SENSITIVITY</span>
+        <input type="range" id="sensSlider" min="0.2" max="3" step="0.05" value="1">
+        <span id="sensVal">1.00x</span>
+        <button data-invert="1" id="invertBtn" type="button">INVERT Y</button>
+      </div>
+      <div id="keybinds"></div>
+      <div class="row">
+        <button data-reset-binds="1" type="button">RESET KEYBINDS TO DEFAULT</button>
+      </div>
     </div>
   </div>
   <div id="board"></div>
@@ -801,7 +828,7 @@ function updateWallRun(dt) {
       const dir = along >= 0 ? 1 : -1;                               // keep whichever way you were already headed
       b.vel.x = tx * dir * WALL_RUN_SPEED;
       b.vel.z = tz * dir * WALL_RUN_SPEED;
-      if (keys['Space']) {
+      if (isDown('jump')) {
         // Only the first wall-jump since your last ground touch gets the real boost + air-boost
         // refresh. Any further one (re-grabbing a wall after already using it) just peels you off
         // the wall with a small outward hop — enough not to get stuck on it, not enough to chain
@@ -839,11 +866,42 @@ let hasMouse = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').
 let lastTouchTime = -1e9;
 
 const keys = {};
+
+// ---- rebindable keyboard controls ----
+// Every action below maps to one KeyboardEvent.code, read through settings.binds (never a literal
+// code) by isDown() and by every keydown/keyup check further down — that's what makes every one of
+// these remappable from the settings panel. Arrow keys (movement) and the mouse (look/shoot/ADS) are
+// left as fixed, always-on extras rather than part of the rebind table.
+const DEFAULT_BINDS = {
+  forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
+  jump: 'Space', slide: 'ShiftLeft', leanLeft: 'KeyQ', leanRight: 'KeyE',
+  reload: 'KeyR', ads: 'KeyV', fire: 'KeyF', airBoost: 'KeyC',
+  equip1: 'Digit1', equip2: 'Digit2', map: 'KeyM', scoreboard: 'Tab',
+};
+const BIND_LABELS = {
+  forward: 'Move Forward', back: 'Move Backward', left: 'Move Left', right: 'Move Right',
+  jump: 'Jump / Wall-Jump', slide: 'Slide', leanLeft: 'Lean Left', leanRight: 'Lean Right',
+  reload: 'Reload', ads: 'Aim (ADS)', fire: 'Fire (hold)', airBoost: 'Air Boost',
+  equip1: 'Equip Primary', equip2: 'Equip Sidearm', map: 'Toggle Map', scoreboard: 'Scoreboard',
+};
+const isDown = (action) => !!keys[settings.binds[action]];
+const KEY_LABELS = {
+  Space: 'SPACE', ShiftLeft: 'SHIFT', ShiftRight: 'R SHIFT', ControlLeft: 'CTRL', ControlRight: 'R CTRL',
+  AltLeft: 'ALT', AltRight: 'R ALT', Tab: 'TAB', CapsLock: 'CAPS', Backquote: '`', Minus: '-', Equal: '=',
+  BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+};
+function keyLabel(code) {
+  if (!code) return '—';
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Arrow')) return code.slice(5);
+  return KEY_LABELS[code] || code;
+}
 let mouseHeld = false, fireCooldown = 0;
 // Alt-Tab / a notification / clicking a second monitor fires 'blur' without ever sending the in-page
 // keyup for whatever was held — including Tab itself, which otherwise leaves the scoreboard stuck open
 // on screen after focus returns, since nothing else ever calls showTab(false) for it.
-const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; adsHeld = false; showTab(false); };
+const clearKeys = () => { for (const k in keys) keys[k] = false; mouseHeld = false; adsHeld = false; showTab(false); bindCapture = null; };
 
 const blockerEl = document.getElementById('blocker');
 const sensSlider = document.getElementById('sensSlider'), sensVal = document.getElementById('sensVal'), invertBtn = document.getElementById('invertBtn');
@@ -853,10 +911,10 @@ let pointerLocked = false, lockWasHeld = false;
 function wishDir() {
   const f = forwardVec(), r = rightVec();
   let fwd = 0, side = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) fwd += 1;
-  if (keys['KeyS'] || keys['ArrowDown']) fwd -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) side += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) side -= 1;
+  if (isDown('forward') || keys['ArrowUp']) fwd += 1;
+  if (isDown('back') || keys['ArrowDown']) fwd -= 1;
+  if (isDown('right') || keys['ArrowRight']) side += 1;
+  if (isDown('left') || keys['ArrowLeft']) side -= 1;
   const w = new THREE.Vector3(f.x * fwd + r.x * side, 0, f.z * fwd + r.z * side);
   if (w.length() > 1) w.normalize();
   return w;
@@ -877,11 +935,17 @@ function airBoost() {            // one extra mid-air kick per jump (resets on l
   player.vel.y = Math.max(player.vel.y, BOOST);
 }
 
-// ---- look settings: sensitivity + invert, saved per-browser ----
+// ---- look + control settings: sensitivity, invert, keybinds — saved per-browser ----
 const SETTINGS_KEY = 'fz_settings_v1';
 function loadSettings() {
-  try { return Object.assign({ sens: 1, invertY: false }, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); }
-  catch { return { sens: 1, invertY: false }; }
+  const fallback = { sens: 1, invertY: false, binds: { ...DEFAULT_BINDS } };
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    // Merge per-key, not just Object.assign — a saved binds object (from an older save, or one missing
+    // a key added in a later update) must still fall back to the matching default per action, not drop
+    // every other default the moment the player has rebound even one key.
+    return Object.assign({}, fallback, saved, { binds: Object.assign({}, DEFAULT_BINDS, saved.binds) });
+  } catch { return fallback; }
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
 const settings = loadSettings();
@@ -1313,7 +1377,7 @@ const scopeEl = document.getElementById('scope');
 function updateViewmodel(dt) {
   realT += dt;
   const w = curW;
-  const wantAds = (adsHeld || keys['KeyV']) && !player.dead && reloadT <= 0 && swapT <= 0 && !player.isSliding && !blockerVisible();
+  const wantAds = (adsHeld || isDown('ads')) && !player.dead && reloadT <= 0 && swapT <= 0 && !player.isSliding && !blockerVisible();
   adsT = Math.max(0, Math.min(1, adsT + (wantAds ? 1 : -1.5) * dt / w.adsTime));
   const e = adsT * adsT * (3 - 2 * adsT);
   swapT = Math.max(0, swapT - dt);
@@ -1407,10 +1471,21 @@ function showPaused() {
   blockerEl.style.display = 'flex';
 }
 let menuReady = false, phaseConfirm = false;           // menuReady: the saved profile has been loaded
+let showSettings = false;
 function renderMenu() {
   for (const b of document.querySelectorAll('#menu [data-diff]')) b.classList.toggle('sel', b.dataset.diff === diffKey);
   for (const b of document.querySelectorAll('#menu [data-mode]')) b.classList.toggle('sel', b.dataset.mode === match.mode);
   document.getElementById('menu').style.display = hasMouse && START_MODE !== 'roam' ? 'flex' : 'none';
+  document.getElementById('settingsToggleBtn').classList.toggle('sel', showSettings);
+  document.getElementById('menu-main').style.display = showSettings ? 'none' : '';
+  document.getElementById('menu-settings').style.display = showSettings ? 'flex' : 'none';
+  if (showSettings) {
+    document.getElementById('keybinds').innerHTML = Object.keys(BIND_LABELS).map(a => {
+      const capturing = bindCapture === a, code = settings.binds[a];
+      const label = capturing ? 'PRESS A KEY…' : keyLabel(code);
+      return `<div class="bindrow"><span>${BIND_LABELS[a]}</span><button type="button" data-bind="${a}" class="${capturing ? 'capturing' : code ? '' : 'unbound'}">${label}</button></div>`;
+    }).join('');
+  }
   if (!menuReady) return;
   const canPhase = profile.level >= MAX_LEVEL && profile.phase < MAX_PHASE;
   document.getElementById('profile-card').innerHTML = profileCardHTML() + (canPhase
@@ -1432,10 +1507,28 @@ sensSlider.addEventListener('input', () => {
 for (const ev of ['click', 'pointerdown', 'mousedown']) sensSlider.addEventListener(ev, (e) => e.stopPropagation());
 blockerEl.addEventListener('click', (e) => {
   if (!hasMouse) return;
-  if (e.target.closest && e.target.closest('#sensrow')) return;     // dragging the slider shouldn't start the match
+  // Any click other than the "press a key" button itself abandons an in-progress capture (that button's
+  // own handler below sets it right back if that's what was clicked) — clicking away clearly means
+  // "never mind", and a stale capture left armed would silently rebind on the player's next keypress.
+  bindCapture = null;
+  if (e.target.closest && e.target.closest('#sensrow')) {
+    // Dragging/clicking the slider itself shouldn't start the match — but the Invert Y button lives in
+    // this same row, so it needs its own early handling here rather than falling into that "any other
+    // click in here is just a slider drag" return (which used to swallow its click entirely).
+    const invBtn = e.target.closest('button[data-invert]');
+    if (invBtn) { settings.invertY = !settings.invertY; saveSettings(); renderMenu(); }
+    return;
+  }
+  if (e.target.closest && e.target.closest('#menu-settings')) {
+    // Nothing inside the settings panel should ever start a match, even a click on blank space in it.
+    const b = e.target.closest('button');
+    if (b && b.dataset.bind) startBindCapture(b.dataset.bind);
+    else if (b && b.dataset.resetBinds) { settings.binds = { ...DEFAULT_BINDS }; saveSettings(); applyInputMode(); renderMenu(); }
+    return;
+  }
   const btn = e.target.closest && e.target.closest('button');
+  if (btn && btn.dataset.settingsToggle) { showSettings = !showSettings; renderMenu(); return; }
   if (btn && btn.dataset.diff) { diffKey = btn.dataset.diff; renderMenu(); return; }      // just picks bot skill
-  if (btn && btn.dataset.invert) { settings.invertY = !settings.invertY; saveSettings(); renderMenu(); return; }
   if (btn && btn.dataset.weapon) {                                                          // pick a class (or spend a token on a locked one)
     const k = btn.dataset.weapon;
     if (isUnlocked(k)) profile.primary = k;
@@ -1470,26 +1563,48 @@ document.addEventListener('pointerlockchange', () => {
 
 // ---- keyboard ----
 const GAME_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
+// ---- keybind capture (settings panel "press a key to bind" flow) ----
+// bindCapture holds the action name while waiting for the next keydown; set by the settings panel's
+// click handler below, consumed by the very first line of the keydown listener so a capture always
+// wins over every other keydown effect (reload, equip, slide, menu Enter-to-start, etc.) — otherwise
+// binding "Reload" to R would also reload on the very keypress that bound it.
+let bindCapture = null;
+function startBindCapture(action) { bindCapture = action; renderMenu(); }
+function finishBindCapture(code) {
+  const action = bindCapture; bindCapture = null;
+  if (!action || !code || code === 'Escape') { renderMenu(); return; }   // Escape cancels, binds nothing
+  // Swap, don't double-bind: if this key was already doing something else, that action goes back to
+  // "unbound" rather than silently firing alongside the one you just set.
+  for (const a of Object.keys(settings.binds)) if (a !== action && settings.binds[a] === code) settings.binds[a] = null;
+  settings.binds[action] = code;
+  saveSettings(); applyInputMode(); renderMenu();
+}
 window.addEventListener('keydown', (e) => {
+  if (bindCapture) { e.preventDefault(); finishBindCapture(e.code); return; }
   if (GAME_KEYS.has(e.code)) e.preventDefault();       // never scroll the page
-  if (e.code === 'KeyM') { if (!e.repeat) cycleMap(); return; }
-  if (e.code === 'Tab') { e.preventDefault(); if (!blockerVisible()) showTab(true); return; }
+  if (e.code === settings.binds.map) { if (!e.repeat) cycleMap(); return; }
+  if (e.code === 'Tab') e.preventDefault();             // always block the browser's own tab-focus cycling…
+  if (e.code === settings.binds.scoreboard) { e.preventDefault(); if (!blockerVisible()) showTab(true); return; }   // …whatever scoreboard is bound to
   if (blockerVisible()) {
     if ((e.code === 'Enter' || e.code === 'Space') && hasMouse) { if (!match.started || match.over) startMatch(match.mode); startGame(); }
     return;
   }
   relockPointer();                                        // a keypress is a user gesture too — try to restore mouse-look
-  if (e.code === 'KeyR') startReload();
-  if (e.code === 'Digit1') equip(0);
-  if (e.code === 'Digit2') equip(1);
+  if (e.code === settings.binds.reload) startReload();
+  if (e.code === settings.binds.equip1) equip(0);
+  if (e.code === settings.binds.equip2) equip(1);
   const fresh = !keys[e.code];
   keys[e.code] = true;
   if (!fresh) return;
-  if (e.code === 'KeyF') triggerReady = true;
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') tryStartSlide();
-  if (e.code === 'KeyC') airBoost();
+  if (e.code === settings.binds.fire) triggerReady = true;
+  if (e.code === settings.binds.slide) tryStartSlide();
+  if (e.code === settings.binds.airBoost) airBoost();
 });
-window.addEventListener('keyup', (e) => { keys[e.code] = false; if (e.code === 'Tab') showTab(false); if (e.code === 'KeyF') triggerReady = true; });
+window.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  if (e.code === settings.binds.scoreboard) showTab(false);
+  if (e.code === settings.binds.fire) triggerReady = true;
+});
 window.addEventListener('blur', () => {
   clearKeys();
   // Losing window focus (Cmd-Tab, a notification, clicking a second monitor) is the #1 cause of
@@ -1537,8 +1652,12 @@ document.addEventListener('wheel', (e) => { if (!blockerVisible() && Math.abs(e.
 
 // ---- HUD text + the "needs a mouse" gate ----
 function applyInputMode() {
-  document.getElementById('controls-line').textContent = 'WASD / Arrows move · SPACE jump (or kick off a wall-run) · SHIFT slide · run at a wall airborne to wall-run · C air-boost · Q/E lean · R reload · 1/2 or wheel: swap · M map · TAB scores';
-  document.getElementById('look-line').textContent = 'Mouse / trackpad: LOOK · CLICK: shoot (hold = auto-fire) · RIGHT-CLICK / V: aim · Esc: pause';
+  const bl = (a) => keyLabel(settings.binds[a]);
+  document.getElementById('controls-line').textContent =
+    `WASD / Arrows move · ${bl('jump')} jump (or kick off a wall-run) · ${bl('slide')} slide · run at a wall airborne to wall-run · `
+    + `${bl('airBoost')} air-boost · ${bl('leanLeft')}/${bl('leanRight')} lean · ${bl('reload')} reload · 1/2 or wheel: swap · ${bl('map')} map · ${bl('scoreboard')} scores`;
+  document.getElementById('look-line').textContent =
+    `Mouse / trackpad: LOOK · CLICK: shoot (hold = auto-fire) · RIGHT-CLICK / ${bl('ads')}: aim · Esc: pause`;
   const title = document.getElementById('blocker-title'), text = document.getElementById('blocker-text');
   renderMenu();
   if (hasMouse) {
@@ -1793,15 +1912,15 @@ function updatePlayer(dt) {
   // Slide-cancel: jumping out of a slide keeps the slide's speed and launches it into the
   // air-strafe system above, instead of snapping back down to walk speed.
   let slideJumpCancel = false;
-  if (player.isSliding && keys['Space'] && player.onGround) {
+  if (player.isSliding && isDown('jump') && player.onGround) {
     slideJumpCancel = true; player.isSliding = false; player.slideCooldown = SLIDE_COOLDOWN;
   }
   // Horizontal velocity: normal walking, a committed slide burst, or (mid-air) strafing
   if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT) * (gameTime < adrenUntil ? 1.15 : 1), dt);
   updateMantle(player);
   updateWallRun(dt);                 // may override vel.x/z to hug a wall, or kick off it on Space
-  integrate(player, dt, keys['Space'] && !player.wallRunning);
-  player.lean += ((keys['KeyQ'] ? -1 : keys['KeyE'] ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
+  integrate(player, dt, isDown('jump') && !player.wallRunning);
+  player.lean += ((isDown('leanLeft') ? -1 : isDown('leanRight') ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
   // Footsteps: tick off distance traveled while grounded (not sliding) rather than a flat timer, so
   // sprinting steps faster than a slow walk, with a brighter sound on stairs/scaffold than floor.
   if (player.onGround && !player.isSliding) {
@@ -3062,7 +3181,7 @@ function animate() {
   // resume mid-air, mid-slide, or with a reload that silently finished while the menu was up.
   if (running && !window.__fzPause) updatePlayer(dt);
   fireCooldown = Math.max(0, fireCooldown - dt);
-  if (running && (mouseHeld || keys['KeyF'])) tryFire();           // auto-fire while the button is held
+  if (running && (mouseHeld || isDown('fire'))) tryFire();           // auto-fire while the button is held
   if (running && !window.__fzPause && match.started && match.mode === 'tdm' && !match.over) updateMatch(dt);
   for (const b of bots) syncBotMesh(b, dt);
   updateCamera();
