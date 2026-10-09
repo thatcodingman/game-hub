@@ -2110,6 +2110,10 @@ function createHumanoid(teamColor, posLabel, teamLabelColor, teamLetter) {
     const bodyLen = Math.max(0.05, SHOE_LEN - r * 2);
     const geo = new THREE.CapsuleGeometry(r, bodyLen, 4, 10);
     geo.rotateX(Math.PI / 2); // capsule's long axis runs along Z (toe-to-heel) instead of Y
+    { const pa = geo.attributes.position, hl = SHOE_LEN / 2;   // sneaker silhouette: narrow, low toe box; fuller, taller heel and ankle
+      for (let i = 0; i < pa.count; i++) { const z = pa.getZ(i), t = clamp((z + hl) / (2 * hl), 0, 1); let x = pa.getX(i), y = pa.getY(i);
+        x *= 1 - 0.38 * t * t; if (y > 0) y *= 1 - 0.55 * t + 0.35 * Math.pow(1 - t, 2); else y *= 1 - 0.1 * t; pa.setXYZ(i, x, y, z); }
+      geo.computeVertexNormals(); }
     const m = new THREE.Mesh(geo, shoeMat);
     m.scale.set(SHOE_WID / SHOE_H, 0.85, 1);
     m.castShadow = true;
@@ -6484,8 +6488,11 @@ function applyShotPose(p, g, L, dt) {
     // Deep bend right at the launch, easing out as he climbs -- the load
     // that actually sends him up, not a flat standing jump.
     const loadT = clamp(shotRiseT(p) / 180, 0, 1);
-    const kneeBend = lerp(0.52, 0.2, loadT);
+    const kneeBend = lerp(0.62, 0.14, loadT);
     kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
+    legLP.rotation.x = -kneeBend * 0.5; legRP.rotation.x = -kneeBend * 0.5;   // thighs drive forward so the feet stay under him
+    g.position.y = rise - 3.25 * (1 - Math.cos(kneeBend * 0.5));            // hips sink into the load
+    if (loadT > 0.5) { L.ankleLP.rotation.x = 0.35 * (loadT - 0.5) * 2; L.ankleRP.rotation.x = 0.35 * (loadT - 0.5) * 2; }   // toes point as he leaves the floor
     g.updateMatrixWorld(true);
     _coTarget.set(game.ball.x, game.ball.y, game.ball.z);
     L.spine.worldToLocal(_coTarget);
@@ -6509,8 +6516,11 @@ function applyShotPose(p, g, L, dt) {
     const e = fallT * fallT * (3 - 2 * fallT);
     const rise = lerp(p.shotFallFromHeight, 0, e);
     g.position.set(p.x, Math.max(0, rise), p.z);
-    const kneeBend = lerp(0.16, 0.32, fallT); // soaks the landing
+    const kneeBend = lerp(0.14, 0.55, Math.sin(fallT * Math.PI * 0.5)); // soaks the landing
     kneeLP.rotation.x = kneeBend; kneeRP.rotation.x = kneeBend;
+    legLP.rotation.x = -kneeBend * 0.5; legRP.rotation.x = -kneeBend * 0.5;
+    g.position.y = Math.max(0, rise) - 3.25 * (1 - Math.cos(kneeBend * 0.5)) * fallT;
+    L.ankleLP.rotation.x = 0.3 * (1 - fallT); L.ankleRP.rotation.x = 0.3 * (1 - fallT);
 
     const side = (p.shotHandSide || 1) < 0 ? -1 : 1;
     const shootArm = side < 0 ? armLP : armRP;
@@ -6525,6 +6535,25 @@ function applyShotPose(p, g, L, dt) {
     L.spine.rotation.set(p.postShot ? lerp(-0.5, -0.05, fallT) : lerp(-0.12, 0.08, fallT), 0, 0);
     if (p.postShot) { legLP.rotation.x = -0.55 * (1 - fallT); legRP.rotation.x = -0.25 * (1 - fallT); }
   }
+}
+
+// Name tags + stamina bars: when two players line up on screen, lift the farther one's tag so they never stack on top of each other.
+const _dtV = new THREE.Vector3();
+function declutterTags() {
+  try {
+    const ps = game.players; if (!ps || !ps.length || !camera) return;
+    const fy = Math.tan(camera.fov * Math.PI / 360), asp = camera.aspect, items = [];
+    ps.forEach((p) => { const U = p.mesh && p.mesh.userData; if (!U || !U.tag) return; if (U._tagOff === undefined) U._tagOff = 0;
+      const base = U.tag.position.y - U._tagOff; _dtV.set(p.mesh.position.x, p.mesh.position.y + base, p.mesh.position.z);
+      const d = camera.position.distanceTo(_dtV); _dtV.project(camera);
+      items.push({ U, base, d, x: _dtV.x, y: _dtV.y, tgt: 0, w: 1.45 / (d * fy * asp), h: 0.95 / (d * fy), k: d * fy }); });
+    items.sort((a, b) => a.d - b.d);
+    items.forEach((a, i) => { for (let j = 0; j < i; j++) { const b = items[j]; const ay = a.y + a.tgt / a.k, by = b.y + b.tgt / b.k;
+        if (Math.abs(a.x - b.x) < a.w + b.w && Math.abs(ay - by) < a.h + b.h) a.tgt += ((a.h + b.h) - (ay - by)) * a.k; }
+      a.tgt = clamp(a.tgt, 0, 3.2); });
+    items.forEach((a) => { const U = a.U; U._tagOff += (a.tgt - U._tagOff) * 0.15; U.tag.position.y = a.base + U._tagOff;
+      if (U.stamBg) { U.stamBg.position.y = a.base + 0.95 + U._tagOff; U.stamFill.position.y = a.base + 0.95 + U._tagOff; } });
+  } catch (e) {}
 }
 
 function updateHumanoidPose(p, dt) {
@@ -6800,8 +6829,8 @@ function updateHumanoidPose(p, dt) {
       // both arms out low and wide (feeling for the ball handler) instead
       // of the normal pumping swing, over quicker/choppier little steps.
       const spread = 0.3 * (amt / 0.55);
-      armLP.rotation.set(-0.3, 0, spread);
-      armRP.rotation.set(-0.3, 0, -spread);
+      armLP.rotation.set(-0.3, 0, -spread);
+      armRP.rotation.set(-0.3, 0, spread);
       kneeLP.rotation.x = Math.max(kneeLP.rotation.x, 0.3);
       kneeRP.rotation.x = Math.max(kneeRP.rotation.x, 0.3);
       L.spine.rotation.x = Math.max(0.05, L.spine.rotation.x * 0.5);
@@ -6859,6 +6888,20 @@ function updateHumanoidPose(p, dt) {
       g.position.y -= 0.03 * idleK;
       L.spine.rotation.z += Math.sin(tt2 * 0.8 + sd2) * 0.018 * idleK;
       L.spine.rotation.x += Math.sin(tt2 * 1.7 + sd2) * 0.008 * idleK;
+    } }
+  // Defending: sink into a wide, bent-knee stance with the arms low and out, the way a real defender guards a man
+  { const cr = game.ball && game.ball.carrier, defOn = game.phase === 'live' && cr && cr.team !== p.team && !(p.blockJumpTimer > 0) && !p.bracing && !(p.swipeT > 0) && !p.dunk ? 1 : 0;
+    const dT = defOn * (1 - 0.85 * kf), da = g.userData.defA = (g.userData.defA || 0) + (dT - (g.userData.defA || 0)) * Math.min(1, dt / 200);
+    if (da > 0.01) {
+      L.legLP.rotation.z -= 0.13 * da; L.legRP.rotation.z += 0.13 * da;
+      L.kneeLP.rotation.x += 0.3 * da; L.kneeRP.rotation.x += 0.3 * da;
+      L.legLP.rotation.x -= 0.15 * da; L.legRP.rotation.x -= 0.15 * da;
+      g.position.y -= 0.04 * da;
+      L.spine.rotation.x += 0.1 * da;
+      L.armLP.rotation.x = lerp(L.armLP.rotation.x, -0.35 + Math.sin(performance.now() * 0.004 + (g.userData.seed || 0)) * 0.06, da);
+      L.armRP.rotation.x = lerp(L.armRP.rotation.x, -0.35 + Math.sin(performance.now() * 0.0043 + (g.userData.seed || 0)) * 0.06, da);
+      L.armLP.rotation.z = lerp(L.armLP.rotation.z, -0.38, da); L.armRP.rotation.z = lerp(L.armRP.rotation.z, 0.38, da);
+      L.elbowLP.rotation.x = lerp(L.elbowLP.rotation.x, -0.35, da); L.elbowRP.rotation.x = lerp(L.elbowRP.rotation.x, -0.35, da);
     } }
   // Defensive stance / hands up
   // Drop step: load into the pivot foot, lead leg drives out toward the rim, shoulder and ball shield the defender.
@@ -11116,6 +11159,7 @@ function frame(now) {
   if (game.phase === 'locker' || game.phase === 'creator') lockerFrame(dtMs);
   if (game.phase === 'scene') sceneFrame(dtMs);
   updateCosmeticFx(dtMs);
+  declutterTags();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
