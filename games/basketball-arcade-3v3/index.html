@@ -752,7 +752,7 @@ const PUSH_ACCUM_HOLD_MS = 350;
 const PUSH_ACCUM_RECOVER_MS = 500;
 // Body-contact distance used by the collision pass, and the closest an AI
 // defender will play a live dribbler (just outside contact, never inside it).
-const BODY_CONTACT_D = PLAYER_R * 2 * 0.9;
+const BODY_CONTACT_D = PLAYER_R * 2 * 0.96;
 const DEFENSE_MIN_GAP = BODY_CONTACT_D + 0.35;
 // Chance an AI defender plays a given closeout recklessly (no body
 // discipline) -- the only way the AI ever commits a push foul.
@@ -2312,10 +2312,10 @@ game.allA = game.teamA.slice(); game.allB = game.teamB.slice();
 const touchControlsEnabled = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 document.getElementById('menu-rules').textContent = touchControlsEnabled
   ? 'Left thumb: stick to move · right-side buttons: hold SHOOT and let go on green, PASS, DUNK/LOB, TURBO, screens, defense moves'
-  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · drive at the rim + X to dunk · C block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · R call for ball · Z screen (C waves off) · hold A+D to post up (steer with arrows) · R call for ball · 1 crossover · 2 behind-the-back · 3 hesitation';
+  : 'Arrow keys move · hold SPACE to shoot (let go on green) or tap to steal · drive at the rim + X to dunk · C block · SHIFT pass (hold an arrow to aim it) · hold TAB to turbo · E switch player · R call for ball · Z screen (C waves off) · hold A+D to post up (steer with arrows) · Q crossover (double-tap = behind-the-back) · W hesitation (double-tap = spin) · S step-back · on D: hold Q hands up, hold W plant';
 document.getElementById('hud-right').textContent = touchControlsEnabled
   ? 'Stick to move · hold SHOOT, let go on green · buttons change on defense'
-  : 'Arrows move · hold SPACE shoot, let go on green / steal · X dunk (drive at rim) · C block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · R call ball · Z screen (C wave off) · A+D post up+arrows · R call ball · 1 crossover · 2 behind-back · 3 hesi';
+  : 'Arrows move · hold SPACE shoot, let go on green / steal · X dunk (drive at rim) · C block · SHIFT pass (aim w/ arrows) · TAB turbo · E switch · R call ball · Z screen (C wave off) · A+D post up · Q cross (2x behind-back) · W hesi (2x spin) · S step-back · D: Q hands up, W plant';
 
 function getTeammates(team) { return team === 'A' ? game.teamA : game.teamB; }
 function getOpponents(team) { return team === 'A' ? game.teamB : game.teamA; }
@@ -3156,9 +3156,15 @@ function applyDunkPose(p, g, L, dt) {
   const ru = clamp(u / DUNK_RELEASE_U, 0, 1);
   const after = u >= DUNK_RELEASE_U ? clamp((u - DUNK_RELEASE_U) / (1 - DUNK_RELEASE_U), 0, 1) : 0;
   const st = d.style;
-  const tuck = Math.sin(Math.min(1, u / DUNK_RELEASE_U) * Math.PI) * (d.contact ? 1.35 : (st === 'power' ? 0.7 : 0.9));
-  L.legLP.rotation.set(-0.25 * tuck, 0, -0.05); L.legRP.rotation.set((d.contact ? -0.2 : 0.1) * tuck, 0, 0.05);
-  L.kneeLP.rotation.x = 0.2 + tuck * 0.7; L.kneeRP.rotation.x = 0.2 + tuck * (d.contact ? 0.7 : 0.5);
+  // Legs: a knee-drive gather (lead knee high, trail leg folded behind), toes pointed in the air, legs hanging loose on the rim,
+  // then both feet reach for the floor and the knees soak the landing.
+  const gather = Math.sin(Math.min(1, u / DUNK_RELEASE_U) * Math.PI / 2), ex = d.contact ? 1.25 : 1;
+  const hang = 1 - clamp(after * 1.6, 0, 1), landK = clamp((u - 0.86) / 0.14, 0, 1), crouch = Math.sin(landK * Math.PI) * 0.75;
+  const gk = (st === 'power' ? 0.85 : 1) * ex * (u < DUNK_RELEASE_U ? gather : 1) * hang;
+  L.legLP.rotation.set(-1.05 * gk - 0.28 * (1 - hang) - 0.5 * crouch, 0, -0.1 - 0.08 * (1 - hang)); L.legRP.rotation.set(0.35 * gk - 0.2 * (1 - hang) - 0.35 * crouch, 0, 0.1 + 0.08 * (1 - hang));
+  L.kneeLP.rotation.x = 0.25 + 1.15 * gk + 0.9 * crouch; L.kneeRP.rotation.x = 0.25 + 1.3 * gk * 0.9 + 0.9 * crouch;
+  L.ankleLP.rotation.x = 0.55 * (1 - landK); L.ankleRP.rotation.x = 0.6 * (1 - landK);
+  g.position.y -= 3.25 * (1 - Math.cos(crouch * 0.9)) * 0.9;
   const up = lerp(-1.9, -2.7, ru);
   const ang = dunkBallArmAngle(d, ru);
   const drop = clamp(after * 2.5, 0, 1);
@@ -3856,6 +3862,17 @@ window.addEventListener('keydown', (e) => {
     if (hp && hp.postUpActive && game.ball.carrier === hp && nowT - (game.lastUpTap || 0) < 320) { startDropStep(hp); game.lastUpTap = 0; }
     else game.lastUpTap = nowT;
   }
+  // Left-hand dribble moves (right hand stays on the arrows): Q cross / double-tap Q behind-the-back, W hesi / double-tap W spin, S step-back.
+  if (!defCtx && !e.repeat && (e.code === 'KeyQ' || e.code === 'KeyW' || e.code === 'KeyS')) {
+    const hp = controlledPlayer(), nowT = performance.now(), dbl = game.lastMoveKey === e.code && nowT - (game.lastMoveKeyT || 0) < 280;
+    game.lastMoveKey = e.code; game.lastMoveKeyT = nowT;
+    if (hp && game.ball.carrier === hp) {
+      if (dbl && hp.moveCooldown > 0) hp.moveCooldown = 0;
+      if (e.code === 'KeyQ') { if (dbl) onBehindBackPressed(); else onCrossoverPressed(); }
+      else if (e.code === 'KeyW') { if (dbl) onSpinPressed(); else onHesitationPressed(); }
+      else onStepBackPressed();
+    }
+  }
   const numKey = /^(Digit|Numpad)[1-5]$/.test(e.code) ? +e.code.slice(-1) : 0;
   if (numKey && numKey <= 3 && defCtx) {
     // On defense 1-3 are the defensive toolkit: 1 hands up (hold), 2 plant (hold), 3 steal. (X deflect, C block, Z switch.)
@@ -4211,6 +4228,7 @@ function startShotRise(player, anyRange) {
   player.shotPhase = 'rise';
   player.shotPhaseT = 0;
   player.shotHandSide = player.handSide || 1; // which hand finishes the flick
+  player.layup = dist2(player, hoop) < 9 && Math.hypot(player.vx || 0, player.vz || 0) > 0.012;   // a moving finish at the rim is a layup: gather, knee drive, one hand reach
   player.postMove = null; player.shotRiseDelay = 0; player.postShot = false; player.postFade = false;
   return true;
 }
@@ -4749,7 +4767,7 @@ const MOVE_BURST_FORWARD_WEIGHT = 0.9;
 // After the hand-switch itself finishes, the carrier gets a short, real
 // jolt of extra speed -- the "blow-by" after you've sold the move. Shared
 // by every dribble move that calls applyMoveKick.
-const MOVE_BOOST_MS = 900;     // how long the post-move explosion lasts (full strength for the first half, then it fades out)
+const MOVE_BOOST_MS = 600;     // how long the post-move explosion lasts (full strength for the first half, then it fades out)
 const MOVE_BOOST_MULT = 1.3;   // peak speed multiplier right out of the move
 // Automatic dribble-hand switching: the ball naturally follows whichever
 // way he's actually driving (camera-relative) -- holding right carries it
@@ -6528,6 +6546,13 @@ function applyShotPose(p, g, L, dt) {
     if (p.postShot) { // leaning back, legs kicked out toward the defender
       legLP.rotation.x = -0.55 * loadT; legRP.rotation.x = -0.25 * loadT;
       kneeLP.rotation.x = 0.25; kneeRP.rotation.x = 0.45;
+    } else if (p.layup) {   // layup: the knee opposite the finishing hand drives up, the push-off leg stays long and points its toe
+      const lt = Math.min(1, shotRiseT(p) / 240), le = lt * lt * (3 - 2 * lt), rightHand = (p.shotHandSide || 1) >= 0;
+      const lead = rightHand ? legLP : legRP, leadK = rightHand ? kneeLP : kneeRP, push = rightHand ? legRP : legLP, pushK = rightHand ? kneeRP : kneeLP, pushA = rightHand ? L.ankleRP : L.ankleLP;
+      lead.rotation.x = -1.2 * le; leadK.rotation.x = 1.25 * le;
+      push.rotation.x = 0.12 * le; pushK.rotation.x = 0.12 + 0.15 * le; pushA.rotation.x = 0.65 * le;
+      g.position.y = rise;
+      L.spine.rotation.set(0.1 - 0.2 * le, 0, 0);
     }
   } else {
     // Fall: the shooting hand finishes the motion alone -- arm extended up
@@ -6557,6 +6582,11 @@ function applyShotPose(p, g, L, dt) {
     offElbow.rotation.x = lerp(0.3, 0.1, fallT);
     L.spine.rotation.set(p.postShot ? lerp(-0.5, -0.05, fallT) : lerp(-0.12, 0.08, fallT), 0, 0);
     if (p.postShot) { legLP.rotation.x = -0.55 * (1 - fallT); legRP.rotation.x = -0.25 * (1 - fallT); }
+    else if (p.layup) {   // lead knee stays up through the hang, then both legs come down together to absorb the landing
+      const rightHand = (p.shotHandSide || 1) >= 0, lead = rightHand ? legLP : legRP, leadK = rightHand ? kneeLP : kneeRP, hold = Math.pow(1 - fallT, 1.5);
+      lead.rotation.x = -1.2 * hold - kneeBend * 0.5 * (1 - hold); leadK.rotation.x = 1.25 * hold + kneeBend * (1 - hold);
+      L.ankleLP.rotation.x = 0.5 * hold; L.ankleRP.rotation.x = 0.5 * hold;
+    }
   }
 }
 
@@ -10971,11 +11001,11 @@ function frame(now) {
       if (p === controlledPlayer()) {
         const cdef = game.ball.carrier && game.ball.carrier.team !== p.team && game.phase === 'live' && !game.freeThrow && !game.foulPending;
         const still = Math.hypot(p.vx, p.vz) < 0.07;
-        p.plantT = (cdef && defKeyHeld(['Digit2', 'Numpad2']) && still) ? (p.plantT || 0) + dtMs : 0;
-        p.bracing = !!(cdef && defKeyHeld(['Digit2', 'Numpad2']) && p.shotPhase === 'none');
+        p.plantT = (cdef && defKeyHeld(['Digit2', 'Numpad2', 'KeyW']) && still) ? (p.plantT || 0) + dtMs : 0;
+        p.bracing = !!(cdef && defKeyHeld(['Digit2', 'Numpad2', 'KeyW']) && p.shotPhase === 'none');
         if (p.plantT >= 40 && !p.plantShown) { p.plantShown = true; showScreenCallout('PLANTED \u2014 TAKING THE CHARGE', 700); }
         if (!p.plantT) p.plantShown = false;
-        p.handsUp = !!(defKeyHeld(['KeyV', 'Digit1', 'Numpad1']) && defenseContext() && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
+        p.handsUp = !!(defKeyHeld(['KeyV', 'KeyQ', 'Digit1', 'Numpad1']) && defenseContext() && game.phase === 'live' && game.ball.carrier !== p && p.shotPhase === 'none' && !p.dunk && p.stamina > 0 && !game.freeThrow && !game.foulPending);
         if (p.handsUp) p.stamina = Math.max(0, p.stamina - 3 * dtMs / 1000);
       }
       if (p.comboT > 0) { p.comboT -= dtMs; if (p.comboT <= 0 || game.ball.carrier !== p) { p.comboT = 0; p.comboCount = 0; p.comboBonus = 0; } }
