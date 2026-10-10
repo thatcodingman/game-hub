@@ -2848,7 +2848,9 @@ function attemptShot(player, meterQuality) {
   const opponents = getOpponents(player.team);
   const nearestDefDist = contestDist(player);
   let acc = player.stats.shot + (player.stepBackT > 0 ? 0.04 : 0);
-  acc -= shotDistancePenalty(d);
+  const dPen = shotDistancePenalty(d);
+  acc -= dPen;
+  let cPen = 0, tPen = 0, bonusWhy = null, bonusAmt = 0;
   // Post moves: a drop-step hook shields the ball with the body (the contest
   // matters less); a turnaround fade is a tougher, off-balance look.
   const contestMult = player.postShot && !player.postFade ? 0.6 : 1;
@@ -2861,12 +2863,12 @@ function attemptShot(player, meterQuality) {
   let contestTier;
   // The penalty now slides continuously with the contest % (full CONTEST_HEAVY_PENALTY when he is in your face, tapering to
   // nothing by the slight range) instead of jumping between tiers; the tier only picks the label.
-  if (nearestDefDist <= CONTEST_SLIGHT_RANGE) acc -= CONTEST_HEAVY_PENALTY * (contestPct(nearestDefDist) / 100) * contestMult;
+  if (nearestDefDist <= CONTEST_SLIGHT_RANGE) { cPen = CONTEST_HEAVY_PENALTY * (contestPct(nearestDefDist) / 100) * contestMult; acc -= cPen; }
   if (nearestDefDist <= CONTEST_HEAVY_RANGE) contestTier = 'heavy';
   else if (nearestDefDist <= CONTEST_NORMAL_RANGE) contestTier = 'normal';
   else if (nearestDefDist <= CONTEST_SLIGHT_RANGE) contestTier = 'slight';
   else if (nearestDefDist <= CONTEST_OPEN_RANGE) { contestTier = 'open'; }
-  else { acc += CONTEST_WIDEOPEN_BONUS; contestTier = 'wideopen'; }
+  else { acc += CONTEST_WIDEOPEN_BONUS; contestTier = 'wideopen'; bonusWhy = 'WIDE OPEN'; bonusAmt = CONTEST_WIDEOPEN_BONUS; }
   // Shown only for the human's own shots, right as the shot is released
   // (the meter's already gone by the time this runs) -- an AI teammate or
   // opponent shooting across the court doesn't need a callout.
@@ -2876,10 +2878,10 @@ function attemptShot(player, meterQuality) {
   // the green zone for a real bonus, badly time it (or let it expire) for a
   // real penalty on top of everything else above.
   const mScale = meterRangeScale(d);
-  if (meterQuality === 'perfect') acc += SHOT_METER_PERFECT_BONUS * mScale;
+  if (meterQuality === 'perfect') { acc += SHOT_METER_PERFECT_BONUS * mScale; if (SHOT_METER_PERFECT_BONUS * mScale > bonusAmt) { bonusWhy = 'PERFECT TIMING'; bonusAmt = SHOT_METER_PERFECT_BONUS * mScale; } }
   else if (meterQuality === 'good') acc += SHOT_METER_GOOD_BONUS * mScale;
-  else if (meterQuality === 'bad') acc -= SHOT_METER_BAD_PENALTY;
-  if (player.onFire) acc += 0.07; // heating up
+  else if (meterQuality === 'bad') { acc -= SHOT_METER_BAD_PENALTY; tPen = SHOT_METER_BAD_PENALTY; }
+  if (player.onFire) { acc += 0.07; if (0.07 > bonusAmt) { bonusWhy = 'ON FIRE'; bonusAmt = 0.07; } } // heating up
   if (player.team === 'B') acc += DIFFK.aiAcc; // level difficulty
   acc = clamp(acc, 0.02, 0.95);
   if (d > HEAVE_DIST && meterQuality !== 'perfect') acc = Math.min(acc, HEAVE_MAX);
@@ -2902,14 +2904,29 @@ function attemptShot(player, meterQuality) {
   const flightMs = clamp(d * 26, 380, 1000);
   playTone(560, 0.04);
   const shot = { t: 0, dur: flightMs, startX, startZ, startY, endX, endZ, endY, shooter: player, made, isThree };
+  // Why it went (or didn't): the biggest single factor, shown with the make chance after the ball comes down.
+  {
+    const tl = (meterQuality === 'bad' && shotMeterFreeze && !shotMeterFreeze.early) ? 'LATE RELEASE' : (meterQuality === 'bad' && shotMeterFreeze ? 'EARLY RELEASE' : 'BAD TIMING');
+    const dl = isThree ? 'DEEP THREE' : (d > 22 ? 'LONG RANGE' : 'TOO FAR OUT');
+    const cl = contestTier === 'heavy' ? 'SMOTHERED' : 'CONTESTED';
+    const neg = [[cPen, cl], [dPen, dl], [tPen, tl]].sort((a, b) => b[0] - a[0])[0];
+    shot.pct = Math.round(acc * 100);
+    shot.whyMiss = neg[0] >= 0.045 ? neg[1] : (contestTier === 'wideopen' || contestTier === 'open' ? 'OPEN LOOK, JUST MISSED' : 'JUST MISSED');
+    shot.whyMake = acc < 0.4 ? 'TOUGH SHOT' : null;
+    shot.whyBonus = bonusWhy;
+  }
   game.activeShot = shot;
   if (contactFouler) { shot.fouled = { by: contactFouler }; callShootingFoulOnShot(contactFouler, player, isThree); }
 }
 
-function resolveShot(shooter, made, isThree) {
+function resolveShot(shooter, made, isThree, shot) {
   game.ball.inFlight = false;
   game.ball.arcHeight = 0;
   noteShotResult(shooter, made, isThree);
+  if (shot && !shot.isDunk && !shot.isFreeThrow && shooter.team === (controlledPlayer() ? controlledPlayer().team : 'A') && shot.pct !== undefined) {
+    if (!made) showScreenCallout('NO GOOD  ·  ' + shot.whyMiss + '  ' + shot.pct + '%', 1200);
+    else if (shot.whyMake) showScreenCallout(shot.whyMake + '  ·  ' + shot.pct + '%', 900);
+  }
   if (!made) sfx(Math.random() < 0.3 ? 'board' : 'clank');
   if (made) {
     sfx(shooter.dunk ? 'dunk' : 'swish');
@@ -2928,7 +2945,7 @@ function resolveShot(shooter, made, isThree) {
     popOffRim(shooter);
   }
 }
-game.pickDunkStyle = (p) => pickDunkStyle(p, p.team === 'A' ? HOOP_A : HOOP_B, getOpponents(p.team)); game.canDunk = (p) => canDunk(p); game.startDunk = (p) => startDunk(p); game.popOffRim = (p) => popOffRim(p);
+game.pickDunkStyle = (p) => pickDunkStyle(p, p.team === 'A' ? HOOP_A : HOOP_B, getOpponents(p.team)); game.canDunk = (p) => canDunk(p); game.dunkMakeChance = (p, o) => dunkMakeChance(p, o); game.startDunk = (p) => startDunk(p); game.popOffRim = (p) => popOffRim(p);
 game.chooseScreenPop = (p, c) => chooseScreenPop(p, c); game.deflectPass = (o, g) => deflectPass(o, g); game.tryDeflectPass = (p) => tryDeflectPass(p);
 game.resolveShot = resolveShot; // exposed for test instrumentation, matches prior debug convention
 
@@ -2950,31 +2967,47 @@ function popOffRim(shooter) {
   const b = game.ball;
   const hoop = shooter.team === 'A' ? HOOP_A : HOOP_B;
   const dirx = -(Math.sign(hoop.x) || 1); // off the rim toward the floor, never through the backboard
-  const spread = (Math.random() - 0.5) * 2.0;
-  const long = Math.random() < 0.15;
-  const spd = long ? 1.0 + Math.random() * 0.45 : 0.3 + Math.random() * 0.5;
+  let spread = (Math.random() - 0.5) * 2.0;
+  const dm = shooter.lastDunkMiss && performance.now() - shooter.lastDunkMiss.t < 1500 ? shooter.lastDunkMiss : null;
+  shooter.lastDunkMiss = null;
+  const long = Math.random() < 0.15 || (dm && dm.kind === 'clank' && Math.random() < 0.5);   // a dunk that clanks hard flies out long
+  let spd = long ? 1.0 + Math.random() * 0.45 : 0.3 + Math.random() * 0.5;
+  if (dm && dm.kind === 'block') {   // swatted: the ball is sent hard toward the side of the blocker, low arc, loose
+    spd = 1.2 + Math.random() * 0.4;
+    spread = Math.atan2(dm.by.z - hoop.z, Math.abs(dm.by.x - hoop.x)) * (Math.random() < 0.8 ? 1 : -1);
+  }
   b.x = hoop.x; b.z = hoop.z; b.y = hoop.y;
   b.vx = dirx * Math.cos(spread) * spd;
   b.vz = Math.sin(spread) * spd;
-  b.vy = 8 + Math.random() * 4;
+  b.vy = dm && dm.kind === 'block' ? 4 + Math.random() * 2 : 8 + Math.random() * 4;
   b.justReleasedBy = shooter; b.releaseLockTimer = 300;
   b.rebound = { hoop, shooterTeam: shooter.team, t: 0 };
 }
-function reboundScore(c, hoop, shooterTeam) {
+// Every rebound is a contest scored from named parts, so the winner (and WHY) is known: height, strength, rebounding skill, box-out
+// leverage (inside position, worth more the closer the man is on you -- that's the contact), hustle (how close you are to where the ball
+// comes down), tiredness, and a little luck. The offense is a touch behind the defense, and Take Over / Glass Eater adds to the user.
+function reboundParts(c, hoop, shooterTeam) {
   const opps = getOpponents(c.team);
   let near = null, nd = REBOUND_BOX_RANGE;
   opps.forEach((o) => { const d = dist2(c, o); if (d < nd) { nd = d; near = o; } });
-  let ins = 0;
-  if (near) ins = clamp((dist2(near, hoop) - dist2(c, hoop)) / 3, -1, 1);
+  let ins = 0, contact = 0;
+  if (near) { ins = clamp((dist2(near, hoop) - dist2(c, hoop)) / 3, -1, 1); contact = clamp(1 - nd / 3.4, 0, 1); }
   const stats = c.stats;
-  return ((stats.height || 6.5) - 6.5) * REBOUND_HEIGHT_W
-    + ((stats.strength || 1) - 1) * REBOUND_STRENGTH_W
-    + ((stats.reb || 1) - 1) * REBOUND_SKILL_W
-    + ins * REBOUND_BOX_W
-    - (dist2(c, game.ball) / REBOUND_R) * 0.3
-    + Math.random() * REBOUND_LUCK_W
-    - (c.team === shooterTeam ? REBOUND_OFF_PENALTY : 0);
+  let tk = 0;
+  if (c.careerUser && typeof TK !== 'undefined' && TK.on) { const k = tkAbil()[0]; tk = k === 'rb' ? 0.5 : (k === 'st' ? 0.15 : 0); }
+  return {
+    height: ((stats.height || 6.5) - 6.5) * REBOUND_HEIGHT_W,
+    strength: ((stats.strength || 1) - 1) * REBOUND_STRENGTH_W * (1 + 0.8 * contact),   // strength matters when there is a body on you
+    skill: ((stats.reb || 1) - 1) * REBOUND_SKILL_W + tk,
+    box: ins * REBOUND_BOX_W * (0.45 + 0.9 * contact),
+    hustle: -(dist2(c, game.ball) / REBOUND_R) * 0.3,
+    tired: -0.18 * (1 - clamp(c.stamina / (STAMINA_MAX * 0.4), 0, 1)),
+    luck: Math.random() * REBOUND_LUCK_W,
+    side: c.team === shooterTeam ? -REBOUND_OFF_PENALTY : 0,
+  };
 }
+const REB_WHY = { height: 'HEIGHT', strength: 'MUSCLE', skill: 'GLASS SKILL', box: 'BOX-OUT', hustle: 'POSITION', tired: 'FRESH LEGS', luck: 'BOUNCE' };
+function sumParts(p) { let t = 0; for (const k in p) t += p[k]; return t; }
 function updateRebound(dtMs) {
   const b = game.ball, rb = b.rebound;
   rb.t += dtMs;
@@ -2993,12 +3026,25 @@ function updateRebound(dtMs) {
     if (hd <= REBOUND_R && b.y <= reach && rb.t >= REBOUND_DELAY_MS) cands.push(pl);
   }
   if (!cands.length) return;
-  let win = cands[0], best = -Infinity;
-  cands.forEach((c) => { const sc = reboundScore(c, rb.hoop, rb.shooterTeam); if (sc > best) { best = sc; win = c; } });
+  const scored = cands.map((c) => { const parts = reboundParts(c, rb.hoop, rb.shooterTeam); return { c, parts, sc: sumParts(parts) }; }).sort((x, y) => y.sc - x.sc);
+  const W = scored[0], R = scored[1] || null, win = W.c, my = controlledPlayer() ? controlledPlayer().team : 'A';
+  // Dead heat between the two sides: the ball can get TIPPED loose instead of secured (once per rebound), a scramble for the next one.
+  if (R && R.c.team !== win.team && W.sc - R.sc < 0.14 && !rb.tipped && Math.random() < 0.45) {
+    rb.tipped = true; rb.t = 0;
+    const dirx = -(Math.sign(rb.hoop.x) || 1), ang = (Math.random() - 0.5) * 2.4;
+    b.vx = dirx * Math.cos(ang) * (0.5 + Math.random() * 0.5); b.vz = Math.sin(ang) * (0.5 + Math.random() * 0.5); b.vy = 4 + Math.random() * 2;
+    if (win.team === my || R.c.team === my) showScreenCallout('TIPPED!  ·  LOOSE BALL', 800);
+    playBodyThud(0.25);
+    return;
+  }
   const off = win.team === rb.shooterTeam;
+  let why = 'UNCONTESTED', Rp = R ? R.parts : null;
+  if (!Rp) { let no = null, nd2 = REBOUND_BOX_RANGE; getOpponents(win.team).forEach((o) => { const d2 = dist2(o, win); if (d2 < nd2) { nd2 = d2; no = o; } }); if (no) Rp = reboundParts(no, rb.hoop, rb.shooterTeam); }
+  if (Rp) { let bk = null, bv = -Infinity; for (const k in REB_WHY) { const dv = W.parts[k] - Rp[k]; if (dv > bv) { bv = dv; bk = k; } } why = REB_WHY[bk]; }
   game.rebounds = (game.rebounds || 0) + 1;
   secureBall(win);
-  if (win.team === controlledPlayer().team) showScreenCallout(off ? 'OFFENSIVE BOARD!' : 'REBOUND!', 900);
+  if (win.team === my) showScreenCallout((off ? 'OFFENSIVE BOARD!' : 'REBOUND!') + '  ·  ' + why, 1000);
+  else if (cands.some((c) => c.team === my)) showScreenCallout('LOST THE BOARD  ·  ' + why, 1000);
   playBodyThud(0.35);
 }
 
@@ -3055,6 +3101,69 @@ function canDunk(p) {
   if (d > (DUNK_RANGE[p.name] || 7) || d < 1.2) return false;
   return p.vx * (hoop.x - p.x) / d + p.vz * (hoop.z - p.z) / d >= DUNK_MIN_APPROACH;
 }
+// Badge-style dunk bonuses by career archetype: 'fin' is added to the make chance, 'poster' shrinks the contact-dunk penalty.
+const DUNK_BADGES = { Slasher: { fin: 0.05, poster: true }, Athlete: { fin: 0.05, poster: true }, 'Rim Runner': { fin: 0.06 }, Bruiser: { fin: 0.05, poster: true }, 'Paint Beast': { fin: 0.05 }, 'Rim Protector': { fin: 0.03 } };
+// DUNK FORMULA -- a dunk is a shot, never automatic.
+//   rating   = how much of a dunker he is: strength 40%, size 35%, speed 25% (a center ~0.86, a point guard ~0.48)
+//   chance   = 0.46 + 0.40*rating                      (PG ~0.65, SF ~0.75, C ~0.8, before the adjustments below)
+//            + up to +0.08 for a full-speed, in-rhythm approach
+//            - up to -0.10 for going up from the edge of his range
+//            - up to -0.12 when he's gassed
+//            - the contest: a defender in his face costs 0.34, a hard closeout 0.16 -- scaled by how big the defender is vs him;
+//              going over him (contact dunk) halves that but carries its own -0.06; a lob catch costs -0.04
+//            + the style's own modifier (windmill is riskier, power slam safer)
+// Clamped to 12%..90%: even a center can get stuffed, and even a guard can finish with a clear lane.
+function dunkMakeChance(p, o) {
+  const st = p.stats || {}, sc = st.scale || 1;
+  const rating = clamp(0.40 * ((st.strength || 0.8) / 1.28) + 0.35 * clamp((sc - 0.9) / 0.34, 0, 1) + 0.25 * clamp((st.speed || 0.4) / 0.53, 0, 1), 0, 1);
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, d = dist2(p, hoop);
+  const app = d > 0.01 ? (p.vx * (hoop.x - p.x) + p.vz * (hoop.z - p.z)) / d : 0;
+  // Take Over and badge-style bonuses (career user): the ability you picked, and the archetype's finishing badge.
+  let bonus = 0, poster = false;
+  if (p.careerUser && typeof CAR !== 'undefined' && CAR.d) {
+    const bd = DUNK_BADGES[(CAR_ARCH[CAR.d.pos] && (CAR_ARCH[CAR.d.pos][CAR.d.arch || 0] || CAR_ARCH[CAR.d.pos][0]) || [''])[0]];
+    if (bd) { bonus += bd.fin; poster = !!bd.poster; }
+    if (typeof TK !== 'undefined' && TK.on) { const k = tkAbil()[0]; bonus += 0.05 + (k === 'sp' ? 0.04 : k === 'st' ? 0.06 : k === 'rb' ? 0.02 : 0); if (k === 'st') poster = true; }
+  }
+  o.poster = poster;
+  let ch = 0.46 + 0.40 * rating + bonus;
+  ch += 0.08 * clamp((app - DUNK_MIN_APPROACH) / 0.12, 0, 1);
+  ch -= 0.10 * clamp((d / (DUNK_RANGE[p.name] || 7) - 0.55) / 0.45, 0, 1);
+  ch -= 0.12 * (1 - clamp(p.stamina / (STAMINA_MAX * 0.5), 0, 1));
+  const nd = o.nd;
+  if (isFinite(nd)) {
+    const dsz = o.nearest && o.nearest.stats ? clamp(0.75 + 0.5 * ((o.nearest.stats.scale || 1) - 0.9) / 0.34, 0.75, 1.25) : 1;
+    let pen = nd <= CONTEST_HEAVY_RANGE ? 0.34 : (nd <= CONTEST_NORMAL_RANGE ? 0.16 : 0);
+    pen *= dsz / clamp(0.8 + 0.4 * rating, 0.8, 1.2);
+    if (o.contact) pen *= 0.5;
+    ch -= pen;
+  }
+  if (o.help < CONTEST_NORMAL_RANGE + 2) ch -= 0.07;     // help defender rotating over
+  if (o.chaser) ch -= 0.04;                              // someone on his hip going for the chase-down block
+  if (p.turboActive) ch += 0.04;                         // full-tilt momentum
+  if (o.contact) ch -= poster ? 0.02 : 0.06;           // posterizers (Slasher / Athlete / Bruiser / Bulldozer Take Over) don't mind going over a defender
+  if (o.alley) ch -= 0.04;
+  ch += (DUNK_STYLES[o.style] ? DUNK_STYLES[o.style].make : 0);
+  return clamp(ch, 0.12, 0.9);
+}
+// Defenders AHEAD of him (between him and the rim) really contest a dunk; one trailing behind just chases the block, and a second
+// defender in the lane is help-side rotation.
+function dunkContestInfo(p, hoop, opps) {
+  const hxx = hoop.x - p.x, hzz = hoop.z - p.z, hdd = Math.hypot(hxx, hzz) || 1, ahead = [], behind = [];
+  opps.forEach((o) => { const dx = o.x - p.x, dz = o.z - p.z, dd = Math.hypot(dx, dz) || 0.001; (((dx * hxx + dz * hzz) / (dd * hdd) > 0.15) ? ahead : behind).push({ o, dd }); });
+  ahead.sort((a, b) => a.dd - b.dd);
+  return { nd: ahead.length ? ahead[0].dd : Infinity, nearest: ahead.length ? ahead[0].o : null,
+    help: ahead.length > 1 ? ahead[1].dd : Infinity, chaser: behind.some((b) => b.dd < CONTEST_HEAVY_RANGE + 0.8) };
+}
+function dunkWhy(p, o) {
+  const hoop = p.team === 'A' ? HOOP_A : HOOP_B, d = dist2(p, hoop);
+  if (p.stamina < STAMINA_MAX * 0.3) return 'TIRED LEGS';
+  if (isFinite(o.nd) && o.nd <= CONTEST_HEAVY_RANGE) return 'SMOTHERED';
+  if (isFinite(o.nd) && o.nd <= CONTEST_NORMAL_RANGE) return 'CONTESTED';
+  if (o.help < CONTEST_NORMAL_RANGE + 2) return 'HELP D';
+  if (d / (DUNK_RANGE[p.name] || 7) > 0.85) return 'LONG TAKEOFF';
+  return 'WIDE OPEN';
+}
 function startDunk(p, opts) {
   opts = opts || {};
   fightHook('dunk', p);
@@ -3074,13 +3183,13 @@ function startDunk(p, opts) {
   });
   const bigD = ((p.stats && p.stats.strength) || 1) >= 0.9 || sc >= 1.1;
   const contact = !!victim && Math.random() < (bigD ? 0.85 : 0.6);
-  let ch = DUNK_MAKE_BASE - (p.name === 'PG' ? 0.06 : 0) + DUNK_STYLES[style].make + (opts.alley ? -0.04 : 0);
-  const contestMul = contact ? 0.5 : 1; // going over a defender: contact hurts less
-  if (nd <= CONTEST_HEAVY_RANGE) ch -= 0.30 * contestMul; else if (nd <= CONTEST_NORMAL_RANGE) ch -= 0.12 * contestMul;
+  const dInfo = Object.assign({ style, contact, alley: !!opts.alley }, dunkContestInfo(p, hoop, opps));
+  const ch = dunkMakeChance(p, dInfo);
+  const dWhy = dunkWhy(p, dInfo);
   p.dunk = {
     t: 0, dur: DUNK_STYLES[style].dur, style, sx: p.x, sz: p.z, tx: hoop.x - sgn * 0.9, tz: hoop.z, hoop,
     peak: clamp(10.9 - 8.58 * sc, 1.0, 3.6) * (contact ? 1.12 : 1), sc, released: false, contact, victim: contact ? victim : null, alley: !!opts.alley,
-    made: Math.random() < ch, stuffer: nd <= CONTEST_HEAVY_RANGE ? nearest : null,
+    why: dWhy, pct: Math.round(ch * 100), made: Math.random() < ch, stuffer: nd <= CONTEST_HEAVY_RANGE ? nearest : null,
     fouler: (game.phase === 'live' && !game.foulPending && !game.freeThrow) ? rollShotContactFoul(p, opps) : null,
   };
   if (contact && !p.dunk.fouler && Math.random() < 0.2) p.dunk.fouler = victim; // sometimes the contact is a whistle: and-one
@@ -3114,19 +3223,20 @@ function releaseDunk(p) {
   game.activeShot = shot;
   if (d.fouler) { shot.fouled = { by: d.fouler }; callShootingFoulOnShot(d.fouler, p, false); }
   const human = controlledPlayer();
+  const why = d.why ? '  ·  ' + d.why + (p.team === 'A' ? ' ' + d.pct + '%' : '') : '';   // why it went (or didn't): wide open, contested, smothered...
   if (d.made && d.contact && d.victim) {
     const v = d.victim;
     v.ankleFallSide = Math.random() < 0.5 ? -1 : 1; v.vx = 0; v.vz = 0;
     const away = Math.atan2(v.x - p.x, v.z - p.z);
     v.x += Math.sin(away) * 1.3; v.z += Math.cos(away) * 1.3; // knocked back off the spot
-    if (Math.random() < 0.55) { v.ankleDownTimer = ANKLE_DOWN_MS * 1.5; showScreenCallout('POSTERIZED!', 1500); }
-    else { v.ankleStunTimer = ANKLE_STUN_MS * 1.3; showScreenCallout('OVER THE TOP!', 1300); }
+    if (Math.random() < 0.55) { v.ankleDownTimer = ANKLE_DOWN_MS * 1.5; showScreenCallout('POSTERIZED!' + why, 1500); }
+    else { v.ankleStunTimer = ANKLE_STUN_MS * 1.3; showScreenCallout('OVER THE TOP!' + why, 1300); }
     playBodyThud(0.9);
     crowd.excite = Math.min(1.9, Math.max(crowd.excite, 1.7)); crowd.allUp = Math.max(crowd.allUp || 0, 3200);
   }
-  else if (d.made) showScreenCallout((d.alley ? 'ALLEY-OOP! ' : '') + DUNK_STYLES[d.style].label, 1000);
-  else if (d.stuffer) { showScreenCallout('STUFFED!', 1000); d.stuffer.blockJumpTimer = BLOCK_JUMP_DUR_MS; }
-  else showScreenCallout('RIMMED OUT!', 1000);
+  else if (d.made) showScreenCallout((d.alley ? 'ALLEY-OOP! ' : '') + DUNK_STYLES[d.style].label + why, 1000);
+  else if (d.stuffer && Math.random() < 0.75) { showScreenCallout('STUFFED!' + why, 1000); d.stuffer.blockJumpTimer = BLOCK_JUMP_DUR_MS; p.lastDunkMiss = { kind: 'block', by: d.stuffer, t: performance.now() }; }
+  else { showScreenCallout((Math.random() < 0.5 ? 'RIMMED OUT!' : 'OFF THE FRONT RIM!') + why, 1000); p.lastDunkMiss = { kind: 'clank', t: performance.now() }; }
   playBodyThud(0.7); playTone(d.made ? 110 : 200, 0.12);
   game.dunks = (game.dunks || 0) + (d.made ? 1 : 0);
 }
@@ -5772,7 +5882,12 @@ function updateAI(p, dtMs) {
     p.aiHoldT += dtMs; p.aiDecT -= dtMs;
     if (p.aiDecT > 90 && getTeammates(p.team).some((t) => t === controlledPlayer() && t !== p && t.ballCallTimer > 0)) p.aiDecT = 90; // he's calling for it: react now
     const oNear = nearestOppDist(p.x, p.z, p.team);
-    if (canDunk(p) && Math.random() < 0.09) { startDunk(p); return; }
+    if (canDunk(p) && Math.random() < 0.09) {
+      // Smart attempt: a weak dunker with a set defender in front takes the layup instead of forcing it.
+      const hp = p.team === 'A' ? HOOP_A : HOOP_B, info = dunkContestInfo(p, hp, getOpponents(p.team));
+      if (dunkMakeChance(p, Object.assign({ style: 'slam', contact: false }, info)) >= 0.5) { startDunk(p); return; }
+      if (startShotRise(p)) { p.shotAIReleaseAt = SHOT_AI_HOLD_MS; return; }
+    }
     // Unselfish decision tick: shoot only a good look, otherwise move it to the better shot (cutter, open shooter, give-and-go).
     if (p.aiDecT <= 0) {
       p.aiDecT = 260 + Math.random() * 200;
@@ -7152,7 +7267,7 @@ function updateBall(dtMs) {
       game.activeShot = null;
       if (s.isFreeThrow) resolveFreeThrow(s);
       else if (s.fouled) resolveFouledShot(s);
-      else resolveShot(s.shooter, s.made, s.isThree);
+      else resolveShot(s.shooter, s.made, s.isThree, s);
     }
     return;
   }
@@ -10793,10 +10908,10 @@ function startMatch() {
 
 const MOVES_HELP = [
   ['MOVEMENT', [['Arrows','Move (camera-relative)'],['TAB (hold)','Turbo sprint, drains stamina'],['E','Switch controlled player (offense)'],['R','Call for the ball: your teammate with it passes to you right away unless a defender is sitting in the lane (the call lasts about 1.5s)']]],
-  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot. A defender in front of you or beside you counts fully; one trailing behind you counts much less'],['X','Dunk when driving at the rim: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). Not driving? X (or SHIFT+X) throws a high ALLEY-OOP LOB any time: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound'],['ON FIRE','Three makes in a row sets a player on fire: flames, a roar from the crowd, a small accuracy boost and a wider green window until his next miss'],['Replays','Big dunks (alley-oops, contact dunks, windmills) and blocks get a slow-motion instant replay. Click or press any key to skip'],['Box score','Points, FG, 3P, rebounds, assists, steals, blocks and turnovers show at the end of the game'],['Modes','Pick 3v3, 2v2 (guard + big) or 1v1 on the start screen, and FULL or QUICK game length'],['Levels & arenas','ROOKIE = Sunset Blacktop (slower, softer AI, wider green). PRO = City Arena. ALL-STAR = Crystal Palace (sharper AI, tighter green). LEGEND = Neon Dome (fastest, tightest AI, smallest green). Each has its own court and crowd']]],
-  ['DRIBBLE MOVES', [['1 Crossover','Hand switch, quick burst'],['2 Behind-the-back','Wide switch, harder to strip'],['3 Hesitation','Freeze to bite the defender'],['4 Spin','360 away from pressure, ball switches hands'],['5 Step-back','Space off the defender, always facing the rim, wider green'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
+  ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot. A defender in front of you or beside you counts fully; one trailing behind you counts much less'],['X','HOLD X while driving at the rim to dunk: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). A dunk is a real attempt: rating, speed, distance, tiredness and defenders (ahead, help side, chasing) decide the make, and it can be blocked or rim out. A quick TAP of X when you cannot dunk (or SHIFT+X) throws a high ALLEY-OOP LOB: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound'],['ON FIRE','Three makes in a row sets a player on fire: flames, a roar from the crowd, a small accuracy boost and a wider green window until his next miss'],['Replays','Big dunks (alley-oops, contact dunks, windmills) and blocks get a slow-motion instant replay. Click or press any key to skip'],['Box score','Points, FG, 3P, rebounds, assists, steals, blocks and turnovers show at the end of the game'],['Modes','Pick 3v3, 2v2 (guard + big) or 1v1 on the start screen, and FULL or QUICK game length'],['Levels & arenas','ROOKIE = Sunset Blacktop (slower, softer AI, wider green). PRO = City Arena. ALL-STAR = Crystal Palace (sharper AI, tighter green). LEGEND = Neon Dome (fastest, tightest AI, smallest green). Each has its own court and crowd']]],
+  ['DRIBBLE MOVES', [['Q (or 1) Crossover','Hand switch, quick burst'],['Q Q (or 2) Behind-the-back','Double-tap Q. Wide switch, harder to strip'],['W (or 3) Hesitation','Freeze to bite the defender'],['W W (or 4) Spin','Double-tap W. 360 away from pressure, ball switches hands'],['S (or 5) Step-back','Space off the defender, always facing the rim, wider green'],['Burst','Every move ends in a short speed boost, so explode to the rim or the other side. Leaving the post or a drop step gives one too'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press C to WAVE IT OFF and isolate your man. Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
-  ['DEFENSE (number row while defending)', [['1 (hold)','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['2 (hold, stand still)','Plant and take a charge on a sprinting handler'],['3','Swipe for the steal (misses can be reach-in fouls)'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
+  ['DEFENSE', [['Q (hold) or 1','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['W (hold, stand still) or 2','Plant and take a charge on a sprinting handler'],['SPACE or 3','Swipe for the steal (misses can be reach-in fouls). Every swipe costs stamina: quick, high steal-rating guards pay least, bigs the most, spamming costs more, and when you are too tired you cannot swipe. LOCKDOWN Take Over halves the cost'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['LOCKER ROOM & LEVELS', [['XP','Every finished game earns XP from points, assists, rebounds, steals, blocks, ON FIRE and the win, scaled up by level (LEGEND pays double) and down for QUICK games. Achievements add bonus XP'],['Levels','Reach level 40. Each level unlocks new gear: more than 200 items in all'],['Locker room','Open it from the start screen or the game-over screen. Customize each of your three players separately (skin, hairstyle and color, headwear, eyewear, facial hair, chain, wristbands, sleeves, shoes, jersey number), plus your team kit, ball, ball trail, flame color and score celebration. Locked items show the level they need'],['VIEW / COPY / RANDOM','FACE view zooms in on the head, COPY LOOK TO TEAM gives all three the same style, RANDOM LOOK rolls one'],['Saved','Your level and loadout are saved in this browser']]],
   ['MY CAREER', [['Start','MY CAREER on the start screen. Pick one of 3 save slots, create your player and pick a difficulty. You start at 60 overall, age 19'],['Archetypes','Each position has 4-5 archetypes shown as a pie chart of shooting, speed, defense, passing, strength and rebounding. Your height, wingspan, agility and build reshape the pie live, always totaling 60 overall. Wingspan past a position limit (+5 guards, +6 SF, +7 bigs) hurts shooting'],['Take Over','A meter above your stamina. Fill it with makes (threes and dunks fill it more), assists, steals, blocks and boards. Misses and turnovers drain it and it slowly leaks when you go quiet, so it is hard to fill. When it is full you TAKE OVER for about 45 seconds: your chosen ability adds +15 to one attribute (Sharpshooter shooting, Jet speed, Lockdown defense, Floor General passing, Bulldozer strength, Glass Eater rebounding) and your foot icon turns gold. Pick it when you create your player and change it any time in UPGRADES'],['Looks','30+ hairstyles, 16 eyewear and 16 facial hair styles, any skin, hair and shoe color (use the rainbow dot for a custom color), 8 shoe models. Drag the player to rotate, scroll to zoom'],['Alive slots','Your save slots show an animated portrait, your overall, build pie and record'],['The league','8 different teams, a 28-game season, then the top 4 play best-of-3 semifinals and finals. 3 teams have a superstar, the other 5 have two All-Stars. Real stars have a gold or cyan star under their feet'],['Games','5v5, 4 quarters of 2:00. You control only your player; the other 9 are AI. You can also SIM a game for 60% of the Ball Bucks'],['Ball Bucks','Earned from your points, assists, rebounds, steals, blocks and threes, plus a bonus for winning. Spend them on attribute upgrades (shooting, speed, defense, passing, strength, rebounding) and cosmetics'],['Seasons','Your career carries on: you age each season, grow while young and slow down later'],['Phone','The PHONE button on the hub has standings, rankings, league leaders, your stats, a shop, messages and a feed'],['Messages','Before some games the other team\'s star DMs you. Reply and you start a rivalry for that game: one answer builds fans, the other builds team chemistry. Beat your rival for a bonus'],['Chemistry','You start with low chemistry, so teammates do not always give it up when you call for the ball (R). Keep calling. Chemistry grows from messages, playing and winning, and when it is high they almost always find you'],['Feed','Fans, media and rivals post about your games, team stats, league leaders, milestones and awards (Player of the Week, All-Star selections, season MVP, Rookie of the Year). Fans repost the big ones'],['Sponsors','Brands from the other games in the Game Hub sign you as you gain fans. Each deal pays Ball Bucks every game plus a bonus if you hit its target. You get 1 slot, a 2nd at 40 fans and a 3rd at 80. Tap PLAY on a deal to jump to that game'],['Fans','More fans means more Ball Bucks (up to +30%) and a Take Over meter that fills faster. Win, score big and answer messages to grow them']]],
   ['SOUND', [['Music','A different track for every arena (and one for the menus and locker room): Sunset Blacktop boom-bap, City Arena funk, Crystal Palace bells, Neon Dome synthwave. It gets busier in close games, late in the clock and when someone is ON FIRE'],['M / N','Toggle music / sound effects. The two buttons in the top-left corner do the same'],['⚙ button','Opens volume sliders for music and sound effects. Music pauses when you switch tabs']]],
