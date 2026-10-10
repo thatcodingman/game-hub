@@ -274,6 +274,7 @@
       <div class="row diff">BOTS:
         <button data-diff="easy">EASY</button><button data-diff="normal">NORMAL</button><button data-diff="hard">HARD</button>
       </div>
+      <div class="row diff" id="mapRow">MAP:</div>
     </div>
     <div id="menu-settings" style="display:none">
       <div class="row" id="sensrow">
@@ -319,23 +320,23 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x201f2a);
 scene.fog = new THREE.Fog(0x2a2632, 40, 130);
 
-// Warm skylight glow fading up into blue sky, seen through the open roof over Mid/Mezzanine —
-// the "Atrium" the map is named for.
-(function makeSkyDome() {
+// Sky dome: a vertical gradient (low/mid/top colors), built fresh per map by applySkyAndWeather()
+// below so each map can have its own atmosphere (Atrium's warm glass-roof glow vs. Monsoon's storm).
+function makeSkyDome(top, mid, low) {
   const geo = new THREE.SphereGeometry(300, 16, 12);
   const pos = geo.attributes.position, colors = [];
-  const top = new THREE.Color(0x5e8fd4), mid = new THREE.Color(0xffc988), low = new THREE.Color(0x241f2c);
+  const topC = new THREE.Color(top), midC = new THREE.Color(mid), lowC = new THREE.Color(low);
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const t = THREE.MathUtils.clamp((pos.getY(i) / 300 + 1) / 2, 0, 1);
-    if (t > 0.42) c.lerpColors(mid, top, (t - 0.42) / 0.58); else c.lerpColors(low, mid, t / 0.42);
+    if (t > 0.42) c.lerpColors(midC, topC, (t - 0.42) / 0.58); else c.lerpColors(lowC, midC, t / 0.42);
     colors.push(c.r, c.g, c.b);
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   const dome = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false }));
   dome.renderOrder = -1;
-  scene.add(dome);
-})();
+  return dome;
+}
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.rotation.order = 'YXZ';
@@ -353,7 +354,8 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-scene.add(new THREE.HemisphereLight(0xaec6ff, 0x4a4030, 1.45));
+const hemi = new THREE.HemisphereLight(0xaec6ff, 0x4a4030, 1.45);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffdfb0, 0.85);
 sun.position.set(20, 60, 10);
 sun.castShadow = true;
@@ -365,6 +367,120 @@ scene.add(sun);
 const fill = new THREE.DirectionalLight(0x7fa8d9, 0.3);
 fill.position.set(-25, 30, -35);
 scene.add(fill);
+
+// ---------- Weather: per-map sky/fog/lighting, plus an optional particle weather system ----------
+// `sky` is this map's atmosphere {dome:[top,mid,low], fogColor, fogNear, fogFar, hemi:[sky,ground,intensity],
+// sun:[color,intensity], fill:[color,intensity]}; `weather` picks the particle system: 'rain' (falling
+// streaks + thunder) or 'embers' (drifting wildfire embers, no thunder). Falsy/'clear' = no particles.
+let skyDome = null, rainPoints = null, rainVel = null, lightningT = 0, weatherMode = 'clear';
+let emberPoints = null, emberVel = null;
+function applySkyAndWeather(m) {
+  const sky = m.sky;
+  scene.background = new THREE.Color(sky.fogColor);
+  scene.fog = new THREE.Fog(sky.fogColor, sky.fogNear, sky.fogFar);
+  if (skyDome) mapGroup.remove(skyDome);     // mapGroup already got swapped out by loadMap(), but be defensive
+  skyDome = makeSkyDome(...sky.dome);
+  mapGroup.add(skyDome);
+  hemi.color.setHex(sky.hemi[0]); hemi.groundColor.setHex(sky.hemi[1]); hemi.intensity = sky.hemi[2];
+  sun.color.setHex(sky.sun[0]); sun.intensity = sky.sun[1];
+  fill.color.setHex(sky.fill[0]); fill.intensity = sky.fill[1];
+  weatherMode = m.weather || 'clear';
+  if (weatherMode === 'rain' && !rainPoints) buildRain();
+  if (weatherMode === 'embers' && !emberPoints) buildEmbers();
+  if (rainPoints) rainPoints.visible = weatherMode === 'rain';
+  if (emberPoints) emberPoints.visible = weatherMode === 'embers';
+}
+// A few hundred falling streaks, recycled in a box around the origin — cheap (one draw call) and
+// map-agnostic, so any future map can opt in with `weather: 'rain'`.
+function buildRain() {
+  const N = 900, positions = new Float32Array(N * 3);
+  rainVel = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 130;
+    positions[i * 3 + 1] = Math.random() * 40 - 6;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 40;
+    rainVel[i] = 14 + Math.random() * 10;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xaecbe0, size: 0.09, transparent: true, opacity: 0.55, fog: true });
+  rainPoints = new THREE.Points(geo, mat);
+  rainPoints.frustumCulled = false;
+  scene.add(rainPoints);   // follows the camera below, not tied to mapGroup, so it survives map rebuilds
+}
+// A few hundred glowing embers drifting slowly upward with a little sideways wander — for a
+// wildfire-smoke map (`weather: 'embers'`). Same recycle-in-a-box-around-the-player trick as rain,
+// just rising instead of falling and additive-glowing instead of streaked.
+function buildEmbers() {
+  const N = 500, positions = new Float32Array(N * 3);
+  emberVel = new Float32Array(N * 2);   // [riseSpeed, driftPhase] per ember
+  for (let i = 0; i < N; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 110;
+    positions[i * 3 + 1] = Math.random() * 30 - 6;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 40;
+    emberVel[i * 2] = 0.8 + Math.random() * 1.4;
+    emberVel[i * 2 + 1] = Math.random() * Math.PI * 2;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xff8a3c, size: 0.13, transparent: true, opacity: 0.85, fog: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  emberPoints = new THREE.Points(geo, mat);
+  emberPoints.frustumCulled = false;
+  scene.add(emberPoints);
+}
+let emberClock = 0;
+function updateWeather(dt) {
+  if (weatherMode === 'rain') {
+    // Rain falls and recenters near the player so a fixed-size particle box always covers the view
+    const pos = rainPoints.geometry.attributes.position.array;
+    for (let i = 0; i < rainVel.length; i++) {
+      let y = pos[i * 3 + 1] - rainVel[i] * dt;
+      if (y < player.pos.y - 6) y += 40;
+      pos[i * 3 + 1] = y;
+    }
+    rainPoints.geometry.attributes.position.needsUpdate = true;
+    rainPoints.position.set(player.pos.x, 0, player.pos.z);
+    // Occasional lightning: a brief bright flash on the sun/hemisphere + a delayed thunder rumble
+    lightningT -= dt;
+    if (lightningT <= 0) {
+      lightningT = 6 + Math.random() * 10;
+      flashLightning();
+    }
+  } else if (weatherMode === 'embers') {
+    emberClock += dt;
+    const pos = emberPoints.geometry.attributes.position.array;
+    for (let i = 0; i < emberVel.length / 2; i++) {
+      const rise = emberVel[i * 2], phase = emberVel[i * 2 + 1];
+      let y = pos[i * 3 + 1] + rise * dt;
+      if (y > player.pos.y + 24) y -= 36;
+      pos[i * 3 + 1] = y;
+      pos[i * 3] += Math.sin(emberClock * 0.6 + phase) * 0.35 * dt;
+      pos[i * 3 + 2] += Math.cos(emberClock * 0.5 + phase) * 0.35 * dt;
+    }
+    emberPoints.geometry.attributes.position.needsUpdate = true;
+    emberPoints.position.set(player.pos.x, 0, player.pos.z);
+    lightningT = 0;
+  } else {
+    lightningT = 0;
+  }
+}
+function flashLightning() {
+  const base = { sun: sun.intensity, hemi: hemi.intensity };
+  sun.intensity = base.sun * 3.5; hemi.intensity = base.hemi * 2.2;
+  setTimeout(() => { sun.intensity = base.sun; hemi.intensity = base.hemi; }, 90);
+  playTone(60, 1.6, 0.05, 'sine', 30);   // low rumble, reuses the existing synth SFX helper (declared below)
+  setTimeout(() => { if (audioCtx) playTone(45, 2.2, 0.04, 'sine', 25); }, 250 + Math.random() * 400);
+}
+
+// ---------- Map registry ----------
+// Every map's geometry/decoration meshes live in `mapGroup` (never added to `scene` directly) so
+// switching maps is just "throw this group away and build a fresh one" rather than hunting down
+// every mesh a map ever created. `MAPS[key]` holds the rest of a map's data (spawns, nav graph
+// builder, minimap content, etc.) — see loadMap() far below, once all that data exists.
+const MAPS = {};
+let currentMap = null, currentMapKey = null;
+let mapGroup = new THREE.Group();
+scene.add(mapGroup);
 
 // ---------- Materials (color-coded by function) ----------
 const M = (c, r = 0.9, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
@@ -425,7 +541,7 @@ function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
   mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
   mesh.castShadow = opts.shadow !== false;
   mesh.receiveShadow = true;
-  scene.add(mesh);
+  mapGroup.add(mesh);
   const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || MAT_TAG.get(mat) || (mat === matMezz ? 'stairs' : null) };
   if (opts.collide !== false) colliders.push(c);
   return c;
@@ -444,6 +560,10 @@ function subtract(a, b) {
   return out;
 }
 
+// ---------- Atrium geometry ----------
+// Everything from here through the end of dressAtrium() is this one map's build step, wrapped so it
+// can be re-run (into a fresh mapGroup) any time Atrium is (re)selected rather than only once at load.
+function buildAtriumGeometry() {
 // ---------- THE GROUND: one solid block, lower areas carved out ----------
 let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
 const cuts = [
@@ -511,11 +631,11 @@ function buildSide(sgn) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(railLen, 0.07, 0.07), matRail);
       rail.position.set(railMidX, 0.95 + 2.5, rz);
       rail.rotation.z = railAngle;
-      rail.castShadow = true; scene.add(rail);
+      rail.castShadow = true; mapGroup.add(rail);
       for (let i = 0; i <= 4; i++) {
         const px = sgn === -1 ? -27 + 12 * (i / 4) : 27 - 12 * (i / 4), py0 = STAIR_RISE * STAIR_N * (i / 4);
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.95, 0.06), matRail);
-        post.position.set(px, py0 + 0.475, rz); post.castShadow = true; scene.add(post);
+        post.position.set(px, py0 + 0.475, rz); post.castShadow = true; mapGroup.add(post);
       }
     }
   }
@@ -565,7 +685,7 @@ for (const [mx, side] of [[-11, 'mezzW'], [-4, 'mezzW'], [4, 'mezzE'], [11, 'mez
   const matPipe = M(0x3d4a52, 0.4, 0.6), matTruss = M(0x1c1d22, 0.6, 0.4);
   const matGlass = new THREE.MeshStandardMaterial({ color: 0x9fc6e8, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.22 });
   const matLamp = new THREE.MeshStandardMaterial({ color: 0xffe3a0, emissive: 0xffc96b, emissiveIntensity: 1.6, roughness: 0.4 });
-  const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; scene.add(mesh); return mesh; };
+  const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
 
   // -- Skylight over Mid + Mezzanine: steel truss grid + tinted glass panels, well above WALL_H --
   const skyY = 13.5;
@@ -674,6 +794,258 @@ for (const [mx, side] of [[-11, 'mezzW'], [-4, 'mezzW'], [4, 'mezzE'], [11, 'mez
     deco(strip, cx, 0.007, 0); strip.castShadow = false;
   }
 })();
+}   // end buildAtriumGeometry()
+
+// ---------- Monsoon geometry ----------
+// Same proven skeleton shape as Atrium (ground/cuts, perimeter, ramps, scaffold bays, per-side lanes,
+// a raised walkway, a flooded under-street tunnel) so the nav graph and bot traversal stay reliable,
+// but re-skinned top to bottom: a flooded night-market alley instead of a glass-roofed lobby. The
+// walkway here is a plain steel catwalk (tagged 'cover', not 'mezzW'/'mezzE') — no destructible beam.
+function buildMonsoonGeometry() {
+  const matStreet = M(0x3a4048, 0.85), matBldg = M(0x2e333c, 0.95), matAlley = M(0x5a4a3a);
+  const matStall = M(0x3f5a4f), matWalk = M(0x454a58, 0.85), matNeonSign = M(0xff3c7a, 0.5, 0.2);
+  const matLadder = M(0x8a6a33, 0.7), matRailM = M(0x1d1e24, 0.6, 0.45);
+  const matSpawnA2 = M(0x3a66c8), matSpawnB2 = M(0xcc3a3a);
+
+  let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
+  const cuts = [
+    { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // flooded storm drain (ceiling = main street)
+    { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },
+    { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },
+    { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },
+    { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },
+  ];
+  for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
+  for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matStreet);
+
+  addSolid(-55, -6, -16, 55, WALL_H, -15, matBldg);
+  addSolid(-55, -6, 15, 55, WALL_H, 16, matBldg);
+  addSolid(-55, -6, -16, -54, WALL_H, 16, matBldg);
+  addSolid(54, -6, -16, 55, WALL_H, 16, matBldg);
+
+  for (let i = 0; i < 9; i++) {
+    addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matStreet, { tag: 'ramp' });
+    addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matStreet, { tag: 'ramp' });
+  }
+  function bay(xa, xb) {
+    for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matAlley);
+  }
+  bay(-10, -5);
+  bay(5, 10);
+
+  function buildSide(sgn) {
+    const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
+      const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
+      return addSolid(a, y0, z0, b, y1, z1, mat, o);
+    };
+    S(-42, -15, -41, -3, 0, WALL_H, matBldg);
+    S(-42, 3, -41, 9, 0, WALL_H, matBldg);
+    S(-41, -15, -15, -3, 0, WALL_H, matBldg);
+    S(-41, 3, -15, 9, 0, WALL_H, matBldg);
+    // Alley choke — a narrower 2.4m gap between buildings (tighter than Atrium's Choke)
+    S(-19, -2.7, -15, -1.2, 0, WALL_H, matAlley);
+    S(-19, 1.2, -15, 2.7, 0, WALL_H, matAlley);
+    S(-12.5, 1.2, -11, 2.8, 0, 1.2, matStall);
+    // Fire-escape ladder up to the catwalk — same stepped-collider shape as Atrium's stairs (keeps
+    // bot pathing/climb behavior proven), re-skinned as a steel fire-escape stair.
+    const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
+    for (let i = 0; i < STAIR_N; i++) S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matLadder);
+    S(-50, 8, -48, 10, 0, 1.2, matStall);
+    S(-47, -7, -45, -5, 0, 1.2, matStall);
+    const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
+    addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA2 : matSpawnB2, { collide: false, shadow: false });
+  }
+  buildSide(-1);
+  buildSide(1);
+
+  // ---------- MID: an open flooded market square, 4 stalls in a diamond instead of one center pillar ----------
+  addSolid(-1, 0, -1, 1, 1.3, 1, matStall);
+  addSolid(-7, 0, -3, -4.5, 1.2, -1, matStall);
+  addSolid(4.5, 0, -3, 7, 1.2, -1, matStall);
+  addSolid(-2, 0, -8, 2, 1.2, -6.8, matStall);
+  for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matLadder);   // ladder up to the catwalk from Mid
+
+  // ---------- CATWALK: one continuous steel walkway over Mid — no destructible half, just normal cover ----------
+  addSolid(-15, 4.4, 9, 15, 5.0, 15, matWalk, { tag: 'cover' });
+  for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) addSolid(a, 5, 9, b, 5.9, 9.4, matWalk, { tag: 'cover' });
+  for (const mx of [-11, -4, 4, 11]) addSolid(mx - 1, 5.0, 10.6, mx + 1, 6.3, 12.2, matStall, { tag: 'cover' });
+  // Support posts under the catwalk — plain cover, not a shootable beam
+  addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matRailM, { tag: 'cover' });
+  addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matRailM, { tag: 'cover' });
+
+  // ---------- MONSOON DRESSING: neon signage, awnings, market stalls, puddles, rain barrels ----------
+  (function dressMonsoon() {
+    const matAwning = new THREE.MeshStandardMaterial({ color: 0x8a2a4a, roughness: 0.8 });
+    const matPuddle = new THREE.MeshStandardMaterial({ color: 0x1a2a38, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.6 });
+    const matCrate = M(0x4a3f2e, 0.9), matBarrel = M(0x2a4a52, 0.6, 0.3), matLampPost = M(0x15161a, 0.6, 0.4);
+    const matSign = new THREE.MeshStandardMaterial({ color: 0x22ffe0, emissive: 0x22ffe0, emissiveIntensity: 1.8, roughness: 0.3 });
+    const matSign2 = new THREE.MeshStandardMaterial({ color: 0xff3c7a, emissive: 0xff3c7a, emissiveIntensity: 1.8, roughness: 0.3 });
+    const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
+
+    // Awning canopies over the lanes (instead of a glass skylight)
+    for (const sgn of [-1, 1]) {
+      const X = (x) => sgn === -1 ? x : -x;
+      for (let lx = -39; lx <= -22; lx += 5.5) {
+        const awn = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.1, 4.6), matAwning);
+        awn.rotation.z = sgn * 0.08; deco(awn, X(lx), 3.9, 0);
+      }
+    }
+    // Puddle decals on the street (flat, faux-reflective quads)
+    for (const [x, z] of [[-33, -2], [-24, 2], [33, 2], [24, -2], [-6, -4], [6, 4], [0, 10]]) {
+      const p = new THREE.Mesh(new THREE.CircleGeometry(1.6 + Math.random(), 10), matPuddle);
+      p.rotation.x = -Math.PI / 2; deco(p, x, 0.012, z);
+    }
+    // Neon shop signs along the building faces
+    for (const [x, z, ry, mat] of [[-41.3, -6, Math.PI / 2, matSign], [-41.3, 6, Math.PI / 2, matSign2], [41.3, -6, -Math.PI / 2, matSign2], [41.3, 6, -Math.PI / 2, matSign]]) {
+      deco(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 2.2), mat), x, 3.2, z, ry);
+    }
+    // Lamp posts down the lanes, over Mid and the tunnel
+    function lamp(x, y, z) {
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, y, 6), matLampPost), x, y / 2, z);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), new THREE.MeshStandardMaterial({ color: 0xfff0c0, emissive: 0xffd98a, emissiveIntensity: 1.4 }));
+      deco(head, x, y, z);
+    }
+    for (const x of [-33, -24, 24, 33]) lamp(x, 3.6, -3.2);
+    lamp(0, 4.4, -8); lamp(0, 4.4, 8);
+    for (let x = -40; x <= 40; x += 10) lamp(x, 2.2, -12);
+
+    // Market crates/barrels for street-level cover texture, plus the flooded tunnel below
+    function crate(x, z, ry = 0, s = 0.75) { deco(new THREE.Mesh(new THREE.BoxGeometry(s, s, s), matCrate), x, s / 2, z, ry); }
+    function barrel(x, z, y0 = 0) { deco(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.8, 10), matBarrel), x, y0 + 0.4, z); }
+    crate(-38, -4.5, 0.3); crate(38, 4.5, 0.5); barrel(-44, 5); barrel(44, -5);
+    function coverStack(x, z) {
+      addSolid(x - 0.6, -5, z - 0.6, x + 0.6, -5 + 1.6, z + 0.6, matCrate, { tag: 'cover' });
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.6, 10), matBarrel), x - 0.45, -5 + 0.3, z + 0.4);
+    }
+    for (const [x, z] of [[-32, -13], [-18, -11], [18, -13], [32, -11]]) coverStack(x, z);
+    for (let x = -40; x <= 40; x += 8) {
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(6.5, 1.3), matPuddle);
+      p.rotation.x = -Math.PI / 2; deco(p, x, -4.98, -12);
+    }
+  })();
+}
+
+// ---------- Scorch: a sun-baked desert canyon outpost, under a wildfire haze. Reuses the exact same
+// structural skeleton (ground/cuts/perimeter/ramps/bay/buildSide coordinates) as Atrium/Monsoon for
+// proven pathing safety, reskinned as sandstone/adobe buildings over a dry canyon wash, with a wooden
+// scaffold catwalk (not destructible — same non-beam approach as Monsoon) and a drifting-ember weather. ----------
+function buildScorchGeometry() {
+  const matSand = M(0xc9a36a, 0.95), matAdobe = M(0xb5713f, 0.95), matRock = M(0x6e5a44, 0.9);
+  const matWood = M(0x7a5330, 0.8), matDeck = M(0x8a6a44, 0.85), matScaffold = M(0x3a3028, 0.6, 0.2);
+  const matSpawnA2 = M(0x3a66c8), matSpawnB2 = M(0xcc3a3a);
+
+  let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
+  const cuts = [
+    { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // dry wash / canyon gulch (ceiling = main street)
+    { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },
+    { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },
+    { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },
+    { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },
+  ];
+  for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
+  for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matSand);
+
+  addSolid(-55, -6, -16, 55, WALL_H, -15, matRock);
+  addSolid(-55, -6, 15, 55, WALL_H, 16, matRock);
+  addSolid(-55, -6, -16, -54, WALL_H, 16, matRock);
+  addSolid(54, -6, -16, 55, WALL_H, 16, matRock);
+
+  for (let i = 0; i < 9; i++) {
+    addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matSand, { tag: 'ramp' });
+    addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matSand, { tag: 'ramp' });
+  }
+  function bay(xa, xb) {
+    for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matRock);
+  }
+  bay(-10, -5);
+  bay(5, 10);
+
+  function buildSide(sgn) {
+    const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
+      const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
+      return addSolid(a, y0, z0, b, y1, z1, mat, o);
+    };
+    S(-42, -15, -41, -3, 0, WALL_H, matAdobe);
+    S(-42, 3, -41, 9, 0, WALL_H, matAdobe);
+    S(-41, -15, -15, -3, 0, WALL_H, matAdobe);
+    S(-41, 3, -15, 9, 0, WALL_H, matAdobe);
+    // Canyon choke — a narrow gap between rock faces
+    S(-19, -2.7, -15, -1.2, 0, WALL_H, matRock);
+    S(-19, 1.2, -15, 2.7, 0, WALL_H, matRock);
+    S(-12.5, 1.2, -11, 2.8, 0, 1.2, matWood);
+    // Scaffold stair up to the catwalk — same stepped-collider shape as Atrium's stairs (keeps
+    // bot pathing/climb behavior proven), re-skinned as a rough timber switchback.
+    const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
+    for (let i = 0; i < STAIR_N; i++) S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matWood);
+    S(-50, 8, -48, 10, 0, 1.2, matWood);
+    S(-47, -7, -45, -5, 0, 1.2, matWood);
+    const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
+    addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA2 : matSpawnB2, { collide: false, shadow: false });
+  }
+  buildSide(-1);
+  buildSide(1);
+
+  // ---------- MID: a dried-up well at center with rock-pile cover instead of one center pillar ----------
+  addSolid(-1, 0, -1, 1, 1.3, 1, matRock);
+  addSolid(-7, 0, -3, -4.5, 1.2, -1, matRock);
+  addSolid(4.5, 0, -3, 7, 1.2, -1, matRock);
+  addSolid(-2, 0, -8, 2, 1.2, -6.8, matRock);
+  for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matWood);   // ladder up to the catwalk from Mid
+
+  // ---------- CATWALK: one continuous timber scaffold walkway over Mid — no destructible half ----------
+  addSolid(-15, 4.4, 9, 15, 5.0, 15, matDeck, { tag: 'cover' });
+  for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) addSolid(a, 5, 9, b, 5.9, 9.4, matDeck, { tag: 'cover' });
+  for (const mx of [-11, -4, 4, 11]) addSolid(mx - 1, 5.0, 10.6, mx + 1, 6.3, 12.2, matWood, { tag: 'cover' });
+  // Support posts under the catwalk — plain cover, not a shootable beam
+  addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matScaffold, { tag: 'cover' });
+  addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matScaffold, { tag: 'cover' });
+
+  // ---------- SCORCH DRESSING: dead trees, cacti, ember barrels, sandbags, distant wildfire glow ----------
+  (function dressScorch() {
+    const matDeadWood = M(0x4a3626, 0.9), matCactus = M(0x4a7a4a, 0.85), matSandbag = M(0x9a8a5a, 0.95);
+    const matEmberGlow = new THREE.MeshStandardMaterial({ color: 0xff7a2e, emissive: 0xff5a1a, emissiveIntensity: 2.2, roughness: 0.4 });
+    const matFireGlow = new THREE.MeshBasicMaterial({ color: 0xff6a1a, transparent: true, opacity: 0.35 });
+    const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
+
+    // Distant wildfire glow along the far canyon walls (soft additive-feeling planes, not real light sources)
+    for (const [x, z, ry] of [[-54.5, 0, Math.PI / 2], [54.5, 0, -Math.PI / 2]]) {
+      const glow = new THREE.Mesh(new THREE.PlaneGeometry(10, 14), matFireGlow);
+      deco(glow, x, 6, z, ry);
+    }
+    // Dead trees and cacti scattered for silhouette/cover texture
+    function deadTree(x, z) {
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.22, 3.2, 6), matDeadWood), x, 1.6, z);
+      for (const ry of [0.6, 2.1, -1.2]) {
+        const limb = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.08, 1.1, 5), matDeadWood);
+        limb.rotation.z = 0.9; deco(limb, x, 2.6, z, ry);
+      }
+    }
+    function cactus(x, z) {
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 1.6, 8), matCactus), x, 0.8, z);
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.7, 6), matCactus);
+      arm.rotation.z = 1.1; deco(arm, x + 0.18, 1.1, z);
+    }
+    for (const [x, z] of [[-33, -2], [33, 2], [-6, -4], [6, 4]]) deadTree(x, z);
+    for (const [x, z] of [[-24, 2], [24, -2], [0, 10], [-45, 6], [45, -6]]) cactus(x, z);
+    // Ember barrels (small glowing fire-pit drums) down the lanes, over Mid and the wash
+    function emberBarrel(x, y, z) {
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.6, 10), matScaffold), x, y + 0.3, z);
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), matEmberGlow);
+      deco(glow, x, y + 0.68, z);
+    }
+    for (const x of [-33, -24, 24, 33]) emberBarrel(x, 0, -3.2);
+    emberBarrel(0, 0, -8); emberBarrel(0, 4.4, 8);
+    for (let x = -40; x <= 40; x += 10) emberBarrel(x, -5, -12);
+
+    // Sandbag cover stacks and crates for street-level texture, plus the wash below
+    function sandbagStack(x, z) {
+      addSolid(x - 0.6, -5, z - 0.6, x + 0.6, -5 + 1.4, z + 0.6, matSandbag, { tag: 'cover' });
+    }
+    for (const [x, z] of [[-32, -13], [-18, -11], [18, -13], [32, -11]]) sandbagStack(x, z);
+    addSolid(-38, 0, -4.8, -37, 0.7, -3.8, matSandbag, { tag: 'cover' });
+    addSolid(37, 0, 3.8, 38, 0.7, 4.8, matSandbag, { tag: 'cover' });
+  })();
+}
 
 // ======================================================
 // PLAYER + PHYSICS
@@ -699,15 +1071,15 @@ const WALL_JUMP_UP = JUMP * 0.95, WALL_JUMP_OUT = 6.5, WALL_JUMP_UNBOOSTED_UP = 
 const MAX_HP = 100, RESPAWN_TIME = 3.5, SPAWN_PROT = 1.5;          // weapon damage lives in WEAPONS below
 const SCORE_LIMIT = 40, MATCH_TIME = 480;
 const START_MODE = location.hash.includes('roam') ? 'roam' : 'tdm';
-const tagLive = { mezzW: true, mezzE: true };          // which Mezzanine halves are still standing
+const tagLive = {};          // which per-map destructible pieces (e.g. Atrium's Mezzanine halves) are still standing — reset per map in loadMap()
 const match = { mode: START_MODE, started: false, over: false, score: { A: 0, B: 0 }, timeLeft: MATCH_TIME };
 let diffKey = 'normal';
+let mapKey = 'atrium';   // which MAPS[] entry is selected in the pre-match menu; loadMap() runs lazily when a match actually starts on a different one
 let gameTime = 0;                                      // seconds of un-paused match time (the bots' clock)
 
-const SPAWNS = {
-  A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
-  B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
-};
+// Per-map spawn data — placeholders here, actually set by loadMap() once the selected map's data runs.
+let SPAWNS = { A: [[0, 0]], B: [[0, 0]] };
+let SPAWN_FACE = { A: 0, B: 0 };   // x of the door each team should spawn facing, so nobody spawns staring at a wall
 
 const player = {
   name: 'You', team: 'A', isPlayer: true,
@@ -723,8 +1095,8 @@ const player = {
 function placeAt(a, x, z, team) {
   a.pos.set(x, 0, z);
   a.vel.set(0, 0, 0);
-  // Always spawn facing the Long door (never staring at a wall)
-  const doorX = team === 'A' ? -41.5 : 41.5;
+  // Always spawn facing the map's "front door" for this team (never staring at a wall)
+  const doorX = SPAWN_FACE[team];
   a.yaw = Math.atan2(-(doorX - x), -(0 - z));
   a.pitch = 0;
   a.isSliding = false; a.onGround = true; a.airBoosts = 1;
@@ -735,7 +1107,11 @@ function respawn(team = 'A') {
   const [x, z] = SPAWNS[team][Math.floor(Math.random() * SPAWNS[team].length)];
   placeAt(player, x, z, team);
 }
-respawn('A');
+// NOTE: the initial respawn('A') call used to live here, but it needs SPAWNS populated by loadMap(),
+// whose target map (MAPS.atrium) isn't fully assembled until the bottom of this file (zoneName/heli/
+// minimap data are attached to it as those systems are defined below) — so the real boot sequence
+// (loadMap('atrium') + respawn('A') + the UI's first render) now lives in one place near the very
+// end of the script, right before the window.__fz test hook.
 
 const forwardVec = () => new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
 const rightVec = () => new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
@@ -1044,7 +1420,7 @@ const fallen = [];                 // removed Mezzanine pieces, kept so a new ma
 function collapse(side) {        // 'W' | 'E' — removes that half of the Mezzanine and its beam
   for (let i = colliders.length - 1; i >= 0; i--) {
     const c = colliders[i];
-    if (c.tag === 'mezz' + side || c.tag === 'beam' + side) { scene.remove(c.mesh); colliders.splice(i, 1); fallen.push(c); }
+    if (c.tag === 'mezz' + side || c.tag === 'beam' + side) { mapGroup.remove(c.mesh); colliders.splice(i, 1); fallen.push(c); }
   }
   collapsedSides.add(side);
   tagLive['mezz' + side] = false;
@@ -1052,7 +1428,7 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
   onWorldChanged();
 }
 function restoreMezz() {
-  for (const c of fallen) { colliders.push(c); scene.add(c.mesh); }
+  for (const c of fallen) { colliders.push(c); mapGroup.add(c.mesh); }
   fallen.length = 0; collapsedSides.clear();
   tagLive.mezzW = tagLive.mezzE = true;
   mapDirty = true;
@@ -1529,6 +1905,11 @@ let showSettings = false;
 function renderMenu() {
   for (const b of document.querySelectorAll('#menu [data-diff]')) b.classList.toggle('sel', b.dataset.diff === diffKey);
   for (const b of document.querySelectorAll('#menu [data-mode]')) b.classList.toggle('sel', b.dataset.mode === match.mode);
+  const mapRowEl = document.getElementById('mapRow');
+  if (mapRowEl) {
+    mapRowEl.innerHTML = 'MAP: ' + Object.values(MAPS).map(m =>
+      `<button data-map="${m.key}" class="${m.key === mapKey ? 'sel' : ''}">${m.name.toUpperCase()}</button>`).join('');
+  }
   document.getElementById('menu').style.display = hasMouse && START_MODE !== 'roam' ? 'flex' : 'none';
   document.getElementById('settingsToggleBtn').classList.toggle('sel', showSettings);
   document.getElementById('menu-main').style.display = showSettings ? 'none' : '';
@@ -1584,6 +1965,7 @@ blockerEl.addEventListener('click', (e) => {
   const btn = e.target.closest && e.target.closest('button');
   if (btn && btn.dataset.settingsToggle) { showSettings = !showSettings; renderMenu(); return; }
   if (btn && btn.dataset.diff) { diffKey = btn.dataset.diff; renderMenu(); return; }      // just picks bot skill
+  if (btn && btn.dataset.map) { mapKey = btn.dataset.map; renderMenu(); applyInputMode(); return; }   // picks which map a new match loads
   if (btn && btn.dataset.weapon) {                                                          // pick a class (or spend a token on a locked one)
     const k = btn.dataset.weapon;
     if (isUnlocked(k)) profile.primary = k;
@@ -1725,15 +2107,18 @@ function applyInputMode() {
   renderMenu();
   if (hasMouse) {
     title.textContent = 'FIRETEAM ZERO';
+    const mapName = currentMap ? currentMap.name : 'Atrium';
     text.textContent = START_MODE === 'roam'
-      ? 'Map: Atrium — free roam. Move with WASD, aim with the mouse or trackpad, click to shoot. Click to start.'
-      : 'Map: Atrium. Move with WASD, aim with the mouse or trackpad, click to shoot. Pick a mode (or click anywhere for Team Deathmatch).';
+      ? `Map: ${mapName} — free roam. Move with WASD, aim with the mouse or trackpad, click to shoot. Click to start.`
+      : `Map: ${mapName}. Move with WASD, aim with the mouse or trackpad, click to shoot. Pick a mode (or click anywhere for Team Deathmatch).`;
   } else {
     title.textContent = 'MOUSE OR TRACKPAD REQUIRED';
     text.textContent = 'Fireteam Zero is a mouse-aim shooter. Open it on a computer with a mouse or a MacBook trackpad.';
   }
 }
-applyInputMode();
+// NOTE: the initial applyInputMode() call used to be right here, but it (via renderMenu()) now
+// reads map-select state too, so it moved into the consolidated boot sequence near the end of the
+// file alongside loadMap('atrium') — see the note by respawn() above for why.
 
 // ======================================================
 // MAP DIAGRAM — live top-down plan + side-view height strip. M cycles large -> small -> off.
@@ -1743,8 +2128,8 @@ applyInputMode();
 const mapCanvas = document.getElementById('map');
 const mctx = mapCanvas.getContext('2d');
 const staticMap = document.createElement('canvas');
-const WB = { x0: -55, x1: 55, z0: -16, z1: 16 };          // world rectangle shown
-const Y_TOP = 7, Y_BOT = -6;                              // side-view height range
+const WB = { x0: -55, x1: 55, z0: -16, z1: 16 };          // world rectangle shown — mutated in place by loadMap()
+let Y_TOP = 7, Y_BOT = -6;                                // side-view height range — set by loadMap()
 const MAP_ORDER = [1, 2, 0];                              // 1 = large, 2 = small, 0 = hidden
 let mapMode = START_MODE === 'roam' ? 1 : 2, mapDirty = true, ML = null;   // free roam opens with the big map; TDM with the small one
 
@@ -1788,15 +2173,15 @@ function drawStaticMap() {
     g.fillStyle = color; g.fillText(txt, mx(x), mz(z));
   };
   const by = (tag, fn) => { for (const c of colliders) if (c.tag === tag) fn(c, R(c.x0, c.z0, c.x1, c.z1)); };
+  const mm = currentMap.minimap;
 
-  // header: title + legend
+  // header: title + legend (the legend vocabulary — wall/cover/stairs/etc — is shared across every
+  // map since they all build geometry with the same addSolid() tag conventions)
   g.fillStyle = '#e8eaf5'; g.font = font(big ? 12 : 9); g.textAlign = 'left'; g.textBaseline = 'middle';
-  g.fillText('ATRIUM · LIVE MAP', 8, head / 2);
+  g.fillText(`${mm.title} · LIVE MAP`, 8, head / 2);
   if (big && W >= 700) {
     let lx = 168;
-    for (const [name, fill, stroke] of [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
-      ['mezzanine', 'rgba(106,120,255,0.55)', '#9aa6ff'], ['lower hall', 'rgba(47,209,200,0.55)', '#2fd1c8'],
-      ['climb', '#ff963c'], ['shoot', '#ff5a3c']]) {
+    for (const [name, fill, stroke] of (mm.legend || DEFAULT_LEGEND)) {
       g.fillStyle = fill; g.fillRect(lx, head / 2 - 5, 10, 10);
       if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.strokeRect(lx + 0.5, head / 2 - 4.5, 9, 9); }
       g.font = font(10); g.textAlign = 'left'; g.fillStyle = '#b9bdd0'; g.fillText(name, lx + 14, head / 2);
@@ -1804,11 +2189,15 @@ function drawStaticMap() {
     }
   }
 
-  // plan: floor, spawn pads, stairs/escalator, cover, mezzanine, walls, then the Lower Hall shown through the floor
+  // plan: floor, spawn pads, stairs/escalator, cover, mezzanine, walls, then anything shown through the floor —
+  // all of this (besides the spawn pads and the optional lower-hall overlay) is driven straight off the
+  // live `colliders` tags, so it works unmodified for any map built with the same addSolid() tag vocabulary.
   g.fillStyle = '#12141b'; g.fillRect(0, head, W, planH);
-  g.fillStyle = '#4a4d5e'; g.fillRect(...R(-54, -15, 54, 15));
-  g.fillStyle = 'rgba(70,110,230,0.55)'; g.fillRect(...R(-52, -4, -44, 4));
-  g.fillStyle = 'rgba(230,70,70,0.55)'; g.fillRect(...R(44, -4, 52, 4));
+  g.fillStyle = '#4a4d5e'; g.fillRect(...R(WB.x0 + 1, WB.z0 + 1, WB.x1 - 1, WB.z1 - 1));
+  if (mm.spawnBox) {
+    g.fillStyle = 'rgba(70,110,230,0.55)'; g.fillRect(...R(...mm.spawnBox.A));
+    g.fillStyle = 'rgba(230,70,70,0.55)'; g.fillRect(...R(...mm.spawnBox.B));
+  }
   by('stairs', (c, r) => { g.fillStyle = `hsl(228,45%,${28 + c.y1 * 7}%)`; g.fillRect(...r); });
   by('escalator', (c, r) => { g.fillStyle = `hsl(220,12%,${34 + c.y1 * 6}%)`; g.fillRect(...r); });
   by('cover', (c, r) => { g.fillStyle = c.y1 > 3 ? '#86c086' : '#5f8a5f'; g.fillRect(...r); });
@@ -1818,17 +2207,25 @@ function drawStaticMap() {
     if (c.y1 < 5.5) { g.fillStyle = 'rgba(106,120,255,0.45)'; g.fillRect(...r); g.strokeStyle = '#9aa6ff'; g.lineWidth = 1.5; g.strokeRect(...r); }
     else { g.fillStyle = '#c9d0ff'; g.fillRect(...r); }                       // broken railing
   }
-  for (const side of collapsedSides) {
-    g.setLineDash([4, 3]); g.strokeStyle = '#ff5a3c'; g.lineWidth = 1.5;
-    g.strokeRect(...(side === 'W' ? R(-15, 9, 0, 15) : R(0, 9, 15, 15))); g.setLineDash([]);
-    label('COLLAPSED', side === 'W' ? -7.5 : 7.5, 12, big ? 9 : 6, '#ff8a70');
+  if (currentMap.hasBeams) {
+    for (const side of collapsedSides) {
+      g.setLineDash([4, 3]); g.strokeStyle = '#ff5a3c'; g.lineWidth = 1.5;
+      g.strokeRect(...(side === 'W' ? R(-15, 9, 0, 15) : R(0, 9, 15, 15))); g.setLineDash([]);
+      label('COLLAPSED', side === 'W' ? -7.5 : 7.5, 12, big ? 9 : 6, '#ff8a70');
+    }
   }
   by('wall', (c, r) => { g.fillStyle = '#0d0e13'; g.fillRect(...r); g.strokeStyle = '#a7adc8'; g.lineWidth = 1; g.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1); });
   by('choke', (c, r) => { g.fillStyle = '#8a6a48'; g.fillRect(...r); g.strokeStyle = '#d9b184'; g.lineWidth = 1; g.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1); });
-  g.fillStyle = 'rgba(47,209,200,0.18)'; g.fillRect(...R(-52, -15, 52, -9));     // Lower Hall: tunnel + the two ramp pits, under the floor
-  by('ramp', (c, r) => { g.fillStyle = `rgba(47,209,200,${0.25 + 0.5 * (1 + c.y1 / 5)})`; g.fillRect(...r); });   // ramps: bright = shallow, dark = deep
-  by('scaffold', (c, r) => { g.fillStyle = `rgba(255,150,60,${0.3 + 0.6 * (c.y1 + 5) / 5})`; g.fillRect(...r); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 1; g.strokeRect(...r); });
-  g.setLineDash([5, 4]); g.strokeStyle = '#2fd1c8'; g.lineWidth = 1.5; g.strokeRect(...R(-52, -15, 52, -9)); g.setLineDash([]);
+  if (mm.lowerHall) {
+    const lh = [mm.lowerHall.x0, mm.lowerHall.z0, mm.lowerHall.x1, mm.lowerHall.z1];
+    g.fillStyle = 'rgba(47,209,200,0.18)'; g.fillRect(...R(...lh));     // shown through the floor
+    by('ramp', (c, r) => { g.fillStyle = `rgba(47,209,200,${0.25 + 0.5 * (1 + c.y1 / 5)})`; g.fillRect(...r); });   // ramps: bright = shallow, dark = deep
+    by('scaffold', (c, r) => { g.fillStyle = `rgba(255,150,60,${0.3 + 0.6 * (c.y1 + 5) / 5})`; g.fillRect(...r); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 1; g.strokeRect(...r); });
+    g.setLineDash([5, 4]); g.strokeStyle = '#2fd1c8'; g.lineWidth = 1.5; g.strokeRect(...R(...lh)); g.setLineDash([]);
+  } else {
+    by('ramp', (c, r) => { g.fillStyle = `rgba(47,209,200,${0.25 + 0.5 * (1 + c.y1 / 5)})`; g.fillRect(...r); });
+    by('scaffold', (c, r) => { g.fillStyle = `rgba(255,150,60,${0.3 + 0.6 * (c.y1 + 5) / 5})`; g.fillRect(...r); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 1; g.strokeRect(...r); });
+  }
   for (const c of colliders) {
     if (!c.tag || !c.tag.startsWith('beam')) continue;
     const r = R(c.x0, c.z0, c.x1, c.z1);
@@ -1836,50 +2233,37 @@ function drawStaticMap() {
     g.strokeStyle = '#fff'; g.lineWidth = 1; g.strokeRect(r[0] - 1, r[1] - 1, r[2] + 2, r[3] + 2);
   }
 
-  // plan labels
+  // plan labels — purely per-map data (room/lane names and where to put them)
   const small = big ? 8 : 6;
-  label('SPAWN A', -48, 0); label('SPAWN B', 48, 0);
-  label('A-LONG', -30, 0); label('B-LONG', 30, 0);
-  label('CHOKE', -17, 0, small); label('CHOKE', 17, 0, small);
-  label('MID', 0, -3);
-  label('A-STAIRS ▶', -21, 12, small); label('B-STAIRS ◀', 21, 12, small);
-  label('MEZZANINE', 0, 12, big ? 9 : 6);
-  label(big ? 'LOWER HALL — tunnel under the floor (y −5)' : 'LOWER HALL', 0, -12);
-  label('DOWN ▶', -47, -12, small); label('◀ DOWN', 47, -12, small);
-  label('CLIMB', -7.5, -6, small); label('CLIMB', 7.5, -6, small);
-  label('ESC ▲', 3.5, 4, small);
+  for (const l of mm.labels) {
+    const txt = (l.textBig && big) ? l.textBig : l.text;
+    label(txt, l.x, l.z, l.compact ? small : undefined, l.color);
+  }
 
-  // side view: height at each x (large map only)
+  // side view: an automatic silhouette (every collider, colored by its tag, projected onto x/height) —
+  // works for any map's geometry with no per-map art needed, large map only
   if (big) {
     g.fillStyle = '#e8eaf5'; g.font = font(11); g.textAlign = 'left'; g.textBaseline = 'middle';
     g.fillText('SIDE VIEW · height at each x', 8, sideTop - 10);
     g.fillStyle = '#12141b'; g.fillRect(0, sideTop, W, sideH);
-    const poly = (pts, fill, stroke) => {
-      g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(mx(x), my(y)) : g.moveTo(mx(x), my(y))); g.closePath();
-      if (fill) { g.fillStyle = fill; g.fill(); }
-      if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.stroke(); }
-    };
-    poly([[-54, 0], [54, 0], [54, -6], [-54, -6]], '#3a3d4c');                       // solid ground
-    poly([[-42, -1], [42, -1], [42, -5], [-42, -5]], '#0b0c11');                     // lower hall tunnel
-    poly([[-52, 0], [-42, 0], [-42, -5], [-43, -5], [-52, -0.5]], '#0b0c11');        // A ramp pit
-    poly([[52, 0], [42, 0], [42, -5], [43, -5], [52, -0.5]], '#0b0c11');             // B ramp pit
-    for (const bx of [-10, 5]) poly([[bx, 0], [bx + 5, 0], [bx + 5, -5], [bx, -5]], 'rgba(255,150,60,0.25)', '#ff963c');   // climb shafts
-    poly([[-27, 0], [-15, 5], [-15, 0]], '#4a5db0'); poly([[27, 0], [15, 5], [15, 0]], '#4a5db0');                       // mezzanine stairs
-    poly([[-1, 0], [1, 0], [1, 5], [-1, 5]], '#86c086');                                                                 // mid pillar
-    for (const [side, x0, x1, bx] of [['W', -15, 0, -8], ['E', 0, 15, 8]]) {
-      if (colliders.some(c => c.tag === 'mezz' + side)) {
-        poly([[x0, 4.4], [x1, 4.4], [x1, 5], [x0, 5]], '#6a78ff');
-        g.strokeStyle = '#ff5a3c'; g.lineWidth = 2; g.beginPath(); g.moveTo(mx(bx), my(0)); g.lineTo(mx(bx), my(4.4)); g.stroke();   // support beam
-      } else {
-        g.setLineDash([4, 3]); g.strokeStyle = '#ff5a3c'; g.lineWidth = 1.5; g.strokeRect(mx(x0), my(5), (x1 - x0) * s, 0.6 * ML.sy); g.setLineDash([]);
-      }
+    for (const c of colliders) {
+      const fill = SIDE_TAG_COLOR[c.tag] || SIDE_TAG_COLOR.default;
+      const x0 = mx(c.x0), x1 = mx(c.x1), y0 = my(c.y1), y1 = my(c.y0);
+      g.fillStyle = fill; g.fillRect(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0));
     }
-    g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 1.5;                                                          // main floor line (gaps = ramp pits + climb shafts)
-    for (const [a, b] of [[-54, -52], [-42, -10], [-5, 5], [10, 42], [52, 54]]) { g.beginPath(); g.moveTo(mx(a), my(0)); g.lineTo(mx(b), my(0)); g.stroke(); }
     g.font = font(9); g.textAlign = 'left'; g.textBaseline = 'alphabetic'; g.fillStyle = '#9aa0b8';
-    for (const [y, t] of [[5, 'y 5  mezzanine'], [0, 'y 0  main floor'], [-5, 'y −5  lower hall']]) g.fillText(t, 6, my(y) - 4);
+    for (const [y, t] of (mm.sideLabels || [[0, 'y 0  main floor']])) g.fillText(t, 6, my(y) - 4);
   }
 }
+const DEFAULT_LEGEND = [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
+  ['upper level', 'rgba(106,120,255,0.55)', '#9aa6ff'], ['lower level', 'rgba(47,209,200,0.55)', '#2fd1c8'],
+  ['climb', '#ff963c'], ['shoot', '#ff5a3c']];
+const SIDE_TAG_COLOR = {
+  wall: 'rgba(13,14,19,0.9)', choke: 'rgba(138,106,72,0.85)', cover: 'rgba(95,138,95,0.8)',
+  stairs: 'rgba(74,93,176,0.75)', escalator: 'rgba(119,119,136,0.7)', scaffold: 'rgba(255,150,60,0.55)',
+  ramp: 'rgba(47,209,200,0.45)', floor: 'rgba(58,61,76,0.9)', mezzW: 'rgba(106,120,255,0.55)', mezzE: 'rgba(106,120,255,0.55)',
+  beamW: 'rgba(255,90,60,0.9)', beamE: 'rgba(255,90,60,0.9)', default: 'rgba(120,120,140,0.3)',
+};
 
 function drawMap() {
   if (!mapMode) return;
@@ -1948,7 +2332,8 @@ function drawMap() {
     mctx.beginPath(); mctx.arc(px, my(y + 0.9), 4, 0, Math.PI * 2); mctx.fill(); mctx.stroke();
   }
 }
-layoutMap();
+// NOTE: the initial layoutMap() call used to be right here, but it reads WB which loadMap() sets —
+// moved into the consolidated boot sequence near the end of the file, same reason as above.
 window.addEventListener('resize', () => { if (mapMode) layoutMap(); });
 
 // ======================================================
@@ -2016,17 +2401,9 @@ function updateCamera() {
   );
 }
 
-function zoneName(x, y, z) {
-  const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
-  if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'SCAFFOLD';
-  if (y < -2) return ax > 42 ? side + '-CONNECTOR' : 'LOWER HALL';
-  if (y > 4.2) return ax <= 15 ? 'MEZZANINE' : side + '-STAIRS';
-  if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
-  if (z > 9 && ax >= 15) return side + '-STAIRS';
-  if (ax >= 27) return side + '-LONG';
-  if (ax >= 15) return side + '-CHOKE';
-  return 'MID';
-}
+// The HUD "zone" callout is per-map (room names/thresholds are specific to each layout) —
+// implemented as MAPS.<key>.zoneName(x,y,z), called generically here.
+function zoneName(x, y, z) { return currentMap.zoneName(x, y, z); }
 
 const posEl = document.getElementById('pos'), calloutEl = document.getElementById('callout');
 const beamPromptEl = document.getElementById('beam-prompt'), slideEl = document.getElementById('slide-status');
@@ -2109,38 +2486,101 @@ function canSee(from, a) {
   return false;
 }
 
-// ---------- waypoint graph of Atrium ----------
+// ---------- waypoint graph ----------
+// NAV/NAVI/N()/L() are the generic graph engine, shared by every map. The actual node/edge layout
+// is per-map (buildAtriumNav() below, called from loadMap()) since it describes one map's geometry.
 const NAV = [], NAVI = {};
 function N(id, x, y, z, o = {}) { NAVI[id] = NAV.length; NAV.push({ id, x, y, z, links: [], req: o.req || null, w: o.w || 0, hold: !!o.hold }); }
 function L(a, b, o = {}) {
   NAV[NAVI[a]].links.push({ to: NAVI[b], cond: o.cond, climb: o.climb });
   if (!o.oneWay) NAV[NAVI[b]].links.push({ to: NAVI[a], cond: o.cond, climb: o.climb });
 }
-for (const s of ['A', 'B']) {
-  const X = (x) => (s === 'A' ? x : -x), mezz = s === 'A' ? 'mezzW' : 'mezzE';
-  const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
-  n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
-  n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
-  n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
-  n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, req: mezz, hold: 1 });
-  const dropX = s === 'A' ? -8 : 11;                   // a gap in that side's broken railing
-  N(s + 'mezzEdge', dropX, 5, 10, { req: mezz }); N(s + 'dropLand', dropX, 0, 6.5);
-  n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
-  n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
-  n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
+function buildAtriumNav() {
+  for (const s of ['A', 'B']) {
+    const X = (x) => (s === 'A' ? x : -x), mezz = s === 'A' ? 'mezzW' : 'mezzE';
+    const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
+    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
+    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
+    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
+    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, req: mezz, hold: 1 });
+    const dropX = s === 'A' ? -8 : 11;                   // a gap in that side's broken railing
+    N(s + 'mezzEdge', dropX, 5, 10, { req: mezz }); N(s + 'dropLand', dropX, 0, 6.5);
+    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
+    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
+    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
+  }
+  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
+  N('escTop', 3.5, 5, 10, { w: 1.5, req: 'mezzE', hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
+  for (const s of ['A', 'B']) {
+    const l = (a, b, o) => L(s + a, s + b, o), mezz = s === 'A' ? 'mezzW' : 'mezzE';
+    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
+    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
+    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
+    l('stairsTop', 'underMezz', { oneWay: true, cond: () => !tagLive[mezz] });     // jump down once that half has collapsed
+    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
+    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
+  }
+  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
+  tagLive.mezzW = true; tagLive.mezzE = true;    // which Mezzanine halves are still standing
 }
-N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
-N('escTop', 3.5, 5, 10, { w: 1.5, req: 'mezzE', hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
-for (const s of ['A', 'B']) {
-  const l = (a, b, o) => L(s + a, s + b, o), mezz = s === 'A' ? 'mezzW' : 'mezzE';
-  l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
-  L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
-  l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
-  l('stairsTop', 'underMezz', { oneWay: true, cond: () => !tagLive[mezz] });     // jump down once that half has collapsed
-  l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
-  l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
+
+// Same node layout/topology as Atrium (proven traversal/pathing) but the catwalk is never destructible,
+// so none of these nodes carry a `req` gate or a collapse-fallback edge.
+function buildMonsoonNav() {
+  for (const s of ['A', 'B']) {
+    const X = (x) => (s === 'A' ? x : -x);
+    const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
+    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
+    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
+    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
+    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, hold: 1 });
+    const dropX = s === 'A' ? -8 : 11;
+    N(s + 'mezzEdge', dropX, 5, 10, {}); N(s + 'dropLand', dropX, 0, 6.5);
+    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
+    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
+    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
+  }
+  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
+  N('escTop', 3.5, 5, 10, { w: 1.5, hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
+  for (const s of ['A', 'B']) {
+    const l = (a, b, o) => L(s + a, s + b, o);
+    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
+    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
+    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
+    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
+    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
+  }
+  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
 }
-L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
+
+// Scorch reuses the exact same node IDs/coordinates/topology as Monsoon (proven pathing skeleton) —
+// the catwalk here is a wooden scaffold, never destructible, same as Monsoon's steel one.
+function buildScorchNav() {
+  for (const s of ['A', 'B']) {
+    const X = (x) => (s === 'A' ? x : -x);
+    const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
+    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
+    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
+    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
+    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, hold: 1 });
+    const dropX = s === 'A' ? -8 : 11;
+    N(s + 'mezzEdge', dropX, 5, 10, {}); N(s + 'dropLand', dropX, 0, 6.5);
+    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
+    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
+    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
+  }
+  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
+  N('escTop', 3.5, 5, 10, { w: 1.5, hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
+  for (const s of ['A', 'B']) {
+    const l = (a, b, o) => L(s + a, s + b, o);
+    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
+    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
+    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
+    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
+    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
+  }
+  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
+}
 
 const navValid = (i) => !NAV[i].req || tagLive[NAV[i].req];
 function findPath(from, to) {
@@ -2510,7 +2950,7 @@ function updateDogs(dt) {
 // ---- Gunship (22 kills): circles above Mid, occasionally strafes an exposed enemy for modest damage.
 // Can only see actors above the Lower Hall (y > -2) — it's in the sky, not underground. Weak, infrequent. ----
 let heli = null;
-const HELI_RADIUS = 15, HELI_HEIGHT = 9, HELI_SPEED = 0.6, HELI_DMG = 10, HELI_INTERVAL = 3;
+const HELI_SPEED = 0.6, HELI_DMG = 10, HELI_INTERVAL = 3;   // radius/height are per-map (currentMap.heli)
 function spawnHeli() {
   removeHeli();
   const mesh = new THREE.Group();
@@ -2531,7 +2971,8 @@ function updateHeli(dt) {
   if (!heli) return;
   if (gameTime >= heli.until) { removeHeli(); return; }
   heli.ang += HELI_SPEED * dt;
-  heli.mesh.position.set(Math.cos(heli.ang) * HELI_RADIUS, HELI_HEIGHT, Math.sin(heli.ang) * HELI_RADIUS);
+  const { radius: heliR, height: heliH } = currentMap.heli;
+  heli.mesh.position.set(Math.cos(heli.ang) * heliR, heliH, Math.sin(heli.ang) * heliR);
   heli.mesh.rotation.y = heli.ang + Math.PI / 2;
   heli.rotor.rotation.y += dt * 40;
   heli.fireCd -= dt;
@@ -2615,8 +3056,8 @@ function finishMatchXP() {
   if (match.score.A > match.score.B) { profile.wins++; grantXP(XP.win, 'VICTORY', false); }
   saveProfile();
 }
-applyProfileLoadout();
-menuReady = true; renderMenu();
+// NOTE: the initial applyProfileLoadout() / menuReady+renderMenu() calls used to be right here —
+// moved into the consolidated boot sequence near the end of the file, same reason as above.
 function xpSummaryHTML() {
   const rows = Object.entries(matchLog).map(([k, v]) => `<tr><td>${k}</td><td>+${v}</td></tr>`).join('');
   const need = xpToNext(profile.level), maxed = profile.level >= MAX_LEVEL && !zeroMaster();
@@ -2676,6 +3117,7 @@ function endMatch() {
   showPaused();                                         // results screen
 }
 function startMatch(mode) {
+  if (mapKey !== currentMapKey) loadMap(mapKey);     // only rebuild the world when the player actually picked a different map
   match.mode = mode; match.started = true; match.over = false;
   match.score.A = match.score.B = 0; match.timeLeft = MATCH_TIME;
   restoreMezz();
@@ -2741,7 +3183,199 @@ const ROLE_SLIDE = { aggressive: 1.4, flanker: 1.2, defensive: 0.55, balanced: 1
 const ROLE_REACT = { aggressive: 0.85, flanker: 0.95, defensive: 1.15, balanced: 1.0 };    // multiplier on reaction delay (lower = faster)
 const ROLE_PUSH = { aggressive: 1.25, flanker: 1.0, defensive: 0.6, balanced: 1.0 };       // multiplier on push-in-toward-target strength
 const ROLE_RETREAT_HP = { aggressive: 25, flanker: 35, defensive: 55, balanced: 40 };      // hp threshold below which they consider bailing to cover
-const FLANKS = ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'];
+let FLANKS = [];   // per-map list of NAV node ids good for flanking bot behavior; set by loadMap()
+
+// ---------- Atrium: full per-map data, now that everything it references (buildAtriumGeometry,
+// buildAtriumNav, NAVI) exists — see loadMap() for how this gets activated. ----------
+MAPS.atrium = {
+  key: 'atrium', name: 'Atrium',
+  build: buildAtriumGeometry,
+  buildNav: buildAtriumNav,
+  hasBeams: true,     // the Mezzanine's two shootable support beams
+  spawns: {
+    A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
+    B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
+  },
+  spawnFace: { A: -41.5, B: 41.5 },
+  bounds: { x0: -55, x1: 55, z0: -16, z1: 16, yTop: 7, yBot: -6 },
+  heli: { radius: 15, height: 9 },
+  sky: {
+    dome: [0x5e8fd4, 0xffc988, 0x241f2c],
+    fogColor: 0x2a2632, fogNear: 40, fogFar: 130,
+    hemi: [0xaec6ff, 0x4a4030, 1.45],
+    sun: [0xffdfb0, 0.85],
+    fill: [0x7fa8d9, 0.3],
+  },
+  weather: 'clear',
+  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  zoneName(x, y, z) {
+    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
+    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'SCAFFOLD';
+    if (y < -2) return ax > 42 ? side + '-CONNECTOR' : 'LOWER HALL';
+    if (y > 4.2) return ax <= 15 ? 'MEZZANINE' : side + '-STAIRS';
+    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
+    if (z > 9 && ax >= 15) return side + '-STAIRS';
+    if (ax >= 27) return side + '-LONG';
+    if (ax >= 15) return side + '-CHOKE';
+    return 'MID';
+  },
+  minimap: {
+    title: 'ATRIUM',
+    spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
+    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
+    sideLabels: [[5, 'y 5  mezzanine'], [0, 'y 0  main floor'], [-5, 'y −5  lower hall']],
+    labels: [
+      { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
+      { text: 'A-LONG', x: -30, z: 0 }, { text: 'B-LONG', x: 30, z: 0 },
+      { text: 'CHOKE', x: -17, z: 0, compact: true }, { text: 'CHOKE', x: 17, z: 0, compact: true },
+      { text: 'MID', x: 0, z: -3 },
+      { text: 'A-STAIRS ▶', x: -21, z: 12, compact: true }, { text: 'B-STAIRS ◀', x: 21, z: 12, compact: true },
+      { text: 'MEZZANINE', x: 0, z: 12 },
+      { text: 'LOWER HALL', textBig: 'LOWER HALL — tunnel under the floor (y −5)', x: 0, z: -12 },
+      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
+      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
+      { text: 'ESC ▲', x: 3.5, z: 4, compact: true },
+    ],
+  },
+};
+
+// ---------- Monsoon: full per-map data ----------
+MAPS.monsoon = {
+  key: 'monsoon', name: 'Monsoon',
+  build: buildMonsoonGeometry,
+  buildNav: buildMonsoonNav,
+  hasBeams: false,    // the catwalk here is a plain steel walkway, never destructible
+  spawns: {
+    A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
+    B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
+  },
+  spawnFace: { A: -41.5, B: 41.5 },
+  bounds: { x0: -55, x1: 55, z0: -16, z1: 16, yTop: 7, yBot: -6 },
+  heli: { radius: 15, height: 9 },
+  sky: {
+    dome: [0x1c2430, 0x2a3240, 0x0a0b10],
+    fogColor: 0x171c24, fogNear: 22, fogFar: 85,
+    hemi: [0x3d4a5e, 0x161414, 0.75],
+    sun: [0x5e7a94, 0.35],
+    fill: [0x2f4a5e, 0.22],
+  },
+  weather: 'rain',
+  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  zoneName(x, y, z) {
+    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
+    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'ALLEY STEPS';
+    if (y < -2) return ax > 42 ? side + '-DRAIN ACCESS' : 'STORM DRAIN';
+    if (y > 4.2) return ax <= 15 ? 'CATWALK' : side + '-FIRE ESCAPE';
+    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
+    if (z > 9 && ax >= 15) return side + '-FIRE ESCAPE';
+    if (ax >= 27) return side + '-MARKET ROW';
+    if (ax >= 15) return side + '-ALLEY';
+    return 'MARKET SQUARE';
+  },
+  minimap: {
+    title: 'MONSOON',
+    legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
+      ['catwalk', 'rgba(106,120,255,0.55)', '#9aa6ff'], ['storm drain', 'rgba(47,209,200,0.55)', '#2fd1c8'],
+      ['climb', '#ff963c']],
+    spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
+    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
+    sideLabels: [[5, 'y 5  catwalk'], [0, 'y 0  street'], [-5, 'y −5  storm drain']],
+    labels: [
+      { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
+      { text: 'MARKET ROW', x: -30, z: 0 }, { text: 'MARKET ROW', x: 30, z: 0 },
+      { text: 'ALLEY', x: -17, z: 0, compact: true }, { text: 'ALLEY', x: 17, z: 0, compact: true },
+      { text: 'MARKET SQUARE', x: 0, z: -3 },
+      { text: 'FIRE ESC ▶', x: -21, z: 12, compact: true }, { text: 'FIRE ESC ◀', x: 21, z: 12, compact: true },
+      { text: 'CATWALK', x: 0, z: 12 },
+      { text: 'STORM DRAIN', textBig: 'STORM DRAIN — flooded tunnel under the street (y −5)', x: 0, z: -12 },
+      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
+      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
+      { text: 'LADDER ▲', x: 3.5, z: 4, compact: true },
+    ],
+  },
+};
+
+// ---------- Scorch: full per-map data ----------
+MAPS.scorch = {
+  key: 'scorch', name: 'Scorch',
+  build: buildScorchGeometry,
+  buildNav: buildScorchNav,
+  hasBeams: false,    // the catwalk here is a timber scaffold, never destructible
+  spawns: {
+    A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
+    B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
+  },
+  spawnFace: { A: -41.5, B: 41.5 },
+  bounds: { x0: -55, x1: 55, z0: -16, z1: 16, yTop: 7, yBot: -6 },
+  heli: { radius: 15, height: 9 },
+  sky: {
+    dome: [0xb9622c, 0xe8923c, 0x3a1f10],
+    fogColor: 0xc97a3a, fogNear: 30, fogFar: 110,
+    hemi: [0xffb060, 0x5a3014, 1.1],
+    sun: [0xff8a3c, 0.95],
+    fill: [0xb0401a, 0.28],
+  },
+  weather: 'embers',
+  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  zoneName(x, y, z) {
+    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
+    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'WASH STEPS';
+    if (y < -2) return ax > 42 ? side + '-WASH ACCESS' : 'DRY WASH';
+    if (y > 4.2) return ax <= 15 ? 'CATWALK' : side + '-SCAFFOLD';
+    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
+    if (z > 9 && ax >= 15) return side + '-SCAFFOLD';
+    if (ax >= 27) return side + '-ROW';
+    if (ax >= 15) return side + '-CANYON';
+    return 'THE WELL';
+  },
+  minimap: {
+    title: 'SCORCH',
+    legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#8a6a3c'], ['stairs', '#9a6a2e'],
+      ['catwalk', 'rgba(255,138,60,0.45)', '#ff8a3c'], ['dry wash', 'rgba(210,140,70,0.5)', '#d28c46'],
+      ['climb', '#ff963c']],
+    spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
+    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
+    sideLabels: [[5, 'y 5  catwalk'], [0, 'y 0  street'], [-5, 'y −5  dry wash']],
+    labels: [
+      { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
+      { text: 'ROW', x: -30, z: 0 }, { text: 'ROW', x: 30, z: 0 },
+      { text: 'CANYON', x: -17, z: 0, compact: true }, { text: 'CANYON', x: 17, z: 0, compact: true },
+      { text: 'THE WELL', x: 0, z: -3 },
+      { text: 'SCAFFOLD ▶', x: -21, z: 12, compact: true }, { text: 'SCAFFOLD ◀', x: 21, z: 12, compact: true },
+      { text: 'CATWALK', x: 0, z: 12 },
+      { text: 'DRY WASH', textBig: 'DRY WASH — canyon gulch under the street (y −5)', x: 0, z: -12 },
+      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
+      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
+      { text: 'LADDER ▲', x: 3.5, z: 4, compact: true },
+    ],
+  },
+};
+
+// ---------- loadMap(): (re)build the whole world from MAPS[key] ----------
+function loadMap(key) {
+  const m = MAPS[key];
+  // Throw away the previous map's meshes wholesale rather than hunting down what to remove.
+  scene.remove(mapGroup);
+  mapGroup = new THREE.Group();
+  scene.add(mapGroup);
+  colliders.length = 0;
+  NAV.length = 0;
+  for (const k in NAVI) delete NAVI[k];
+  for (const k in tagLive) delete tagLive[k];
+  fallen.length = 0;
+  collapsedSides.clear();
+  SPAWNS = m.spawns;
+  SPAWN_FACE = m.spawnFace;
+  Object.assign(WB, m.bounds);
+  Y_TOP = m.bounds.yTop; Y_BOT = m.bounds.yBot;
+  FLANKS = m.flanks.slice();
+  currentMap = m; currentMapKey = key;
+  m.build();
+  m.buildNav();
+  applySkyAndWeather(m);
+  mapDirty = true;
+}
+
 function pickGoal(b, flank) {
   if (flank === undefined) flank = Math.random() < (ROLE_FLANK[b.role] ?? 0.25);
   if (flank) {                                         // take the long way round: tunnel, scaffold, stairs, Mezzanine
@@ -3194,6 +3828,18 @@ function updateStreakHud() {
   streakactiveEl.innerHTML = active.map(([label, c]) => `<span style="--c:${c}">${label}</span>`).join('');
 }
 
+// ---------- Boot sequence ----------
+// Everything below depended on a map being loaded (SPAWNS, NAV, WB, ...) or on code defined further
+// down the file (renderMenu, applyInputMode, layoutMap), so it's grouped here at the very end rather
+// than scattered at each system's own definition site — see the NOTE comments left at their old
+// call sites above.
+loadMap('atrium');
+respawn('A');
+applyInputMode();
+layoutMap();
+applyProfileLoadout();
+menuReady = true; renderMenu();
+
 // Test/debug hook (lets automated checks drive the real game loop)
 window.__fz = {
   player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
@@ -3202,6 +3848,10 @@ window.__fz = {
   teleport(x, y, z, yaw = 0) { player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.yaw = yaw; player.pitch = 0; player.isSliding = false; player.onGround = false; },
   // bots / TDM
   match, bots, NAV, NAVI, findPath, nearestNode, startMatch, updateBot, updateMatch, rayWorld, canSee, applyDamage, tagLive, DIFFS,
+  // maps
+  MAPS, loadMap, get mapKey() { return mapKey; }, set mapKey(k) { mapKey = k; renderMenu(); }, get currentMapKey() { return currentMapKey; }, SPAWNS: () => SPAWNS,
+  // weather / atmosphere (debug)
+  scene, get rainPoints() { return rainPoints; }, get emberPoints() { return emberPoints; }, get weatherMode() { return weatherMode; }, hemi, sun, updateWeather, applySkyAndWeather,
   fx: updateEffects, setDiff: (k) => { diffKey = k; }, weapon: () => ({ ammo, reloadT, spray, key: curKey, slot, adsT, fov: camera.fov }), restoreMezz,
   WEAPONS, profile, grantXP, enterPhase, equip, isUnlocked, xpToNext, renderMenu, syncBotMesh, coverNode, walkableLine,
   setBotWeapon, vm: gun, HIP, vmCam, vmScene, applyProfileLoadout, finishMatchXP, matchXP: () => ({ matchXP, matchLog, streak }), camoSet: (k) => { camo = k; applyCamo(); },
@@ -3249,6 +3899,7 @@ function animate() {
   for (const b of bots) syncBotMesh(b, dt);
   updateCamera();
   if (running) updateEffects(dt);
+  updateWeather(dt);
   updateHud(frame++);
   updateMatchHud(dt);
   drawMap();
