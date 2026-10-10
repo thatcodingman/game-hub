@@ -6748,18 +6748,26 @@ function updateHumanoidPose(p, dt) {
   const rig = g.userData.rig, T1 = rig.thighLen, Sh = rig.shinLen;
   const vW = speed * GAME_SPEED / 16.67;                       // feet per ms actually covered
   const kf = clamp((vW - 0.004) / 0.013, 0, 1);                 // 0 = walk .. 1 = full sprint
-  const S = clamp(0.4 + vW * 33, 0.35, 1.0);                  // half stride (foot travel ahead/behind the hip)
-  const ds = lerp(0.62, 0.36, kf);                              // fraction of the cycle a foot is on the floor
+  // Real running proportions (v in ft/s): the stance foot sweeps about +/-1.2 ft about the hip (hip angle +/-20-25 deg) at every speed, so
+  // faster running means a quicker cadence (about 2 steps/s walking, 3 jogging, 3.5 sprinting) rather than tiny pitter-patter steps.
+  // Contact time shrinks as he speeds up (duty factor ~0.62 walking, ~0.45 jog, ~0.27 sprint) which creates a real flight phase.
+  const vF = vW * 1000;
+  const S = clamp(0.3 * vF, 0.45, 1.2) + clamp((vF - 4) * 0.0077, 0, 0.1);     // half stride (foot travel ahead/behind the hip)
+  const ds = 0.62 - 0.35 * Math.pow(kf, 0.6);                                   // fraction of the cycle a foot is on the floor
   if (vW > 0.0015) g.userData.gaitU = ((g.userData.gaitU || 0) + dt * ds * vW / (2 * S)) % 1;
   const u0 = g.userData.gaitU || 0;
   const wB = clamp(amt / 0.2, 0, 1); g.userData.wB = wB;
-  const H0 = rig.legLen * (0.995 - 0.02 * kf), Bd = 0.03 + 0.05 * kf;
+  const H0 = rig.legLen * (0.975 - 0.012 * kf), Bd = rig.legLen * (0.025 + 0.035 * kf);   // compliant stance knee: hips ride about 5% below full leg length and dip at mid-stance
   const H = H0 - Bd * (0.5 + 0.5 * Math.cos(4 * Math.PI * (u0 - ds / 2)));   // hips lowest at mid-stance, highest in flight
   const readyKnee = 0.16;
   const legPose = (u) => {
     const st = u < ds; let fx, lift = 0, w = 0;
     if (st) fx = S * (1 - 2 * u / ds);
-    else { w = (u - ds) / (1 - ds); const e = w * w * (3 - 2 * w); fx = -S + 2 * S * e; lift = (0.34 + 0.4 * kf) * Math.pow(Math.sin(Math.PI * w), 0.9); }
+    else {
+      // Swing: heel recovery first (the foot stays back while the heel snaps up behind him, thigh near vertical), then the leg swings through
+      // and reaches forward, then the foot slows and drops onto the floor ahead of the hip -- instead of one symmetric hop up and over.
+      w = (u - ds) / (1 - ds); const x15 = Math.pow(w, 1.5), e = x15 * x15 * (3 - 2 * x15); fx = -S + 2 * S * e;
+      lift = rig.legLen * (0.2 + 0.17 * kf) * Math.sin(Math.PI * Math.pow(w, 0.75)); }
     const depth = Math.max(0.8, H - lift);
     const d = Math.min(Math.hypot(fx, depth), (T1 + Sh) * 0.998);
     const fwd = Math.atan2(fx, depth) + Math.acos(clamp((T1 * T1 + d * d - Sh * Sh) / (2 * T1 * d), -1, 1));
@@ -6794,7 +6802,7 @@ function updateHumanoidPose(p, dt) {
   // hands tuck toward the midline on the forward swing, elbows stay loose around 90 degrees and relax when slowing down.
   if (g.userData.seed === undefined) g.userData.seed = Math.random() * 6.28;
   const sd = g.userData.seed, tt = performance.now() * 0.001;
-  const armT = clamp((pL.fwd - pR.fwd) / (2 * S), -1, 1) * (0.5 + 0.55 * kf) * wB * (0.92 + 0.16 * Math.sin(sd));   // swing follows the stride: opposite arm to each leg, bigger the faster he runs
+  const armT = clamp((pL.fwd - pR.fwd) / 0.62, -1, 1) * (0.45 + 0.25 * kf) * wB * (0.92 + 0.16 * Math.sin(sd));   // swing follows the stride: opposite arm to each leg, bigger the faster he runs
   g.userData.armA = (g.userData.armA || 0) + (armT - (g.userData.armA || 0)) * Math.min(1, dt / 55);
   const armAmp = g.userData.armA;
   const aSwL = bl(0, armAmp), aSwR = bl(0, -armAmp);
