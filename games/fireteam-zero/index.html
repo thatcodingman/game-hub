@@ -925,94 +925,69 @@ function buildMonsoonGeometry() {
   })();
 }
 
-// ---------- Scorch: a sun-baked desert canyon outpost, under a wildfire haze. Reuses the exact same
-// structural skeleton (ground/cuts/perimeter/ramps/bay/buildSide coordinates) as Atrium/Monsoon for
-// proven pathing safety, reskinned as sandstone/adobe buildings over a dry canyon wash, with a wooden
-// scaffold catwalk (not destructible — same non-beam approach as Monsoon) and a drifting-ember weather. ----------
+// ---------- Scorch: a sun-baked desert canyon outpost under a wildfire haze. Its own layout, not
+// Atrium/Monsoon's long+choke+mezzanine skeleton reskinned: each spawn opens onto two genuinely
+// different routes — a sunken "Wash" that widens into an open bowl ("The Pit") around a climbable
+// rock spire ("The Mesa", the single tallest point on the map), and a separate elevated "Ridge" that
+// runs straight spawn-to-spawn, bypassing the Pit entirely instead of crossing over it. ----------
 function buildScorchGeometry() {
-  const matSand = M(0xc9a36a, 0.95), matAdobe = M(0xb5713f, 0.95), matRock = M(0x6e5a44, 0.9);
-  const matWood = M(0x7a5330, 0.8), matDeck = M(0x8a6a44, 0.85), matScaffold = M(0x3a3028, 0.6, 0.2);
+  const matSand = M(0xc9a36a, 0.95), matRock = M(0x6e5a44, 0.9), matWash = M(0x8a6a44, 0.85);
+  const matRidge = M(0xb5824a, 0.85), matSpire = M(0x7a5a3a, 0.8), matSpireTop = M(0x96724a, 0.75);
   const matSpawnA2 = M(0x3a66c8), matSpawnB2 = M(0xcc3a3a);
 
-  let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
-  const cuts = [
-    { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // dry wash / canyon gulch (ceiling = main street)
-    { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },
-    { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },
-    { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },
-    { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },
-  ];
-  for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
-  for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matSand);
-
+  // ---------- perimeter ----------
   addSolid(-55, -6, -16, 55, WALL_H, -15, matRock);
   addSolid(-55, -6, 15, 55, WALL_H, 16, matRock);
   addSolid(-55, -6, -16, -54, WALL_H, 16, matRock);
   addSolid(54, -6, -16, 55, WALL_H, 16, matRock);
 
-  for (let i = 0; i < 9; i++) {
-    addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matSand, { tag: 'ramp' });
-    addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matSand, { tag: 'ramp' });
+  // ---------- spawn rooms (flat ground, y 0) ----------
+  addSolid(-55, -1, -9, -41, 0, 9, matSand);
+  addSolid(41, -1, -9, 55, 0, 9, matSand);
+  addSolid(-52, 0, -4, -44, 0.03, 4, matSpawnA2, { collide: false, shadow: false });
+  addSolid(44, 0, -4, 52, 0.03, 4, matSpawnB2, { collide: false, shadow: false });
+  // seal the spawn's east face everywhere except the two lane doors (Wash at z -4..4, Ridge at z 8+)
+  addSolid(-41, -4, -9, -40, WALL_H, -4, matRock); addSolid(40, -4, -9, 41, WALL_H, -4, matRock);
+  addSolid(-41, -4, 4, -40, WALL_H, 8, matRock); addSolid(40, -4, 4, 41, WALL_H, 8, matRock);
+
+  // ---------- THE WASH + THE PIT: a sunken band (y −3) that's narrow leaving each spawn and opens
+  // into an exposed bowl around the Mesa ----------
+  addSolid(-35, -4, -4, -14, -3, 4, matWash);      // west wash arm
+  addSolid(14, -4, -4, 35, -3, 4, matWash);         // east wash arm
+  addSolid(-14, -4, -6, 14, -3, 6, matRock);        // the Pit floor (wider, rockier)
+  for (let i = 0; i < 6; i++) {
+    addSolid(-41 + i, -4, -4, -40 + i, -0.5 * (i + 1), 4, matWash, { tag: 'ramp' });
+    addSolid(40 - i, -4, -4, 41 - i, -0.5 * (i + 1), 4, matWash, { tag: 'ramp' });
   }
-  function bay(xa, xb) {
-    for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matRock);
+  addSolid(-41, -4, 4, -14, WALL_H, 4.6, matRock); addSolid(14, -4, 4, 41, WALL_H, 4.6, matRock);
+  addSolid(-41, -4, -4.6, -14, WALL_H, -4, matRock); addSolid(14, -4, -4.6, 41, WALL_H, -4, matRock);
+  addSolid(-14, -4, 6, 14, WALL_H, 6.6, matRock); addSolid(-14, -4, -6.6, 14, WALL_H, -6, matRock);
+
+  // ---------- THE MESA: a climbable rock spire in the middle of the Pit — the single tallest,
+  // most commanding spot on the map, reached by one staircase up its south face ----------
+  addSolid(-3, -3, -2, 3, 4.2, 2, matSpire);
+  addSolid(-4, 4.2, -3, 4, 4.5, 3, matSpireTop);
+  for (let i = 0; i < 16; i++) addSolid(-1, -3, -6 + 0.25 * i, 1, -3 + 0.45 * (i + 1), -6 + 0.25 * (i + 1), matSpire, { tag: 'stairs' });
+
+  // ---------- THE RIDGE: an elevated back lane (y 2.5) connecting the two spawns directly — it
+  // never crosses the Pit, a separate flanking route with its own rules ----------
+  addSolid(-35, 2.5, 8, 35, 2.8, 15, matRidge);
+  for (let i = 0; i < 6; i++) {
+    addSolid(-41 + i, 0, 8, -40 + i, (2.5 / 6) * (i + 1), 15, matRidge, { tag: 'ramp' });
+    addSolid(40 - i, 0, 8, 41 - i, (2.5 / 6) * (i + 1), 15, matRidge, { tag: 'ramp' });
   }
-  bay(-10, -5);
-  bay(5, 10);
+  addSolid(-41, 2.5, 7.6, 41, 3.7, 8, matRock);   // low parapet along the Pit-facing edge
 
-  function buildSide(sgn) {
-    const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
-      const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
-      return addSolid(a, y0, z0, b, y1, z1, mat, o);
-    };
-    S(-42, -15, -41, -3, 0, WALL_H, matAdobe);
-    S(-42, 3, -41, 9, 0, WALL_H, matAdobe);
-    S(-41, -15, -15, -3, 0, WALL_H, matAdobe);
-    S(-41, 3, -15, 9, 0, WALL_H, matAdobe);
-    // Canyon choke — a narrow gap between rock faces
-    S(-19, -2.7, -15, -1.2, 0, WALL_H, matRock);
-    S(-19, 1.2, -15, 2.7, 0, WALL_H, matRock);
-    S(-12.5, 1.2, -11, 2.8, 0, 1.2, matWood);
-    // Scaffold stair up to the catwalk — same stepped-collider shape as Atrium's stairs (keeps
-    // bot pathing/climb behavior proven), re-skinned as a rough timber switchback.
-    const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
-    for (let i = 0; i < STAIR_N; i++) S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matWood);
-    S(-50, 8, -48, 10, 0, 1.2, matWood);
-    S(-47, -7, -45, -5, 0, 1.2, matWood);
-    const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
-    addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA2 : matSpawnB2, { collide: false, shadow: false });
-  }
-  buildSide(-1);
-  buildSide(1);
-
-  // ---------- MID: a dried-up well at center with rock-pile cover instead of one center pillar ----------
-  addSolid(-1, 0, -1, 1, 1.3, 1, matRock);
-  addSolid(-7, 0, -3, -4.5, 1.2, -1, matRock);
-  addSolid(4.5, 0, -3, 7, 1.2, -1, matRock);
-  addSolid(-2, 0, -8, 2, 1.2, -6.8, matRock);
-  for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matWood);   // ladder up to the catwalk from Mid
-
-  // ---------- CATWALK: one continuous timber scaffold walkway over Mid — no destructible half ----------
-  addSolid(-15, 4.4, 9, 15, 5.0, 15, matDeck, { tag: 'cover' });
-  for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) addSolid(a, 5, 9, b, 5.9, 9.4, matDeck, { tag: 'cover' });
-  for (const mx of [-11, -4, 4, 11]) addSolid(mx - 1, 5.0, 10.6, mx + 1, 6.3, 12.2, matWood, { tag: 'cover' });
-  // Support posts under the catwalk — plain cover, not a shootable beam
-  addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matScaffold, { tag: 'cover' });
-  addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matScaffold, { tag: 'cover' });
-
-  // ---------- SCORCH DRESSING: dead trees, cacti, ember barrels, sandbags, distant wildfire glow ----------
+  // ---------- dressing: dead trees, cacti, ember barrels, sandbags, distant wildfire glow ----------
   (function dressScorch() {
     const matDeadWood = M(0x4a3626, 0.9), matCactus = M(0x4a7a4a, 0.85), matSandbag = M(0x9a8a5a, 0.95);
     const matEmberGlow = new THREE.MeshStandardMaterial({ color: 0xff7a2e, emissive: 0xff5a1a, emissiveIntensity: 2.2, roughness: 0.4 });
     const matFireGlow = new THREE.MeshBasicMaterial({ color: 0xff6a1a, transparent: true, opacity: 0.35 });
     const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
 
-    // Distant wildfire glow along the far canyon walls (soft additive-feeling planes, not real light sources)
     for (const [x, z, ry] of [[-54.5, 0, Math.PI / 2], [54.5, 0, -Math.PI / 2]]) {
-      const glow = new THREE.Mesh(new THREE.PlaneGeometry(10, 14), matFireGlow);
-      deco(glow, x, 6, z, ry);
+      deco(new THREE.Mesh(new THREE.PlaneGeometry(10, 14), matFireGlow), x, 6, z, ry);
     }
-    // Dead trees and cacti scattered for silhouette/cover texture
     function deadTree(x, z) {
       deco(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.22, 3.2, 6), matDeadWood), x, 1.6, z);
       for (const ry of [0.6, 2.1, -1.2]) {
@@ -1025,25 +1000,18 @@ function buildScorchGeometry() {
       const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.7, 6), matCactus);
       arm.rotation.z = 1.1; deco(arm, x + 0.18, 1.1, z);
     }
-    for (const [x, z] of [[-33, -2], [33, 2], [-6, -4], [6, 4]]) deadTree(x, z);
-    for (const [x, z] of [[-24, 2], [24, -2], [0, 10], [-45, 6], [45, -6]]) cactus(x, z);
-    // Ember barrels (small glowing fire-pit drums) down the lanes, over Mid and the wash
+    for (const [x, z] of [[-45, 6], [45, -6], [-20, -10.5], [20, 10.5]]) deadTree(x, z);
+    for (const [x, z] of [[-28, 10.5], [28, -10.5], [-45, -6], [45, 6]]) cactus(x, z);
     function emberBarrel(x, y, z) {
-      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.6, 10), matScaffold), x, y + 0.3, z);
-      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), matEmberGlow);
-      deco(glow, x, y + 0.68, z);
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.6, 10), matDeadWood), x, y + 0.3, z);
+      deco(new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), matEmberGlow), x, y + 0.68, z);
     }
-    for (const x of [-33, -24, 24, 33]) emberBarrel(x, 0, -3.2);
-    emberBarrel(0, 0, -8); emberBarrel(0, 4.4, 8);
-    for (let x = -40; x <= 40; x += 10) emberBarrel(x, -5, -12);
-
-    // Sandbag cover stacks and crates for street-level texture, plus the wash below
-    function sandbagStack(x, z) {
-      addSolid(x - 0.6, -5, z - 0.6, x + 0.6, -5 + 1.4, z + 0.6, matSandbag, { tag: 'cover' });
+    emberBarrel(-24, -3, 0); emberBarrel(24, -3, 0); emberBarrel(0, 4.5, 0);
+    emberBarrel(-24, 2.8, 11); emberBarrel(24, 2.8, 11);
+    function sandbagStack(x, z, y0 = -3) {
+      addSolid(x - 0.6, y0, z - 0.6, x + 0.6, y0 + 1.3, z + 0.6, matSandbag, { tag: 'cover' });
     }
-    for (const [x, z] of [[-32, -13], [-18, -11], [18, -13], [32, -11]]) sandbagStack(x, z);
-    addSolid(-38, 0, -4.8, -37, 0.7, -3.8, matSandbag, { tag: 'cover' });
-    addSolid(37, 0, 3.8, 38, 0.7, 4.8, matSandbag, { tag: 'cover' });
+    for (const [x, z] of [[-20, -2.5], [20, 2.5], [-20, 2.5], [20, -2.5]]) sandbagStack(x, z);
   })();
 }
 
@@ -2553,33 +2521,28 @@ function buildMonsoonNav() {
   L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
 }
 
-// Scorch reuses the exact same node IDs/coordinates/topology as Monsoon (proven pathing skeleton) —
-// the catwalk here is a wooden scaffold, never destructible, same as Monsoon's steel one.
+// Scorch's own topology, matching its own layout (Wash/Pit/Mesa + a separate Ridge back lane) —
+// deliberately NOT the Atrium/Monsoon node graph.
 function buildScorchNav() {
   for (const s of ['A', 'B']) {
     const X = (x) => (s === 'A' ? x : -x);
     const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
-    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
-    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
-    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
-    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, hold: 1 });
-    const dropX = s === 'A' ? -8 : 11;
-    N(s + 'mezzEdge', dropX, 5, 10, {}); N(s + 'dropLand', dropX, 0, 6.5);
-    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
-    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
-    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
+    n('spawn', -48, 0, 0);
+    n('washRampTop', -41, 0, 0); n('washRampBot', -35, -3, 0, { w: 1, hold: 1 }); n('washMid', -24, -3, 0, { w: 1, hold: 1 });
+    n('pitEdge', -14, -3, 0, { w: 1.5, hold: 1 });
+    n('ridgeRampBot', -41, 0, 11); n('ridgeRampTop', -35, 2.5, 11, { w: 1, hold: 1 }); n('ridgeMid', -24, 2.5, 11, { w: 1, hold: 1 });
   }
-  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
-  N('escTop', 3.5, 5, 10, { w: 1.5, hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
+  N('pitW', -8, -3, 0, { w: 1.5, hold: 1 }); N('pitC', 0, -3, 0, { w: 2, hold: 1 }); N('pitE', 8, -3, 0, { w: 1.5, hold: 1 });
+  N('mesaBase', 0, -3, -4, { w: 1, hold: 1 }); N('mesaTop', 0, 4.5, 0, { w: 2, hold: 1 });
+  N('ridgeC', 0, 2.5, 11, { w: 2, hold: 1 });
   for (const s of ['A', 'B']) {
     const l = (a, b, o) => L(s + a, s + b, o);
-    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
-    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
-    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
-    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
-    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
+    l('spawn', 'washRampTop'); l('washRampTop', 'washRampBot'); l('washRampBot', 'washMid'); l('washMid', 'pitEdge');
+    L(s + 'pitEdge', s === 'A' ? 'pitW' : 'pitE');
+    l('spawn', 'ridgeRampBot'); l('ridgeRampBot', 'ridgeRampTop'); l('ridgeRampTop', 'ridgeMid');
+    L(s + 'ridgeMid', 'ridgeC');
   }
-  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
+  L('pitW', 'pitC'); L('pitC', 'pitE'); L('pitC', 'mesaBase'); L('mesaBase', 'mesaTop');
 }
 
 const navValid = (i) => !NAV[i].req || tagLive[NAV[i].req];
@@ -3316,37 +3279,31 @@ MAPS.scorch = {
     fill: [0xb0401a, 0.28],
   },
   weather: 'embers',
-  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  flanks: ['AridgeMid', 'BridgeMid', 'ridgeC', 'pitC', 'mesaTop', 'AwashMid', 'BwashMid'],
   zoneName(x, y, z) {
     const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
-    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'WASH STEPS';
-    if (y < -2) return ax > 42 ? side + '-WASH ACCESS' : 'DRY WASH';
-    if (y > 4.2) return ax <= 15 ? 'CATWALK' : side + '-SCAFFOLD';
-    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
-    if (z > 9 && ax >= 15) return side + '-SCAFFOLD';
-    if (ax >= 27) return side + '-ROW';
-    if (ax >= 15) return side + '-CANYON';
-    return 'THE WELL';
+    if (y > 3.5) return 'MESA PEAK';
+    if (z > 6) return ax >= 41 ? 'TEAM ' + side + ' SPAWN' : (ax <= 15 ? 'HIGH RIDGE' : side + '-RIDGE');
+    if (ax < 14) return y < -1 ? 'THE PIT' : 'MESA BASE';
+    if (ax >= 41) return 'TEAM ' + side + ' SPAWN';
+    return side + '-WASH';
   },
   minimap: {
     title: 'SCORCH',
     legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#8a6a3c'], ['stairs', '#9a6a2e'],
-      ['catwalk', 'rgba(255,138,60,0.45)', '#ff8a3c'], ['dry wash', 'rgba(210,140,70,0.5)', '#d28c46'],
-      ['climb', '#ff963c']],
+      ['ramp', 'rgba(210,140,70,0.5)', '#d28c46']],
     spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
-    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
-    sideLabels: [[5, 'y 5  catwalk'], [0, 'y 0  street'], [-5, 'y −5  dry wash']],
+    lowerHall: { x0: -52, z0: -6, x1: 52, z1: 6 },
+    sideLabels: [[4.5, 'y 4.5  mesa peak'], [2.5, 'y 2.5  ridge'], [0, 'y 0  spawn floor'], [-3, 'y −3  wash / pit']],
     labels: [
       { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
-      { text: 'ROW', x: -30, z: 0 }, { text: 'ROW', x: 30, z: 0 },
-      { text: 'CANYON', x: -17, z: 0, compact: true }, { text: 'CANYON', x: 17, z: 0, compact: true },
-      { text: 'THE WELL', x: 0, z: -3 },
-      { text: 'SCAFFOLD ▶', x: -21, z: 12, compact: true }, { text: 'SCAFFOLD ◀', x: 21, z: 12, compact: true },
-      { text: 'CATWALK', x: 0, z: 12 },
-      { text: 'DRY WASH', textBig: 'DRY WASH — canyon gulch under the street (y −5)', x: 0, z: -12 },
-      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
-      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
-      { text: 'LADDER ▲', x: 3.5, z: 4, compact: true },
+      { text: 'WASH', x: -24, z: 0, compact: true }, { text: 'WASH', x: 24, z: 0, compact: true },
+      { text: 'THE PIT', x: 0, z: 0 },
+      { text: 'MESA', textBig: 'THE MESA — climbable high ground in the Pit (y 4.5)', x: 0, z: -3 },
+      { text: 'RIDGE ▶', x: -24, z: 11, compact: true }, { text: '◀ RIDGE', x: 24, z: 11, compact: true },
+      { text: 'HIGH RIDGE', x: 0, z: 11 },
+      { text: 'DOWN ▶', x: -38, z: 0, compact: true }, { text: '◀ DOWN', x: 38, z: 0, compact: true },
+      { text: 'UP ▶', x: -38, z: 11, compact: true }, { text: '◀ UP', x: 38, z: 11, compact: true },
     ],
   },
 };
