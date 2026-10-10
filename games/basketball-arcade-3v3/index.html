@@ -4731,8 +4731,8 @@ const MOVE_BURST_FORWARD_WEIGHT = 0.9;
 // After the hand-switch itself finishes, the carrier gets a short, real
 // jolt of extra speed -- the "blow-by" after you've sold the move. Shared
 // by every dribble move that calls applyMoveKick.
-const MOVE_BOOST_MS = 260;
-const MOVE_BOOST_MULT = 1.18;
+const MOVE_BOOST_MS = 700;     // how long the post-move explosion lasts (it fades out over this)
+const MOVE_BOOST_MULT = 1.2;   // peak speed multiplier right out of the move
 // Automatic dribble-hand switching: the ball naturally follows whichever
 // way he's actually driving (camera-relative) -- holding right carries it
 // into the right hand as he goes that way, holding left into the left, the
@@ -5117,6 +5117,7 @@ const FLUID_SIDE_TAU_MS = 48, FLUID_REVERSE_TAU_MS = 55, FLUID_STOP_TAU_MS = 90;
 function approachVelocityFluid(p, targetVx, targetVz, dtMs) {
   let accelMult = (p.stats && p.stats.accelMult) || 1;
   if (p.switchUrgencyTimer > 0) accelMult *= (p.switchAccelMult || 0.65);
+  if (p.boostK > 0) accelMult *= 1 - 0.4 * p.boostK;   // out of a dribble move he gets up to speed fast: the explosion
   const ts = Math.hypot(targetVx, targetVz);
   if (ts < 0.001) { // keys released: short glide to a stop
     const a = 1 - Math.exp(-dtMs / (FLUID_STOP_TAU_MS * accelMult));
@@ -6109,8 +6110,9 @@ function updateHumanMovement(dtMs) {
   // a short real speed boost so the move actually buys separation.
   if (human.moveBoostTimer > 0) {
     human.moveBoostTimer -= dtMs;
-    if (human.handAnimT >= 1) speedMult *= MOVE_BOOST_MULT;
-  }
+    if (human.handAnimT >= 1) { const f = clamp(human.moveBoostTimer / MOVE_BOOST_MS, 0, 1), bk = Math.pow(f, 0.6);
+      speedMult *= 1 + (MOVE_BOOST_MULT - 1) * bk; human.boostK = bk; }
+  } else human.boostK = 0;
   let targetVx = 0, targetVz = 0;
   if (mag >= 0.05) {
     const nx = ix / (mag || 1), nz = iz / (mag || 1);
@@ -6747,7 +6749,7 @@ function updateHumanoidPose(p, dt) {
   // Cadence and stride length come from how fast he is actually moving, so a jog, a sprint and a turbo burst all look different.
   const rig = g.userData.rig, T1 = rig.thighLen, Sh = rig.shinLen;
   const vW = speed * GAME_SPEED / 16.67;                       // feet per ms actually covered
-  const kf = clamp((vW - 0.004) / 0.013, 0, 1);                 // 0 = walk .. 1 = full sprint
+  const kf = clamp((vW * 1000 - 4) / 24, 0, 1);                 // 0 = walk .. 1 = full turbo sprint (normal running sits around 0.75)
   // Real running proportions (v in ft/s): the stance foot sweeps about +/-1.2 ft about the hip (hip angle +/-20-25 deg) at every speed, so
   // faster running means a quicker cadence (about 2 steps/s walking, 3 jogging, 3.5 sprinting) rather than tiny pitter-patter steps.
   // Contact time shrinks as he speeds up (duty factor ~0.62 walking, ~0.45 jog, ~0.27 sprint) which creates a real flight phase.
@@ -6796,6 +6798,18 @@ function updateHumanoidPose(p, dt) {
     const bt = clamp(-dF / Math.max(dt, 1) * 16 * Math.min(1, speed * 9), -0.24, 0.24); g.userData.bank = (g.userData.bank || 0) + (bt - (g.userData.bank || 0)) * 0.12;
     L.spine.rotation.set(lean + Math.sin(performance.now() * 0.0021) * 0.012, twist, sway + g.userData.bank); }
 
+  // Starting, braking and cutting: lean into the push when accelerating, sit back and plant the feet when stopping hard,
+  // and dip the knees when changing direction -- so movement has weight instead of switching on and off.
+  { const pS = g.userData.pS === undefined ? speed : g.userData.pS; g.userData.pS = speed;
+    g.userData.accS = (g.userData.accS || 0) + ((speed - pS) / Math.max(dt, 1) - (g.userData.accS || 0)) * Math.min(1, dt / 90);
+    const ac = g.userData.accS, push = clamp(ac * 90, -0.16, 0.24) * clamp(speed * 4 + (ac > 0 ? 1 : 0), 0, 1);
+    const brake = ac < 0 && speed > 0.06 ? clamp(-ac / 0.0022, 0, 1) : 0;
+    const cutK = clamp(Math.abs(g.userData.bank || 0) / 0.24, 0, 1) * wB;
+    L.spine.rotation.x += push - 0.08 * brake;
+    const kb = 0.3 * brake + 0.14 * cutK, lb = 0.15 * brake + 0.06 * cutK;
+    kneeLP.rotation.x += kb; kneeRP.rotation.x += kb; legLP.rotation.x -= lb; legRP.rotation.x -= lb;
+    g.userData.hipDrop = (g.userData.hipDrop || 0) + 3.25 * (1 - Math.cos(lb)) * rig.bodyScale;
+  }
   const fakeAmt = p.hesitateFakeAmt || 0;
   // Arms pump opposite the legs with elbows held near 90 degrees, closing as each hand drives forward (sprint technique).
   // Human arm swing: eased (arms lag the legs a touch instead of tracking them perfectly), a little different on every player,
