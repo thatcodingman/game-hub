@@ -1190,17 +1190,49 @@ function buildArena() {
   // advertising boards around the court
   const adCvs = document.createElement('canvas'); adCvs.width = 1024; adCvs.height = 64;
   const actx = adCvs.getContext('2d');
-  crowd.paintAds = (T) => { T.ads.forEach((a, i) => {
-    const x0 = i * 204.8; actx.fillStyle = T.adBg; actx.fillRect(x0, 0, 204.8, 64);
-    actx.fillStyle = a[1]; actx.globalAlpha = 0.85; actx.fillRect(x0 + 10, 6, 184.8, 3); actx.fillRect(x0 + 10, 55, 184.8, 3); actx.globalAlpha = 1;
-    let fs = 28; actx.font = '800 ' + fs + 'px "Arial Narrow", Arial, sans-serif';
-    while (actx.measureText(a[0]).width > 178 && fs > 14) { fs -= 1; actx.font = '800 ' + fs + 'px "Arial Narrow", Arial, sans-serif'; }
-    actx.textAlign = 'center'; actx.textBaseline = 'middle'; actx.fillStyle = a[1]; actx.fillText(a[0], x0 + 102.4, 33);
-  }); };
+  // LED ribbon boards: live game clock, score, shot clock and team fouls, plus a rotating sponsor, like a real arena
+  const ledInfo = () => {
+    const o = { clock: '--:--', sa: 0, sb: 0, la: 'YOU', lb: 'AI', shot: 24, fa: 0, fb: 0, bonus: false };
+    try {
+      if (window.__gameReady) {
+        const mc = Math.max(0, game.matchClock), ca = game.career;
+        o.clock = (ca ? (ca.q <= 4 && !(game.overtimes > 0) ? 'Q' + ca.q + ' ' : 'OT ') : '') + Math.floor(mc / 60) + ':' + String(Math.floor(mc % 60)).padStart(2, '0');
+        o.sa = game.scoreA; o.sb = game.scoreB; o.la = ca ? ca.abA : 'YOU'; o.lb = ca ? ca.abB : 'AI';
+        o.shot = Math.max(0, Math.ceil(game.shotClock === undefined ? 24 : game.shotClock));
+        o.fa = teamFouls('A'); o.fb = teamFouls('B'); o.bonus = o.fa >= TEAM_FOUL_BONUS || o.fb >= TEAM_FOUL_BONUS;
+      }
+    } catch (e) { /* not ready yet */ }
+    return o;
+  };
+  crowd.paintAds = (T) => {
+    const L = ledInfo(), nt = performance.now() / 1000, ac = T.ads[0][1], urgent = L.shot <= 5 && L.shot > 0 && Math.floor(nt * 2) % 2 === 0;
+    const cells = [
+      ['GAME CLOCK', L.clock, '#fef3c7'],
+      [L.la + '  –  ' + L.lb, L.sa + ' – ' + L.sb, '#ffffff'],
+      ['SHOT CLOCK', String(L.shot), L.shot <= 5 ? (urgent ? '#fecaca' : '#ef4444') : ac],
+      [L.bonus ? 'FOULS · BONUS' : 'FOULS', L.fa + ' – ' + L.fb, L.bonus ? '#fbbf24' : '#e2e8f0'],
+    ];
+    actx.fillStyle = T.adBg; actx.fillRect(0, 0, 1024, 64);
+    cells.forEach((c, i) => {
+      const x0 = i * 192;
+      actx.fillStyle = 'rgba(255,255,255,0.05)'; actx.fillRect(x0 + 6, 4, 180, 56);
+      actx.textAlign = 'center'; actx.textBaseline = 'middle';
+      actx.fillStyle = ac; actx.globalAlpha = 0.8; actx.font = '700 11px "Arial Narrow", Arial, sans-serif'; actx.fillText(c[0], x0 + 96, 12); actx.globalAlpha = 1;
+      let fs = 34; actx.font = '800 ' + fs + 'px "Arial Narrow", Arial, sans-serif';
+      while (actx.measureText(c[1]).width > 168 && fs > 16) { fs -= 1; actx.font = '800 ' + fs + 'px "Arial Narrow", Arial, sans-serif'; }
+      actx.fillStyle = c[2]; actx.fillText(c[1], x0 + 96, 38);
+    });
+    // sponsor cell rotates every 5s
+    const ad = T.ads[Math.floor(nt / 5) % T.ads.length];
+    actx.fillStyle = ad[1]; actx.globalAlpha = 0.85; actx.fillRect(784, 6, 230, 3); actx.fillRect(784, 55, 230, 3); actx.globalAlpha = 1;
+    let sf = 26; actx.font = '800 ' + sf + 'px "Arial Narrow", Arial, sans-serif';
+    while (actx.measureText(ad[0]).width > 214 && sf > 12) { sf -= 1; actx.font = '800 ' + sf + 'px "Arial Narrow", Arial, sans-serif'; }
+    actx.textAlign = 'center'; actx.textBaseline = 'middle'; actx.fillStyle = ad[1]; actx.fillText(ad[0], 899, 33);
+  };
   crowd.paintAds(ARENAS.pro); crowd.adTex = [];
   const adTex = new THREE.CanvasTexture(adCvs); adTex.wrapS = THREE.RepeatWrapping; adTex.colorSpace = THREE.SRGBColorSpace;
   const adMat = new THREE.MeshBasicMaterial({ map: adTex });
-  crowd.adMats = []; const addBoard = (len, x, z, rotY) => { const t = adTex.clone(); t.needsUpdate = true; crowd.adTex.push(t); t.repeat.set(len / 40, 1); const m = new THREE.Mesh(new THREE.BoxGeometry(len, 2.6, 0.3), new THREE.MeshBasicMaterial({ map: t })); crowd.adMats.push(m.material); m.position.set(x, 1.3, z); m.rotation.y = rotY; scene.add(m); };
+  crowd.adMats = []; const addBoard = (len, x, z, rotY) => { const t = adTex.clone(); t.needsUpdate = true; crowd.adTex.push(t); t.repeat.set(Math.max(1, Math.round(len / 40)), 1); const m = new THREE.Mesh(new THREE.BoxGeometry(len, 2.6, 0.3), new THREE.MeshBasicMaterial({ map: t })); crowd.adMats.push(m.material); m.position.set(x, 1.3, z); m.rotation.y = rotY; scene.add(m); };
   addBoard(108, 0, 31.5, 0); addBoard(108, 0, -31.5, Math.PI);
   addBoard(64, 56, 0, Math.PI / 2); addBoard(64, -56, 0, -Math.PI / 2);
 
@@ -11421,7 +11453,7 @@ function frame(now) {
   if (arenaUpdate) arenaUpdate(performance.now() / 1000);
   { // live signage: ad boards scroll like LED ribbons and flare when the crowd is hyped; banners sway
     const nt = performance.now() / 1000, ex = clamp(crowd.excite || 0, 0, 1.9), T = ARENAS[currentArena] || ARENAS.pro, dim = T.adDim === undefined ? 1 : T.adDim;
-    if (crowd.adTex) crowd.adTex.forEach((t, i) => { t.offset.x = ((nt * (i % 2 ? -0.07 : 0.07)) % 1 + 1) % 1; });
+    if (crowd.adTex && nt - (crowd.ledT || 0) > 0.2) { crowd.ledT = nt; crowd.paintAds(T); crowd.adTex.forEach((t) => { t.needsUpdate = true; }); }
     if (crowd.adMats) { const fl = Math.min(1.5, dim * (1 + ex * 0.28 + Math.sin(nt * 9) * 0.04 * ex)); crowd.adMats.forEach((m) => m.color.setScalar(fl)); }
     if (crowd.banners) crowd.banners.forEach((b, i) => { b.rotation.z = Math.sin(nt * 0.9 + i * 1.3) * 0.035; });
   }
