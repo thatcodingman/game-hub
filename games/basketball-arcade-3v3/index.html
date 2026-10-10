@@ -707,7 +707,7 @@ const JERSEY_NUMBERS = { PG: '1', SG: '8', SF: '23', PF: '32', C: '34' };
 // Two speed tiers: the stat above is top speed running free; actually
 // controlling a live dribble is a touch slower and more deliberate, same as
 // real ball-handling vs. a flat-out sprint.
-const BALL_HANDLE_SPEED_MULT = 0.88;
+const BALL_HANDLE_SPEED_MULT = 0.79;   // dribbling is 10% slower than before
 // Defensive catch-up: a defender trailing his man by a lot closes with real
 // urgency instead of drifting at a flat pace -- scales up with the gap.
 const DEFENSE_CATCHUP_DIST = 1.6;
@@ -2600,10 +2600,27 @@ function updateActivePass(dtMs) {
   }
 }
 
+// Steals cost stamina so nobody can swipe the whole possession. Cost depends on the defender's steal rating (the Lockdown / Pickpocket types
+// swipe cheaply, bigs burn more), climbs with rapid repeats, is halved while LOCKDOWN Take Over is on, and a tired defender can't swipe.
+function stealStaminaCost(d, air) {
+  const sk = clamp(((d.stats.steal || 0.45) - 0.3) / 0.45, 0, 1), now = performance.now();
+  if (now > (d.swipeSpamUntil || 0)) d.swipeSpam = 0;
+  let c = STAMINA_MAX * lerp(0.13, 0.05, sk) * (1 + 0.45 * (d.swipeSpam || 0));
+  if (d.careerUser && typeof TK !== 'undefined' && TK.on && tkAbil()[0] === 'df') c *= 0.5;
+  return air ? c * 0.5 : c;
+}
+function spendSteal(d, air) {
+  const c = stealStaminaCost(d, air);
+  if (d.stamina < c) return false;
+  d.stamina -= c; d.swipeSpam = Math.min(4, (d.swipeSpam || 0) + 1); d.swipeSpamUntil = performance.now() + 2600;
+  return true;
+}
 function attemptSteal(defender) {
   if (defender.actionCooldown > 0) return;
   const isHumanDef = defender === controlledPlayer();
-  defender.actionCooldown = isHumanDef ? 300 : 750; // AI swipes less often
+  if (!spendSteal(defender, false)) { defender.actionCooldown = 450; if (isHumanDef) showScreenCallout('TOO TIRED TO SWIPE', 700); return; }
+  defender.actionCooldown = (isHumanDef ? 300 : 750) + 110 * (defender.swipeSpam || 0); // AI swipes less often; spamming slows you down
+
   defender.swipeT = 320; defender.swipeSide = Math.random() < 0.5 ? 1 : -1;
   // Nobody can strip the ball off anybody while a checkup/inbound pass is
   // actively being thrown in — the player putting the ball in play is fully
@@ -4288,7 +4305,8 @@ function onActionPressed() {
   if (game.activePass && game.activePass.passer.team !== p.team) { tryDeflectPass(p); return; }
   if (game.ball.carrier && game.ball.carrier.team !== p.team) {
     if (dist2(p, game.ball.carrier) < STEAL_RANGE) { attemptSteal(p); return; }
-    if (p.actionCooldown <= 0) { p.actionCooldown = 300; p.swipeT = 320; p.swipeSide = Math.random() < 0.5 ? 1 : -1; playTone(200, 0.03); } // swipe at air
+    if (p.actionCooldown <= 0 && !spendSteal(p, true)) { p.actionCooldown = 450; showScreenCallout('TOO TIRED TO SWIPE', 700); return; }
+    if (p.actionCooldown <= 0) { p.actionCooldown = 300 + 110 * (p.swipeSpam || 0); p.swipeT = 320; p.swipeSide = Math.random() < 0.5 ? 1 : -1; playTone(200, 0.03); } // swipe at air
     return;
   }
   if (!game.ball.carrier && !game.ball.inFlight && dist2(p, game.ball) < PICKUP_RANGE) {
@@ -4629,7 +4647,7 @@ function stepDropStep(p, dtMs) {
   let diff = Math.atan2(hoop.x - p.x, hoop.z - p.z) - ds.startFacing;
   diff = Math.atan2(Math.sin(diff), Math.cos(diff));
   p.facing = ds.startFacing + diff * e;
-  if (k >= 1) p.dropStep = null;
+  if (k >= 1) { p.dropStep = null; p.moveBoostTimer = MOVE_BOOST_MS; p.moveKind = 'post'; }   // out of the drop step he explodes to the rim
 }
 // X: dunk when you're driving at the rim; otherwise a LOB. A teammate already near the rim gets the alley-oop pass;
 // if nobody is there yet, the first X sends the closest one cutting to the rim and the next X throws it up to him.
@@ -4731,8 +4749,8 @@ const MOVE_BURST_FORWARD_WEIGHT = 0.9;
 // After the hand-switch itself finishes, the carrier gets a short, real
 // jolt of extra speed -- the "blow-by" after you've sold the move. Shared
 // by every dribble move that calls applyMoveKick.
-const MOVE_BOOST_MS = 700;     // how long the post-move explosion lasts (it fades out over this)
-const MOVE_BOOST_MULT = 1.2;   // peak speed multiplier right out of the move
+const MOVE_BOOST_MS = 900;     // how long the post-move explosion lasts (full strength for the first half, then it fades out)
+const MOVE_BOOST_MULT = 1.3;   // peak speed multiplier right out of the move
 // Automatic dribble-hand switching: the ball naturally follows whichever
 // way he's actually driving (camera-relative) -- holding right carries it
 // into the right hand as he goes that way, holding left into the left, the
@@ -5117,7 +5135,7 @@ const FLUID_SIDE_TAU_MS = 48, FLUID_REVERSE_TAU_MS = 55, FLUID_STOP_TAU_MS = 90;
 function approachVelocityFluid(p, targetVx, targetVz, dtMs) {
   let accelMult = (p.stats && p.stats.accelMult) || 1;
   if (p.switchUrgencyTimer > 0) accelMult *= (p.switchAccelMult || 0.65);
-  if (p.boostK > 0) accelMult *= 1 - 0.4 * p.boostK;   // out of a dribble move he gets up to speed fast: the explosion
+  if (p.boostK > 0) accelMult *= 1 - 0.55 * p.boostK;   // out of a dribble move he gets up to speed fast: the explosion
   const ts = Math.hypot(targetVx, targetVz);
   if (ts < 0.001) { // keys released: short glide to a stop
     const a = 1 - Math.exp(-dtMs / (FLUID_STOP_TAU_MS * accelMult));
@@ -6110,9 +6128,12 @@ function updateHumanMovement(dtMs) {
   // a short real speed boost so the move actually buys separation.
   if (human.moveBoostTimer > 0) {
     human.moveBoostTimer -= dtMs;
-    if (human.handAnimT >= 1) { const f = clamp(human.moveBoostTimer / MOVE_BOOST_MS, 0, 1), bk = Math.pow(f, 0.6);
-      speedMult *= 1 + (MOVE_BOOST_MULT - 1) * bk; human.boostK = bk; }
+    if (human.handAnimT >= 0.6 || human.moveKind === 'post') { const f = clamp(human.moveBoostTimer / MOVE_BOOST_MS, 0, 1), x = clamp(f / 0.5, 0, 1), bk = x * x * (3 - 2 * x);   // full strength first, then eases off
+      speedMult *= 1 + (MOVE_BOOST_MULT - 1) * bk; human.boostK = bk; } else human.boostK = 0;
   } else human.boostK = 0;
+  // Coming out of the post (letting go of the post-up, or finishing a drop step) is an explosion too, only a touch smaller.
+  { const wasPost = human._wasPost; human._wasPost = human.postUpActive;
+    if (wasPost && !human.postUpActive && mag >= 0.05 && game.ball.carrier === human && human.moveBoostTimer < MOVE_BOOST_MS * 0.8) { human.moveBoostTimer = MOVE_BOOST_MS * 0.8; human.moveKind = 'post'; } }
   let targetVx = 0, targetVz = 0;
   if (mag >= 0.05) {
     const nx = ix / (mag || 1), nz = iz / (mag || 1);
@@ -6134,10 +6155,10 @@ function updateHumanMovement(dtMs) {
     const bc = game.ball.carrier;
     if (bc && bc.team !== human.team && game.phase === 'live' && !game.freeThrow && mag >= 0.05) {
       const dd = dist2(human, bc);
-      if (dd < 11) {
-        const k = clamp((11 - dd) / 7, 0, 1);
-        targetVx = targetVx * (1 + 0.12 * k) + bc.vx * 0.45 * k;
-        targetVz = targetVz * (1 + 0.12 * k) + bc.vz * 0.45 * k;
+      if (dd < 15) {
+        const k = clamp((15 - dd) / 8, 0, 1);
+        targetVx = targetVx * (1 + 0.2 * k) + bc.vx * 0.65 * k;
+        targetVz = targetVz * (1 + 0.2 * k) + bc.vz * 0.65 * k;
       }
     }
   }
