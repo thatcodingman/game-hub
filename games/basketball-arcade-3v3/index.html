@@ -1352,6 +1352,7 @@ buildArena();
 const arenaProps = new THREE.Group(); scene.add(arenaProps);
 let arenaUpdate = null, currentArena = null;
 function disposeProps() {
+  crowd.banners = [];
   while (arenaProps.children.length) {
     const c = arenaProps.children[arenaProps.children.length - 1]; arenaProps.remove(c);
     c.traverse((o) => { if (o.geometry) o.geometry.dispose(); const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; ms.forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); }); });
@@ -1370,7 +1371,7 @@ function addBanners(list, c1, c2) {
   for (let i = 0; i < 7; i++) {
     [1, -1].forEach((sg) => {
       const b = bannerMesh(list[(i + (sg > 0 ? 0 : 3)) % list.length], c1, c2, 7, 11);
-      b.position.set(-48 + i * 16, 19.5, sg * 58.6); b.rotation.y = sg > 0 ? Math.PI : 0; arenaProps.add(b);
+      b.position.set(-48 + i * 16, 19.5, sg * 58.6); b.rotation.y = sg > 0 ? Math.PI : 0; arenaProps.add(b); (crowd.banners = crowd.banners || []).push(b);
     });
   }
 }
@@ -8199,7 +8200,7 @@ document.addEventListener('click', (e) => { if (e.target.closest && e.target.clo
   document.getElementById('aud-cfg').addEventListener('click', (e) => { e.stopPropagation(); panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; });
   document.getElementById('aud-cfg').addEventListener('pointerdown', (e) => e.stopPropagation()); }
 audRefreshButtons();
-game.AUD = AUD; game.audCreate = audCreate; game.crowdVoice = crowdVoice; game.sfx = sfx; game.THEMES = THEMES; game.SFXD = SFX_DEFS; game.audStep = audStep;
+game.AUD = AUD; game.audCreate = audCreate; game.crowdVoice = crowdVoice; game.sfx = sfx; game.THEMES = THEMES; game.SFXD = SFX_DEFS; game.audStep = audStep; game.crowd = crowd;
 game.prog = prog; game.openLocker = openLocker; game.closeLocker = closeLocker; game.levelInfo = levelInfo; game.awardProgress = awardProgress; game.KITS = KITS; game.CATALOG = CATALOG; game.applyLoadout = applyLoadout; game.spawnCeleb = spawnCeleb; game.effectiveLook = effectiveLook;
 
 
@@ -11418,6 +11419,12 @@ function frame(now) {
   }
 
   if (arenaUpdate) arenaUpdate(performance.now() / 1000);
+  { // live signage: ad boards scroll like LED ribbons and flare when the crowd is hyped; banners sway
+    const nt = performance.now() / 1000, ex = clamp(crowd.excite || 0, 0, 1.9), T = ARENAS[currentArena] || ARENAS.pro, dim = T.adDim === undefined ? 1 : T.adDim;
+    if (crowd.adTex) crowd.adTex.forEach((t, i) => { t.offset.x = ((nt * (i % 2 ? -0.07 : 0.07)) % 1 + 1) % 1; });
+    if (crowd.adMats) { const fl = Math.min(1.5, dim * (1 + ex * 0.28 + Math.sin(nt * 9) * 0.04 * ex)); crowd.adMats.forEach((m) => m.color.setScalar(fl)); }
+    if (crowd.banners) crowd.banners.forEach((b, i) => { b.rotation.z = Math.sin(nt * 0.9 + i * 1.3) * 0.035; });
+  }
   if (game.phase === 'replay') stepReplay(dtMs);
 
   if (game.phase === 'fight') {
