@@ -3855,7 +3855,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF') onBlockPressed();
   if (e.code === 'KeyX' && !defCtx) {
     if (game.shiftPassTimer) { clearTimeout(game.shiftPassTimer); game.shiftPassTimer = null; if (!e.repeat) tryLob(controlledPlayer()); } // SHIFT then X: lob
-    else onDunkPressed();
+    else onDunkKeyDown();
   }
   if (e.code === 'ArrowUp' && !e.repeat) {
     const hp = controlledPlayer(), nowT = performance.now();
@@ -3890,6 +3890,7 @@ window.addEventListener('keyup', (e) => {
   // Hold-to-shoot: letting go of SPACE is the release.
   if (e.code === 'Space') { e.preventDefault(); onActionReleased(); }
   if (e.code === 'KeyZ' && !game.foulPending && !game.freeThrow) onScreenKeyUp();
+  if (e.code === 'KeyX') onDunkKeyUp();
 });
 
 window.addEventListener('blur', () => { keysDown.clear(); ctrlIgnore.clear(); onActionReleased(); });
@@ -4670,6 +4671,25 @@ function stepDropStep(p, dtMs) {
 // X: dunk when you're driving at the rim; otherwise a LOB. A teammate already near the rim gets the alley-oop pass;
 // if nobody is there yet, the first X sends the closest one cutting to the rim and the next X throws it up to him.
 const LOB_RIM_RANGE = 17;
+// X is hold-to-dunk: pressing it before you're in dunk range arms the dunk, and the moment you get there (still holding X) he goes up.
+// Only a quick tap with no dunk available throws the alley-oop lob (or SHIFT+X).
+function onDunkKeyDown() {
+  const p = controlledPlayer();
+  if (!p || game.ball.carrier !== p || p.dunk || p.shotPhase !== 'none') return;
+  if (canDunk(p)) { game.dunkArm = 0; startDunk(p); return; }
+  game.dunkArm = performance.now();
+}
+function onDunkKeyUp() {
+  const t = game.dunkArm; game.dunkArm = 0;
+  const p = controlledPlayer();
+  if (t && performance.now() - t < 260 && p && game.ball.carrier === p && !p.dunk && p.shotPhase === 'none') tryLob(p);
+}
+function dunkArmTick() {
+  if (!game.dunkArm) return;
+  const p = controlledPlayer();
+  if (!p || game.ball.carrier !== p || !keysDown.has('KeyX') || p.dunk || p.shotPhase !== 'none') { game.dunkArm = 0; return; }
+  if (canDunk(p)) { game.dunkArm = 0; startDunk(p); }
+}
 function onDunkPressed() {
   const p = controlledPlayer();
   if (game.ball.carrier !== p || p.dunk || p.shotPhase !== 'none') return;
@@ -6144,7 +6164,8 @@ function updateHumanMovement(dtMs) {
   // Post-crossover blow-by: once the hand-switch itself has actually played
   // out (not during it -- that's the lateral/forward momentum burst's job),
   // a short real speed boost so the move actually buys separation.
-  if (human.moveBoostTimer > 0) {
+  dunkArmTick();
+if (human.moveBoostTimer > 0) {
     human.moveBoostTimer -= dtMs;
     if (human.handAnimT >= 0.6 || human.moveKind === 'post') { const f = clamp(human.moveBoostTimer / MOVE_BOOST_MS, 0, 1), x = clamp(f / 0.5, 0, 1), bk = x * x * (3 - 2 * x);   // full strength first, then eases off
       speedMult *= 1 + (MOVE_BOOST_MULT - 1) * bk; human.boostK = bk; } else human.boostK = 0;
