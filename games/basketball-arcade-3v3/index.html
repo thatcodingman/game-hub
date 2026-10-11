@@ -2449,7 +2449,7 @@ function makePlayer(team, posLabel) {
     postUpActive: false,
     postDefenseFacing: false, postDefenseFacingAngle: 0,
     postContestTimer: 0, postPrevWave: 0,
-    postDefenseMark: null, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200, comboT: 0, comboCount: 0, comboBonus: 0, comboSeq: [], bumpCd: 0, bumpDrag: 0, bumpT: 0, bumpDirX: 0, bumpDirZ: 0,
+    postDefenseMark: null, bal: 100, stumbleT: 0, shoulderT: 0, shoulderCd: 0, ctT: 0, pinT: 0, rock: 0, rockVel: 0, swipeT: 1, swipeCooldown: 1200, comboT: 0, comboCount: 0, comboBonus: 0, comboSeq: [], bumpCd: 0, bumpDrag: 0, bumpT: 0, bumpDirX: 0, bumpDirZ: 0,
     markOverride: null, lateSwitchCheck: null, screenHangTimer: 0, screenHangDur: 1,
     // Dribble-move momentum: a real, sustained velocity push in the move's
     // direction (not just a one-frame nudge that the normal movement code
@@ -2529,6 +2529,7 @@ function resetPositions(possessionTeam, isMatchStart) {
     p.actionCooldown = 0; p.moveCooldown = 0; p.stealResistTimer = 0;
     p.hesitateTimer = 0; p.hesitateFakeAmt = 0;
     p.handSide = 1; p.handAnimFrom = 1; p.handAnimTo = 1; p.handAnimT = 1; p.handSwitchKind = 'front';
+    p.bal = 100; p.stumbleT = 0; p.shoulderT = 0; p.shoulderCd = 0; p.pinT = 0;
     if (isMatchStart) { p.stamina = STAMINA_MAX; p.exhausted = false; } else p.stamina = Math.min(STAMINA_MAX, p.stamina + STAMINA_MAX * 0.4); // partial recovery on dead balls
     p.turboActive = false;
     p.screenedTimer = 0; p.inboundImmuneTimer = 0; p.screenAssignment = null; p.screenCallCooldown = 0; p.screenHoldTimer = 0;
@@ -2807,7 +2808,7 @@ function attemptSteal(defender) {
   if (carrier.inboundImmuneTimer > 0) return;
   // A recent crossover makes the carrier much harder to strip for a short
   // window — that's the whole point of the move.
-  const evadeMult = carrier.stealResistTimer > 0 ? 0.3 : 1;
+  const evadeMult = (carrier.stealResistTimer > 0 ? 0.3 : 1) * (1 + 0.5 * effFatigue(carrier)) * (1 + 0.4 * (1 - balOf(carrier) / 100)); // a tired or off-balance handler is easier to strip
   const chance = Math.min(0.5, defender.stats.steal * 0.5) * evadeMult * (isHumanDef ? DIFFK.uSteal : 0.22 * (defender.team === 'B' ? DIFFK.steal : 1));
   if (Math.random() < chance) {
     stat(defender, 'stl'); stat(carrier, 'tov');
@@ -3057,13 +3058,14 @@ function attemptShot(player, meterQuality) {
   else if (meterQuality === 'bad') { acc -= SHOT_METER_BAD_PENALTY; tPen = SHOT_METER_BAD_PENALTY; }
   if (player.onFire) { acc += 0.07; if (0.07 > bonusAmt) { bonusWhy = 'ON FIRE'; bonusAmt = 0.07; } } // heating up
   if (player.team === 'B') acc += DIFFK.aiAcc; // level difficulty
+  acc -= 0.14 * effFatigue(player); // gassed legs: a lower percentage (shooters and playmakers hold up better)
   acc = clamp(acc, 0.02, 0.95);
   if (d > HEAVE_DIST && meterQuality !== 'perfect') acc = Math.min(acc, HEAVE_MAX);
   player.lastShotAcc = acc; // exposed for tests/tuning
   // a green only ALWAYS falls if your shooting rating clears the difficulty's bar; below it a green is a big boost, not a guarantee
   let made;
   if (meterQuality === 'perfect' && player === controlledPlayer()) {
-    const nrm = shotNorm(player), sure = nrm >= DIFFK.greenSure;
+    const nrm = shotNorm(player) * (1 - 0.3 * effFatigue(player)), sure = nrm >= DIFFK.greenSure;
     made = sure || Math.random() < clamp(DIFFK.greenMake + nrm * 0.45 - (contestTier === 'heavy' ? 0.2 : contestTier === 'normal' ? 0.08 : 0) - (isThreePt(player.x, player.z, hoop) ? 0.06 : 0), 0.2, 1);
     if (!made) setTimeout(() => showScreenCallout('GREEN... RIMMED OUT', 1100), 700);
   } else made = Math.random() < acc;
@@ -4196,7 +4198,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) onActionPressed(); }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
     if (!e.repeat) {
-      if (keysDown.has('KeyX') && controlledPlayer() === game.ball.carrier) tryLob(controlledPlayer()); // X already down: SHIFT makes it a lob
+      if (defCtx) startShoulder(controlledPlayer()); // on defense SHIFT is a shoulder check
+      else if (keysDown.has('KeyX') && controlledPlayer() === game.ball.carrier) tryLob(controlledPlayer()); // X already down: SHIFT makes it a lob
       else { clearTimeout(game.shiftPassTimer); game.shiftPassTimer = setTimeout(() => { game.shiftPassTimer = null; onPassPressed(); }, 70); } // tiny grace so SHIFT+X can become a lob
     }
   }
@@ -4509,7 +4512,7 @@ function meterZoneWidth(p) {
   const nd = contestDist(p);
   const lo = CONTEST_HEAVY_RANGE, hi = CONTEST_OPEN_RANGE + 1;
   const w = 0.055 + 0.135 * clamp((nd - lo) / (hi - lo), 0, 1); // 0.055 smothered -> 0.19 wide open
-  return Math.max(0.012, w * meterDistScale(dist2(p, p.team === 'A' ? HOOP_A : HOOP_B)) * (p.onFire ? 1.25 : 1) * DIFFK.green * (0.35 + 1.3 * shotNorm(p)));
+  return Math.max(0.012, w * meterDistScale(dist2(p, p.team === 'A' ? HOOP_A : HOOP_B)) * (p.onFire ? 1.25 : 1) * DIFFK.green * (0.35 + 1.3 * shotNorm(p)) * (1 - 0.45 * effFatigue(p)));
 }
 function updateMeterZone(p, snap) {
   const tw = meterZoneWidth(p);
@@ -5161,11 +5164,11 @@ const AUTO_HAND_SWITCH_COOLDOWN_MS = 450;
 // own base flash rating -- behind-the-back is the showiest, hesitation the
 // most dependent on the defender actually biting.
 const ANKLE_BREAKER_RANGE = 3.4;
-const ANKLE_MOVE_BASE = { front: 0.4, behind: 0.52, hesitate: 0.44, spin: 0.5, stepback: 0.28 };
+const ANKLE_MOVE_BASE = { front: 0.11, behind: 0.15, hesitate: 0.12, spin: 0.15, stepback: 0.08 };
 const ANKLE_STUN_MS = 700;
 const ANKLE_DOWN_MS = 1150;
 const ANKLE_GETUP_MS = 500;
-const ANKLE_IMMUNE_MS = 1400;
+const ANKLE_IMMUNE_MS = 2000;
 // Behind-the-back gets its own short cooldown (~= its own switch time) instead
 // of sharing the longer universal MOVE_COOLDOWN_MS, so it can be chained back
 // to back like a real behind-the-back combo instead of one-and-done.
@@ -5232,29 +5235,35 @@ function attemptAnkleBreaker(handler, moveKind) {
   if (defender.ankleStunTimer > 0 || defender.ankleDownTimer > 0 || defender.ankleGetUpTimer > 0 || defender.ankleImmuneTimer > 0) return;
   if (dist2(handler, defender) > ANKLE_BREAKER_RANGE) return;
 
-  const handlerSkill = (handler.stats && (handler.stats.handle || handler.stats.steal)) || 0.5;
+  const handlerSkill = ((handler.stats && (handler.stats.handle || handler.stats.steal)) || 0.5) * (1 - 0.35 * effFatigue(handler)); // gassed handles are sloppier
   const defSkill = (defender.stats && defender.stats.steal) || 0.5;
   const defAnchor = (defender.stats && defender.stats.strength) || 1;
   const skillDiff = clamp(handlerSkill - defSkill, -0.3, 0.3);
-
-  const baseP = (ANKLE_MOVE_BASE[moveKind] || 0.45) + (handler.comboBonus || 0);
+  const gap = dist2(handler, defender), defBal = balOf(defender) / 100, defSp = Math.hypot(defender.vx, defender.vz), defTop = (defender.stats && defender.stats.speed) || 0.45;
+  // spacing: the move only sells in the pocket (about 2-3 ft); too far or jammed up and he doesn't bite
+  const space = clamp(1 - Math.abs(gap - 2.4) / 1.4, 0, 1);
+  // how he's standing: lunging / off balance / tired = beatable; planted with hands up = hard
+  const toH = Math.hypot(handler.x - defender.x, handler.z - defender.z) || 1;
+  const lunge = clamp(((defender.vx * (handler.x - defender.x) + defender.vz * (handler.z - defender.z)) / toH) / (defTop * 0.7), 0, 1);
+  const planted = defSp < defTop * 0.12 || (defender.plantT || 0) >= 40;
+  const state = 0.06 * lunge + 0.12 * (1 - defBal) + 0.06 * fatigueOf(defender) - (planted ? 0.05 : 0) - (defender.handsUp ? 0.03 : 0);
+  const baseP = (ANKLE_MOVE_BASE[moveKind] || 0.07) + Math.min(0.12, (handler.comboBonus || 0) * 0.3);
   const dm = handler === controlledPlayer() ? DIFFK.ankle : defender === controlledPlayer() ? DIFFK.aiAnkle : 1;
-  const triggerChance = clamp((baseP + skillDiff * 1.6) * dm, 0.02, 0.92);
+  const triggerChance = clamp((baseP + skillDiff * 0.45 + state) * (0.4 + 0.6 * space) * dm, 0.0, 0.6);
+  contact.ankleTry++;
   if (Math.random() >= triggerChance) return;
 
-  // Among the ones that land, how many are a full knockdown vs just a
-  // stumble: a bigger skill edge and a weaker-anchored defender both push
-  // toward knockdown.
-  const knockdownChance = clamp((0.22 + skillDiff * 1.1 - (defAnchor - 1) * 0.3) * Math.min(1, dm), 0.03, 0.75);
+  // Among the ones that land, a clearly won exchange (low balance / big skill edge) is a knockdown; most are a stumble.
+  const knockdownChance = clamp((0.10 + skillDiff * 0.8 + (1 - defBal) * 0.35 - (defAnchor - 1) * 0.25) * Math.min(1, dm), 0.01, 0.5);
   defender.ankleFallSide = Math.random() < 0.5 ? -1 : 1;
   defender.vx = 0; defender.vz = 0;
   if (Math.random() < knockdownChance) {
-    defender.ankleDownTimer = ANKLE_DOWN_MS;
+    defender.ankleDownTimer = ANKLE_DOWN_MS; defender.bal = 0; contact.ankleDown++;
     showScreenCallout('ANKLE BREAKER!', 1300);
     playBodyThud(0.55);
     playTone(170, 0.1);
   } else {
-    defender.ankleStunTimer = ANKLE_STUN_MS;
+    defender.ankleStunTimer = ANKLE_STUN_MS; defender.bal = Math.max(0, balOf(defender) - 35); contact.ankleStun++;
     showScreenCallout('CROSSED UP!', 950);
     playTone(300, 0.06);
   }
@@ -5616,17 +5625,52 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
 // Opposing players who run into each other inside BUMP_D lose the speed they were closing at (the
 // offensive player more than the defender, scaled by strength), get a short drag, a lean/lunge
 // animation and a thud. Pairs have a short cooldown so it reads as a bump, not a buzz.
+// ===== CONTACT SYSTEM ====================================================================================
+// Bumping is a choice: a defender throws a shoulder (SHIFT) or a handler drives with turbo; otherwise bodies slide past with
+// only a slight slowdown. A hit's strength comes from closing speed x both players' weight (size + height + strength) x the
+// dribble angle (head-on lands fully, across the body barely) x the defender's chest alignment. Both players have BALANCE
+// (0-100): hits drain it, the loser more than the winner; low balance caps top speed, and at 0-15 you stumble. A hit also
+// costs stamina (the handler most, a shoulder-checking defender a little), and a tired player dribbles and shoots worse
+// (softened by shooting + playmaking skill) with a narrower green window. Every hit is logged in game.contact for tuning.
+const CT = { stdWt: 1.0, hitRef: 0.55, lightMax: 0.6, mediumMax: 1.25, softK: 0.35, shoulderMs: 450, shoulderCd: 1100, stumbleBal: 15, stumbleMs: 450 };
+const contact = { n: 0, light: 0, medium: 0, hard: 0, stumbles: 0, maxPinMs: 0, log: [], ankleTry: 0, ankleStun: 0, ankleDown: 0, shoulders: 0, aiShoulders: 0 };
+function wtOf(p) { const st = p.stats || {}; const sc = st.scale || 1, h = (st.height || 6.5) / 6.5, str = st.strength || 0.9; return (sc * 0.6 + h * 0.4) * (0.7 + 0.3 * str); }
+function balOf(p) { return p.bal === undefined ? 100 : p.bal; }
+function balSpeedK(p) { return (0.72 + 0.28 * clamp(balOf(p) / 60, 0, 1)) * (p.stumbleT > 0 ? 0.55 : 1); }
+function fatigueOf(p) { return clamp((0.6 - clamp(p.stamina / STAMINA_MAX, 0, 1)) / 0.6, 0, 1); }
+function gritOf(p) { const pm = clamp(((p.stats && p.stats.pass) || 0.6) - 0.5, 0, 0.4) / 0.4; return clamp(0.5 * shotNorm(p) + 0.5 * pm, 0, 1); }
+function effFatigue(p) { return fatigueOf(p) * (1 - 0.55 * gritOf(p)); }   // great shooters / playmakers keep more of their game when gassed
+function startShoulder(p) {
+  if (!p || p.shoulderCd > 0 || p.stamina < 2) return;
+  p.shoulderT = CT.shoulderMs; p.shoulderCd = CT.shoulderMs + CT.shoulderCd; p.stamina = Math.max(0, p.stamina - 0.6); contact.shoulders++;
+}
 const BUMP_D = PLAYER_R * 2 + 1.0;
 const BUMP_CLOSE_MIN = 0.07;      // closing speed (units/frame) needed to count as a collision
-const BUMP_CD_MS = 420, BUMP_DRAG_MS = 340;
+const BUMP_CD_MS = 420, BUMP_DRAG_MS = 200;
+const BUMP_PUSH_MAX_MS = 420; // a handler leaning on a defender wears the resistance down over this long, then shoulders through
 function applyBodyContacts(dtMs) {
-  const P = game.players;
+  const P = game.players, human = controlledPlayer();
   const possTeam = game.ball.carrier ? game.ball.carrier.team : game.possessionTeam;
   for (let i = 0; i < P.length; i++) {
     const a = P[i];
     if (a.bumpCd > 0) a.bumpCd -= dtMs;
     if (a.chargeCd > 0) a.chargeCd -= dtMs;
     if (a.bumpDrag > 0) { a.bumpDrag -= dtMs; const k = Math.exp(-dtMs / 1100); a.vx *= k; a.vz *= k; }
+    if (a.pushT > 0) a.pushT = Math.max(0, a.pushT - dtMs * 1.5);
+    if (a.shoulderT > 0) a.shoulderT -= dtMs;
+    if (a.shoulderCd > 0) a.shoulderCd -= dtMs;
+    if (a.stumbleT > 0) a.stumbleT -= dtMs;
+    if (a.ctT > 0) a.ctT -= dtMs;
+    // balance: recovers faster planted, with speed + strength, slower when gassed
+    const sp = Math.hypot(a.vx, a.vz), st = a.stats || {}, still = sp < (st.speed || 0.4) * 0.25;
+    const rec = (still ? 34 : 15) * (0.8 + 0.4 * ((st.speed || 0.45) / 0.5)) * (0.85 + 0.3 * (st.strength || 0.9)) * (1 - 0.4 * fatigueOf(a));
+    if (a.bal === undefined) a.bal = 100;
+    a.bal = Math.min(100, a.bal + rec * dtMs / 1000);
+    // low balance caps your top speed (turbo included)
+    const bk = balSpeedK(a);
+    if (bk < 0.999) { const cap = (st.speed || 0.45) * TURBO_SPEED_MULT * 1.1 * bk; if (sp > cap) { a.vx *= cap / sp; a.vz *= cap / sp; } }
+    // pin tracking for tuning: a handler in contact who is barely moving
+    if (a.ctT > 0 && game.ball.carrier === a && sp < (st.speed || 0.45) * 0.25) { a.pinT += dtMs; if (a.pinT > contact.maxPinMs) contact.maxPinMs = a.pinT; } else a.pinT = 0;
   }
   if (game.activeInbound || game.freeThrow || game.foulPending) return;
   for (let i = 0; i < P.length; i++) {
@@ -5645,29 +5689,54 @@ function applyBodyContacts(dtMs) {
       if (closing < BUMP_CLOSE_MIN) continue;
       const off = a.team === possTeam ? a : b, def = off === a ? b : a;
       const offIn = off === a ? aIn : bIn, defIn = def === a ? aIn : bIn;
-      const sOff = (off.stats && off.stats.strength) || 1, sDef = (def.stats && def.stats.strength) || 1;
-      const defEdge = clamp(sDef / (sOff + sDef), 0.25, 0.75); // 0.5 = even
       const ox = off === a ? nx : -nx, oz = off === a ? nz : -nz; // off -> def
-      // continuous resistance while pushing into a body (turbo shoulders through a bit better)
+      off.ctT = 140;
+      // ---- intent: a shoulder check (SHIFT / AI read) or a handler driving with turbo makes it a real hit; otherwise slide-by
+      if (def !== human && off === game.ball.carrier && !(def.shoulderT > 0) && !(def.shoulderCd > 0) && balOf(def) > 50 && Math.random() < 0.015 * DIFFK.steal) { startShoulder(def); contact.aiShoulders++; }
+      const offSp = Math.hypot(off.vx, off.vz), defIntent = def.shoulderT > 0, offIntent = off.turboActive || (off !== human && offSp >= (off.stats.speed || 0.4) * 0.95);
+      const cK = (defIntent || offIntent) ? 1 : CT.softK;
+      // ---- who wins: weight (size + height + strength), balance, stance, chest alignment
+      const wOff = wtOf(off), wDef = wtOf(def), bOff = balOf(off) / 100, bDef = balOf(def) / 100;
+      const velLen = offSp || 1, cosA = clamp((off.vx * ox + off.vz * oz) / velLen, 0, 1);
+      const fd = def.facing || 0, chest = clamp(-(Math.sin(fd) * ox + Math.cos(fd) * oz), 0, 1);
+      const offPow = wOff * (0.6 + 0.4 * bOff) * (off.turboActive ? 1.2 : 1);
+      const defPow = wDef * (0.6 + 0.4 * bDef) * ((def.plantT || 0) >= 40 ? 1.15 : 1) * (defIntent ? 1.25 : 1) * (0.6 + 0.4 * chest);
+      const defEdge = clamp(defPow / (defPow + offPow), 0.2, 0.8); // 0.5 = even
+      const baseHit = clamp(closing * (wOff + wDef) / 2 * (0.35 + 0.65 * cosA) / CT.hitRef, 0, 2);
+      // continuous resistance while leaning into a body, wearing down so it slows you rather than pinning you
+      off.pushT = (off.pushT || 0) + dtMs * 2.5; const wear = 1 - clamp(off.pushT / BUMP_PUSH_MAX_MS, 0, 1);
       const turboK = off.turboActive ? 0.7 : 1;
-      if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.55 + 0.6 * defEdge) * turboK; off.vx -= ox * cut; off.vz -= oz * cut; }
-      if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.9 - 0.5 * defEdge); def.vx += ox * cut; def.vz += oz * cut; }
-      // Planted defender (hold 2, stand still) vs a sprinting ball handler: chance of a charge
-      if (def === controlledPlayer() && (def.plantT || 0) >= 40 && game.ball.carrier === off && (offIn >= 0.15 || off.turboActive) && !(off.chargeCd > 0)) {
+      if (offIn > 0) { const cut = offIn * (1 - Math.exp(-dtMs / 110)) * (0.22 + 0.3 * defEdge) * turboK * wear * cK; off.vx -= ox * cut; off.vz -= oz * cut; }
+      if (defIn > 0) { const cut = defIn * (1 - Math.exp(-dtMs / 110)) * (0.6 - 0.35 * defEdge) * (0.4 + 0.6 * wear) * cK; def.vx += ox * cut; def.vz += oz * cut; }
+      // charge: a planted defender vs a sprinting handler
+      if (def === human && (def.plantT || 0) >= 40 && game.ball.carrier === off && (offIn >= 0.15 || off.turboActive) && !(off.chargeCd > 0)) {
+        const sOff = (off.stats && off.stats.strength) || 1, sDef = (def.stats && def.stats.strength) || 1;
         const chance = clamp(0.55 + (offIn - 0.3) * 1.2 + (off.turboActive ? 0.2 : 0) + (sDef - sOff) * 0.15, 0.4, 0.95);
         off.chargeCd = 450;
         if (Math.random() < chance) { callFoul(off, def, 'charge'); return; }
       }
-      if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1) {
+      // ---- the hit itself (cooldown-gated): speed, balance, stamina, feedback, metrics
+      const score = baseHit * cK;
+      if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1 && score >= 0.12) {
         a.bumpCd = b.bumpCd = BUMP_CD_MS;
-        const big = clamp(closing / 0.4, 0.5, 1.3);
-        off.vx -= ox * offIn * 0.35 * turboK; off.vz -= oz * offIn * 0.35 * turboK; // the hit itself
-        def.vx += ox * defIn * 0.2; def.vz += oz * defIn * 0.2;
+        off.vx -= ox * offIn * 0.2 * turboK * (0.4 + 0.6 * defEdge) * cK; off.vz -= oz * offIn * 0.2 * turboK * (0.4 + 0.6 * defEdge) * cK;
+        def.vx += ox * defIn * 0.12 * cK; def.vz += oz * defIn * 0.12 * cK;
         off.bumpDrag = BUMP_DRAG_MS * (turboK < 1 ? 0.7 : 1);
+        // balance: the loser pays most, the winner a little; a deliberate shoulder protects the checker
+        const lossOff = 24 * score * (0.25 + 0.75 * defEdge), lossDef = 24 * score * (0.25 + 0.75 * (1 - defEdge)) * (defIntent ? 0.7 : 1);
+        off.bal = Math.max(0, balOf(off) - lossOff); def.bal = Math.max(0, balOf(def) - lossDef);
+        // stamina: the handler takes the toll; a defender who threw the shoulder pays a little
+        off.stamina = Math.max(0, off.stamina - (1.2 + 3.2 * score * defEdge)); if (off.stamina <= 0 && off === human) off.exhausted = true;
+        if (defIntent) def.stamina = Math.max(0, def.stamina - (0.8 + 0.8 * score));
+        // stumble when balance bottoms out
+        [off, def].forEach((q) => { if (balOf(q) < CT.stumbleBal && !(q.stumbleT > 0)) { q.stumbleT = CT.stumbleMs; q.vx *= 0.5; q.vz *= 0.5; q.rockVel += (q === off ? -1 : 1) * 0.006; contact.stumbles++; if (q === human) showScreenCallout('OFF BALANCE', 550); } });
+        const tier = score < CT.lightMax ? 'light' : score < CT.mediumMax ? 'medium' : 'hard';
+        contact.n++; contact[tier]++; contact.log.push({ tier, score: +score.toFixed(2), edge: +defEdge.toFixed(2), off: off.name, def: def.name, balO: Math.round(off.bal), balD: Math.round(def.bal), intent: defIntent ? 'D' : offIntent ? 'O' : '-' }); if (contact.log.length > 600) contact.log.shift();
         a.bumpT = 1; b.bumpT = 1; a.bumpDirX = nx; a.bumpDirZ = nz; b.bumpDirX = -nx; b.bumpDirZ = -nz;
+        const big = clamp(score, 0.5, 1.3);
         off.rockVel -= 0.0042 * big * (1.2 - defEdge); def.rockVel += 0.003 * big * defEdge;
-        playBodyThud(clamp(0.3 * big, 0.2, 0.45));
-        if (off === controlledPlayer() || def === controlledPlayer()) showScreenCallout(off === controlledPlayer() ? 'CHECKED' : 'BUMP', 450);
+        playBodyThud(clamp(0.18 + 0.18 * score, 0.2, 0.5));
+        if ((off === human || def === human) && tier !== 'light') showScreenCallout(off === human ? 'CHECKED' : 'BUMP', 450);
       }
     }
   }
@@ -5682,6 +5751,7 @@ function moveToward(p, tx, tz, dtMs, extraMult = 1) {
   speed *= extraMult;
   if (p.team === 'B') speed *= DIFFK.aiSpeed;
   if (p !== controlledPlayer()) speed *= 0.82 + 0.18 * clamp(p.stamina / (STAMINA_MAX * 0.4), 0, 1); // tired legs
+  speed *= balSpeedK(p);
   if (p.screenHangTimer > 0) speed *= 1 - SCREEN_HANG_SLOW * (p.name === 'C' ? 0.5 : 1) * (p.screenHangTimer / p.screenHangDur);
   let targetVx = 0, targetVz = 0;
   if (d >= 0.6) { targetVx = dx / d * speed; targetVz = dz / d * speed; }
@@ -6515,6 +6585,7 @@ function updateHumanMovement(dtMs) {
       if (human.exhausted && human.stamina >= STAMINA_EXHAUST_RECOVER) human.exhausted = false;
     }
   }
+  speedMult *= balSpeedK(human); // off-balance: lower top speed
   // Post-crossover blow-by: once the hand-switch itself has actually played
   // out (not during it -- that's the lateral/forward momentum burst's job),
   // a short real speed boost so the move actually buys separation.
@@ -8355,7 +8426,7 @@ document.addEventListener('click', (e) => { if (e.target.closest && e.target.clo
   document.getElementById('aud-cfg').addEventListener('click', (e) => { e.stopPropagation(); panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; });
   document.getElementById('aud-cfg').addEventListener('pointerdown', (e) => e.stopPropagation()); }
 audRefreshButtons();
-game.AUD = AUD; game.audCreate = audCreate; game.crowdVoice = crowdVoice; game.sfx = sfx; game.THEMES = THEMES; game.SFXD = SFX_DEFS; game.audStep = audStep; game.crowd = crowd;
+game.contact = contact; game.AUD = AUD; game.audCreate = audCreate; game.crowdVoice = crowdVoice; game.sfx = sfx; game.THEMES = THEMES; game.SFXD = SFX_DEFS; game.audStep = audStep; game.crowd = crowd;
 game.prog = prog; game.openLocker = openLocker; game.closeLocker = closeLocker; game.levelInfo = levelInfo; game.awardProgress = awardProgress; game.KITS = KITS; game.CATALOG = CATALOG; game.applyLoadout = applyLoadout; game.spawnCeleb = spawnCeleb; game.effectiveLook = effectiveLook;
 
 
@@ -11151,7 +11222,7 @@ const MOVES_HELP = [
   ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot. A defender in front of you or beside you counts fully; one trailing behind you counts much less'],['X','HOLD X while driving at the rim to dunk: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). A dunk is a real attempt: rating, speed, distance, tiredness and defenders (ahead, help side, chasing) decide the make, and it can be blocked or rim out. A quick TAP of X when you cannot dunk (or SHIFT+X) throws a high ALLEY-OOP LOB: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound'],['ON FIRE','Three makes in a row sets a player on fire: flames, a roar from the crowd, a small accuracy boost and a wider green window until his next miss'],['Replays','Big dunks (alley-oops, contact dunks, windmills) and blocks get a slow-motion instant replay. Click or press any key to skip'],['Box score','Points, FG, 3P, rebounds, assists, steals, blocks and turnovers show at the end of the game'],['Modes','Pick 3v3, 2v2 (guard + big) or 1v1 on the start screen, and FULL or QUICK game length'],['Levels & arenas','ROOKIE = Sunset Blacktop (slower, softer AI, wider green). PRO = City Arena. ALL-STAR = Crystal Palace (sharper AI, tighter green). LEGEND = Neon Dome (fastest, tightest AI, smallest green). Each has its own court and crowd']]],
   ['DRIBBLE MOVES', [['Q (or 1) Crossover','Hand switch, quick burst'],['Q Q (or 2) Behind-the-back','Double-tap Q. Wide switch, harder to strip'],['W (or 3) Hesitation','Freeze to bite the defender'],['W W (or 4) Spin','Double-tap W. 360 away from pressure, ball switches hands'],['S (or 5) Step-back','Space off the defender, always facing the rim, wider green'],['Burst','Every move ends in a short speed boost, so explode to the rim or the other side. Leaving the post or a drop step gives one too'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press C to WAVE IT OFF and isolate your man. Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
-  ['DEFENSE', [['Q (hold) or 1','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['W (hold, stand still) or 2','Plant and take a charge on a sprinting handler'],['SPACE or 3','Swipe for the steal (misses can be reach-in fouls). Every swipe costs stamina: quick, high steal-rating guards pay least, bigs the most, spamming costs more, and when you are too tired you cannot swipe. LOCKDOWN Take Over halves the cost'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
+  ['DEFENSE', [['SHIFT (defense)','Shoulder check: a real bump that costs the handler balance and stamina (you pay a little). Without it, contact only slows slightly'],['Q (hold) or 1','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['W (hold, stand still) or 2','Plant and take a charge on a sprinting handler'],['SPACE or 3','Swipe for the steal (misses can be reach-in fouls). Every swipe costs stamina: quick, high steal-rating guards pay least, bigs the most, spamming costs more, and when you are too tired you cannot swipe. LOCKDOWN Take Over halves the cost'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['LOCKER ROOM & LEVELS', [['XP','Every finished game earns XP from points, assists, rebounds, steals, blocks, ON FIRE and the win, scaled up by level (LEGEND pays double) and down for QUICK games. Achievements add bonus XP'],['Levels','Reach level 40. Each level unlocks new gear: more than 200 items in all'],['Locker room','Open it from the start screen or the game-over screen. Customize each of your three players separately (skin, hairstyle and color, headwear, eyewear, facial hair, chain, wristbands, sleeves, shoes, jersey number), plus your team kit, ball, ball trail, flame color and score celebration. Locked items show the level they need'],['VIEW / COPY / RANDOM','FACE view zooms in on the head, COPY LOOK TO TEAM gives all three the same style, RANDOM LOOK rolls one'],['Saved','Your level and loadout are saved in this browser']]],
   ['MY CAREER', [['Start','MY CAREER on the start screen. Pick one of 3 save slots, create your player and pick a difficulty. You start at 60 overall, age 19'],['Archetypes','Each position has 4-5 archetypes shown as a pie chart of shooting, speed, defense, passing, strength and rebounding. Your height, wingspan, agility and build reshape the pie live, always totaling 60 overall. Wingspan past a position limit (+5 guards, +6 SF, +7 bigs) hurts shooting'],['Take Over','A meter above your stamina. Fill it with makes (threes and dunks fill it more), assists, steals, blocks and boards. Misses and turnovers drain it and it slowly leaks when you go quiet, so it is hard to fill. When it is full you TAKE OVER for about 45 seconds: your chosen ability adds +15 to one attribute (Sharpshooter shooting, Jet speed, Lockdown defense, Floor General passing, Bulldozer strength, Glass Eater rebounding) and your foot icon turns gold. Pick it when you create your player and change it any time in UPGRADES'],['Looks','30+ hairstyles, 16 eyewear and 16 facial hair styles, any skin, hair and shoe color (use the rainbow dot for a custom color), 8 shoe models. Drag the player to rotate, scroll to zoom'],['Alive slots','Your save slots show an animated portrait, your overall, build pie and record'],['The league','8 different teams, a 28-game season, then the top 4 play best-of-3 semifinals and finals. 3 teams have a superstar, the other 5 have two All-Stars. Real stars have a gold or cyan star under their feet'],['Games','5v5, 4 quarters of 2:00. You control only your player; the other 9 are AI. You can also SIM a game for 60% of the Ball Bucks'],['Ball Bucks','Earned from your points, assists, rebounds, steals, blocks and threes, plus a bonus for winning. Spend them on attribute upgrades (shooting, speed, defense, passing, strength, rebounding) and cosmetics'],['Seasons','Your career carries on: you age each season, grow while young and slow down later'],['Phone','The PHONE button on the hub has standings, rankings, league leaders, your stats, a shop, messages and a feed'],['Messages','Before some games the other team\'s star DMs you. Reply and you start a rivalry for that game: one answer builds fans, the other builds team chemistry. Beat your rival for a bonus'],['Chemistry','You start with low chemistry, so teammates do not always give it up when you call for the ball (R). Keep calling. Chemistry grows from messages, playing and winning, and when it is high they almost always find you'],['Feed','Fans, media and rivals post about your games, team stats, league leaders, milestones and awards (Player of the Week, All-Star selections, season MVP, Rookie of the Year). Fans repost the big ones'],['Sponsors','Brands from the other games in the Game Hub sign you as you gain fans. Each deal pays Ball Bucks every game plus a bonus if you hit its target. You get 1 slot, a 2nd at 40 fans and a 3rd at 80. Tap PLAY on a deal to jump to that game'],['Fans','More fans means more Ball Bucks (up to +30%) and a Take Over meter that fills faster. Win, score big and answer messages to grow them']]],
   ['SOUND', [['Music','A different track for every arena (and one for the menus and locker room): Sunset Blacktop boom-bap, City Arena funk, Crystal Palace bells, Neon Dome synthwave. It gets busier in close games, late in the clock and when someone is ON FIRE'],['M / N','Toggle music / sound effects. The two buttons in the top-left corner do the same'],['⚙ button','Opens volume sliders for music and sound effects. Music pauses when you switch tabs']]],
