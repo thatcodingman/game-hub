@@ -5282,6 +5282,7 @@ function moveReady(p) {
 function registerMove(p, kind, cd) {
   if (game.phase === 'live') sfx('squeak', 0.75, p);
   p.moveCdTotal = cd; p.moveCooldown = cd;
+  { const cc = (p.comboT > 0 ? (p.comboCount || 0) : 0); p.stamina = Math.max(0, p.stamina - (3.2 + 1.4 * cc)); p.dribLockT = 1400; if (p.stamina <= 0 && p === controlledPlayer()) p.exhausted = true; } // dribble moves burn legs; no refill while working the ball
   const prev = p.comboT > 0 && p.comboSeq && p.comboSeq.length ? p.comboSeq[p.comboSeq.length - 1] : null;
   if (prev) { p.comboCount++; p.comboSeq.push(kind); if (p.comboSeq.length > 6) p.comboSeq.shift(); }
   else { p.comboCount = 1; p.comboSeq = [kind]; p.comboBonus = 0; }
@@ -5635,14 +5636,19 @@ function resolveDribblerContact(h, def, overlap, ux, uz) {
 const CT = { stdWt: 1.0, hitRef: 0.55, lightMax: 0.6, mediumMax: 1.25, softK: 0.35, shoulderMs: 450, shoulderCd: 1100, stumbleBal: 15, stumbleMs: 450 };
 const contact = { n: 0, light: 0, medium: 0, hard: 0, stumbles: 0, maxPinMs: 0, log: [], ankleTry: 0, ankleStun: 0, ankleDown: 0, shoulders: 0, aiShoulders: 0 };
 function wtOf(p) { const st = p.stats || {}; const sc = st.scale || 1, h = (st.height || 6.5) / 6.5, str = st.strength || 0.9; return (sc * 0.6 + h * 0.4) * (0.7 + 0.3 * str); }
-function balOf(p) { return p.bal === undefined ? 100 : p.bal; }
-function balSpeedK(p) { return (0.72 + 0.28 * clamp(balOf(p) / 60, 0, 1)) * (p.stumbleT > 0 ? 0.55 : 1); }
+function balOf(p) { return 100; } // balance mechanic removed
+function balSpeedK(p) { return 1; }
 function fatigueOf(p) { return clamp((0.6 - clamp(p.stamina / STAMINA_MAX, 0, 1)) / 0.6, 0, 1); }
 function gritOf(p) { const pm = clamp(((p.stats && p.stats.pass) || 0.6) - 0.5, 0, 0.4) / 0.4; return clamp(0.5 * shotNorm(p) + 0.5 * pm, 0, 1); }
 function effFatigue(p) { return fatigueOf(p) * (1 - 0.55 * gritOf(p)); }   // great shooters / playmakers keep more of their game when gassed
 function startShoulder(p) {
   if (!p || p.shoulderCd > 0 || p.stamina < 2) return;
   p.shoulderT = CT.shoulderMs; p.shoulderCd = CT.shoulderMs + CT.shoulderCd; p.stamina = Math.max(0, p.stamina - 0.6); contact.shoulders++;
+  const car = game.ball && game.ball.carrier;
+  let dx, dz;
+  if (car && car.team !== p.team && Math.hypot(car.x - p.x, car.z - p.z) < 10) { dx = car.x - p.x; dz = car.z - p.z; } else { dx = Math.sin(p.facing || 0); dz = Math.cos(p.facing || 0); }
+  const dl = Math.hypot(dx, dz) || 1; p.vx += dx / dl * 0.3; p.vz += dz / dl * 0.3; p.rockVel += 0.004;
+  if (p === controlledPlayer()) showScreenCallout('SHOULDER', 400);
 }
 const BUMP_D = PLAYER_R * 2 + 1.0;
 const BUMP_CLOSE_MIN = 0.07;      // closing speed (units/frame) needed to count as a collision
@@ -5658,6 +5664,7 @@ function applyBodyContacts(dtMs) {
     if (a.bumpDrag > 0) { a.bumpDrag -= dtMs; const k = Math.exp(-dtMs / 1100); a.vx *= k; a.vz *= k; }
     if (a.pushT > 0) a.pushT = Math.max(0, a.pushT - dtMs * 1.5);
     if (a.shoulderT > 0) a.shoulderT -= dtMs;
+    if (a.dribLockT > 0) a.dribLockT -= dtMs;
     if (a.shoulderCd > 0) a.shoulderCd -= dtMs;
     if (a.stumbleT > 0) a.stumbleT -= dtMs;
     if (a.ctT > 0) a.ctT -= dtMs;
@@ -6546,7 +6553,7 @@ function updateHumanMovement(dtMs) {
     targetVz = targetVz * contestMult + contestPushZ;
     approachVelocity(human, targetVx, targetVz, dtMs);
     human.turboActive = false;
-    human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
+    human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * (human.dribLockT > 0 ? 0.2 : 1) * dtMs / 1000);
     return;
   }
   human.postUpActive = false;
@@ -6570,7 +6577,7 @@ function updateHumanMovement(dtMs) {
     const elapsed = HESITATE_TOTAL_MS - human.hesitateTimer;
     speedMult = elapsed < HESITATE_STUTTER_MS ? 0.2 : 1.45;
     human.turboActive = false;
-    human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
+    human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * (human.dribLockT > 0 ? 0.2 : 1) * dtMs / 1000);
   } else {
     const turboHeld = keysDown.has('Tab');
     const wantTurbo = turboHeld && !human.exhausted && mag >= 0.05 && human.stamina > 0;
@@ -6581,11 +6588,11 @@ function updateHumanMovement(dtMs) {
       if (human.stamina <= 0) human.exhausted = true;
     } else {
       human.turboActive = false;
-      human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * dtMs / 1000);
+      human.stamina = Math.min(STAMINA_MAX, human.stamina + STAMINA_REGEN_PER_SEC * (human.dribLockT > 0 ? 0.2 : 1) * dtMs / 1000);
       if (human.exhausted && human.stamina >= STAMINA_EXHAUST_RECOVER) human.exhausted = false;
     }
   }
-  speedMult *= balSpeedK(human); // off-balance: lower top speed
+  if (human.shoulderT > 0) speedMult *= 1.35; // shoulder lunge
   // Post-crossover blow-by: once the hand-switch itself has actually played
   // out (not during it -- that's the lateral/forward momentum burst's job),
   // a short real speed boost so the move actually buys separation.
@@ -11222,7 +11229,7 @@ const MOVES_HELP = [
   ['SHOOTING', [['SPACE (hold, release on green)','Jump shot. A perfect release always goes in'],['Green window','Shrinks the more you are contested and the farther you are; tiny from full court'],['Readout','Coverage + % contested + your timing after each shot. A defender in front of you or beside you counts fully; one trailing behind you counts much less'],['X','HOLD X while driving at the rim to dunk: one-hand, two-hand, windmill, or a CONTACT dunk over a defender (he may hit the floor). A dunk is a real attempt: rating, speed, distance, tiredness and defenders (ahead, help side, chasing) decide the make, and it can be blocked or rim out. A quick TAP of X when you cannot dunk (or SHIFT+X) throws a high ALLEY-OOP LOB: to the teammate you point at with the arrows, otherwise the one closest to the rim. He sprints to the landing spot, leaps, catches it in the air and slams it if the pass is good and traffic is light. Too far or too early and he may not get there'],['Shot clock','24s; 14 after an offensive rebound'],['ON FIRE','Three makes in a row sets a player on fire: flames, a roar from the crowd, a small accuracy boost and a wider green window until his next miss'],['Replays','Big dunks (alley-oops, contact dunks, windmills) and blocks get a slow-motion instant replay. Click or press any key to skip'],['Box score','Points, FG, 3P, rebounds, assists, steals, blocks and turnovers show at the end of the game'],['Modes','Pick 3v3, 2v2 (guard + big) or 1v1 on the start screen, and FULL or QUICK game length'],['Levels & arenas','ROOKIE = Sunset Blacktop (slower, softer AI, wider green). PRO = City Arena. ALL-STAR = Crystal Palace (sharper AI, tighter green). LEGEND = Neon Dome (fastest, tightest AI, smallest green). Each has its own court and crowd']]],
   ['DRIBBLE MOVES', [['Q (or 1) Crossover','Hand switch, quick burst'],['Q Q (or 2) Behind-the-back','Double-tap Q. Wide switch, harder to strip'],['W (or 3) Hesitation','Freeze to bite the defender'],['W W (or 4) Spin','Double-tap W. 360 away from pressure, ball switches hands'],['S (or 5) Step-back','Space off the defender, always facing the rim, wider green'],['Burst','Every move ends in a short speed boost, so explode to the rim or the other side. Leaving the post or a drop step gives one too'],['Combos','Chain different moves within about 1s for a bigger ankle-breaker chance']]],
   ['POST GAME', [['A + D (hold)','Post up; steer with the arrows'],['Double-tap Up','DROP STEP: pivot off the defender and attack the rim'],['SPACE while posted','Left/Right = drop-step shot, neither = turnaround fadeaway'],['Z (hold)','Call a screen from your big. An overlay shows ROLL (automatic: he dives to the rim). Press C to WAVE IT OFF and isolate your man. Press Z again while he sets it to POP instead: to the 3, the elbow or mid-range, chosen by the open spot']]],
-  ['DEFENSE', [['SHIFT (defense)','Shoulder check: a real bump that costs the handler balance and stamina (you pay a little). Without it, contact only slows slightly'],['Q (hold) or 1','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['W (hold, stand still) or 2','Plant and take a charge on a sprinting handler'],['SPACE or 3','Swipe for the steal (misses can be reach-in fouls). Every swipe costs stamina: quick, high steal-rating guards pay least, bigs the most, spamming costs more, and when you are too tired you cannot swipe. LOCKDOWN Take Over halves the cost'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
+  ['DEFENSE', [['SHIFT (defense)','Shoulder check: lunge into the handler. A real bump that costs him stamina (you pay a little). Without it, contact only slows slightly'],['Q (hold) or 1','Hands up: about 10% slower, counts as a closer contest, drains stamina'],['W (hold, stand still) or 2','Plant and take a charge on a sprinting handler'],['SPACE or 3','Swipe for the steal (misses can be reach-in fouls). Every swipe costs stamina: quick, high steal-rating guards pay least, bigs the most, spamming costs more, and when you are too tired you cannot swipe. LOCKDOWN Take Over halves the cost'],['X','Swipe at a pass in the air: deflect, tip or pick it off'],['C','Block a shot in the air'],['Z','Switch the player you control (on defense)'],['Fouls','Rarer and clearer now: a shooting foul usually needs a defender in front of or beside the shooter in contact, lunging into him (from behind it is rare); reach-ins only on missed steals; pushing needs real shoving; at most one non-charge whistle every ~6 seconds. Straight-up blocks and clean contests are legal'],['Old keys','SPACE steal/deflect, F block, V hands up still work'],['Help defense','Your AI teammates sag off their man to stunt at a driver or post-up; leave them open and they scramble back. Beat your man and expect help, then kick it out. If your defender is still on you, help is rare (about 5%)']]],
   ['LOCKER ROOM & LEVELS', [['XP','Every finished game earns XP from points, assists, rebounds, steals, blocks, ON FIRE and the win, scaled up by level (LEGEND pays double) and down for QUICK games. Achievements add bonus XP'],['Levels','Reach level 40. Each level unlocks new gear: more than 200 items in all'],['Locker room','Open it from the start screen or the game-over screen. Customize each of your three players separately (skin, hairstyle and color, headwear, eyewear, facial hair, chain, wristbands, sleeves, shoes, jersey number), plus your team kit, ball, ball trail, flame color and score celebration. Locked items show the level they need'],['VIEW / COPY / RANDOM','FACE view zooms in on the head, COPY LOOK TO TEAM gives all three the same style, RANDOM LOOK rolls one'],['Saved','Your level and loadout are saved in this browser']]],
   ['MY CAREER', [['Start','MY CAREER on the start screen. Pick one of 3 save slots, create your player and pick a difficulty. You start at 60 overall, age 19'],['Archetypes','Each position has 4-5 archetypes shown as a pie chart of shooting, speed, defense, passing, strength and rebounding. Your height, wingspan, agility and build reshape the pie live, always totaling 60 overall. Wingspan past a position limit (+5 guards, +6 SF, +7 bigs) hurts shooting'],['Take Over','A meter above your stamina. Fill it with makes (threes and dunks fill it more), assists, steals, blocks and boards. Misses and turnovers drain it and it slowly leaks when you go quiet, so it is hard to fill. When it is full you TAKE OVER for about 45 seconds: your chosen ability adds +15 to one attribute (Sharpshooter shooting, Jet speed, Lockdown defense, Floor General passing, Bulldozer strength, Glass Eater rebounding) and your foot icon turns gold. Pick it when you create your player and change it any time in UPGRADES'],['Looks','30+ hairstyles, 16 eyewear and 16 facial hair styles, any skin, hair and shoe color (use the rainbow dot for a custom color), 8 shoe models. Drag the player to rotate, scroll to zoom'],['Alive slots','Your save slots show an animated portrait, your overall, build pie and record'],['The league','8 different teams, a 28-game season, then the top 4 play best-of-3 semifinals and finals. 3 teams have a superstar, the other 5 have two All-Stars. Real stars have a gold or cyan star under their feet'],['Games','5v5, 4 quarters of 2:00. You control only your player; the other 9 are AI. You can also SIM a game for 60% of the Ball Bucks'],['Ball Bucks','Earned from your points, assists, rebounds, steals, blocks and threes, plus a bonus for winning. Spend them on attribute upgrades (shooting, speed, defense, passing, strength, rebounding) and cosmetics'],['Seasons','Your career carries on: you age each season, grow while young and slow down later'],['Phone','The PHONE button on the hub has standings, rankings, league leaders, your stats, a shop, messages and a feed'],['Messages','Before some games the other team\'s star DMs you. Reply and you start a rivalry for that game: one answer builds fans, the other builds team chemistry. Beat your rival for a bonus'],['Chemistry','You start with low chemistry, so teammates do not always give it up when you call for the ball (R). Keep calling. Chemistry grows from messages, playing and winning, and when it is high they almost always find you'],['Feed','Fans, media and rivals post about your games, team stats, league leaders, milestones and awards (Player of the Week, All-Star selections, season MVP, Rookie of the Year). Fans repost the big ones'],['Sponsors','Brands from the other games in the Game Hub sign you as you gain fans. Each deal pays Ball Bucks every game plus a bonus if you hit its target. You get 1 slot, a 2nd at 40 fans and a 3rd at 80. Tap PLAY on a deal to jump to that game'],['Fans','More fans means more Ball Bucks (up to +30%) and a Take Over meter that fills faster. Win, score big and answer messages to grow them']]],
   ['SOUND', [['Music','A different track for every arena (and one for the menus and locker room): Sunset Blacktop boom-bap, City Arena funk, Crystal Palace bells, Neon Dome synthwave. It gets busier in close games, late in the clock and when someone is ON FIRE'],['M / N','Toggle music / sound effects. The two buttons in the top-left corner do the same'],['⚙ button','Opens volume sliders for music and sound effects. Music pauses when you switch tabs']]],
