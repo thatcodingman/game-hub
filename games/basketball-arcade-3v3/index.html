@@ -5695,7 +5695,13 @@ function applyBodyContacts(dtMs) {
       off.ctT = 140;
       // ---- intent: a shoulder check (SHIFT / AI read) or a handler driving with turbo makes it a real hit; otherwise slide-by
       if (def !== human && off === game.ball.carrier && !(def.shoulderT > 0) && !(def.shoulderCd > 0) && balOf(def) > 50 && false) { }
-      const offSp = Math.hypot(off.vx, off.vz), defIntent = def.shoulderT > 0, offIntent = off.turboActive || (off !== human && offSp >= (off.stats.speed || 0.4) * 0.95);
+      const offSp = Math.hypot(off.vx, off.vz), defIntent = (() => { // good defense: set between the handler and the hoop, chest square, under control -> a real body-up
+        if (def.stumbleT > 0) return false;
+        const H = off.team === 'A' ? HOOP_A : HOOP_B, hl = Math.hypot(H.x - off.x, H.z - off.z) || 1;
+        const between = (ox * (H.x - off.x) + oz * (H.z - off.z)) / hl;
+        const fdd = def.facing || 0, sq = -(Math.sin(fdd) * ox + Math.cos(fdd) * oz);
+        return between > 0.5 && sq > 0.55 && Math.hypot(def.vx, def.vz) < (def.stats.speed || 0.45) * 0.8;
+      })(), offIntent = off.turboActive || (off !== human && offSp >= (off.stats.speed || 0.4) * 0.95);
       const cK = (defIntent || offIntent) ? 1 : CT.softK;
       // ---- who wins: weight (size + height + strength), balance, stance, chest alignment
       const wOff = wtOf(off), wDef = wtOf(def), bOff = balOf(off) / 100, bDef = balOf(def) / 100;
@@ -5720,7 +5726,7 @@ function applyBodyContacts(dtMs) {
       // ---- the hit itself (cooldown-gated): speed, balance, stamina, feedback, metrics
       const score = baseHit * cK;
       if (!(a.bumpCd > 0) && !(b.bumpCd > 0) && closing > 0.1 && score >= 0.12) {
-        a.bumpCd = b.bumpCd = BUMP_CD_MS;
+        a.bumpCd = b.bumpCd = defIntent ? 750 : BUMP_CD_MS;
         off.vx -= ox * offIn * 0.2 * turboK * (0.4 + 0.6 * defEdge) * cK; off.vz -= oz * offIn * 0.2 * turboK * (0.4 + 0.6 * defEdge) * cK;
         def.vx += ox * defIn * 0.12 * cK; def.vz += oz * defIn * 0.12 * cK;
         off.bumpDrag = BUMP_DRAG_MS * (turboK < 1 ? 0.7 : 1);
@@ -5734,6 +5740,8 @@ function applyBodyContacts(dtMs) {
         [off, def].forEach((q) => { if (balOf(q) < CT.stumbleBal && !(q.stumbleT > 0)) { q.stumbleT = CT.stumbleMs; q.vx *= 0.5; q.vz *= 0.5; q.rockVel += (q === off ? -1 : 1) * 0.006; contact.stumbles++; if (q === human) showScreenCallout('OFF BALANCE', 550); } });
         const tier = score < CT.lightMax ? 'light' : score < CT.mediumMax ? 'medium' : 'hard';
         contact.n++; contact[tier]++; contact.log.push({ tier, score: +score.toFixed(2), edge: +defEdge.toFixed(2), off: off.name, def: def.name, balO: Math.round(off.bal), balD: Math.round(def.bal), intent: defIntent ? 'D' : offIntent ? 'O' : '-' }); if (contact.log.length > 600) contact.log.shift();
+        off.bumpRole = 'off'; def.bumpRole = 'def'; a.bumpMag = b.bumpMag = clamp(score, 0.45, 1.4); a.bumpDur = b.bumpDur = tier === 'light' ? 320 : tier === 'medium' ? 480 : 700;
+        off.bumpStagger = tier === 'hard' && defEdge >= 0.5; def.bumpStagger = tier === 'hard' && defEdge < 0.5;
         a.bumpT = 1; b.bumpT = 1; a.bumpDirX = nx; a.bumpDirZ = nz; b.bumpDirX = -nx; b.bumpDirZ = -nz;
         const big = clamp(score, 0.5, 1.3);
         off.rockVel -= 0.0042 * big * (1.2 - defEdge); def.rockVel += 0.003 * big * defEdge;
@@ -7487,15 +7495,36 @@ function updateHumanoidPose(p, dt) {
       g.position.y += 0.55 * hop - 0.28 * (1 - e);
     }
   }
-  // Body bump: shoulder into the contact, brace with the arms, a short lunge toward the other player.
+  // Body bump: the handler drives a shoulder in and shields with the free forearm; the defender sets his feet, opens his chest
+  // and absorbs; a hard hit staggers whoever lost it (feet shuffle, arms out) and slides them back.
   if (p.bumpT > 0) {
-    p.bumpT = Math.max(0, p.bumpT - dt / 320);
-    const e = Math.sin(Math.min(1, p.bumpT) * Math.PI * 0.5);
-    const cross = Math.sin(p.facing) * p.bumpDirZ - Math.cos(p.facing) * p.bumpDirX;
-    L.spine.rotation.z += (cross > 0 ? -1 : 1) * 0.16 * e;
-    L.spine.rotation.x += 0.07 * e;
-    L.armLP.rotation.x = Math.min(L.armLP.rotation.x, -0.5 * e - 0.2); L.armRP.rotation.x = Math.min(L.armRP.rotation.x, -0.5 * e - 0.2);
-    g.position.x += p.bumpDirX * 0.35 * e; g.position.z += p.bumpDirZ * 0.35 * e;
+    const dur = p.bumpDur || 320, mag = p.bumpMag || 0.7;
+    p.bumpT = Math.max(0, p.bumpT - dt / dur);
+    const ease = Math.sin(Math.min(1, p.bumpT) * Math.PI * 0.5), e = ease * Math.min(1, (1 - p.bumpT) * 9 + 0.3);
+    const cross = Math.sin(p.facing) * p.bumpDirZ - Math.cos(p.facing) * p.bumpDirX, side = cross > 0 ? -1 : 1;
+    const m = clamp(mag, 0.45, 1.2);
+    if (p.bumpRole === 'def') {
+      L.spine.rotation.x += -0.1 * m * e; L.spine.rotation.z += side * 0.08 * m * e;
+      L.armLP.rotation.set(lerp(L.armLP.rotation.x, -0.55, e), 0, lerp(L.armLP.rotation.z, 0.95, e)); L.armRP.rotation.set(lerp(L.armRP.rotation.x, -0.55, e), 0, lerp(L.armRP.rotation.z, -0.95, e));
+      L.elbowLP.rotation.x = lerp(L.elbowLP.rotation.x, -0.5, e); L.elbowRP.rotation.x = lerp(L.elbowRP.rotation.x, -0.5, e);
+      L.kneeLP.rotation.x += 0.25 * m * e; L.kneeRP.rotation.x += 0.25 * m * e; g.position.y -= 0.16 * m * e;
+      const slide = (p.bumpStagger ? 0.9 : 0.35) * m;
+      g.position.x -= p.bumpDirX * slide * e; g.position.z -= p.bumpDirZ * slide * e;   // rocked back by the hit
+    } else {
+      L.spine.rotation.x += 0.2 * m * e; L.spine.rotation.z += side * 0.2 * m * e;
+      const free = (p.handSide || 1) < 0 ? 'R' : 'L', sg = free === 'L' ? 1 : -1;      // the arm that isn't dribbling becomes the shield
+      const sh = L['arm' + free + 'P'], el = L['elbow' + free + 'P'];
+      sh.rotation.set(lerp(sh.rotation.x, -1.15, e), 0, lerp(sh.rotation.z, sg * 0.4, e)); el.rotation.x = lerp(el.rotation.x, -1.6, e);
+      L.kneeLP.rotation.x += 0.2 * m * e; L.kneeRP.rotation.x += 0.2 * m * e; g.position.y -= 0.12 * m * e;
+      const push = p.bumpStagger ? -0.8 : 0.22;
+      g.position.x += p.bumpDirX * push * m * e; g.position.z += p.bumpDirZ * push * m * e;
+    }
+    if (p.bumpStagger) { // lost it badly: feet shuffle, arms fling wide
+      const sh2 = Math.sin((1 - p.bumpT) * 15) * 0.5 * e;
+      L.legLP.rotation.x += sh2; L.legRP.rotation.x -= sh2;
+      L.armLP.rotation.z = lerp(L.armLP.rotation.z, 1.0, e * 0.8); L.armRP.rotation.z = lerp(L.armRP.rotation.z, -1.0, e * 0.8);
+      L.spine.rotation.x += 0.1 * e;
+    }
   }
   // the shorts/pelvis follow the torso lean so the rear never pokes out behind a leaning body
   if (g.userData.pelvis) g.userData.pelvis.rotation.x = L.spine.rotation.x * 0.85;
