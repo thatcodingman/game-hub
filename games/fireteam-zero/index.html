@@ -384,6 +384,7 @@ function applySkyAndWeather(m) {
   hemi.color.setHex(sky.hemi[0]); hemi.groundColor.setHex(sky.hemi[1]); hemi.intensity = sky.hemi[2];
   sun.color.setHex(sky.sun[0]); sun.intensity = sky.sun[1];
   fill.color.setHex(sky.fill[0]); fill.intensity = sky.fill[1];
+  { const sc = m.shadow || { left: -70, right: 70, top: 40, bottom: -40 }; Object.assign(sun.shadow.camera, sc); sun.shadow.camera.updateProjectionMatrix(); }
   weatherMode = m.weather || 'clear';
   if (weatherMode === 'rain' && !rainPoints) buildRain();
   if (weatherMode === 'embers' && !emberPoints) buildEmbers();
@@ -543,7 +544,7 @@ function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
   mesh.receiveShadow = true;
   mapGroup.add(mesh);
   const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || MAT_TAG.get(mat) || (mat === matMezz ? 'stairs' : null) };
-  if (opts.collide !== false) colliders.push(c);
+  if (opts.collide !== false) { colliders.push(c); grid.n = -1; }
   return c;
 }
 
@@ -564,372 +565,357 @@ function subtract(a, b) {
 // Everything from here through the end of dressAtrium() is this one map's build step, wrapped so it
 // can be re-run (into a fresh mapGroup) any time Atrium is (re)selected rather than only once at load.
 function buildAtriumGeometry() {
-// ---------- THE GROUND: one solid block, lower areas carved out ----------
-let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
-const cuts = [
-  { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // Lower Hall tunnel (4m headroom; main floor is its ceiling)
-  { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },   // A connector ramp pit (open to the spawn room above)
-  { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },     // B connector ramp pit
-  { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },     // west scaffold bay (tunnel -> Mid)
-  { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },       // east scaffold bay
-];
-for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
-for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matFloor);
+// ---------- THE HELIX (Atrium) — a LARGE map (~120 x 84 m) ----------
+// One continuous square-spiral ramp (a "track") winds twice around an open core, rising 8 m per turn to
+// a 16 m Crown deck. The first turn is a solid plinth; the second floats on four corner masts. Under the
+// core runs a basement tunnel that connects the two spawn sides and pops out in the middle of the open
+// core ("THE CORE"), looking straight up the whole tower. Around the tower: a big plaza, a sunken Garden
+// to the south and a covered Arcade with a terrace + skybridge to the north — three very different
+// fighting layers (plaza/garden, tunnel/core, spiral/crown) instead of one ring-and-shaft skeleton.
+const PX = 60, PZ = 42;                                   // plaza half-extents
+const C = 14, HW = 2.5, IN = C - HW, OUT = C + HW;        // track centreline half-size / half-width -> inner 11.5, outer 16.5
+const STEPS = 15, SIDE_RISE = 2.0, SOLID_TOP = 8.01, RAIL_H = 1.1, CY = 16;
+const matPlinth = M(0x59627a, 0.75, 0.25), matTrack = M(0x8592b0, 0.5, 0.3), matMast = M(0x2b2f3a, 0.5, 0.5);
+const matGlassRail = new THREE.MeshStandardMaterial({ color: 0x9fc6e8, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.4 });
+const noShadow = { shadow: false };
 
-// ---------- Perimeter: sealed all the way round ----------
-addSolid(-55, -6, -16, 55, WALL_H, -15, matWall);   // south
-addSolid(-55, -6, 15, 55, WALL_H, 16, matWall);     // north
-addSolid(-55, -6, -16, -54, WALL_H, 16, matWall);   // west
-addSolid(54, -6, -16, 55, WALL_H, 16, matWall);     // east
+// ---------- Perimeter ----------
+addSolid(-PX, -4.4, -PZ, PX, WALL_H, -PZ + 1, matWall);
+addSolid(-PX, -4.4, PZ - 1, PX, WALL_H, PZ, matWall);
+addSolid(-PX, -4.4, -PZ, -PX + 1, WALL_H, PZ, matWall);
+addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
 
-// ---------- Connector ramps down into the Lower Hall (0.5m treads = walkable) ----------
-for (let i = 0; i < 9; i++) {
-  addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matFloor, { tag: 'ramp' });
-  addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matFloor, { tag: 'ramp' });
-}
-
-// ---------- Scaffold bays: 6 treads of ~0.83m — you have to JUMP each one ----------
-function bay(xa, xb) {
-  for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matScaffold);
-}
-bay(-10, -5);
-bay(5, 10);
-
-// ---------- One team's side, written for A (negative X) and mirrored for B ----------
-function buildSide(sgn) {
-  const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
-    const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
-    return addSolid(a, y0, z0, b, y1, z1, mat, o);
+// ---------- Spawn halls (one big ground slab runs under everything, so there are no door-gap voids) ----------
+for (const sgn of [-1, 1]) {
+  const put = (xa, y0, z0, xb, y1, z1, mat, o) => {
+    const a = sgn === -1 ? xa : -xb, b = sgn === -1 ? xb : -xa;
+    addSolid(Math.min(a, b), y0, z0, Math.max(a, b), y1, z1, mat, o);
   };
-  // Wall between spawn room and the lanes. Doors: Long z[-3,3], Stairs z[9,15]
-  S(-42, -15, -41, -3, 0, WALL_H, matWall);
-  S(-42, 3, -41, 9, 0, WALL_H, matWall);
-  // Solid masses that carve out the lanes
-  S(-41, -15, -15, -3, 0, WALL_H, matWall);   // south of Long
-  S(-41, 3, -15, 9, 0, WALL_H, matWall);      // between Long and the Stairs lane
-  // Choke: 3m doorway at the end of Long
-  S(-19, -3, -15, -1.5, 0, WALL_H, matChoke);
-  S(-19, 1.5, -15, 3, 0, WALL_H, matChoke);
-  // Long's two sightline-breaking support columns are built (collider + detailing) in dressAtrium()
-  // below, alongside the rest of that lane's conduit/rib/sconce dressing, so they read as one piece.
-  // Hard cover just inside Mid, off the main sightline
-  S(-12.5, 1.2, -11, 2.8, 0, 1.2, matCover);
-  // Stairs up to the Mezzanine: 20 shallower treads (0.25m rise / 0.6m run each) — the old 0.5m
-  // rise was too close to the auto-step limit (STEP=0.6), so running up at an angle or at speed
-  // could out-climb it and force a jump. Same total rise/run, just a gentler, more reliable climb.
-  const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
-  for (let i = 0; i < STAIR_N; i++) {
-    S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matMezz);
-    if (i % 2 === 1) S(-27 + STAIR_RUN * i, 9.05, -27 + STAIR_RUN * i + 0.05, 14.95, 0, STAIR_RISE * (i + 1), matRail, { collide: false, tag: 'stairs' });   // tread-nosing accent line
+  put(-47, 0, -14, -46, WALL_H, -4, matWall);              // door wall, south of the 8 m gap
+  put(-47, 0, 4, -46, WALL_H, 14, matWall);                // door wall, north of the gap
+  put(-60, 0, -15, -46, WALL_H, -14, matWall);             // hall side walls
+  put(-60, 0, 14, -46, WALL_H, 15, matWall);
+  put(-58, 0, -6, -50, 0.03, 6, sgn === -1 ? matSpawnA : matSpawnB, { collide: false, shadow: false });
+  put(-55, 0, -10.5, -53.5, 4, -9, matWall);               // two pillars to break the hall's sightlines
+  put(-55, 0, 9, -53.5, 4, 10.5, matWall);
+}
+
+// ---------- Ground slab: cut for the core, both tunnel stairwells and the south Garden ----------
+let ground = [{ x0: -PX, y0: -0.4, z0: -PZ, x1: PX, y1: 0, z1: PZ }];
+for (const cut of [
+  { x0: -IN, x1: IN, z0: -IN, z1: IN },
+  { x0: -40, x1: -32, z0: -5, z1: 5 }, { x0: 32, x1: 40, z0: -5, z1: 5 },
+  { x0: -24, x1: 24, z0: -38, z1: -24 },
+]) ground = ground.flatMap(g => subtract(g, { ...cut, y0: -0.4, y1: 0 }));
+for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matFloor, { tag: 'floor' });
+
+// ---------- Basement tunnel + the core pit ----------
+addSolid(-IN, -4.4, -IN, IN, -4, IN, matFloor, { tag: 'ramp' });                       // core floor
+addSolid(-32, -4.4, -5, -IN, -4, 5, matFloor, { tag: 'ramp' });                        // tunnel floors
+addSolid(IN, -4.4, -5, 32, -4, 5, matFloor, { tag: 'ramp' });
+for (const sgn of [-1, 1]) {
+  const put = (xa, y0, z0, xb, y1, z1, mat, o) => {
+    const a = sgn === -1 ? xa : -xb, b = sgn === -1 ? xb : -xa;
+    addSolid(Math.min(a, b), y0, z0, Math.max(a, b), y1, z1, mat, o);
+  };
+  put(-40, -4.4, -5.5, -IN, 0, -5, matWall);                                           // tunnel + stairwell side walls
+  put(-40, -4.4, 5, -IN, 0, 5.5, matWall);
+  put(-IN, -4.4, -IN, -IN + 0.5, 0, -5.5, matWall);                                    // core retaining wall, with the tunnel mouth left open
+  put(-IN, -4.4, 5.5, -IN + 0.5, 0, IN, matWall);
+  for (let i = 0; i < 10; i++) {                                                       // tunnel stairs: 10 steps, 0.4 rise each
+    put(-40 + 0.8 * i, -4.4, -5, -40 + 0.8 * (i + 1), -0.4 * (i + 1), 5, matMezz);
   }
-  // Handrails: both sides of the stairwell are already fully walled in (no fall risk), so this is
-  // pure finish — posts + a sloped rail following the tread line instead of bare walls.
-  {
-    const railLen = Math.hypot(12.0, 5.0), railAngle = Math.atan2(5.0, 12.0) * (sgn === -1 ? 1 : -1);
-    const railMidX = sgn === -1 ? -21 : 21;
-    for (const rz of [9.35, 14.65]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(railLen, 0.07, 0.07), matRail);
-      rail.position.set(railMidX, 0.95 + 2.5, rz);
-      rail.rotation.z = railAngle;
-      rail.castShadow = true; mapGroup.add(rail);
-      for (let i = 0; i <= 4; i++) {
-        const px = sgn === -1 ? -27 + 12 * (i / 4) : 27 - 12 * (i / 4), py0 = STAIR_RISE * STAIR_N * (i / 4);
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.95, 0.06), matRail);
-        post.position.set(px, py0 + 0.475, rz); post.castShadow = true; mapGroup.add(post);
-      }
-    }
+}
+addSolid(-IN, -4.4, -IN, IN, 0, -IN + 0.5, matWall);                                   // core south / north retaining walls
+addSolid(-IN, -4.4, IN - 0.5, IN, 0, IN, matWall);
+addSolid(-3, -4, -9, 3, -2.8, -7.5, matCover); addSolid(-3, -4, 7.5, 3, -2.8, 9, matCover);   // cover on the core floor
+
+// ---------- THE HELIX: 2 turns x 4 sides, 15 steps each, 2 m rise per side ----------
+const SIDES = [
+  { axis: 'x', s0: -IN, s1: IN, p0: -OUT, p1: -IN, inner: [-IN - 0.25, -IN], outer: [-OUT, -OUT + 0.25] },   // S, heading +x
+  { axis: 'z', s0: -IN, s1: IN, p0: IN, p1: OUT, inner: [IN, IN + 0.25], outer: [OUT - 0.25, OUT] },         // E, heading +z
+  { axis: 'x', s0: IN, s1: -IN, p0: IN, p1: OUT, inner: [IN, IN + 0.25], outer: [OUT - 0.25, OUT] },         // N, heading -x
+  { axis: 'z', s0: IN, s1: -IN, p0: -OUT, p1: -IN, inner: [-IN - 0.25, -IN], outer: [-OUT, -OUT + 0.25] },   // W, heading -z
+];
+const bx = (axis, a0, a1, p0, p1, y0, y1, mat, o) => axis === 'x' ? addSolid(a0, y0, p0, a1, y1, p1, mat, o) : addSolid(p0, y0, a0, p1, y1, a1, mat, o);
+for (let t = 0; t < 2; t++) for (let s = 0; s < 4; s++) {
+  const d = SIDES[s], h0 = t * 8 + s * SIDE_RISE, h1 = h0 + SIDE_RISE, solid = h1 <= SOLID_TOP;
+  for (let i = 0; i < STEPS; i++) {
+    const a = d.s0 + (d.s1 - d.s0) * i / STEPS, b = d.s0 + (d.s1 - d.s0) * (i + 1) / STEPS;
+    const top = h0 + SIDE_RISE * (i + 1) / STEPS;
+    bx(d.axis, Math.min(a, b), Math.max(a, b), d.p0, d.p1, solid ? -0.4 : top - 0.5, top, solid ? matPlinth : matTrack, { tag: 'spiral' });
   }
-  // Spawn room cover
-  S(-50, 8, -48, 10, 0, 1.2, matCover);
-  S(-47, -7, -45, -5, 0, 1.2, matCover);
-  // Team-colored spawn pad (visual only)
-  const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
-  addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA : matSpawnB, { collide: false, shadow: false });
+  for (let g = 0; g < STEPS / 3; g++) {                                                // glass rails, one box per 3 steps
+    const a = d.s0 + (d.s1 - d.s0) * (3 * g) / STEPS, b = d.s0 + (d.s1 - d.s0) * (3 * g + 3) / STEPS;
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const tLow = h0 + SIDE_RISE * (3 * g + 1) / STEPS, tHigh = h0 + SIDE_RISE * (3 * g + 3) / STEPS;
+    bx(d.axis, lo, hi, d.inner[0], d.inner[1], tLow, tHigh + RAIL_H, matGlassRail, { tag: 'rail', ...noShadow });
+    if (!(t === 0 && s === 0 && g === 0)) bx(d.axis, lo, hi, d.outer[0], d.outer[1], tLow, tHigh + RAIL_H, matGlassRail, { tag: 'rail', ...noShadow });   // first group of the S ramp is the ground entrance
+  }
 }
-buildSide(-1);
-buildSide(1);
-
-// Deliberate asymmetry: B-Long gets one extra low crate that A-Long doesn't have
-addSolid(30, 0, 1.5, 32, 1.2, 3, matCover);
-
-// ---------- MID ----------
-addSolid(-1, 0, 3, 1, 5, 5, matCover);                    // central pillar
-addSolid(-8, 0, 1, -5, 1.2, 2, matCover);                 // low covers
-addSolid(6, 0, 1, 9, 1.2, 2, matCover);
-addSolid(-2, 0, -8, 2, 1.2, -6.8, matCover);
-for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matEscalator);   // dead escalator -> Mezzanine
-
-// ---------- MEZZANINE (two halves, each held up by a shootable red support beam) ----------
-addSolid(-15, 4.4, 9, 0, 5.0, 15, matMezz, { tag: 'mezzW' });
-addSolid(0, 4.4, 9, 15, 5.0, 15, matMezz, { tag: 'mezzE' });
-addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matBeam, { tag: 'beamW' });
-addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matBeam, { tag: 'beamE' });
-for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) {      // broken railing: partial cover only
-  addSolid(a, 5, 9, b, 5.9, 9.4, matMezz, { tag: a < 0 ? 'mezzW' : 'mezzE' });
+// Corner landings (flat 5x5 squares joining one side to the next). Corner order: SE, NE, NW, SW.
+const CORNERS = [[1, -1], [1, 1], [-1, 1], [-1, -1]];
+function landingRails(cx, cz, h, o = {}) {
+  const xr = cx > 0 ? [IN, OUT] : [-OUT, -IN], zr = cz > 0 ? [IN, OUT] : [-OUT, -IN];
+  const xo = cx > 0 ? [OUT - 0.25, OUT] : [-OUT, -OUT + 0.25], zo = cz > 0 ? [OUT - 0.25, OUT] : [-OUT, -OUT + 0.25];
+  const rail = (x0, z0, x1, z1) => { if (x1 - x0 > 0.01 && z1 - z0 > 0.01) addSolid(x0, h, z0, x1, h + RAIL_H, z1, matGlassRail, { tag: 'rail', ...noShadow }); };
+  if (!o.noX) rail(xo[0], zr[0], xo[1], zr[1]);                                         // rail along the outer x edge
+  if (o.gapZ) { rail(xr[0], zo[0], o.gapZ[0], zo[1]); rail(o.gapZ[1], zo[0], xr[1], zo[1]); } else rail(xr[0], zo[0], xr[1], zo[1]);   // outer z edge (optionally with a gap for the skybridge)
 }
-// Waist-high cover up top — the deck itself was wide open behind that railing, nothing to post up
-// behind while peeking a gap. Tagged to the half it sits on so it falls with the platform if that
-// half's support beam gets shot out, same as everything else up here.
-for (const [mx, side] of [[-11, 'mezzW'], [-4, 'mezzW'], [4, 'mezzE'], [11, 'mezzE']]) {
-  addSolid(mx - 1, 5.0, 10.6, mx + 1, 6.3, 12.2, matCover, { tag: side });
+for (let t = 0; t < 2; t++) for (let c = 0; c < 4; c++) {
+  const [cx, cz] = CORNERS[c], h = t * 8 + (c + 1) * SIDE_RISE, solid = h <= SOLID_TOP;
+  const xr = cx > 0 ? [IN, OUT] : [-OUT, -IN], zr = cz > 0 ? [IN, OUT] : [-OUT, -IN];
+  addSolid(xr[0], solid ? -0.4 : h - 0.5, zr[0], xr[1], h, zr[1], solid ? matPlinth : matTrack, { tag: 'spiral' });
+  const opts = {};
+  if (t === 0 && c === 0) opts.noX = true;                                              // SE landing: east edge is the stair entrance
+  if (t === 0 && c === 2) opts.gapZ = [-15.5, -12.5];                                   // NW landing: north edge opens onto the skybridge
+  landingRails(cx, cz, h, opts);
 }
+// Crown deck at y=16: continues from the SW landing east along the S side, round the SE landing and north up the E side
+addSolid(-IN, CY - 0.5, -OUT, IN, CY, -IN, matTrack, { tag: 'spiral' });
+addSolid(IN, CY - 0.5, -OUT, OUT, CY, -IN, matTrack, { tag: 'spiral' });
+addSolid(IN, CY - 0.5, -IN, OUT, CY, IN, matTrack, { tag: 'spiral' });
+addSolid(IN, CY - 0.5, IN, OUT, CY, OUT, matTrack, { tag: 'spiral' });
+{
+  const rail = (x0, z0, x1, z1) => addSolid(x0, CY, z0, x1, CY + RAIL_H, z1, matGlassRail, { tag: 'rail', ...noShadow });
+  rail(-IN, -OUT, IN, -OUT + 0.25); rail(-IN, -IN - 0.25, IN, -IN);                     // S deck: outer + inner
+  rail(IN, -OUT, OUT, -OUT + 0.25); rail(OUT - 0.25, -OUT, OUT, -IN);                   // SE landing: south + east
+  rail(OUT - 0.25, -IN, OUT, IN); rail(IN, -IN, IN + 0.25, IN);                         // E deck: outer + inner
+  rail(OUT - 0.25, IN, OUT, OUT); rail(IN, OUT - 0.25, OUT, OUT); rail(IN, IN, IN + 0.25, OUT);   // NE landing: east + north + west (dead end)
+}
+// Four corner masts carry the glass tower visually (outside the walkway, so they never block it)
+for (const [cx, cz] of CORNERS) {
+  const x0 = cx > 0 ? OUT : -OUT - 1, z0 = cz > 0 ? OUT : -OUT - 1;
+  addSolid(x0, -0.4, z0, x0 + 1, CY + 1.5, z0 + 1, matMast, { tag: 'mast' });
+}
+// Entrance stairs onto the SE landing (y 2.0): 4 steps of 0.5 from the east plaza
+for (let i = 0; i < 4; i++) addSolid(OUT + (3 - i), -0.4, -OUT, OUT + (4 - i), 0.5 * (i + 1) + 0, -IN, matMezz);
 
-// ---------- ATRIUM DRESSING: a glass-roofed lobby up top, gritty service level down below ----------
-// Purely decorative — every piece is collide:false so none of this touches movement, bots, or the
-// nav graph. It's here to make "Atrium" look like an atrium: a skylight over Mid, planters and
-// benches on the main floor, pipes/crates/barrels once you drop into the Lower Hall.
-(function dressAtrium() {
-  const matPot = M(0x7a4a33, 0.9), matLeaf = M(0x3c7a44, 0.85), matLeaf2 = M(0x2f5f38, 0.85);
-  const matBench = M(0x6b4a2f, 0.85), matBenchLeg = M(0x2a2b30, 0.6, 0.4);
-  const matCrate = M(0x5c4530, 0.9), matBarrel = M(0xb0531f, 0.6, 0.2), matBarrelCap = M(0x2a2b30, 0.5, 0.4);
-  const matPipe = M(0x3d4a52, 0.4, 0.6), matTruss = M(0x1c1d22, 0.6, 0.4);
-  const matGlass = new THREE.MeshStandardMaterial({ color: 0x9fc6e8, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.22 });
+// ---------- NORTH ARCADE: a covered shopping arcade with a terrace on top (y 6) ----------
+addSolid(-38, 5.5, 30, 38, 6, 41, matTrack, { tag: 'spiral' });                        // terrace slab
+for (let x = -36; x <= 36; x += 8) addSolid(x - 0.5, 0, 30, x + 0.5, 5.5, 31, matWall);   // colonnade
+{
+  const rail = (x0, z0, x1, z1) => addSolid(x0, 6, z0, x1, 6 + RAIL_H, z1, matGlassRail, { tag: 'rail', ...noShadow });
+  rail(-38, 30, -16, 30.25); rail(-12, 30, 38, 30.25);                                  // parapet, gap for the skybridge
+  rail(-38, 30, -37.75, 32); rail(-38, 36, -37.75, 41); rail(37.75, 30, 38, 32); rail(37.75, 36, 38, 41);   // end parapets, gaps for the stairs
+}
+for (const sgn of [-1, 1]) {                                                           // terrace stairs: 12 steps of 0.5
+  for (let i = 0; i < 12; i++) {
+    const xa = -46 + 8 * i / 12, xb = -46 + 8 * (i + 1) / 12;
+    const lo = sgn === -1 ? xa : -xb, hi = sgn === -1 ? xb : -xa;
+    addSolid(lo, -0.4, 32, hi, 0.5 * (i + 1), 36, matMezz);
+  }
+}
+// Skybridge: terrace -> NW landing of the Helix (both at y 6.0)
+addSolid(-15.5, 5.5, 16.5, -12.5, 6, 30, matTrack, { tag: 'spiral' });
+addSolid(-15.5, 6, 16.5, -15.25, 6 + RAIL_H, 30, matGlassRail, { tag: 'rail', ...noShadow });
+addSolid(-12.75, 6, 16.5, -12.5, 6 + RAIL_H, 30, matGlassRail, { tag: 'rail', ...noShadow });
+for (const [x0, z0, x1, z1] of [[-33, 32.5, -29, 34], [-16, 38, -11, 39.5], [-6, 32.5, -2, 34], [2, 38, 7, 39.5], [11, 32.5, 15, 34], [27, 38, 32, 39.5], [30, 32.5, 34, 34]])
+  addSolid(x0, 0, z0, x1, 1.1, z1, matCover);                                           // shop counters
+for (const [x0, z0, x1, z1] of [[-30, 33, -28.5, 36.5]]) addSolid(x0, 0, z0, x1, 2.2, z1, matChoke);   // a kiosk
+for (const [x0, z0, x1, z1] of [[-12, 37, -6, 38], [8, 37, 14, 38], [22, 37, 28, 38]]) addSolid(x0, 6, z0, x1, 7.2, z1, matCover);   // terrace cover
+
+// ---------- SOUTH GARDEN: a 3 m sunken court between the plaza and the south wall ----------
+addSolid(-18, -3.4, -38, 18, -3, -24, matFloor, { tag: 'ramp' });
+addSolid(-24, -3.4, -24.5, 24, 0, -24, matWall);                                       // retaining walls (north + south)
+addSolid(-24, -3.4, -38, 24, 0, -37.5, matWall);
+for (let i = 0; i < 6; i++) {                                                          // grand stairs at each end: 6 steps of 0.5
+  addSolid(-24 + i, -3.4, -38, -23 + i, -0.5 * (i + 1), -24, matMezz);
+  addSolid(23 - i, -3.4, -38, 24 - i, -0.5 * (i + 1), -24, matMezz);
+}
+for (const [x0, z0, x1, z1, h] of [[-13, -34.5, -9, -33, 1.2], [9, -29, 13, -27.5, 1.2], [-5, -29, -1, -27.5, 1.2], [1, -35.5, 5, -34, 1.2], [-17, -29, -15.5, -25.5, 1.6], [15.5, -36.5, 17, -33, 1.6]])
+  addSolid(x0, -3, z0, x1, -3 + h, z1, matCover);                                      // planters
+addSolid(-4, -3, -33, 4, -2.5, -30, matChoke);                                         // low central pavilion
+
+// ---------- PLAZA COVER ----------
+for (const [x0, z0, x1, z1, h] of [
+  [-38, -22, -34, -20.5, 1.3], [-38, 20.5, -34, 22, 1.3], [34, -22, 38, -20.5, 1.3], [34, 20.5, 38, 22, 1.3],
+  [-29, 8, -26.5, 9.5, 1.3], [-29, -9.5, -26.5, -8, 1.3], [26.5, 8, 29, 9.5, 1.3], [26.5, -9.5, 29, -8, 1.3],
+  [-44, -30, -41, -28.5, 1.3], [41, -30, 44, -28.5, 1.3], [-44, 26, -41, 27.5, 1.3], [41, 26, 44, 27.5, 1.3],
+  [-8, 24.5, -4, 26, 1.3], [4, 24.5, 8, 26, 1.3],
+]) addSolid(x0, 0, z0, x1, h, z1, matCover);
+for (const [x0, z0, x1, z1] of [[-52, 18, -50, 22], [50, 18, 52, 22], [-52, -22, -50, -18], [50, -22, 52, -18]]) addSolid(x0, 0, z0, x1, 3, z1, matWall);   // pillars flanking the halls
+
+// ---------- DRESSING (non-colliding) ----------
+(function dressHelix() {
   const matLamp = new THREE.MeshStandardMaterial({ color: 0xffe3a0, emissive: 0xffc96b, emissiveIntensity: 1.6, roughness: 0.4 });
+  const matPost = M(0x1c1d22, 0.6, 0.4), matPot = M(0x7a4a33, 0.9), matLeaf = M(0x3c7a44, 0.85), matLeaf2 = M(0x2f5f38, 0.85);
   const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
-
-  // -- Skylight over Mid + Mezzanine: steel truss grid + tinted glass panels, well above WALL_H --
-  const skyY = 13.5;
-  for (let x = -15; x <= 15; x += 5) deco(new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, 31), matTruss), x, skyY, 0);
-  for (let z = -2; z <= 15; z += 4.25) deco(new THREE.Mesh(new THREE.BoxGeometry(31, 0.3, 0.25), matTruss), 0, skyY, z);
-  for (let x = -12.5; x <= 12.5; x += 5) for (let z = -0.1; z <= 13; z += 4.25) {
-    deco(new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.08, 4.0), matGlass), x, skyY - 0.3, z + 2.1);
+  const post = (x, z) => { deco(new THREE.Mesh(new THREE.BoxGeometry(0.12, 4.2, 0.12), matPost), x, 2.1, z); deco(new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), matLamp), x, 4.3, z); };
+  for (const [x, z] of [[-30, -16], [30, -16], [-30, 16], [30, 16], [-20, -26], [20, -26], [-8, 20], [8, 20], [-44, 0], [44, 0], [-44, -22], [44, -22], [-44, 22], [44, 22]]) post(x, z);
+  function tree(x, z, s = 1) {
+    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22 * s, 0.3 * s, 2.2 * s, 7), matPot), x, 1.1 * s, z);
+    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.5 * s, 0), matLeaf), x, 3.2 * s, z);
+    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.1 * s, 0), matLeaf2), x + 0.5 * s, 4.1 * s, z + 0.3 * s);
   }
-
-  // -- Potted plants: spawn rooms + Mid corners --
-  function plant(x, z) {
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.26, 0.5, 8), matPot), x, 0.25, z);
-    for (const [dx, dz, dy, s, m] of [[0, 0, 1.0, 0.42, matLeaf], [0.18, 0.12, 0.85, 0.3, matLeaf2], [-0.16, -0.14, 0.9, 0.32, matLeaf], [0.05, -0.2, 1.15, 0.26, matLeaf2]]) {
-      const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 0), m);
-      deco(leaf, x + dx, dy, z + dz);
-    }
-  }
-  for (const [x, z] of [[-49, 4.5], [-49, -4.5], [49, 4.5], [49, -4.5]]) plant(x, z);
-  plant(-4, 6); plant(4, 6); plant(-13, -2); plant(13, -2);
-
-  // -- Benches: spawn rooms, facing the lanes --
-  function bench(x, z, ry) {
-    deco(new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.5), matBench), x, 0.5, z, ry);
-    deco(new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.4, 0.06), matBench), x, 0.3, z, ry);
-    for (const s of [-0.65, 0.65]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.5, 0.45), matBenchLeg);
-      leg.position.set(Math.cos(ry) * s, 0.25, -Math.sin(ry) * s);
-      deco(leg, x + Math.cos(ry) * s, 0.25, z - Math.sin(ry) * s);
-    }
-  }
-  bench(-49, 1.5, Math.PI / 2); bench(49, 1.5, -Math.PI / 2);
-
-  // -- Hanging lamps down the lanes, over Mid, and through Lower Hall --
-  function lamp(x, y, z) {
-    const cable = new THREE.Mesh(new THREE.BoxGeometry(0.03, WALL_H - y, 0.03), matTruss);
-    deco(cable, x, (WALL_H + y) / 2, z);
-    const head = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.22, 10), matBenchLeg);
-    head.rotation.x = Math.PI; deco(head, x, y + 0.1, z);
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), matLamp);
-    deco(bulb, x, y - 0.05, z);
-  }
-  for (const x of [-33, -24, 24, 33]) lamp(x, 3.6, 0);
-  lamp(0, 4.4, -12); lamp(0, 4.4, 12);
-
-  // -- Lower Hall service level: crates, hazard barrels, pipes along the walls --
-  function crate(x, z, ry = 0, s = 0.75) {
-    deco(new THREE.Mesh(new THREE.BoxGeometry(s, s, s), matCrate), x, -5 + s / 2, z, ry);
-  }
-  function barrel(x, z) {
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.85, 10), matBarrel), x, -5 + 0.43, z);
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.04, 10), matBarrelCap), x, -5 + 0.86, z);
-  }
-  crate(-38, -11.5, 0.3); crate(-36.8, -11.6, -0.2, 0.6); crate(38, -11.5, 0.5); crate(36.6, -12, 0.1, 0.65);
-  barrel(-44, -12); barrel(-43, -11.6); barrel(44, -12); barrel(43, -11.6); barrel(0, -13.5); barrel(1, -13.4);
-  // Real cover down the tunnel: the whole 68m stretch was walk-through dressing, nothing that
-  // actually blocked a shot. Stacked crates (collidable), alternating which wall they sit near so
-  // there's always a gap to flank through, with a loose crate and a barrel on top for detail.
-  function coverStack(x, z) {
-    addSolid(x - 0.6, -5, z - 0.6, x + 0.6, -5 + 1.6, z + 0.6, matCrate, { tag: 'cover' });
-    deco(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.45, 0.5), matCrate), x + 0.35, -5 + 1.85, z - 0.3, 0.3);
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.6, 10), matBarrel), x - 0.45, -5 + 0.3, z + 0.4);
-  }
-  for (const [x, z] of [[-32, -13], [-18, -11], [18, -13], [32, -11]]) coverStack(x, z);
-  for (let x = -40; x <= 40; x += 8) {
-    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 7.6, 8), matPipe);
-    pipe.rotation.z = Math.PI / 2; deco(pipe, x, -1.6, -14.5);
-  }
-  for (let x = -40; x <= 40; x += 10) lamp(x, -1.8, -12);
-
-  // -- Long hallway ambiance + support columns: conduit runs, ceiling ribs, and wall sconces down
-  // both Long lanes, plus two dressed-up structural columns (base/cap plates, a conduit run, a
-  // hazard-stripe wrap) so the straight shot from spawn to the choke reads as one built service
-  // corridor — the sightline-breaking cover belongs to the space instead of being a bare gray box --
-  const matColumn = M(0x474b55, 0.55, 0.45), matHazardBand = M(0xd9a829, 0.85, 0.1);
-  for (const sgn of [-1, 1]) {
-    const X = (x) => sgn === -1 ? x : -x;
-    const run = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 20, 8), matPipe);
-    run.rotation.z = Math.PI / 2; deco(run, X(-30), 2.6, -2.82);
-    deco(run.clone(), X(-30), 1.3, 2.82);
-    for (let lx = -39; lx <= -22; lx += 4.25) {
-      deco(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.22, 6.4), matTruss), X(lx), 3.95, 0);
-    }
-    for (const lz of [-2.85, 2.85]) {
-      for (let lx = -37; lx <= -23; lx += 8) {
-        deco(new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 0.05), matBenchLeg), X(lx), 2.5, lz);
-        deco(new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), matLamp), X(lx), 2.5, lz - Math.sign(lz) * 0.18);
-      }
-    }
-    // Two support columns: the real collider (tagged 'cover', same as before) plus a flanged base
-    // plate, a cap plate, a conduit run up one face, and a hazard-stripe band at ankle height — it's
-    // the same cover, just built out of the same kit as the rest of the corridor instead of a box.
-    for (const [cx, zLo, zHi] of [[-35, -1.1, 0.9], [-25, -0.9, 1.1]]) {
-      const cxX = X(cx), zMid = (zLo + zHi) / 2, hw = 0.8, depth = zHi - zLo;
-      addSolid(cxX - hw, 0, zLo, cxX + hw, 4.4, zHi, matColumn, { tag: 'cover' });
-      deco(new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 0.3, 0.14, depth + 0.3), matBenchLeg), cxX, 0.07, zMid);
-      deco(new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 0.3, 0.14, depth + 0.3), matBenchLeg), cxX, 4.42, zMid);
-      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.1, 8), matPipe), cxX + hw + 0.08, 2.1, zMid - depth / 2 + 0.15);
-      deco(new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 0.04, 0.3, depth + 0.04), matHazardBand), cxX, 0.55, zMid);
-    }
-  }
-
-  // -- Hazard floor stripes at the choke points (functional read: "danger ahead") --
-  const matHazard = new THREE.MeshStandardMaterial({ color: 0xd9a829, roughness: 0.95 });
-  for (const cx of [-19, 19]) {
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.012, 3.4), matHazard);
-    deco(strip, cx, 0.007, 0); strip.castShadow = false;
-  }
+  for (const [x, z] of [[-56, 28], [56, 28], [-56, -28], [56, -28], [-46, 38], [46, 38], [-22, 14], [22, 14], [-22, -12], [22, -12]]) tree(x, z);
 })();
 }   // end buildAtriumGeometry()
 
 // ---------- Monsoon geometry ----------
-// Same proven skeleton shape as Atrium (ground/cuts, perimeter, ramps, scaffold bays, per-side lanes,
-// a raised walkway, a flooded under-street tunnel) so the nav graph and bot traversal stay reliable,
-// but re-skinned top to bottom: a flooded night-market alley instead of a glass-roofed lobby. The
-// walkway here is a plain steel catwalk (tagged 'cover', not 'mezzW'/'mezzE') — no destructible beam.
+// "THE CISTERN": a flooded cross/plus-shaped tower — NOT Atrium's square ring skeleton reskinned.
+// A horizontal spawn-to-spawn arm crosses a north-south arm; the north-south arm is split in the
+// middle by a sunken flood pit with NO ground-level path around it, so the only way from its south
+// half to its north half is up and over the roof deck — via two offset, non-mirrored ladders, not
+// one shared stair. Two levels (street + roof deck) plus the pit, instead of Atrium's four.
 function buildMonsoonGeometry() {
-  const matStreet = M(0x3a4048, 0.85), matBldg = M(0x2e333c, 0.95), matAlley = M(0x5a4a3a);
-  const matStall = M(0x3f5a4f), matWalk = M(0x454a58, 0.85), matNeonSign = M(0xff3c7a, 0.5, 0.2);
-  const matLadder = M(0x8a6a33, 0.7), matRailM = M(0x1d1e24, 0.6, 0.45);
-  const matSpawnA2 = M(0x3a66c8), matSpawnB2 = M(0xcc3a3a);
+// ---------- TWIN SPIRES (Monsoon) — a LARGE map (~120 x 76 m) ----------
+// Each team owns an open-frame tower (spawn lobby + two open decks + roof). Between them lies THE DRAIN,
+// a flooded 3 m-deep canyon with a three-level central Mast; at heights 6 / 12 / 18 m a skybridge runs
+// from each tower to the Mast, so the "mid fight" happens on narrow bridges stacked over the drain.
+// Around the complex a ring road: a covered night-market Bazaar (with a walkable roof) to the north and
+// a container-maze Rail Yard to the south, plus a rear yard behind each tower. Nothing here reuses the
+// Helix's spiral/plaza skeleton — it is a symmetric three-structure, stacked-crossing map.
+const PX = 60, PZ = 38, RAIL_H = 1.1;
+const matStreet = M(0x66717f, 0.85), matBldg = M(0x56606e, 0.95), matStall = M(0x4f8a72), matDeck = M(0x8794b4, 0.6, 0.3);
+const matPad = [M(0x3a66c8), M(0xcc3a3a)];
+const matContA = M(0x8a3b2e, 0.7), matContB = M(0x2e6b6b, 0.7), matContC = M(0xb0873a, 0.7), matContD = M(0x2f4f8a, 0.7);
+const matGlassRail = new THREE.MeshStandardMaterial({ color: 0x9fc6e8, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.4 });
+const rail = (x0, y, z0, x1, z1, h = RAIL_H) => addSolid(x0, y, z0, x1, y + h, z1, matGlassRail, { tag: 'rail', shadow: false });
+const mirrorPut = (sgn) => (xa, y0, z0, xb, y1, z1, mat, o) => {
+  const a = sgn === -1 ? xa : -xb, b = sgn === -1 ? xb : -xa;
+  return addSolid(Math.min(a, b), y0, z0, Math.max(a, b), y1, z1, mat, o);
+};
 
-  let ground = [{ x0: -54, y0: -6, z0: -15, x1: 54, y1: 0, z1: 15 }];
-  const cuts = [
-    { x0: -42, x1: 42, z0: -15, z1: -9, y0: -5, y1: -1 },   // flooded storm drain (ceiling = main street)
-    { x0: -52, x1: -42, z0: -15, z1: -9, y0: -5, y1: 0 },
-    { x0: 42, x1: 52, z0: -15, z1: -9, y0: -5, y1: 0 },
-    { x0: -10, x1: -5, z0: -9, z1: -3, y0: -5, y1: 0 },
-    { x0: 5, x1: 10, z0: -9, z1: -3, y0: -5, y1: 0 },
-  ];
-  for (const cut of cuts) ground = ground.flatMap(g => subtract(g, cut));
-  for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matStreet);
+// ---------- Perimeter + ground slab (cut for the Drain) ----------
+addSolid(-PX, -3.4, -PZ, PX, WALL_H, -PZ + 1, matBldg);
+addSolid(-PX, -3.4, PZ - 1, PX, WALL_H, PZ, matBldg);
+addSolid(-PX, -3.4, -PZ, -PX + 1, WALL_H, PZ, matBldg);
+addSolid(PX - 1, -3.4, -PZ, PX, WALL_H, PZ, matBldg);
+let ground = [{ x0: -PX, y0: -0.4, z0: -PZ, x1: PX, y1: 0, z1: PZ }];
+ground = ground.flatMap(g => subtract(g, { x0: -26, x1: 26, z0: -14, z1: 14, y0: -0.4, y1: 0 }));
+for (const g of ground) addSolid(g.x0, g.y0, g.z0, g.x1, g.y1, g.z1, matStreet, { tag: 'floor' });
 
-  addSolid(-55, -6, -16, 55, WALL_H, -15, matBldg);
-  addSolid(-55, -6, 15, 55, WALL_H, 16, matBldg);
-  addSolid(-55, -6, -16, -54, WALL_H, 16, matBldg);
-  addSolid(54, -6, -16, 55, WALL_H, 16, matBldg);
+// ---------- THE DRAIN (y -3): floor, retaining walls, stairs in from the lobbies and from both streets ----------
+addSolid(-26, -3.4, -14, 26, -3, 14, matStreet, { tag: 'ramp' });
+for (const [x0, x1] of [[-26, -8], [8, 26]]) { addSolid(x0, -3.4, 13.5, x1, 0, 14, matBldg); addSolid(x0, -3.4, -14, x1, 0, -13.5, matBldg); }
+for (const sgn of [-1, 1]) {
+  const put = mirrorPut(sgn);
+  put(-26, -3.4, -14, -25.5, 0, -5, matBldg); put(-26, -3.4, 5, -25.5, 0, 14, matBldg);   // end walls, lobby stairs between
+  for (let i = 0; i < 6; i++) put(-26 + i, -3.4, -5, -25 + i, -0.5 * (i + 1), 5, matMezz);   // lobby stairs down into the drain
+}
+for (let i = 0; i < 6; i++) {                                                             // grand stairs from both streets
+  addSolid(-8, -3.4, 13 - i, 8, -0.5 * (i + 1), 14 - i, matMezz);
+  addSolid(-8, -3.4, -14 + i, 8, -0.5 * (i + 1), -13 + i, matMezz);
+}
+// shipping containers + wrecks as cover on the drain floor
+for (const [x0, z0, x1, z1, m] of [[-19, -10, -13, -7.6, matContA], [13, 7.6, 19, 10, matContB], [-15, 6, -9, 8.4, matContC], [9, -8.4, 15, -6, matContD],
+  [-20, 10.5, -17.5, 13, matContB], [17.5, -13, 20, -10.5, matContA]]) addSolid(x0, -3, z0, x1, -0.4, z1, m, { tag: 'cover' });
+for (const [x0, z0, x1, z1] of [[-9, -3, -7.5, -1], [7.5, 1, 9, 3], [-4, 8.5, -2, 10], [2, -10, 4, -8.5]]) addSolid(x0, -3, z0, x1, -1.9, z1, matCover);   // sandbag walls
 
-  for (let i = 0; i < 9; i++) {
-    addSolid(-52 + i, -5, -15, -51 + i, -0.5 * (i + 1), -9, matStreet, { tag: 'ramp' });
-    addSolid(51 - i, -5, -15, 52 - i, -0.5 * (i + 1), -9, matStreet, { tag: 'ramp' });
-  }
-  function bay(xa, xb) {
-    for (let j = 0; j < 6; j++) addSolid(xa, -5, -9 + j, xb, -5 + (5 / 6) * (j + 1), -8 + j, matAlley);
-  }
-  bay(-10, -5);
-  bay(5, 10);
-
-  function buildSide(sgn) {
-    const S = (x0, z0, x1, z1, y0, y1, mat, o) => {
-      const [a, b] = sgn === -1 ? [x0, x1] : [-x1, -x0];
-      return addSolid(a, y0, z0, b, y1, z1, mat, o);
-    };
-    S(-42, -15, -41, -3, 0, WALL_H, matBldg);
-    S(-42, 3, -41, 9, 0, WALL_H, matBldg);
-    S(-41, -15, -15, -3, 0, WALL_H, matBldg);
-    S(-41, 3, -15, 9, 0, WALL_H, matBldg);
-    // Alley choke — a narrower 2.4m gap between buildings (tighter than Atrium's Choke)
-    S(-19, -2.7, -15, -1.2, 0, WALL_H, matAlley);
-    S(-19, 1.2, -15, 2.7, 0, WALL_H, matAlley);
-    S(-12.5, 1.2, -11, 2.8, 0, 1.2, matStall);
-    // Fire-escape ladder up to the catwalk — same stepped-collider shape as Atrium's stairs (keeps
-    // bot pathing/climb behavior proven), re-skinned as a steel fire-escape stair.
-    const STAIR_N = 20, STAIR_RISE = 5.0 / STAIR_N, STAIR_RUN = 12.0 / STAIR_N;
-    for (let i = 0; i < STAIR_N; i++) S(-27 + STAIR_RUN * i, 9, -27 + STAIR_RUN * (i + 1), 15, 0, STAIR_RISE * (i + 1), matLadder);
-    S(-50, 8, -48, 10, 0, 1.2, matStall);
-    S(-47, -7, -45, -5, 0, 1.2, matStall);
-    const [pa, pb] = sgn === -1 ? [-52, -44] : [44, 52];
-    addSolid(pa, 0, -4, pb, 0.03, 4, sgn === -1 ? matSpawnA2 : matSpawnB2, { collide: false, shadow: false });
-  }
-  buildSide(-1);
-  buildSide(1);
-
-  // ---------- MID: an open flooded market square, 4 stalls in a diamond instead of one center pillar ----------
-  addSolid(-1, 0, -1, 1, 1.3, 1, matStall);
-  addSolid(-7, 0, -3, -4.5, 1.2, -1, matStall);
-  addSolid(4.5, 0, -3, 7, 1.2, -1, matStall);
-  addSolid(-2, 0, -8, 2, 1.2, -6.8, matStall);
-  for (let k = 0; k < 10; k++) addSolid(2, 0, -1 + k, 5, 0.5 * (k + 1), k, matLadder);   // ladder up to the catwalk from Mid
-
-  // ---------- CATWALK: one continuous steel walkway over Mid — no destructible half, just normal cover ----------
-  addSolid(-15, 4.4, 9, 15, 5.0, 15, matWalk, { tag: 'cover' });
-  for (const [a, b] of [[-15, -9], [-7, -2], [6, 10], [12, 15]]) addSolid(a, 5, 9, b, 5.9, 9.4, matWalk, { tag: 'cover' });
-  for (const mx of [-11, -4, 4, 11]) addSolid(mx - 1, 5.0, 10.6, mx + 1, 6.3, 12.2, matStall, { tag: 'cover' });
-  // Support posts under the catwalk — plain cover, not a shootable beam
-  addSolid(-8.4, 0, 11.6, -7.6, 4.4, 12.4, matRailM, { tag: 'cover' });
-  addSolid(7.6, 0, 11.6, 8.4, 4.4, 12.4, matRailM, { tag: 'cover' });
-
-  // ---------- MONSOON DRESSING: neon signage, awnings, market stalls, puddles, rain barrels ----------
-  (function dressMonsoon() {
-    const matAwning = new THREE.MeshStandardMaterial({ color: 0x8a2a4a, roughness: 0.8 });
-    const matPuddle = new THREE.MeshStandardMaterial({ color: 0x1a2a38, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.6 });
-    const matCrate = M(0x4a3f2e, 0.9), matBarrel = M(0x2a4a52, 0.6, 0.3), matLampPost = M(0x15161a, 0.6, 0.4);
-    const matSign = new THREE.MeshStandardMaterial({ color: 0x22ffe0, emissive: 0x22ffe0, emissiveIntensity: 1.8, roughness: 0.3 });
-    const matSign2 = new THREE.MeshStandardMaterial({ color: 0xff3c7a, emissive: 0xff3c7a, emissiveIntensity: 1.8, roughness: 0.3 });
-    const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
-
-    // Awning canopies over the lanes (instead of a glass skylight)
-    for (const sgn of [-1, 1]) {
-      const X = (x) => sgn === -1 ? x : -x;
-      for (let lx = -39; lx <= -22; lx += 5.5) {
-        const awn = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.1, 4.6), matAwning);
-        awn.rotation.z = sgn * 0.08; deco(awn, X(lx), 3.9, 0);
-      }
-    }
-    // Puddle decals on the street (flat, faux-reflective quads)
-    for (const [x, z] of [[-33, -2], [-24, 2], [33, 2], [24, -2], [-6, -4], [6, 4], [0, 10]]) {
-      const p = new THREE.Mesh(new THREE.CircleGeometry(1.6 + Math.random(), 10), matPuddle);
-      p.rotation.x = -Math.PI / 2; deco(p, x, 0.012, z);
-    }
-    // Neon shop signs along the building faces
-    for (const [x, z, ry, mat] of [[-41.3, -6, Math.PI / 2, matSign], [-41.3, 6, Math.PI / 2, matSign2], [41.3, -6, -Math.PI / 2, matSign2], [41.3, 6, -Math.PI / 2, matSign]]) {
-      deco(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 2.2), mat), x, 3.2, z, ry);
-    }
-    // Lamp posts down the lanes, over Mid and the tunnel
-    function lamp(x, y, z) {
-      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, y, 6), matLampPost), x, y / 2, z);
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), new THREE.MeshStandardMaterial({ color: 0xfff0c0, emissive: 0xffd98a, emissiveIntensity: 1.4 }));
-      deco(head, x, y, z);
-    }
-    for (const x of [-33, -24, 24, 33]) lamp(x, 3.6, -3.2);
-    lamp(0, 4.4, -8); lamp(0, 4.4, 8);
-    for (let x = -40; x <= 40; x += 10) lamp(x, 2.2, -12);
-
-    // Market crates/barrels for street-level cover texture, plus the flooded tunnel below
-    function crate(x, z, ry = 0, s = 0.75) { deco(new THREE.Mesh(new THREE.BoxGeometry(s, s, s), matCrate), x, s / 2, z, ry); }
-    function barrel(x, z, y0 = 0) { deco(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.8, 10), matBarrel), x, y0 + 0.4, z); }
-    crate(-38, -4.5, 0.3); crate(38, 4.5, 0.5); barrel(-44, 5); barrel(44, -5);
-    function coverStack(x, z) {
-      addSolid(x - 0.6, -5, z - 0.6, x + 0.6, -5 + 1.6, z + 0.6, matCrate, { tag: 'cover' });
-      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.6, 10), matBarrel), x - 0.45, -5 + 0.3, z + 0.4);
-    }
-    for (const [x, z] of [[-32, -13], [-18, -11], [18, -13], [32, -11]]) coverStack(x, z);
-    for (let x = -40; x <= 40; x += 8) {
-      const p = new THREE.Mesh(new THREE.PlaneGeometry(6.5, 1.3), matPuddle);
-      p.rotation.x = -Math.PI / 2; deco(p, x, -4.98, -12);
-    }
-  })();
+// ---------- THE MAST: four legs + platforms at 6 / 12 / 18 ----------
+for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+  const x0 = sx < 0 ? -5 : 3, z0 = sz < 0 ? -5 : 3;
+  addSolid(x0, -3.4, z0, x0 + 2, 18.6, z0 + 2, matBldg, { tag: 'mast' });
+}
+for (const y of [6, 12, 18]) {
+  addSolid(-5, y - 0.5, -5, 5, y, 5, matDeck, { tag: 'spiral' });
+  rail(-5, y, -5, 5, -4.75); rail(-5, y, 4.75, 5, 5);                                     // north/south edges
+  rail(-5, y, -5, -4.75, -2); rail(-5, y, 2, -4.75, 5); rail(4.75, y, -5, 5, -2); rail(4.75, y, 2, 5, 5);   // west/east edges, gaps for the bridges
 }
 
-// ---------- Scorch: a sun-baked desert canyon outpost under a wildfire haze. Its own layout, not
-// Atrium/Monsoon's long+choke+mezzanine skeleton reskinned: each spawn opens onto two genuinely
-// different routes — a sunken "Wash" that widens into an open bowl ("The Pit") around a climbable
-// rock spire ("The Mesa", the single tallest point on the map), and a separate elevated "Ridge" that
-// runs straight spawn-to-spawn, bypassing the Pit entirely instead of crossing over it. ----------
+// ---------- THE TOWERS (mirrored): lobby + decks at 6 and 12 + roof at 18, three bridges to the Mast ----------
+for (const sgn of [-1, 1]) {
+  const put = mirrorPut(sgn);
+  // lobby shell (y 0..5.5): west wall, north/south walls with a 5 m door gap, east wall with a 10 m gap onto the drain stairs
+  put(-46, 0, -14, -45, 5.5, 14, matBldg);
+  put(-46, 0, 13, -44, 5.5, 14, matBldg); put(-40, 0, 13, -26, 5.5, 14, matBldg);
+  put(-46, 0, -14, -44, 5.5, -13, matBldg); put(-40, 0, -14, -26, 5.5, -13, matBldg);
+  put(-27, 0, -14, -26, 5.5, -5, matBldg); put(-27, 0, 5, -26, 5.5, 14, matBldg);
+  put(-44, 0, -6, -36, 0.03, 6, matPad[sgn === -1 ? 0 : 1], { collide: false, shadow: false });   // spawn pad
+  put(-40, 0, -3, -38.5, 3.5, -1.5, matBldg); put(-40, 0, 1.5, -38.5, 3.5, 3, matBldg);           // lobby pillars
+  // decks: y 6 (hole over the lobby stair), y 12 (hole over the L1->L2 stair), roof y 18 (hole over the roof stair)
+  const deck = (y, hole) => {
+    let pieces = [{ x0: -46, y0: y - 0.5, z0: -14, x1: -26, y1: y, z1: 14 }];
+    pieces = pieces.flatMap(p => subtract(p, { ...hole, y0: y - 0.5, y1: y }));
+    for (const p of pieces) put(p.x0, p.y0, p.z0, p.x1, p.y1, p.z1, matDeck, { tag: 'spiral' });
+  };
+  deck(6, { x0: -40, x1: -28, z0: -12, z1: -9 });
+  deck(12, { x0: -40, x1: -28, z0: 9, z1: 12 });
+  deck(18, { x0: -40, x1: -28, z0: -12, z1: -9 });
+  for (let i = 0; i < 12; i++) {
+    put(-40 + i, 0, -12, -39 + i, 0.5 * (i + 1), -9, matMezz);                            // S1: lobby -> deck 1
+    put(-40 + i, 5.5, 9, -39 + i, 6 + 0.5 * (i + 1), 12, matMezz);                       // S2: deck 1 -> deck 2
+    put(-40 + i, 11.5, -12, -39 + i, 12 + 0.5 * (i + 1), -9, matMezz);                   // S3: deck 2 -> roof
+  }
+  // perimeter rails on every deck (bridge gap on the east edge), and rails around each stair hole
+  for (const [y, hz0, hz1] of [[6, -12, -9], [12, 9, 12], [18, -12, -9]]) {
+    const h = y === 18 ? 1.3 : RAIL_H;
+    put(-46, y, -14, -45.75, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+    put(-46, y, 13.75, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+    put(-46, y, -14, -26, y + h, -13.75, matGlassRail, { tag: 'rail', shadow: false });
+    put(-26.25, y, -14, -26, y + h, -2, matGlassRail, { tag: 'rail', shadow: false });
+    put(-26.25, y, 2, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+    put(-40.25, y, hz0, -40, y + RAIL_H, hz1, matGlassRail, { tag: 'rail', shadow: false });
+    put(-40, y, hz0 - 0.25, -28, y + RAIL_H, hz0, matGlassRail, { tag: 'rail', shadow: false });
+    put(-40, y, hz1, -28, y + RAIL_H, hz1 + 0.25, matGlassRail, { tag: 'rail', shadow: false });
+    // bridge to the Mast
+    put(-26, y - 0.5, -2, -5, y, 2, matDeck, { tag: 'spiral' });
+    put(-26, y, -2, -5, y + RAIL_H, -1.75, matGlassRail, { tag: 'rail', shadow: false });
+    put(-26, y, 1.75, -5, y + RAIL_H, 2, matGlassRail, { tag: 'rail', shadow: false });
+  }
+  // corner pillars for the open frame
+  for (const [x0, z0] of [[-46, -14], [-46, 12.5], [-27.5, -14], [-27.5, 12.5], [-37, -14], [-37, 12.5]]) put(x0, 0, z0, x0 + 1.5, 18, z0 + 1.5, matBldg, { tag: 'mast' });
+  // deck cover (crates)
+  for (const [y, list] of [[6, [[-41, -4.5, -38.5, -3], [-35, 3.5, -32, 5]]], [12, [[-41, 3.5, -38.5, 5], [-35, -5, -32, -3.5]]], [18, [[-41, -4.5, -38.5, -3], [-35, 3.5, -32, 5]]]])
+    for (const [x0, z0, x1, z1] of list) put(x0, y, z0, x1, y + 1.2, z1, matCover);
+}
+
+// ---------- NORTH: THE BAZAAR (covered hall with a walkable roof at y 5) ----------
+addSolid(-18, 0, 20, -12, 4.5, 21, matBldg); addSolid(-6, 0, 20, 6, 4.5, 21, matBldg); addSolid(12, 0, 20, 18, 4.5, 21, matBldg);   // south wall, gaps x[-12,-6] and x[6,12]
+addSolid(-18, 0, 31, -4, 4.5, 32, matBldg); addSolid(4, 0, 31, 18, 4.5, 32, matBldg);         // north wall, gap x[-4,4]
+addSolid(-18, 0, 20, -17, 4.5, 32, matBldg); addSolid(17, 0, 20, 18, 4.5, 32, matBldg);       // end walls
+addSolid(-18, 4.5, 20, 18, 5, 32, matDeck, { tag: 'spiral' });                                  // roof
+for (let i = 0; i < 10; i++) {                                                                 // roof stairs at both ends
+  addSolid(-28 + i, -0.4, 24, -27 + i, 0.5 * (i + 1), 28, matMezz);
+  addSolid(27 - i, -0.4, 24, 28 - i, 0.5 * (i + 1), 28, matMezz);
+}
+rail(-18, 5, 20, 18, 20.25); rail(-18, 5, 31.75, 18, 32);                                       // roof rails (front/back)
+rail(-18, 5, 20, -17.75, 24); rail(-18, 5, 28, -17.75, 32); rail(17.75, 5, 20, 18, 24); rail(17.75, 5, 28, 18, 32);
+for (const [x0, z0, x1, z1] of [[-16, 23, -13, 24.5], [13, 27.5, 16, 29], [-3, 22, 0, 23.5], [3, 22.5, 7, 24]]) addSolid(x0, 0, z0, x1, 1.1, z1, matStall, { tag: 'cover' });   // stalls inside
+for (const [x0, z0] of [[-6, 27], [6, 27]]) addSolid(x0 - 0.6, 0, z0 - 0.6, x0 + 0.6, 4.5, z0 + 0.6, matBldg);
+for (const [x0, z0, x1, z1] of [[-12, 28, -8, 29.5], [8, 22.5, 12, 24]]) addSolid(x0, 5, z0, x1, 6.2, z1, matCover);   // roof cover
+
+// ---------- SOUTH: THE RAIL YARD (container maze) ----------
+const conts = [
+  // row 1 (z -22 .. -19.6)
+  [-24, -22, -18, -19.6, matContA], [-14, -22, -8, -19.6, matContC], [-2, -22, 4, -19.6, matContB], [8, -22, 14, -19.6, matContD], [20, -22, 26, -19.6, matContA],
+  // row 2 (z -27 .. -24.6), staggered
+  [-20, -27, -14, -24.6, matContB], [-10, -27, -4, -24.6, matContD], [2, -27, 8, -24.6, matContA], [12, -27, 18, -24.6, matContC],
+  // row 3 (z -32 .. -29.6)
+  [-24, -32, -18, -29.6, matContD], [-14, -32, -8, -29.6, matContA], [-2, -32, 4, -29.6, matContC], [8, -32, 14, -29.6, matContB], [20, -32, 26, -29.6, matContD],
+];
+for (const [x0, z0, x1, z1, m] of conts) addSolid(x0, 0, z0, x1, 2.6, z1, m, { tag: 'cover' });
+for (const [x0, z0] of [[-14, -22], [12, -27]]) addSolid(x0, 2.6, z0, x0 + 6, 5.2, z0 + 2.4, matContD, { tag: 'cover' });   // two stacked boxes: sightline-blockers
+
+// ---------- STREETS + REAR YARDS: market stalls and low cover ----------
+for (const [x0, z0, x1, z1] of [[-40, 17, -36, 18.5], [-26, 33, -22, 34.5], [24, 33, 28, 34.5], [36, 17, 40, 18.5],
+  [-40, -18.5, -36, -17], [-26, -34.5, -22, -33], [24, -34.5, 28, -33], [36, -18.5, 40, -17],
+  [-54, 12, -51, 14], [-54, -14, -51, -12], [51, 12, 54, 14], [51, -14, 54, -12]]) addSolid(x0, 0, z0, x1, 1.2, z1, matStall, { tag: 'cover' });
+
+// ---------- DRESSING (non-colliding): flood water, neon, lamps ----------
+(function dressMonsoon() {
+  const matWater = new THREE.MeshStandardMaterial({ color: 0x1d4a6a, roughness: 0.15, metalness: 0.5, transparent: true, opacity: 0.6, emissive: 0x0b2a40, emissiveIntensity: 0.6 });
+  const water = new THREE.Mesh(new THREE.BoxGeometry(52, 0.05, 28), matWater);
+  water.position.set(0, -2.55, 0); water.castShadow = false; mapGroup.add(water);
+  const neon = (c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 2.2, roughness: 0.4 });
+  const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = false; mapGroup.add(mesh); return mesh; };
+  const colors = [0xff3fa4, 0x3fd8ff, 0xffd23f, 0x7dff6a];
+  // neon strips on the tower faces at each deck level, plus the Mast
+  for (const sgn of [-1, 1]) {
+    colors.slice(0, 3).forEach((c, i) => deco(new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.25, 26), neon(c)), sgn * 26.2, 6 + i * 6 + 0.9, 0));
+    deco(new THREE.Mesh(new THREE.BoxGeometry(0.3, 22, 0.3), neon(sgn < 0 ? 0x3d7bff : 0xff4545)), sgn * 46.3, 9, 0);
+  }
+  for (const y of [6, 12, 18]) deco(new THREE.Mesh(new THREE.BoxGeometry(10.2, 0.2, 10.2), neon(0x3fd8ff)), 0, y - 0.55, 0);
+  // street lamps + bazaar signs
+  const matPost = M(0x1c1d22, 0.6, 0.4), matLamp = new THREE.MeshStandardMaterial({ color: 0xffe3a0, emissive: 0xffc96b, emissiveIntensity: 1.8, roughness: 0.4 });
+  for (const [x, z] of [[-34, 16], [34, 16], [-34, -16], [34, -16], [-12, 34], [12, 34], [-12, -36], [12, -36], [-52, 0], [52, 0], [-52, 30], [52, 30], [-52, -30], [52, -30]]) {
+    deco(new THREE.Mesh(new THREE.BoxGeometry(0.12, 4.4, 0.12), matPost), x, 2.2, z);
+    deco(new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 6), matLamp), x, 4.5, z);
+  }
+  for (const [x, z, c] of [[-9, 20.2, 0xff3fa4], [9, 20.2, 0x3fd8ff], [0, 20.2, 0xffd23f]]) deco(new THREE.Mesh(new THREE.BoxGeometry(5, 0.9, 0.12), neon(c)), x, 3.6, z);
+})();
+}   // end buildMonsoonGeometry()
 function buildScorchGeometry() {
   const matSand = M(0xc9a36a, 0.95), matRock = M(0x6e5a44, 0.9), matWash = M(0x8a6a44, 0.85);
   const matRidge = M(0xb5824a, 0.85), matSpire = M(0x7a5a3a, 0.8), matSpireTop = M(0x96724a, 0.75);
@@ -1086,28 +1072,62 @@ const rightVec = () => new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(play
 
 const overlapsXZ = (c, x, z) => x + RADIUS > c.x0 && x - RADIUS < c.x1 && z + RADIUS > c.z0 && z - RADIUS < c.z1;
 
+// ---------- spatial grid ----------
+// Every collision / line-of-sight query used to scan ALL colliders. Fine for a 56m map, far too slow
+// for a ~120m one with a dozen actors, so colliders are bucketed into an XZ grid. Each collider is
+// registered in every cell its RADIUS-padded footprint touches, so a point lookup only needs one cell.
+// It rebuilds lazily whenever grid.n is invalidated (-1) or the collider count changes.
+const GRID_CELL = 8, NO_COLLIDERS = [];
+const grid = { n: -1, x0: 0, z0: 0, nx: 0, nz: 0, cells: [] };
+let queryStamp = 0;
+function ensureGrid() {
+  if (grid.n === colliders.length) return;
+  grid.n = colliders.length;
+  grid.cells = []; grid.nx = grid.nz = 0;
+  if (!colliders.length) return;
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (const c of colliders) { x0 = Math.min(x0, c.x0); z0 = Math.min(z0, c.z0); x1 = Math.max(x1, c.x1); z1 = Math.max(z1, c.z1); }
+  const pad = RADIUS + 0.02;
+  grid.x0 = x0 - pad; grid.z0 = z0 - pad;
+  grid.nx = Math.ceil((x1 + pad - grid.x0) / GRID_CELL) + 1;
+  grid.nz = Math.ceil((z1 + pad - grid.z0) / GRID_CELL) + 1;
+  grid.cells = Array.from({ length: grid.nx * grid.nz }, () => []);
+  for (const c of colliders) {
+    c._q = 0;
+    const i0 = Math.floor((c.x0 - pad - grid.x0) / GRID_CELL), i1 = Math.floor((c.x1 + pad - grid.x0) / GRID_CELL);
+    const j0 = Math.floor((c.z0 - pad - grid.z0) / GRID_CELL), j1 = Math.floor((c.z1 + pad - grid.z0) / GRID_CELL);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) grid.cells[j * grid.nx + i].push(c);
+  }
+}
+function cellAt(x, z) {
+  ensureGrid();
+  const i = Math.floor((x - grid.x0) / GRID_CELL), j = Math.floor((z - grid.z0) / GRID_CELL);
+  if (i < 0 || j < 0 || i >= grid.nx || j >= grid.nz) return NO_COLLIDERS;
+  return grid.cells[j * grid.nx + i];
+}
+
 // Would standing at (x,z) with feet at `feet` put us inside a wall?
 function blockedAt(x, z, feet) {
   const lo = feet + STEP, hi = feet + HEIGHT;
-  for (const c of colliders) if (c.y1 > lo && c.y0 < hi && overlapsXZ(c, x, z)) return true;
+  for (const c of cellAt(x, z)) if (c.y1 > lo && c.y0 < hi && overlapsXZ(c, x, z)) return true;
   return false;
 }
 // Highest surface under (x,z) that is no higher than maxTop.
 function groundAt(x, z, maxTop) {
   let best = -Infinity;
-  for (const c of colliders) if (c.y1 <= maxTop && c.y1 > best && overlapsXZ(c, x, z)) best = c.y1;
+  for (const c of cellAt(x, z)) if (c.y1 <= maxTop && c.y1 > best && overlapsXZ(c, x, z)) best = c.y1;
   return best;
 }
 // Tag of whatever's directly underfoot (close to feet height) — used to pick a footstep sound.
 function surfaceTagAt(x, z, feet) {
   let best = -Infinity, tag = null;
-  for (const c of colliders) if (c.y1 <= feet + 0.05 && c.y1 > best && overlapsXZ(c, x, z)) { best = c.y1; tag = c.tag; }
+  for (const c of cellAt(x, z)) if (c.y1 <= feet + 0.05 && c.y1 > best && overlapsXZ(c, x, z)) { best = c.y1; tag = c.tag; }
   return tag;
 }
 // Lowest underside between our head and where it's heading.
 function ceilingAt(x, z, head, newHead) {
   let best = Infinity;
-  for (const c of colliders) if (c.y0 >= head - 0.001 && c.y0 < newHead && c.y0 < best && overlapsXZ(c, x, z)) best = c.y0;
+  for (const c of cellAt(x, z)) if (c.y0 >= head - 0.001 && c.y0 < newHead && c.y0 < best && overlapsXZ(c, x, z)) best = c.y0;
   return best;
 }
 
@@ -1390,6 +1410,7 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
     const c = colliders[i];
     if (c.tag === 'mezz' + side || c.tag === 'beam' + side) { mapGroup.remove(c.mesh); colliders.splice(i, 1); fallen.push(c); }
   }
+  grid.n = -1;
   collapsedSides.add(side);
   tagLive['mezz' + side] = false;
   mapDirty = true;
@@ -1397,6 +1418,7 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
 }
 function restoreMezz() {
   for (const c of fallen) { colliders.push(c); mapGroup.add(c.mesh); }
+  grid.n = -1;
   fallen.length = 0; collapsedSides.clear();
   tagLive.mezzW = tagLive.mezzE = true;
   mapDirty = true;
@@ -2168,6 +2190,7 @@ function drawStaticMap() {
   }
   by('stairs', (c, r) => { g.fillStyle = `hsl(228,45%,${28 + c.y1 * 7}%)`; g.fillRect(...r); });
   by('escalator', (c, r) => { g.fillStyle = `hsl(220,12%,${34 + c.y1 * 6}%)`; g.fillRect(...r); });
+  by('spiral', (c, r) => { g.fillStyle = `hsl(${215 + c.y1 * 3},55%,${32 + c.y1 * 1.8}%)`; g.fillRect(...r); });
   by('cover', (c, r) => { g.fillStyle = c.y1 > 3 ? '#86c086' : '#5f8a5f'; g.fillRect(...r); });
   for (const c of colliders) {
     if (c.tag !== 'mezzW' && c.tag !== 'mezzE') continue;
@@ -2229,7 +2252,7 @@ const DEFAULT_LEGEND = [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['
 const SIDE_TAG_COLOR = {
   wall: 'rgba(13,14,19,0.9)', choke: 'rgba(138,106,72,0.85)', cover: 'rgba(95,138,95,0.8)',
   stairs: 'rgba(74,93,176,0.75)', escalator: 'rgba(119,119,136,0.7)', scaffold: 'rgba(255,150,60,0.55)',
-  ramp: 'rgba(47,209,200,0.45)', floor: 'rgba(58,61,76,0.9)', mezzW: 'rgba(106,120,255,0.55)', mezzE: 'rgba(106,120,255,0.55)',
+  ramp: 'rgba(47,209,200,0.45)', spiral: 'rgba(111,134,214,0.8)', rail: 'rgba(159,198,232,0.35)', floor: 'rgba(58,61,76,0.9)', mezzW: 'rgba(106,120,255,0.55)', mezzE: 'rgba(106,120,255,0.55)',
   beamW: 'rgba(255,90,60,0.9)', beamE: 'rgba(255,90,60,0.9)', default: 'rgba(120,120,140,0.3)',
 };
 
@@ -2414,10 +2437,42 @@ function rayBox(ox, oy, oz, dx, dy, dz, x0, y0, z0, x1, y1, z1) {
   return tmin;
 }
 function rayWorld(o, d, maxT) {
+  ensureGrid();
   let best = maxT;
-  for (const c of colliders) {
-    const t = rayBox(o.x, o.y, o.z, d.x, d.y, d.z, c.x0, c.y0, c.z0, c.x1, c.y1, c.z1);
-    if (t < best) best = t;
+  if (!grid.nx) return best;
+  const stamp = ++queryStamp, CELL = GRID_CELL;
+  // Walk the ray's XZ footprint cell by cell (Amanatides-Woo DDA), clipped to the grid's bounds.
+  const sx = d.x * maxT, sz = d.z * maxT;
+  const gx0 = grid.x0, gz0 = grid.z0, gx1 = gx0 + grid.nx * CELL, gz1 = gz0 + grid.nz * CELL;
+  let f0 = 0, f1 = 1;
+  for (const [s, o0, lo, hi] of [[sx, o.x, gx0, gx1], [sz, o.z, gz0, gz1]]) {
+    if (Math.abs(s) < 1e-9) { if (o0 < lo || o0 >= hi) return best; continue; }
+    let a = (lo - o0) / s, b = (hi - o0) / s;
+    if (a > b) { const t = a; a = b; b = t; }
+    if (a > f0) f0 = a;
+    if (b < f1) f1 = b;
+    if (f0 > f1) return best;
+  }
+  const clampI = (v, n) => Math.max(0, Math.min(n - 1, v));
+  let i = clampI(Math.floor((o.x + sx * f0 - gx0) / CELL), grid.nx), j = clampI(Math.floor((o.z + sz * f0 - gz0) / CELL), grid.nz);
+  const ie = clampI(Math.floor((o.x + sx * f1 - gx0) / CELL), grid.nx), je = clampI(Math.floor((o.z + sz * f1 - gz0) / CELL), grid.nz);
+  const stepI = sx > 0 ? 1 : -1, stepJ = sz > 0 ? 1 : -1;
+  let tMaxX = Math.abs(sx) < 1e-9 ? Infinity : (gx0 + (sx > 0 ? i + 1 : i) * CELL - o.x) / sx;
+  let tMaxZ = Math.abs(sz) < 1e-9 ? Infinity : (gz0 + (sz > 0 ? j + 1 : j) * CELL - o.z) / sz;
+  const tDx = Math.abs(sx) < 1e-9 ? Infinity : CELL / Math.abs(sx), tDz = Math.abs(sz) < 1e-9 ? Infinity : CELL / Math.abs(sz);
+  if (!(i >= 0 && j >= 0 && i < grid.nx && j < grid.nz)) return best;     // NaN-safe
+  for (let guard = grid.nx + grid.nz + 4; guard > 0; guard--) {
+    for (const c of grid.cells[j * grid.nx + i]) {
+      if (c._q === stamp) continue;
+      c._q = stamp;
+      const t = rayBox(o.x, o.y, o.z, d.x, d.y, d.z, c.x0, c.y0, c.z0, c.x1, c.y1, c.z1);
+      if (t < best) best = t;
+    }
+    if (i === ie && j === je) break;
+    const tNext = Math.min(tMaxX, tMaxZ) * maxT;
+    if (best <= tNext) break;                       // anything in later cells is farther than the hit we already have
+    if (tMaxX < tMaxZ) { i += stepI; tMaxX += tDx; } else { j += stepJ; tMaxZ += tDz; }
+    if (i < 0 || j < 0 || i >= grid.nx || j >= grid.nz) break;
   }
   return best;
 }
@@ -2463,66 +2518,155 @@ function L(a, b, o = {}) {
   NAV[NAVI[a]].links.push({ to: NAVI[b], cond: o.cond, climb: o.climb });
   if (!o.oneWay) NAV[NAVI[b]].links.push({ to: NAVI[a], cond: o.cond, climb: o.climb });
 }
+// The Helix's topology: a plaza ring, a basement tunnel that surfaces in the open core, a long spiral
+// that can be walked in either direction (entered at ground level, from the east stair, or over the
+// north skybridge), the Crown dead end at the top, a sunken Garden to the south and an Arcade + terrace
+// to the north. Node names ending in A/B are the west/east mirror pair.
 function buildAtriumNav() {
-  for (const s of ['A', 'B']) {
-    const X = (x) => (s === 'A' ? x : -x), mezz = s === 'A' ? 'mezzW' : 'mezzE';
-    const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
-    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
-    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
-    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
-    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, req: mezz, hold: 1 });
-    const dropX = s === 'A' ? -8 : 11;                   // a gap in that side's broken railing
-    N(s + 'mezzEdge', dropX, 5, 10, { req: mezz }); N(s + 'dropLand', dropX, 0, 6.5);
-    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
-    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
-    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
-  }
-  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
-  N('escTop', 3.5, 5, 10, { w: 1.5, req: 'mezzE', hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
-  for (const s of ['A', 'B']) {
-    const l = (a, b, o) => L(s + a, s + b, o), mezz = s === 'A' ? 'mezzW' : 'mezzE';
-    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
-    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
-    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
-    l('stairsTop', 'underMezz', { oneWay: true, cond: () => !tagLive[mezz] });     // jump down once that half has collapsed
-    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
-    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
-  }
-  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
-  tagLive.mezzW = true; tagLive.mezzE = true;    // which Mezzanine halves are still standing
+  const N2 = (id, x, y, z, o) => { N(id + 'A', x, y, z, o); N(id + 'B', -x, y, z, o); };
+  const ex = (s, k) => s.replace('*', k);
+  const LL = (a, b, o) => { if (a.includes('*') || b.includes('*')) { L(ex(a, 'A'), ex(b, 'A'), o); L(ex(a, 'B'), ex(b, 'B'), o); } else L(a, b, o); };
+
+  // spawn halls + doors + the plaza right outside them
+  N2('spawn', -54, 0, 0); N2('door', -46.5, 0, 0, { hold: 1 }); N2('pW', -43, 0, 0, { w: 1 });
+  N2('pWn', -43, 0, 9); N2('pWs', -43, 0, -9); N2('qWN', -36, 0, 10, { w: 1 }); N2('qWS', -36, 0, -10, { w: 1 });
+  // plaza ring around the tower (clear of the garden pit to the south and the arcade to the north)
+  N2('rS', -24, 0, -20, { w: 1 }); N('rSC', 0, 0, -20, { w: 1 });
+  N2('rM', -24, 0, 0, { w: 1 });
+  N2('rN', -24, 0, 23, { w: 1 }); N('rNC', 0, 0, 23, { w: 1 });
+  // basement tunnel + the core pit
+  N2('tunTop', -39.5, 0, 0, { hold: 1 }); N2('tunBot', -31.5, -4, 0, { hold: 1 }); N2('tun', -22, -4, 0, { w: 1.2 });
+  N('pitC', 0, -4, 0, { w: 2, hold: 1 });
+  // helix entrances
+  N('spPre', -9.2, 0, -19.5); N('spIn', -9.2, 0.25, -14, { hold: 1 });
+  N('seIn', 22, 0, -14);
+  // helix landings, in walking order up the spiral (turn 0: y 2..8, turn 1: y 10..16)
+  N('L0SE', 14, 2, -14, { w: 0.8, hold: 1 }); N('L0NE', 14, 4, 14, { w: 0.8 }); N('L0NW', -14, 6, 14, { w: 0.8, hold: 1 }); N('L0SW', -14, 8, -14, { w: 0.8 });
+  N('L1SE', 14, 10, -14, { w: 0.8 }); N('L1NE', 14, 12, 14, { w: 0.8, hold: 1 }); N('L1NW', -14, 14, 14, { w: 0.8 });
+  N('crownSW', -14, 16, -14, { w: 0.7, hold: 1 }); N('crownSE', 14, 16, -14, { w: 0.5 }); N('crownNE', 14, 16, 14, { w: 0.7, hold: 1 });
+  // north arcade (ground) + terrace (y 6) + skybridge
+  N2('nwc', -50, 0, 24); N2('stBot', -48.5, 0, 34); N2('stTop', -37, 6, 34, { hold: 1 });
+  N('arA', -24, 0, 36, { w: 1 }); N('arC', 0, 0, 36, { w: 1 }); N('arB', 24, 0, 36, { w: 1 });
+  N2('terr', -26, 6, 35, { w: 1 }); N('terrBr', -14, 6, 34, { hold: 1 }); N('terrC', 0, 6, 35, { w: 1.2 });
+  N('brg', -14, 6, 24, { hold: 1 });
+  // south garden (y -3)
+  N2('gTop', -25.5, 0, -31); N2('gBot', -17, -3, -31, { hold: 1 }); N('gdC', 0, -3, -31, { w: 1.5, hold: 1 });
+
+  // --- links ---
+  LL('spawn*', 'door*'); LL('door*', 'pW*'); LL('pW*', 'pWn*'); LL('pW*', 'pWs*');
+  LL('pWn*', 'qWN*'); LL('pWs*', 'qWS*');
+  LL('qWN*', 'rM*'); LL('qWS*', 'rM*'); LL('qWN*', 'rN*'); LL('qWS*', 'rS*');
+  LL('rS*', 'rM*'); LL('rM*', 'rN*');
+  L('rSA', 'rSC'); L('rSC', 'rSB'); L('rNA', 'rNC'); L('rNC', 'rNB');
+  // tunnel
+  LL('pW*', 'tunTop*'); LL('tunTop*', 'tunBot*', { climb: true }); LL('tunBot*', 'tun*'); LL('tun*', 'pitC');
+  // helix entrances + spiral
+  L('rSA', 'spPre'); L('rSC', 'spPre'); L('spPre', 'spIn'); L('spIn', 'L0SE');
+  L('rSB', 'seIn'); L('seIn', 'L0SE');
+  L('L0SE', 'L0NE'); L('L0NE', 'L0NW'); L('L0NW', 'L0SW'); L('L0SW', 'L1SE'); L('L1SE', 'L1NE'); L('L1NE', 'L1NW'); L('L1NW', 'crownSW');
+  L('crownSW', 'crownSE'); L('crownSE', 'crownNE');
+  // north arcade, terrace, skybridge
+  LL('nwc*', 'rN*'); LL('nwc*', 'stBot*'); LL('stBot*', 'stTop*', { climb: true });
+  L('arA', 'arC'); L('arC', 'arB'); L('arA', 'rNA'); L('arC', 'rNC'); L('arB', 'rNB');
+  LL('stTop*', 'terr*'); L('terrA', 'terrBr'); L('terrBr', 'terrC'); L('terrC', 'terrB');
+  L('terrBr', 'brg'); L('brg', 'L0NW');
+  // south garden
+  LL('gTop*', 'gBot*', { climb: true }); LL('gBot*', 'gdC'); LL('gTop*', 'rS*');
+  NAVI.midC = NAVI.pitC;
 }
 
-// Same node layout/topology as Atrium (proven traversal/pathing) but the catwalk is never destructible,
-// so none of these nodes carry a `req` gate or a collapse-fallback edge.
+// "The Cistern": a cross-shaped tower, deliberately NOT a mirror of Atrium's square-ring topology.
+// The south and north halves of the vertical arm have no ground-level link between them at all —
+// the flood pit sits in the way — so the only path across is up onto the roof deck and back down,
+// via two offset ladders rather than one shared stair. Mostly a path, not a loop: that's the point.
+// Twin Spires topology: each tower is a spawn lobby with a serpentine stair (lobby -> deck 1 -> deck 2 -> roof);
+// at y 6 / 12 / 18 a bridge runs from each tower to the central Mast, so the middle is three stacked crossings.
+// The Drain (y -3) runs between the lobbies under the Mast; streets north (Bazaar, walkable roof) and south
+// (Rail Yard container maze) ring the complex, and a rear yard behind each tower links the two outer lanes.
+// Node names ending in A/B are the west/east mirror pair.
 function buildMonsoonNav() {
-  for (const s of ['A', 'B']) {
-    const X = (x) => (s === 'A' ? x : -x);
-    const n = (id, x, y, z, o) => N(s + id, X(x), y, z, o);
-    n('spawn', -48, 0, 0); n('spawnS', -53, 0, -6); n('rampTop', -53, 0, -12); n('rampBot', -42.5, -5, -12);
-    n('tun', -25, -5, -12, { w: 1, hold: 1 }); n('bayBot', -7.5, -5, -12, { w: 1 }); n('bayTop', -7.5, 0, -2, { w: 1.5, hold: 1 });
-    n('spawnN', -46, 0, 12); n('stairsDoor', -41.5, 0, 12); n('stairsBase', -29, 0, 12, { w: 1, hold: 1 });
-    n('stairsTop', -15.6, 5, 12, { w: 1, hold: 1 }); n('mezz', -8, 5, 12, { w: 2, hold: 1 });
-    const dropX = s === 'A' ? -8 : 11;
-    N(s + 'mezzEdge', dropX, 5, 10, {}); N(s + 'dropLand', dropX, 0, 6.5);
-    n('underMezz', -11, 0, 12, { w: 1, hold: 1 });
-    n('longDoor', -41.5, 0, 0); n('long', -30, 0, 0, { w: 1, hold: 1 }); n('choke', -17, 0, 0, { w: 1.5, hold: 1 });
-    n('midSide', -12, 0, -1, { w: 2 }); n('midN', -8, 0, 6, { w: 1 });
-  }
-  N('midC', 0, 0, -2.5, { w: 2.5, hold: 1 }); N('midS', 0, 0, -5, { w: 1 }); N('escBot', 3.5, 0, -2.5, { w: 1 });
-  N('escTop', 3.5, 5, 10, { w: 1.5, hold: 1 }); N('tunC', 0, -5, -12, { w: 1.5, hold: 1 });
-  for (const s of ['A', 'B']) {
-    const l = (a, b, o) => L(s + a, s + b, o);
-    l('spawn', 'longDoor'); l('spawn', 'spawnS'); l('spawnS', 'rampTop'); l('rampTop', 'rampBot'); l('rampBot', 'tun'); l('tun', 'bayBot');
-    L(s + 'bayBot', 'tunC'); l('bayBot', 'bayTop', { climb: true }); l('bayTop', 'midSide'); L(s + 'bayTop', 'midC');
-    l('spawn', 'spawnN'); l('spawnN', 'stairsDoor'); l('stairsDoor', 'stairsBase'); l('stairsBase', 'stairsTop'); l('stairsTop', 'mezz');
-    l('mezz', 'mezzEdge'); l('mezzEdge', 'dropLand', { oneWay: true }); l('dropLand', 'midN');
-    l('longDoor', 'long'); l('long', 'choke'); l('choke', 'midSide'); L(s + 'midSide', 'midC'); l('midSide', 'midN'); l('midN', 'underMezz');
-  }
-  L('Amezz', 'Bmezz'); L('midC', 'midS'); L('midC', 'escBot'); L('escBot', 'escTop'); L('escTop', 'Bmezz'); L('escTop', 'Amezz'); L('escBot', 'BmidSide');
-}
+  const N2 = (id, x, y, z, o) => { N(id + 'A', x, y, z, o); N(id + 'B', -x, y, z, o); };
+  const ex = (s, k) => s.replace('*', k);
+  const LL = (a, b, o) => { if (a.includes('*') || b.includes('*')) { L(ex(a, 'A'), ex(b, 'A'), o); L(ex(a, 'B'), ex(b, 'B'), o); } else L(a, b, o); };
+  const chain = (ids, o) => { for (let i = 0; i + 1 < ids.length; i++) L(ids[i], ids[i + 1], o); };
 
-// Scorch's own topology, matching its own layout (Wash/Pit/Mesa + a separate Ridge back lane) —
-// deliberately NOT the Atrium/Monsoon node graph.
+  // --- tower lobby ---
+  N2('spawn', -42, 0, 0); N2('lobC', -34, 0, 0, { w: 1 }); N2('lobE', -26.5, 0, 0, { hold: 1 });
+  N2('lobN', -42, 0, 13.5, { hold: 1 }); N2('lobS', -42, 0, -13.5, { hold: 1 });
+  // --- tower stairs + decks (y 6 / 12 / 18), mirrored ---
+  N2('s1b', -41.5, 0, -10.5); N2('s1t', -27.2, 6, -10.5);
+  N2('d1E', -27.2, 6, 0, { w: 0.5 }); N2('d1C', -34, 6, 0, { w: 1 }); N2('s2b', -41.5, 6, 10.5);
+  N2('s2t', -27.2, 12, 10.5);
+  N2('d2E', -27.2, 12, 0, { w: 0.5 }); N2('d2C', -34, 12, 0, { w: 1 }); N2('s3b', -41.5, 12, -10.5);
+  N2('s3t', -27.2, 18, -10.5);
+  N2('rE', -27.2, 18, 0, { w: 0.5 }); N2('rC', -34, 18, 0, { w: 1 });
+  // --- bridges + the Mast ---
+  N2('br1', -15, 6, 0); N2('br2', -15, 12, 0); N2('br3', -15, 18, 0);
+  N('hub1', 0, 6, 0, { w: 2.5, hold: 1 }); N('hub2', 0, 12, 0, { w: 2.5, hold: 1 }); N('hub3', 0, 18, 0, { w: 2.5, hold: 1 });
+  // --- the Drain (y -3) ---
+  N2('drW', -18, -3, 0, { w: 1.5 }); N('drC', 0, -3, 0, { w: 2, hold: 1 });
+  N('drN', 0, -3, 7, { w: 1.5 }); N('drS', 0, -3, -7, { w: 1.5 });
+  // --- north lane z=16, bazaar, outer lane z=36 ---
+  for (const x of [-42, -30, -9]) N2('nl' + (x === -42 ? 'W' : x === -30 ? 'M' : 'I'), x, 0, 16, { w: 1 });
+  N('nlC', 0, 0, 16, { w: 1.5 });
+  N2('nw26', -42, 0, 26, { w: 1 }); N2('bsB', -28.5, 0, 26); N2('bsT', -16.5, 5, 26, { hold: 1 });
+  N('brC', 0, 5, 26, { w: 1.5, hold: 1 });
+  N2('bzW', -9, 0, 25, { w: 1 }); N('bzC', 0, 0, 25, { w: 1.5, hold: 1 }); N('bzN', 0, 0, 30);
+  N2('olW', -42, 0, 36, { w: 1 }); N2('olM', -30, 0, 36, { w: 1 }); N('olC', 0, 0, 36, { w: 1.5 });
+  // --- rear yards (behind the towers) ---
+  N2('ryN', -49, 0, 30); N2('ryM', -49, 0, 0, { w: 1 }); N2('ryS', -49, 0, -30);
+  // --- south: front lane z=-16, rail yard lanes z=-23.3 / -28.3, outer lane z=-36 ---
+  const fx = [-42, -30, -16, -5, 6, 17, 30, 42];
+  fx.forEach(x => N('fl' + x, x, 0, -16, { w: 1 }));
+  N('flC', 0, 0, -16, { w: 1.5 });
+  const l1x = [-42, -30, -16, -12, -5, -1, 6, 10, 17, 22, 30, 42];
+  l1x.forEach(x => N('y1_' + x, x, 0, -23.3, { w: 0.8 }));
+  const l2x = [-42, -30, -16, -12, -5, -1, 6, 10, 17, 22, 30, 42];
+  l2x.forEach(x => N('y2_' + x, x, 0, -28.3, { w: 0.8 }));
+  const l3x = [-42, -30, -16, -5, 0, 6, 17, 30, 42];
+  l3x.forEach(x => N('y3_' + x, x, 0, -36, { w: 1 }));
+
+  // ================= links =================
+  // lobby
+  LL('spawn*', 'lobC*'); LL('lobC*', 'lobE*'); LL('spawn*', 'lobN*'); LL('spawn*', 'lobS*');
+  // lobby -> serpentine stair
+  LL('lobS*', 's1b*'); LL('s1b*', 's1t*', { climb: true }); LL('s1t*', 'd1E*'); LL('d1E*', 'd1C*');
+  LL('d1C*', 's2b*'); LL('s2b*', 's2t*', { climb: true }); LL('s2t*', 'd2E*'); LL('d2E*', 'd2C*');
+  LL('d2C*', 's3b*'); LL('s3b*', 's3t*', { climb: true }); LL('s3t*', 'rE*'); LL('rE*', 'rC*');
+  // bridges to the Mast
+  LL('d1E*', 'br1*'); LL('br1*', 'hub1'); LL('d2E*', 'br2*'); LL('br2*', 'hub2'); LL('rE*', 'br3*'); LL('br3*', 'hub3');
+  // lobby east door -> drain, drain internals
+  LL('lobE*', 'drW*', { climb: true }); LL('drW*', 'drC'); L('drC', 'drN'); L('drC', 'drS');
+  // drain grand stairs to the north / south lanes
+  L('drN', 'nlC', { climb: true }); L('drS', 'flC', { climb: true });
+  // lobby doors to the lanes
+  LL('lobN*', 'nlW*'); L('lobSA', 'fl-42'); L('lobSB', 'fl42');
+  // north lane z=16
+  chain(['nlWA', 'nlMA', 'nlIA', 'nlC', 'nlIB', 'nlMB', 'nlWB']);
+  // bazaar: entrances at x=+-9, interior lane z=25, north exit, outer lane
+  LL('nlI*', 'bzW*');
+  L('bzWA', 'bzC'); L('bzWB', 'bzC');
+  L('bzC', 'bzN'); L('bzN', 'olC');
+  // bazaar roof: stairs from the west/east lane columns
+  LL('nlW*', 'nw26*'); LL('nw26*', 'bsB*'); LL('bsB*', 'bsT*', { climb: true });
+  L('bsTA', 'brC'); L('bsTB', 'brC');
+  // outer lane z=36
+  chain(['olWA', 'olMA', 'olC', 'olMB', 'olWB']); LL('nw26*', 'olW*');
+  // rear yards: link the outer lanes, the north/south lane columns and the front lanes
+  LL('olW*', 'ryN*'); LL('ryN*', 'ryM*'); LL('ryM*', 'ryS*');
+  // south: front lane, rail-yard lanes, outer lane
+  chain(fx.map(x => 'fl' + x).slice(0, 4).concat(['flC']).concat(fx.map(x => 'fl' + x).slice(4)));
+  chain(l1x.map(x => 'y1_' + x)); chain(l2x.map(x => 'y2_' + x)); chain(l3x.map(x => 'y3_' + x));
+  // front lane -> lane 1 through the row-1 gaps (x -16,-5,6,17) and the open ends (+-30, +-42)
+  for (const x of [-42, -30, -16, -5, 6, 17, 30, 42]) L('fl' + x, 'y1_' + x);
+  // lane 1 -> lane 2 through the row-2 gaps (x -12,-1,10,22) and the open ends
+  for (const x of [-42, -30, -12, -1, 10, 22, 30, 42]) L('y1_' + x, 'y2_' + x);
+  // lane 2 -> outer lane through the row-3 gaps (x -16,-5,6,17) and the open ends
+  for (const x of [-42, -30, -16, -5, 6, 17, 30, 42]) L('y2_' + x, 'y3_' + x);
+  // south rear yard
+  L('rySA', 'y3_-42'); L('ryS' + 'B', 'y3_42');
+  NAVI.midC = NAVI.drC;
+}
 function buildScorchNav() {
   for (const s of ['A', 'B']) {
     const X = (x) => (s === 'A' ? x : -x);
@@ -2586,7 +2730,10 @@ function nearestNode(p, needSight = true) {
 
 // ---------- bot bodies (animated: legs walk, arms hold a real gun model, upper body follows the aim) ----------
 const TEAM_HEX = { A: 0x3d7bff, B: 0xff4545 };
-const BOT_NAMES = { A: ['Kestrel', 'Vox', 'Mako'], B: ['Rook', 'Jinx', 'Talon', 'Ghost'] };
+// Enough bots for a 6v6 (player is on team A, so A needs one fewer). Maps with a smaller `teamSize`
+// bench the extras (see applyTeamSize) — they stay dead/hidden instead of being removed, so every
+// array that holds bots keeps a stable length.
+const BOT_NAMES = { A: ['Kestrel', 'Vox', 'Mako', 'Sable', 'Wren'], B: ['Rook', 'Jinx', 'Talon', 'Ghost', 'Onyx', 'Fang'] };
 const matSkin = M(0xd9b38c), matBotGun = M(0x2a2c34, 0.5, 0.4), matBotDark = M(0x16171c, 0.5, 0.5), matLegs = M(0x2a2c33), matBoots = M(0x15161a);
 const matPads = M(0x1d1e24, 0.75, 0.15), matBelt = M(0x131319, 0.8), matGaiter = M(0x24252b, 0.85);
 const allyTex = (() => {
@@ -3079,6 +3226,15 @@ function endMatch() {
   if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
   showPaused();                                         // results screen
 }
+// Per-map team size (default 4v4): bots past the limit are benched — permanently dead and hidden.
+// The player fills one slot on team A, so A fields one fewer bot than B.
+function applyTeamSize() {
+  const size = currentMap.teamSize || 4, seen = { A: 0, B: 0 };
+  for (const b of bots) {
+    const limit = b.team === 'A' ? size - 1 : size;
+    b.benched = seen[b.team]++ >= limit;
+  }
+}
 function startMatch(mode) {
   if (mapKey !== currentMapKey) loadMap(mapKey);     // only rebuild the world when the player actually picked a different map
   match.mode = mode; match.started = true; match.over = false;
@@ -3086,10 +3242,11 @@ function startMatch(mode) {
   restoreMezz();
   killfeedEl.innerHTML = '';
   for (const a of allActors) { a.kills = 0; a.deaths = 0; }
+  applyTeamSize();
   streak = 0; matchXP = 0; matchLog = {}; levelsGained = 0; resetKillstreaks();
   applyProfileLoadout();
   for (const b of bots) {
-    if (mode === 'tdm') spawnActor(b);
+    if (mode === 'tdm' && !b.benched) spawnActor(b);
     else { b.dead = true; b.respawnT = 1e9; b.mesh.visible = false; }
   }
   if (mode === 'tdm') spawnActor(player); else { respawn('A'); player.spawnProt = 0; resetWeapons(); }
@@ -3125,7 +3282,7 @@ function hurtFeedback(att) {
   playTone(110, 0.12, 0.2, 'triangle', 70);
 }
 function boardHTML() {
-  const rows = (t) => allActors.filter(a => a.team === t).sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
+  const rows = (t) => allActors.filter(a => a.team === t && !a.benched).sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
     .map(a => `<tr class="${a === player ? 'me' : ''} ${a.dead ? 'dead' : ''}"><td>${a.name}${a === player ? `<span class="lv">${phaseTag()}LV ${profile.level}</span>` : `<span class="lv">${WEAPONS[a.wk].cls}</span>`}</td><td>${a.kills}</td><td>${a.deaths}</td></tr>`).join('');
   return `<div class="boards"><table class="ta"><tr><th>BLUE · ${match.score.A}</th><th>K</th><th>D</th></tr>${rows('A')}</table>` +
     `<table class="tb"><tr><th>RED · ${match.score.B}</th><th>K</th><th>D</th></tr>${rows('B')}</table></div>`;
@@ -3148,112 +3305,113 @@ const ROLE_PUSH = { aggressive: 1.25, flanker: 1.0, defensive: 0.6, balanced: 1.
 const ROLE_RETREAT_HP = { aggressive: 25, flanker: 35, defensive: 55, balanced: 40 };      // hp threshold below which they consider bailing to cover
 let FLANKS = [];   // per-map list of NAV node ids good for flanking bot behavior; set by loadMap()
 
-// ---------- Atrium: full per-map data, now that everything it references (buildAtriumGeometry,
-// buildAtriumNav, NAVI) exists — see loadMap() for how this gets activated. ----------
+// ---------- Atrium: "THE HELIX" — full per-map data (LARGE map, 6v6) ----------
 MAPS.atrium = {
   key: 'atrium', name: 'Atrium',
   build: buildAtriumGeometry,
   buildNav: buildAtriumNav,
-  hasBeams: true,     // the Mezzanine's two shootable support beams
+  hasBeams: false,
+  teamSize: 6,
   spawns: {
-    A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
-    B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
+    A: [[-55, 0], [-53, 3], [-55, 6], [-52, -3], [-57, -5], [-51, 5], [-56, 3], [-51, -6], [-54, -8], [-57, 8], [-52, 8], [-49, 0]],
+    B: [[55, 0], [53, 3], [55, 6], [52, -3], [57, -5], [51, 5], [56, 3], [51, -6], [54, -8], [57, 8], [52, 8], [49, 0]],
   },
-  spawnFace: { A: -41.5, B: 41.5 },
-  bounds: { x0: -55, x1: 55, z0: -16, z1: 16, yTop: 7, yBot: -6 },
-  heli: { radius: 15, height: 9 },
+  spawnFace: { A: -46.5, B: 46.5 },
+  bounds: { x0: -62, x1: 62, z0: -44, z1: 44, yTop: 20, yBot: -6 },
+  shadow: { left: -75, right: 75, top: 55, bottom: -55 },
+  heli: { radius: 40, height: 24 },
   sky: {
     dome: [0x5e8fd4, 0xffc988, 0x241f2c],
-    fogColor: 0x2a2632, fogNear: 40, fogFar: 130,
+    fogColor: 0x2a2632, fogNear: 90, fogFar: 260,
     hemi: [0xaec6ff, 0x4a4030, 1.45],
     sun: [0xffdfb0, 0.85],
     fill: [0x7fa8d9, 0.3],
   },
   weather: 'clear',
-  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  flanks: ['pitC', 'L0NW', 'L1NE', 'terrC', 'arC', 'gdC', 'tunA', 'tunB'],
   zoneName(x, y, z) {
-    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
-    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'SCAFFOLD';
-    if (y < -2) return ax > 42 ? side + '-CONNECTOR' : 'LOWER HALL';
-    if (y > 4.2) return ax <= 15 ? 'MEZZANINE' : side + '-STAIRS';
-    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
-    if (z > 9 && ax >= 15) return side + '-STAIRS';
-    if (ax >= 27) return side + '-LONG';
-    if (ax >= 15) return side + '-CHOKE';
-    return 'MID';
+    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x), az = Math.abs(z);
+    if (y > 15.2) return 'THE CROWN';
+    if (ax <= 17 && az <= 17) {
+      if (y < -1.5) return 'THE CORE';
+      return y > 1 ? 'THE HELIX · TURN ' + (y > 8 ? '2' : '1') : 'HELIX BASE';
+    }
+    if (z > 16.5 && z < 30 && x > -16 && x < -12 && y > 4.5) return 'THE SKYBRIDGE';
+    if (z >= 30) return y > 4.5 ? 'NORTH TERRACE' : 'THE ARCADE';
+    if (z < -23.5 && ax < 24.5) return y < -1.5 ? 'THE GARDEN' : 'GARDEN EDGE';
+    if (y < -1.5) return 'THE TUNNEL';
+    if (ax >= 46) return 'TEAM ' + side + ' SPAWN';
+    if (ax < 17) return z < 0 ? 'SOUTH PLAZA' : 'NORTH PLAZA';
+    return side + '-PLAZA';
   },
   minimap: {
-    title: 'ATRIUM',
-    spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
-    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
-    sideLabels: [[5, 'y 5  mezzanine'], [0, 'y 0  main floor'], [-5, 'y −5  lower hall']],
+    title: 'ATRIUM · THE HELIX',
+    legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
+      ['helix track', '#6f86d6'], ['tunnel / garden', 'rgba(47,209,200,0.45)', '#2fd1c8']],
+    spawnBox: { A: [-60, -14, -47, 14], B: [47, -14, 60, 14] },
+    sideLabels: [[16, 'y 16  the crown'], [8, 'y 8  end of turn 1'], [6, 'y 6  terrace'], [0, 'y 0  plaza'], [-3, 'y −3  garden'], [-4.4, 'y −4.4  tunnel']],
     labels: [
-      { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
-      { text: 'A-LONG', x: -30, z: 0 }, { text: 'B-LONG', x: 30, z: 0 },
-      { text: 'CHOKE', x: -17, z: 0, compact: true }, { text: 'CHOKE', x: 17, z: 0, compact: true },
-      { text: 'MID', x: 0, z: -3 },
-      { text: 'A-STAIRS ▶', x: -21, z: 12, compact: true }, { text: 'B-STAIRS ◀', x: 21, z: 12, compact: true },
-      { text: 'MEZZANINE', x: 0, z: 12 },
-      { text: 'LOWER HALL', textBig: 'LOWER HALL — tunnel under the floor (y −5)', x: 0, z: -12 },
-      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
-      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
-      { text: 'ESC ▲', x: 3.5, z: 4, compact: true },
+      { text: 'SPAWN A', x: -54, z: 0 }, { text: 'SPAWN B', x: 54, z: 0 },
+      { text: 'THE HELIX', textBig: 'THE HELIX — a spiral ramp, two turns, 16 m up', x: 0, z: 14, compact: true },
+      { text: 'THE CORE', textBig: 'THE CORE — the tunnel surfaces here, under the whole open tower', x: 0, z: 0 },
+      { text: 'NORTH ARCADE', textBig: 'NORTH ARCADE — covered shops, terrace + skybridge above (y 6)', x: 0, z: 35 },
+      { text: 'THE GARDEN', textBig: 'THE GARDEN — sunken court (y −3)', x: 0, z: -31 },
+      { text: 'TUNNEL ▶', x: -26, z: 0, compact: true }, { text: '◀ TUNNEL', x: 26, z: 0, compact: true },
+      { text: 'ENTRY ▲', x: -9, z: -22, compact: true }, { text: 'STAIR ▲', x: 20, z: -14, compact: true },
+      { text: 'SKYBRIDGE', x: -14, z: 23, compact: true },
     ],
   },
 };
 
-// ---------- Monsoon: full per-map data ----------
+// ---------- Monsoon: "TWIN SPIRES" — full per-map data (LARGE map, 6v6) ----------
 MAPS.monsoon = {
   key: 'monsoon', name: 'Monsoon',
   build: buildMonsoonGeometry,
   buildNav: buildMonsoonNav,
-  hasBeams: false,    // the catwalk here is a plain steel walkway, never destructible
+  hasBeams: false,
+  teamSize: 6,
   spawns: {
-    A: [[-50, 0], [-48, 3], [-50, 6], [-47, -2], [-52, -3], [-45, 5], [-51, 3], [-45, -3]],
-    B: [[50, 0], [48, 3], [50, 6], [47, -2], [52, -3], [45, 5], [51, 3], [45, -3]],
+    A: [[-43, 0], [-42, -4], [-42, 4], [-36, 0], [-36, -4], [-36, 4], [-34, -2], [-34, 2], [-43, -6], [-43, 6], [-37, -7], [-37, 7]],
+    B: [[43, 0], [42, -4], [42, 4], [36, 0], [36, -4], [36, 4], [34, -2], [34, 2], [43, -6], [43, 6], [37, -7], [37, 7]],
   },
-  spawnFace: { A: -41.5, B: 41.5 },
-  bounds: { x0: -55, x1: 55, z0: -16, z1: 16, yTop: 7, yBot: -6 },
-  heli: { radius: 15, height: 9 },
+  spawnFace: { A: -26.5, B: 26.5 },
+  bounds: { x0: -62, x1: 62, z0: -40, z1: 40, yTop: 21, yBot: -5 },
+  shadow: { left: -75, right: 75, top: 50, bottom: -50 },
+  heli: { radius: 40, height: 26 },
   sky: {
-    dome: [0x1c2430, 0x2a3240, 0x0a0b10],
-    fogColor: 0x171c24, fogNear: 22, fogFar: 85,
-    hemi: [0x3d4a5e, 0x161414, 0.75],
-    sun: [0x5e7a94, 0.35],
-    fill: [0x2f4a5e, 0.22],
+    dome: [0x2c4062, 0x4b6286, 0x141a28],
+    fogColor: 0x2a3650, fogNear: 80, fogFar: 260,
+    hemi: [0x9ab4e8, 0x4a4650, 2.0],
+    sun: [0xc4d4f0, 1.25],
+    fill: [0x6a92c8, 0.6],
   },
   weather: 'rain',
-  flanks: ['Atun', 'Btun', 'tunC', 'AbayTop', 'BbayTop', 'AstairsTop', 'BstairsTop', 'Amezz', 'Bmezz', 'AunderMezz', 'BunderMezz', 'escTop'],
+  flanks: ['hub1', 'hub2', 'hub3', 'drC', 'bzC', 'brC', 'y2_-1', 'y2_10'],
   zoneName(x, y, z) {
-    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x);
-    if (z < -3 && z > -9 && ax >= 5 && ax <= 10 && y < -0.2) return 'ALLEY STEPS';
-    if (y < -2) return ax > 42 ? side + '-DRAIN ACCESS' : 'STORM DRAIN';
-    if (y > 4.2) return ax <= 15 ? 'CATWALK' : side + '-FIRE ESCAPE';
-    if (ax >= 42) return 'TEAM ' + side + ' SPAWN';
-    if (z > 9 && ax >= 15) return side + '-FIRE ESCAPE';
-    if (ax >= 27) return side + '-MARKET ROW';
-    if (ax >= 15) return side + '-ALLEY';
-    return 'MARKET SQUARE';
+    const side = x < 0 ? 'A' : 'B', ax = Math.abs(x), az = Math.abs(z);
+    if (ax <= 5.5 && az <= 5.5 && y > 4) return 'THE MAST · LEVEL ' + (y > 15 ? '3' : y > 9 ? '2' : '1');
+    if (ax > 5.5 && ax < 26 && az < 2.5 && y > 4) return 'BRIDGE ' + (y > 15 ? '3' : y > 9 ? '2' : '1');
+    if (ax >= 26 && ax <= 46 && az <= 14 && y > 4) return 'TOWER ' + side + (y > 15 ? ' · ROOF' : y > 9 ? ' · DECK 2' : ' · DECK 1');
+    if (ax >= 26 && ax <= 46 && az <= 14) return 'TOWER ' + side + ' LOBBY';
+    if (ax < 26 && az < 14 && y < -1.5) return 'THE DRAIN';
+    if (az >= 20 && az <= 32 && ax <= 18) return y > 4 ? 'BAZAAR ROOF' : 'THE BAZAAR';
+    if (z < -17 && z > -34 && ax <= 28) return 'RAIL YARD';
+    if (ax > 46) return 'REAR YARD ' + side;
+    return z > 0 ? 'NORTH STREET' : 'SOUTH STREET';
   },
   minimap: {
-    title: 'MONSOON',
+    title: 'MONSOON · TWIN SPIRES',
     legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
-      ['catwalk', 'rgba(106,120,255,0.55)', '#9aa6ff'], ['storm drain', 'rgba(47,209,200,0.55)', '#2fd1c8'],
-      ['climb', '#ff963c']],
-    spawnBox: { A: [-52, -4, -44, 4], B: [44, -4, 52, 4] },
-    lowerHall: { x0: -52, z0: -15, x1: 52, z1: -9 },
-    sideLabels: [[5, 'y 5  catwalk'], [0, 'y 0  street'], [-5, 'y −5  storm drain']],
+      ['decks / bridges', '#6f86d6'], ['the drain', 'rgba(47,209,200,0.45)', '#2fd1c8']],
+    spawnBox: { A: [-46, -14, -26, 14], B: [26, -14, 46, 14] },
+    sideLabels: [[18, 'y 18  roofs + mast 3'], [12, 'y 12  deck 2'], [6, 'y 6  deck 1'], [0, 'y 0  street'], [-3, 'y −3  the drain']],
     labels: [
-      { text: 'SPAWN A', x: -48, z: 0 }, { text: 'SPAWN B', x: 48, z: 0 },
-      { text: 'MARKET ROW', x: -30, z: 0 }, { text: 'MARKET ROW', x: 30, z: 0 },
-      { text: 'ALLEY', x: -17, z: 0, compact: true }, { text: 'ALLEY', x: 17, z: 0, compact: true },
-      { text: 'MARKET SQUARE', x: 0, z: -3 },
-      { text: 'FIRE ESC ▶', x: -21, z: 12, compact: true }, { text: 'FIRE ESC ◀', x: 21, z: 12, compact: true },
-      { text: 'CATWALK', x: 0, z: 12 },
-      { text: 'STORM DRAIN', textBig: 'STORM DRAIN — flooded tunnel under the street (y −5)', x: 0, z: -12 },
-      { text: 'DOWN ▶', x: -47, z: -12, compact: true }, { text: '◀ DOWN', x: 47, z: -12, compact: true },
-      { text: 'CLIMB', x: -7.5, z: -6, compact: true }, { text: 'CLIMB', x: 7.5, z: -6, compact: true },
-      { text: 'LADDER ▲', x: 3.5, z: 4, compact: true },
+      { text: 'SPAWN A', x: -41, z: 0 }, { text: 'SPAWN B', x: 41, z: 0 },
+      { text: 'THE MAST', textBig: 'THE MAST — three levels, bridged to both towers (y 6 / 12 / 18)', x: 0, z: 0 },
+      { text: 'THE DRAIN', textBig: 'THE DRAIN — flooded canyon under the bridges (y −3)', x: 0, z: -9, compact: true },
+      { text: 'BAZAAR', textBig: 'THE BAZAAR — covered market, walkable roof (y 5)', x: 0, z: 26 },
+      { text: 'RAIL YARD', textBig: 'RAIL YARD — container maze', x: 0, z: -27 },
+      { text: 'BRIDGE', x: -15, z: 3, compact: true }, { text: 'BRIDGE', x: 15, z: 3, compact: true },
     ],
   },
 };
@@ -3315,7 +3473,7 @@ function loadMap(key) {
   scene.remove(mapGroup);
   mapGroup = new THREE.Group();
   scene.add(mapGroup);
-  colliders.length = 0;
+  colliders.length = 0; grid.n = -1;
   NAV.length = 0;
   for (const k in NAVI) delete NAVI[k];
   for (const k in tagLive) delete tagLive[k];
