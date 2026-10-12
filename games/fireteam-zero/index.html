@@ -346,6 +346,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.75;
 renderer.autoClear = false;
 document.body.appendChild(renderer.domElement);
 window.addEventListener('resize', () => {
@@ -527,6 +530,174 @@ const matRail = M(0x24262c, 0.6, 0.4);   // dark metal trim — handrails, tread
 // Every solid gets a tag from its material so the map diagram can draw the real geometry
 const MAT_TAG = new Map([[matWall, 'wall'], [matChoke, 'choke'], [matCover, 'cover'], [matFloor, 'floor'], [matScaffold, 'scaffold'], [matEscalator, 'escalator']]);
 
+
+// ======================================================
+// REALISM PASS — procedural PBR surfaces (concrete / paving / metal / wood) with real-world UVs,
+// baked contact darkening, sky reflections and grime decals. Runs once per map load over every box mesh.
+// ======================================================
+const REAL = { cache: new Map(), tex: {}, wet: 0, env: null, envRT: null };
+function hash2(x, y) { let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; }
+function vnoise(x, y, px, py) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+  const m = (a, n) => ((a % n) + n) % n;
+  const a = hash2(m(xi, px), m(yi, py)), b = hash2(m(xi + 1, px), m(yi, py)), c = hash2(m(xi, px), m(yi + 1, py)), d = hash2(m(xi + 1, px), m(yi + 1, py));
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+function fbm(x, y, base, oct) { let v = 0, a = 0.5, f = 1, t = 0; for (let o = 0; o < oct; o++) { v += a * vnoise(x * base * f, y * base * f, base * f, base * f); t += a; a *= 0.5; f *= 2; } return v / t; }
+function makeGrayTex(size, fn, bump, tile) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const g = cv.getContext('2d'), img = g.createImageData(size, size);
+  for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    const v = Math.max(0, Math.min(1, fn(i / size, j / size, i, j))) * 255, k = (j * size + i) * 4;
+    img.data[k] = img.data[k + 1] = img.data[k + 2] = v; img.data[k + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return { tex: t, bump, tile };
+}
+function getRealTex(kind) {
+  if (REAL.tex[kind]) return REAL.tex[kind];
+  let r;
+  if (kind === 'concrete') r = makeGrayTex(512, (u, v, i, j) => {      // poured concrete: mottling, pits, stains, formwork seams + tie holes
+    let x = 0.9 + (fbm(u, v, 4, 5) - 0.5) * 0.3 + (hash2(i, j) - 0.5) * 0.06;
+    x -= Math.max(0, fbm(u + 3.1, v + 1.7, 2, 3) - 0.6) * 0.5;
+    if (hash2(i >> 1, (j >> 1) + 999) > 0.994) x -= 0.22;
+    const su = Math.abs(((u * 2) % 1) - 0.5), sv = Math.abs(((v * 2) % 1) - 0.5);
+    if (su > 0.494 || sv > 0.494) x -= 0.2;
+    const tu = (u * 2) % 1 - 0.25, tv = (v * 2) % 1 - 0.25; if (Math.hypot((tu % 0.5), (tv % 0.5)) < 0.012 && Math.hypot(tu, tv) < 2) x -= 0.18;
+    return x;
+  }, 1.4, 4);
+  else if (kind === 'pave') r = makeGrayTex(512, (u, v, i, j) => {     // 1 m paving slabs with grout, per-slab tone, grime, chips
+    const cu = Math.floor(u * 4), cv = Math.floor(v * 4);
+    let x = 0.9 + (hash2(cu, cv) - 0.5) * 0.14 + (fbm(u, v, 6, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
+    const fu = (u * 4) % 1, fv = (v * 4) % 1, e = Math.min(fu, 1 - fu, fv, 1 - fv);
+    if (e < 0.012) x *= 0.42; else if (e < 0.03) x *= 0.82 + e * 6;
+    x -= Math.max(0, fbm(u + 7, v + 2, 3, 3) - 0.62) * 0.45;
+    if (hash2(i >> 2, (j >> 2) + 31) > 0.997) x -= 0.2;
+    return x;
+  }, 1.2, 4);
+  else if (kind === 'metal') r = makeGrayTex(512, (u, v, i, j) => {    // brushed painted steel: streaks, panel seams, rivets, scratches
+    let x = 0.9 + (vnoise(u * 3, v * 96, 3, 96) - 0.5) * 0.12 + (fbm(u, v, 3, 4) - 0.5) * 0.14 + (hash2(i, j) - 0.5) * 0.03;
+    const fu = (u * 2) % 1, fv = (v * 2) % 1;
+    if (fu < 0.008 || fv < 0.008) x *= 0.5;
+    const ru = (fu * 8) % 1 - 0.5, rv = (fv * 8) % 1 - 0.5; if ((fu < 0.06 || fu > 0.94 || fv < 0.06 || fv > 0.94) && Math.hypot(ru, rv) < 0.18) x += 0.08;
+    if (hash2(i >> 3, j + 4444) > 0.985 && (i % 7) < 3) x -= 0.16;
+    x -= Math.max(0, fbm(u + 5, v + 9, 2, 3) - 0.64) * 0.5;
+    return x;
+  }, 0.8, 2);
+  else r = makeGrayTex(256, (u, v, i, j) => {                          // wood planks with grain + gaps
+    const pl = Math.floor(v * 4);
+    let x = 0.86 + (hash2(pl, 7) - 0.5) * 0.18 + (vnoise(u * 4, v * 64, 4, 64) - 0.5) * 0.2 + (fbm(u, v, 5, 3) - 0.5) * 0.12;
+    const fv = (v * 4) % 1; if (fv < 0.025) x *= 0.4;
+    if (Math.abs(((u * 1 + hash2(pl, 3)) % 1) - 0.5) > 0.495) x *= 0.45;
+    return x;
+  }, 1.0, 2);
+  return (REAL.tex[kind] = r);
+}
+function realMatFor(base) {
+  if (REAL.cache.has(base)) return REAL.cache.get(base);
+  let out = base;
+  if (base.isMeshStandardMaterial && !base.transparent && !base.map && !(base.emissiveIntensity > 0.05 && base.emissive.getHex() !== 0)) {
+    const hsl = {}; base.color.getHSL(hsl);
+    const kind = base.metalness > 0.25 ? 'metal' : (hsl.h > 0.04 && hsl.h < 0.13 && hsl.s > 0.3 && hsl.l < 0.5 ? 'wood' : (base === matFloor ? 'pave' : 'concrete'));
+    const t = getRealTex(kind);
+    out = base.clone();
+    out.map = t.tex; out.bumpMap = t.tex; out.bumpScale = t.bump; out.roughnessMap = t.tex;
+    out.vertexColors = true;
+    out.roughness = Math.min(1, base.roughness * (kind === 'metal' ? 0.9 : 1.05) * ((kind === 'pave' || kind === 'concrete') && REAL.wet ? 0.5 : 1));
+    if (REAL.env) { out.envMap = REAL.env; out.envMapIntensity = kind === 'metal' ? 0.9 : 0.35 + REAL.wet * 0.5; }
+    out.userData.tile = t.tile;
+  }
+  REAL.cache.set(base, out);
+  return out;
+}
+function realizeMesh(mesh) {
+  if (!mesh.isMesh || mesh.userData.real || !mesh.geometry || mesh.geometry.type !== 'BoxGeometry' || Array.isArray(mesh.material)) return;
+  mesh.userData.real = 1;
+  const rm = realMatFor(mesh.material);
+  if (rm === mesh.material) return;
+  const geo = mesh.geometry.clone(); mesh.geometry = geo;
+  mesh.updateWorldMatrix(true, false);
+  const mw = mesh.matrixWorld, nm = new THREE.Matrix3().getNormalMatrix(mw);
+  const pos = geo.attributes.position, nor = geo.attributes.normal, uv = geo.attributes.uv;
+  const col = new Float32Array(pos.count * 3), v = new THREE.Vector3(), n = new THREE.Vector3(), tile = rm.userData.tile;
+  let minY = Infinity;
+  for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i).applyMatrix4(mw); if (v.y < minY) minY = v.y; }
+  const shade = 0.93 + hash2(Math.round(mw.elements[12] * 4), Math.round(mw.elements[14] * 4)) * 0.12;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mw); n.fromBufferAttribute(nor, i).applyMatrix3(nm).normalize();
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    let u, w;
+    if (ay >= ax && ay >= az) { u = v.x; w = v.z; } else if (ax >= az) { u = v.z; w = v.y; } else { u = v.x; w = v.y; }
+    uv.setXY(i, u / tile, w / tile);
+    let ao = 1;
+    if (ay < 0.5) ao = 1 - 0.3 * Math.max(0, 1 - (v.y - minY) / 0.9);
+    if (n.y < -0.5) ao = 0.6;
+    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = ao * shade;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  uv.needsUpdate = true;
+  mesh.material = rm;
+}
+function buildEnvFor(m) {
+  try {
+    const pm = new THREE.PMREMGenerator(renderer), es = new THREE.Scene();
+    es.add(makeSkyDome(...m.sky.dome));
+    const rt = pm.fromScene(es, 0.03);
+    if (REAL.envRT) REAL.envRT.dispose();
+    REAL.envRT = rt; REAL.env = rt.texture; pm.dispose();
+  } catch (e) { REAL.env = null; }
+}
+// Grime decals: stains, cracks, oil, tyre scuffs (+ real reflective puddles on rainy maps) laid on big flat tops.
+const DECAL = {};
+function decalTex(kind) {
+  if (DECAL[kind]) return DECAL[kind];
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256; const g = cv.getContext('2d');
+  if (kind === 'crack') {
+    g.strokeStyle = 'rgba(10,8,6,0.8)'; g.lineCap = 'round';
+    const branch = (x, y, a, len, w) => { if (len < 6 || w < 0.3) return; g.lineWidth = w; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 6; k++) { a += (Math.random() - 0.5) * 0.8; x += Math.cos(a) * len / 6; y += Math.sin(a) * len / 6; g.lineTo(x, y); if (Math.random() < 0.25) branch(x, y, a + (Math.random() - 0.5) * 1.6, len * 0.5, w * 0.6); } g.stroke(); };
+    branch(128, 128, Math.random() * 6, 150, 2.2); branch(128, 128, Math.random() * 6, 150, 2.2);
+  } else if (kind === 'scuff') {
+    for (let k = 0; k < 2; k++) { const x0 = 100 + k * 56; for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(12,10,8,${0.25 + Math.random() * 0.25})`; g.fillRect(x0 + (Math.random() - 0.5) * 12, i * 2.8, 4 + Math.random() * 6, 3); } }
+  } else {
+    const dark = kind === 'oil' ? 0.85 : 0.5;
+    for (let k = 0; k < 14; k++) { const r = 20 + Math.random() * 55, x = 128 + (Math.random() - 0.5) * 70, y = 128 + (Math.random() - 0.5) * 70; const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, `rgba(14,12,10,${dark * 0.5})`); gr.addColorStop(1, 'rgba(14,12,10,0)'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256); }
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  return (DECAL[kind] = t);
+}
+function scatterDecals(m) {
+  const g = new THREE.Group(); g.name = 'decals';
+  const geo = new THREE.PlaneGeometry(1, 1), mats = {};
+  const dm = (k) => mats[k] || (mats[k] = k === 'puddle'
+    ? new THREE.MeshStandardMaterial({ color: 0x0a1018, roughness: 0.04, metalness: 0.7, transparent: true, opacity: 0.9, alphaMap: decalTex('stain'), envMap: REAL.env, envMapIntensity: 1.4, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+    : new THREE.MeshStandardMaterial({ map: decalTex(k), transparent: true, roughness: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  const tops = colliders.filter(c => Math.min(c.x1 - c.x0, c.z1 - c.z0) >= 3 && c.y1 - c.y0 >= 0.15 && c.tag !== 'rail' && c.tag !== 'wall' && c.y1 < 14);
+  if (!tops.length) return;
+  const area = tops.map(c => (c.x1 - c.x0) * (c.z1 - c.z0)), tot = area.reduce((a, b) => a + b, 0);
+  const wet = m.weather === 'rain', kinds = wet ? ['stain', 'crack', 'scuff', 'puddle', 'puddle', 'puddle'] : ['stain', 'crack', 'scuff', 'oil', 'stain', 'crack'];
+  const N = 170; let placed = 0, tries = 0;
+  while (placed < N && tries++ < N * 8) {
+    let r = Math.random() * tot, ci = 0; while (ci < tops.length - 1 && (r -= area[ci]) > 0) ci++;
+    const c = tops[ci], k = kinds[Math.floor(Math.random() * kinds.length)], sz = k === 'puddle' ? 1.6 + Math.random() * 3.2 : (k === 'scuff' ? 3 + Math.random() * 3 : 1.6 + Math.random() * 3.4);
+    const x = c.x0 + sz / 2 + Math.random() * Math.max(0.01, c.x1 - c.x0 - sz), z = c.z0 + sz / 2 + Math.random() * Math.max(0.01, c.z1 - c.z0 - sz), y = c.y1;
+    let bad = false; for (const [dx, dz] of [[0, 0], [1, 1], [1, -1], [-1, 1], [-1, -1], [1.2, 0], [-1.2, 0], [0, 1.2], [0, -1.2]]) if (blockedAt(x + dx * sz * 0.5, z + dz * sz * 0.5, y + 0.05)) { bad = true; break; }
+    if (bad) continue;
+    const mesh = new THREE.Mesh(geo, dm(k));
+    mesh.rotation.x = -Math.PI / 2; mesh.rotation.z = Math.random() * Math.PI * 2;
+    mesh.position.set(x, y + 0.012 + placed * 0.00004, z); mesh.scale.set(sz, sz * (k === 'scuff' ? 1.4 : 1), 1);
+    mesh.userData.real = 1; mesh.receiveShadow = true; g.add(mesh); placed++;
+  }
+  mapGroup.add(g);
+}
+function applyRealism(m) {
+  mapGroup.traverse(realizeMesh);
+  scatterDecals(m);
+}
+
 // ---------- Solid world ----------
 const colliders = [];       // { x0,y0,z0,x1,y1,z1, mesh, tag }
 const WALL_H = 12;          // tall enough that nobody can jump out of the map
@@ -535,9 +706,7 @@ function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
   // Floors and walls get a per-solid retiled texture clone (see tiledMat); every other tagged
   // material (cover, scaffold, spawn pads, beams...) stays a flat color on purpose — those are
   // smaller, already-colorful accent pieces where a seam texture would just add visual noise.
-  let useMat = mat;
-  if (mat === matFloor) useMat = tiledMat(matFloor, floorTex, x1 - x0, z1 - z0);
-  else if (mat === matWall) useMat = tiledMat(matWall, wallTex, Math.max(x1 - x0, z1 - z0), y1 - y0);
+  const useMat = mat;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), useMat);
   mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
   mesh.castShadow = opts.shadow !== false;
@@ -3829,9 +3998,11 @@ function loadMap(key) {
   Y_TOP = m.bounds.yTop; Y_BOT = m.bounds.yBot;
   FLANKS = m.flanks.slice();
   currentMap = m; currentMapKey = key;
+  REAL.cache.clear(); REAL.wet = m.weather === 'rain' ? 1 : 0; buildEnvFor(m);
   m.build();
   m.buildNav();
   applySkyAndWeather(m);
+  applyRealism(m);
   mapDirty = true;
 }
 
