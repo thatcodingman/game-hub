@@ -831,8 +831,45 @@ function fitShadowToMap() {
   Object.assign(cam, { left: l - 1, right: r + 1, bottom: b - 1, top: t + 1, near: Math.max(0.5, n - 5), far: f + 5 });
   cam.updateProjectionMatrix();
 }
+// Z-fighting killer: where two boxes share a face plane (same direction, overlapping) the GPU can't decide which is in front and the
+// surfaces flicker in stepped blocks. Nudge each face in such a group outward by a few mm, biggest box first, so the order is fixed.
+function fixCoplanar() {
+  const C = colliders.filter(c => c.mesh && c.mesh.geometry && c.mesh.geometry.type === 'BoxGeometry' && !c.glass), E = 0.006, faces = [];
+  C.forEach((c, i) => {
+    const vol = (c.x1 - c.x0) * (c.y1 - c.y0) * (c.z1 - c.z0);
+    faces.push({ i, vol, a: 0, s: -1, p: c.x0, u0: c.y0, u1: c.y1, v0: c.z0, v1: c.z1 }, { i, vol, a: 0, s: 1, p: c.x1, u0: c.y0, u1: c.y1, v0: c.z0, v1: c.z1 },
+      { i, vol, a: 1, s: -1, p: c.y0, u0: c.x0, u1: c.x1, v0: c.z0, v1: c.z1 }, { i, vol, a: 1, s: 1, p: c.y1, u0: c.x0, u1: c.x1, v0: c.z0, v1: c.z1 },
+      { i, vol, a: 2, s: -1, p: c.z0, u0: c.x0, u1: c.x1, v0: c.y0, v1: c.y1 }, { i, vol, a: 2, s: 1, p: c.z1, u0: c.x0, u1: c.x1, v0: c.y0, v1: c.y1 });
+  });
+  const by = new Map();
+  for (const fc of faces) { const k = fc.a + ':' + fc.s + ':' + Math.round(fc.p / (E * 2)); let l = by.get(k); if (!l) by.set(k, l = []); l.push(fc); }
+  const shift = new Map();                                   // collider index -> list of [axis, side, outwardOffset]
+  for (const l of by.values()) {
+    if (l.length < 2) continue;
+    const inGroup = new Set();
+    for (let a = 0; a < l.length; a++) for (let b = a + 1; b < l.length; b++) {
+      const A = l[a], B = l[b]; if (A.i === B.i || Math.abs(A.p - B.p) > E) continue;
+      if (Math.min(A.u1, B.u1) - Math.max(A.u0, B.u0) > 0.02 && Math.min(A.v1, B.v1) - Math.max(A.v0, B.v0) > 0.02) { inGroup.add(A); inGroup.add(B); }
+    }
+    if (inGroup.size < 2) continue;
+    [...inGroup].sort((x, y) => y.vol - x.vol).forEach((fc, rank) => {
+      if (!rank) return;
+      let arr = shift.get(fc.i); if (!arr) shift.set(fc.i, arr = []); arr.push([fc.a, fc.s, Math.min(0.02, 0.004 * rank)]);
+    });
+  }
+  for (const [i, arr] of shift) {
+    const c = C[i], m = c.mesh; m.geometry = m.geometry.clone();
+    const P = m.geometry.attributes.position, cx = (c.x0 + c.x1) / 2, cy = (c.y0 + c.y1) / 2, cz = (c.z0 + c.z1) / 2, mid = [cx - m.position.x, cy - m.position.y, cz - m.position.z];
+    for (const [ax, side, off] of arr) for (let k = 0; k < P.count; k++) {
+      const v = ax === 0 ? P.getX(k) : ax === 1 ? P.getY(k) : P.getZ(k);
+      if (v * side > 0.0001) { if (ax === 0) P.setX(k, v + side * off); else if (ax === 1) P.setY(k, v + side * off); else P.setZ(k, v + side * off); }
+    }
+    P.needsUpdate = true; m.geometry.computeBoundingSphere();
+  }
+}
 function applyRealism(m) {
   mapGroup.traverse(realizeMesh);
+  fixCoplanar();
   scatterDecals(m);
   batchStatics();
   batchGlass();
