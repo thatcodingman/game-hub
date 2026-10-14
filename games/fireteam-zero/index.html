@@ -590,8 +590,10 @@ function makeGrayTex(size, fn, bump, tile) {
   const cv = document.createElement('canvas'); cv.width = cv.height = size;
   const g = cv.getContext('2d'), img = g.createImageData(size, size);
   for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
-    const v = Math.max(0, Math.min(1, fn(i / size, j / size, i, j))) * 255, k = (j * size + i) * 4;
-    img.data[k] = img.data[k + 1] = img.data[k + 2] = v; img.data[k + 3] = 255;
+    const o = fn(i / size, j / size, i, j), k = (j * size + i) * 4;
+    if (Array.isArray(o)) { img.data[k] = Math.max(0, Math.min(1, o[0])) * 255; img.data[k + 1] = Math.max(0, Math.min(1, o[1])) * 255; img.data[k + 2] = Math.max(0, Math.min(1, o[2])) * 255; }
+    else { const v = Math.max(0, Math.min(1, o)) * 255; img.data[k] = img.data[k + 1] = img.data[k + 2] = v; }
+    img.data[k + 3] = 255;
   }
   g.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(cv);
@@ -623,14 +625,21 @@ function getRealTex(kind) {
     if (hash2(i >> 2, (j >> 2) + 77) > 0.996) x -= 0.18;
     return x;
   }, 4, 4);
-  else if (kind === 'pave') r = makeGrayTex(512, (u, v, i, j) => {     // 1 m paving slabs with grout, per-slab tone, grime, chips
-    const cu = Math.floor(u * 4), cv = Math.floor(v * 4);
-    let x = 0.9 + (hash2(cu, cv) - 0.5) * 0.14 + (fbm(u, v, 6, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
+  else if (kind === 'pave') r = makeGrayTex(512, (u, v, i, j) => {     // 1 m paving slabs: per-slab hue (sandstone / slate / terracotta / mossy), grout with moss, grime, chips, worn edges
+    const cu = Math.floor(u * 4), cv = Math.floor(v * 4), h = hash2(cu + 3, cv + 9);
+    const tints = [[1.0, 0.95, 0.86], [0.88, 0.94, 1.0], [1.0, 0.88, 0.8], [0.9, 1.0, 0.92], [1.0, 1.0, 0.96], [0.94, 0.9, 1.0]];
+    const tt = tints[Math.floor(h * 6) % 6].map(t => 1 + (t - 1) * 0.5);
+    let x = 0.92 + (hash2(cu, cv) - 0.5) * 0.16 + (fbm(u, v, 6, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
     const fu = (u * 4) % 1, fv = (v * 4) % 1, e = Math.min(fu, 1 - fu, fv, 1 - fv);
-    if (e < 0.012) x *= 0.42; else if (e < 0.03) x *= 0.82 + e * 6;
-    x -= Math.max(0, fbm(u + 7, v + 2, 3, 3) - 0.62) * 0.45;
-    if (hash2(i >> 2, (j >> 2) + 31) > 0.997) x -= 0.2;
-    return x;
+    let r = x * tt[0], g = x * tt[1], b = x * tt[2];
+    const sw = fbm(u + 7, v + 2, 3, 3);                                           // big grime / moss blotches
+    if (sw > 0.62) { const k = (sw - 0.62) * 0.9; r -= k * 0.5; g -= k * 0.38; b -= k * 0.5; }
+    if (e < 0.012) { const moss = hash2(i >> 3, j >> 3) > 0.55; r *= moss ? 0.38 : 0.42; g *= moss ? 0.52 : 0.42; b *= moss ? 0.34 : 0.42; }   // grout, partly mossy
+    else if (e < 0.03) { const k = 0.82 + e * 6; r *= k; g *= k; b *= k; }
+    else if (e < 0.06) { const w = 1 + (0.06 - e) * 0.9; r *= w; g *= w * 0.99; b *= w * 0.96; }   // sun-bleached worn edge
+    if (hash2(i >> 2, (j >> 2) + 31) > 0.997) { r -= 0.2; g -= 0.2; b -= 0.2; }
+    if (hash2(cu + 17, cv + 5) > 0.93) { r *= 0.8; g *= 0.85; b *= 0.95; }       // the odd darker replacement slab
+    return [r, g, b];
   }, 1.2, 4);
   else if (kind === 'metal') r = makeGrayTex(512, (u, v, i, j) => {    // brushed painted steel: streaks, panel seams, rivets, scratches
     let x = 0.9 + (vnoise(u * 3, v * 96, 3, 96) - 0.5) * 0.12 + (fbm(u, v, 3, 4) - 0.5) * 0.14 + (hash2(i, j) - 0.5) * 0.03;
@@ -714,6 +723,9 @@ function decalTex(kind) {
     branch(128, 128, Math.random() * 6, 150, 2.2); branch(128, 128, Math.random() * 6, 150, 2.2);
   } else if (kind === 'scuff') {
     for (let k = 0; k < 2; k++) { const x0 = 100 + k * 56; for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(12,10,8,${0.25 + Math.random() * 0.25})`; g.fillRect(x0 + (Math.random() - 0.5) * 12, i * 2.8, 4 + Math.random() * 6, 3); } }
+  } else if (kind === 'tintW' || kind === 'tintC' || kind === 'moss') {
+    const col = kind === 'tintW' ? '255,190,120' : kind === 'tintC' ? '90,140,220' : '70,130,60';
+    for (let k = 0; k < 5; k++) { const x = 128 + (Math.random() - 0.5) * 90, y = 128 + (Math.random() - 0.5) * 90, r = 60 + Math.random() * 60; const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, `rgba(${col},0.22)`); gr.addColorStop(1, `rgba(${col},0)`); g.fillStyle = gr; g.fillRect(0, 0, 256, 256); }
   } else {
     const dark = kind === 'oil' ? 0.85 : 0.5;
     for (let k = 0; k < 14; k++) { const r = 20 + Math.random() * 55, x = 128 + (Math.random() - 0.5) * 70, y = 128 + (Math.random() - 0.5) * 70; const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, `rgba(14,12,10,${dark * 0.5})`); gr.addColorStop(1, 'rgba(14,12,10,0)'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256); }
@@ -743,6 +755,16 @@ function scatterDecals(m) {
     mesh.rotation.x = -Math.PI / 2; mesh.rotation.z = Math.random() * Math.PI * 2;
     mesh.position.set(x, y + 0.012 + placed * 0.00004, z); mesh.scale.set(sz, sz * (k === 'scuff' ? 1.4 : 1), 1);
     mesh.userData.real = 1; mesh.receiveShadow = false; g.add(mesh); placed++;
+  }
+  // big soft colour patches (warm sun-bleach, cool shade, moss) so the floor isn't one flat grey wash
+  for (let n = 0, tr = 0; n < 34 && tr++ < 300;) {
+    let r = Math.random() * tot, ci = 0; while (ci < tops.length - 1 && (r -= area[ci]) > 0) ci++;
+    const c = tops[ci], k = ['tintW', 'tintC', 'moss', 'tintW', 'tintC'][Math.floor(Math.random() * 5)], sz = Math.min(5 + Math.random() * 9, Math.min(c.x1 - c.x0, c.z1 - c.z0) - 0.2);
+    if (sz < 3) continue;
+    const x = c.x0 + sz / 2 + Math.random() * Math.max(0.01, c.x1 - c.x0 - sz), z = c.z0 + sz / 2 + Math.random() * Math.max(0.01, c.z1 - c.z0 - sz);
+    const dmat = dm(k); dmat.userData.batch = true;
+    const mesh = new THREE.Mesh(geo, dmat); mesh.rotation.x = -Math.PI / 2; mesh.rotation.z = Math.random() * 6.28;
+    mesh.position.set(x, c.y1 + 0.009 + n * 0.00003, z); mesh.scale.set(sz, sz, 1); mesh.userData.real = 1; mesh.receiveShadow = false; g.add(mesh); n++;
   }
   mapGroup.add(g);
 }
@@ -1027,6 +1049,15 @@ function scatterScenery(m, key) {
   for (let i = 0; i < 16; i++) if (tryPlace((x, z) => addTree(x, 0, z, 0.9 + rnd() * 0.5, rnd() < 0.3 ? 'pine' : 'oak', ++n), 1.9, 80, 56, 38)) { }
   for (let i = 0; i < 22; i++) tryPlace((x, z) => addBush(x, 0, z, 0.9 + rnd() * 0.7, ++n), 1.0, 60, 57, 39);
   for (let i = 0; i < 8; i++) tryPlace((x, z) => addFlowerBed(x, 0, z, ++n), 1.8, 60, 56, 38);
+  // floor inlays: brass bands around the tower plaza and four medallions — flat, so they never get in the way
+  const brass = M(0xb8935a, 0.45, 0.2), flat = (w, d, x, z, mat) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, 0.03, d), mat); b.position.set(x, 0.016, z); b.receiveShadow = true; mapGroup.add(b); };
+  for (const r of [20.5, 23]) { flat(2 * r, 0.14, 0, -r, brass); flat(2 * r, 0.14, 0, r, brass); flat(0.14, 2 * r, -r, 0, brass); flat(0.14, 2 * r, r, 0, brass); }
+  const medal = (x, z, col) => {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(2.6, 2.85, 48), brass); ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.02, z); mapGroup.add(ring);
+    const disk = new THREE.Mesh(new THREE.CircleGeometry(2.55, 48), M(col, 0.7)); disk.rotation.x = -Math.PI / 2; disk.position.set(x, 0.018, z); disk.receiveShadow = true; mapGroup.add(disk);
+    for (let k = 0; k < 8; k++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 2.1), brass); sp.position.set(x, 0.024, z); sp.rotation.y = k * Math.PI / 8; mapGroup.add(sp); }
+  };
+  medal(-26, 0, 0x3a5a8a); medal(26, 0, 0x8a3a3a); medal(0, 27.5, 0x3a7a5a);
   // vines on the perimeter walls (inner faces), wherever the ground in front is open
   for (let i = 0; i < 26; i++) {
     const side = i % 4, a = (rnd() * 2 - 1) * 0.92, wd = 2.5 + rnd() * 3, hh = 2.6 + rnd() * 3;
