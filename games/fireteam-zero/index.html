@@ -323,7 +323,7 @@ scene.fog = new THREE.Fog(0x2a2632, 40, 130);
 // Sky dome: a vertical gradient (low/mid/top colors), built fresh per map by applySkyAndWeather()
 // below so each map can have its own atmosphere (Atrium's warm glass-roof glow vs. Monsoon's storm).
 function makeSkyDome(top, mid, low) {
-  const geo = new THREE.SphereGeometry(300, 16, 12);
+  const geo = new THREE.SphereGeometry(300, 40, 28);
   const pos = geo.attributes.position, colors = [];
   const topC = new THREE.Color(top), midC = new THREE.Color(mid), lowC = new THREE.Color(low);
   const c = new THREE.Color();
@@ -379,12 +379,51 @@ scene.add(fill);
 // streaks + thunder) or 'embers' (drifting wildfire embers, no thunder). Falsy/'clear' = no particles.
 let skyDome = null, rainPoints = null, rainVel = null, lightningT = 0, weatherMode = 'clear';
 let emberPoints = null, emberVel = null;
+
+// Procedural sky: gradient + layered clouds + sun glow + stars, painted once per map onto the dome (it costs nothing per frame).
+const _skyCache = {};
+function paintSky(dome, m) {
+  const sk = m.sky, rain = m.weather === 'rain', key = sk.dome.join(',') + rain;
+  let tex = _skyCache[key];
+  if (!tex) {
+    const W = 768, H = 384, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const g = cv.getContext('2d'), img = g.createImageData(W, H);
+    const top = new THREE.Color(sk.dome[0]), mid = new THREE.Color(sk.dome[1]), low = new THREE.Color(sk.dome[2]), c = new THREE.Color();
+    const sd = new THREE.Vector3(20, 60, 10).normalize(), cover = rain ? 0.42 : 0.56, cloudBase = new THREE.Color(sk.dome[1]).lerp(new THREE.Color(0xffffff), rain ? 0.05 : 0.45), cloudShade = new THREE.Color(sk.dome[1]).multiplyScalar(rain ? 0.35 : 0.55);
+    for (let j = 0; j < H; j++) {
+      const th = Math.PI * (j + 0.5) / H, y = Math.cos(th), t = (y + 1) / 2;
+      for (let i = 0; i < W; i++) {
+        const u = (i + 0.5) / W, ph = 2 * Math.PI * u, dx = -Math.cos(ph) * Math.sin(th), dz = Math.sin(ph) * Math.sin(th);
+        if (t > 0.42) c.lerpColors(mid, top, (t - 0.42) / 0.58); else c.lerpColors(low, mid, t / 0.42);
+        // sun glow
+        const sdot = Math.max(0, dx * sd.x + y * sd.y + dz * sd.z);
+        const glow = Math.pow(sdot, 40) * 0.9 + Math.pow(sdot, 6) * 0.22;
+        // clouds: two noise layers, stretched along the horizon, fading out toward the ground
+        if (y > 0.02) {
+          const fade = Math.min(1, y * 3.2) * (1 - Math.max(0, y - 0.8) * 3);
+          const n1 = fbm(u * 1 + 0.13, (1 - y) * 0.8, 6, 5), n2 = fbm(u + 0.5, (1 - y) * 0.6 + 0.3, 14, 3);
+          let a = Math.max(0, (n1 * 0.75 + n2 * 0.25) - (1 - cover)) / cover; a = Math.min(1, a * 1.7) * fade;
+          const lit = Math.min(1, 0.55 + sdot * 0.9);
+          const cr = cloudShade.r + (cloudBase.r - cloudShade.r) * lit, cg = cloudShade.g + (cloudBase.g - cloudShade.g) * lit, cb = cloudShade.b + (cloudBase.b - cloudShade.b) * lit;
+          c.r += (cr - c.r) * a * (rain ? 0.92 : 0.8); c.g += (cg - c.g) * a * (rain ? 0.92 : 0.8); c.b += (cb - c.b) * a * (rain ? 0.92 : 0.8);
+          if (y > 0.3 && y < 0.72 && a < 0.12 && hash2((i * 7) | 0, (j * 13) | 0) > 0.9985) { const sb = 0.7 * (1 - a * 6); c.r += sb; c.g += sb; c.b += sb; }   // stars through the gaps
+        }
+        const k = (j * W + i) * 4;
+        img.data[k] = Math.min(255, (c.r + glow * 1.0) * 255); img.data[k + 1] = Math.min(255, (c.g + glow * 0.82) * 255); img.data[k + 2] = Math.min(255, (c.b + glow * 0.6) * 255); img.data[k + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    tex = _skyCache[key] = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping;
+  }
+  dome.material = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false });
+}
 function applySkyAndWeather(m) {
   const sky = m.sky;
   scene.background = new THREE.Color(sky.fogColor);
   scene.fog = new THREE.Fog(sky.fogColor, sky.fogNear, sky.fogFar);
   if (skyDome) mapGroup.remove(skyDome);     // mapGroup already got swapped out by loadMap(), but be defensive
   skyDome = makeSkyDome(...sky.dome);
+  paintSky(skyDome, m);
   mapGroup.add(skyDome);
   hemi.color.setHex(sky.hemi[0]); hemi.groundColor.setHex(sky.hemi[1]); hemi.intensity = sky.hemi[2];
   sun.color.setHex(sky.sun[0]); sun.intensity = sky.sun[1];
@@ -636,8 +675,8 @@ function realizeMesh(mesh) {
     uv.setXY(i, u / tile, w / tile);
     let ao = 1;
     if (ay < 0.5) ao = 1 - 0.3 * Math.max(0, 1 - (v.y - minY) / 0.9);
-    if (n.y < -0.5) ao = 0.6;
-    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = ao * shade;
+    let lift = 1; if (n.y < -0.5) { ao = 0.9; lift = 1.9; }   // ceilings/undersides catch bounce light from the floors instead of going black
+    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = ao * shade * lift;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   uv.needsUpdate = true;
@@ -783,6 +822,24 @@ function batchStatics() {
     else if (o.parent) { o.parent.remove(o); if (o.geometry && !o.userData.sharedGeo) { /* geometry may be shared; leave to GC */ } }
   }
 }
+
+// Glass look: faint vertical tint, bright top/bottom edge lines, thin side frames and a couple of diagonal sheen streaks (unlit, so it costs nothing).
+let _glassTex = null;
+function getGlassTex() {
+  if (_glassTex) return _glassTex;
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128; const g = cv.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 128); gr.addColorStop(0, 'rgba(170,215,245,0.20)'); gr.addColorStop(1, 'rgba(110,165,215,0.34)');
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 128);
+  g.save(); g.translate(0, 0); g.rotate(-0.35);
+  for (const [x, w, a] of [[40, 22, 0.20], [90, 7, 0.28], [170, 30, 0.14], [215, 6, 0.24]]) { g.fillStyle = `rgba(235,248,255,${a})`; g.fillRect(x, -60, w, 260); }
+  g.restore();
+  g.fillStyle = 'rgba(215,245,255,0.95)'; g.fillRect(0, 0, 256, 7);          // top cap rail
+  g.fillStyle = 'rgba(150,205,240,0.7)'; g.fillRect(0, 121, 256, 7);         // bottom rail
+  g.fillStyle = 'rgba(200,235,255,0.55)'; g.fillRect(0, 0, 3, 128); g.fillRect(253, 0, 3, 128);   // posts
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return (_glassTex = t);
+}
 function batchGlass() {
   const cols = colliders.filter(c => c.glass && c.mesh && c.mesh.geometry && c.mesh.geometry.attributes.position);
   const groups = new Map(), CH = 64;
@@ -794,16 +851,20 @@ function batchGlass() {
   }
   for (const g of groups.values()) {
     const parts = g.items.map(c => { const geo = c.mesh.geometry.index ? c.mesh.geometry.toNonIndexed() : c.mesh.geometry.clone(); geo.applyMatrix4(c.mesh.matrixWorld); return geo; });
-    const tot = parts.reduce((a, q) => a + q.attributes.position.count, 0), pos = new Float32Array(tot * 3), nor = new Float32Array(tot * 3);
+    const tot = parts.reduce((a, q) => a + q.attributes.position.count, 0), pos = new Float32Array(tot * 3), nor = new Float32Array(tot * 3), uvs = new Float32Array(tot * 2);
     let off = 0;
     parts.forEach((q, i) => {
       pos.set(q.attributes.position.array, off * 3); nor.set(q.attributes.normal.array, off * 3);
+      { const pa = q.attributes.position, na = q.attributes.normal; let y0 = Infinity, y1 = -Infinity;
+        for (let k = 0; k < pa.count; k++) { const y = pa.getY(k); if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        for (let k = 0; k < pa.count; k++) { const along = Math.abs(na.getX(k)) > Math.abs(na.getZ(k)) ? pa.getZ(k) : pa.getX(k); uvs[(off + k) * 2] = along / 3.2; uvs[(off + k) * 2 + 1] = 1 - (pa.getY(k) - y0) / Math.max(0.01, y1 - y0); } }
       const c = g.items[i]; c.gRange = { start: off, count: q.attributes.position.count }; c.gOrig = q.attributes.position.array.slice();
       off += q.attributes.position.count; q.dispose();
     });
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3)); geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geo.computeBoundingSphere();
+    if (!g.mat.userData.glassLook) { g.mat = g.mat.clone(); g.mat.map = getGlassTex(); g.mat.color.set(0xffffff); g.mat.opacity = 1; g.mat.transparent = true; g.mat.depthWrite = false; g.mat.userData.glassLook = true; }
     const mm = new THREE.Mesh(geo, g.mat); mm.renderOrder = 1; mm.matrixAutoUpdate = false; mm.frustumCulled = true;
     mm.userData.real = 1; mm.userData.batched = true;
     mapGroup.add(mm);
