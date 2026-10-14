@@ -683,16 +683,93 @@ function scatterDecals(m) {
     const x = c.x0 + sz / 2 + Math.random() * Math.max(0.01, c.x1 - c.x0 - sz), z = c.z0 + sz / 2 + Math.random() * Math.max(0.01, c.z1 - c.z0 - sz), y = c.y1;
     let bad = false; for (const [dx, dz] of [[0, 0], [1, 1], [1, -1], [-1, 1], [-1, -1], [1.2, 0], [-1.2, 0], [0, 1.2], [0, -1.2]]) if (blockedAt(x + dx * sz * 0.5, z + dz * sz * 0.5, y + 0.05)) { bad = true; break; }
     if (bad) continue;
-    const mesh = new THREE.Mesh(geo, dm(k));
+    const dmat = dm(k); dmat.userData.batch = true;
+    const mesh = new THREE.Mesh(geo, dmat);
     mesh.rotation.x = -Math.PI / 2; mesh.rotation.z = Math.random() * Math.PI * 2;
     mesh.position.set(x, y + 0.012 + placed * 0.00004, z); mesh.scale.set(sz, sz * (k === 'scuff' ? 1.4 : 1), 1);
     mesh.userData.real = 1; mesh.receiveShadow = true; g.add(mesh); placed++;
   }
   mapGroup.add(g);
 }
+// Static map geometry is welded into a few big chunks per material so the GPU gets a few hundred draw
+// calls instead of ~2000 (the shadow pass doubles that). Original collider meshes stay in the scene
+// graph, hidden, purely as raycast targets for bullets; glass and collapsible Mezzanine pieces stay live.
+function batchStatics() {
+  const keep = new Set();
+  for (const c of colliders) if (c.glass || c.tag === 'mezzW' || c.tag === 'mezzE' || c.tag === 'beamW' || c.tag === 'beamE') keep.add(c.mesh);
+  const colMeshes = new Set(colliders.map(c => c.mesh));
+  const groups = new Map(), list = [];
+  mapGroup.traverse(o => {
+    if (!o.isMesh || o === skyDome || keep.has(o) || o.renderOrder !== 0 || Array.isArray(o.material) || o.isInstancedMesh || o.isSkinnedMesh) return;
+    const mt = o.material;
+    if (mt.transparent && !mt.userData.batch) return;
+    if (!o.geometry || !o.geometry.attributes.position) return;
+    list.push(o);
+  });
+  const CH = 48, ATTRS = ['position', 'normal', 'uv', 'color'], canon = new Map();
+  // Plain opaque materials all collapse into a handful of shared ones: colour moves into vertex colours.
+  const bakeable = (mt) => !mt.transparent && mt.isMeshStandardMaterial && !(mt.emissive && mt.emissive.getHex() !== 0 && mt.emissiveIntensity > 0.01);
+  for (const o of list) {
+    o.updateWorldMatrix(true, false);
+    const mt = o.material;
+    let skey, gm;
+    if (bakeable(mt)) {
+      skey = 'B' + (mt.map ? mt.map.uuid : '') + '/' + mt.roughness.toFixed(1) + '/' + mt.metalness.toFixed(1) + '/' + mt.side + mt.flatShading + (mt.roughnessMap ? 'r' : '');
+      if (!canon.has(skey)) { const c = mt.clone(); c.color.set(0xffffff); c.vertexColors = true; c.roughness = Math.round(mt.roughness * 10) / 10; c.metalness = Math.round(mt.metalness * 10) / 10; canon.set(skey, c); }
+      gm = canon.get(skey);
+    } else {
+      skey = 'S' + mt.type + mt.color.getHex() + '/' + mt.roughness.toFixed(2) + '/' + mt.metalness.toFixed(2) + '/' + (mt.emissive ? mt.emissive.getHex() + '/' + mt.emissiveIntensity : '') + '/' + (mt.map ? mt.map.uuid : '') + '/' + mt.vertexColors + '/' + mt.opacity + mt.transparent + mt.side + mt.flatShading;
+      gm = mt;
+    }
+    const w = o.matrixWorld.elements, key = skey + '|' + (o.castShadow ? 1 : 0) + (o.receiveShadow ? 1 : 0) + '|' + Math.floor(w[12] / CH) + ',' + Math.floor(w[14] / CH);
+    let g = groups.get(key); if (!g) groups.set(key, g = { mat: gm, baked: skey[0] === 'B', cast: o.castShadow, recv: o.receiveShadow, items: [] });
+    g.items.push(o);
+  }
+  const hide = [];
+  for (const g of groups.values()) {
+    if (g.items.length < 2) continue;
+    const parts = [];
+    for (const o of g.items) {
+      let geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      for (const k of Object.keys(geo.attributes)) if (!ATTRS.includes(k)) geo.deleteAttribute(k);
+      const n = geo.attributes.position.count;
+      if (!geo.attributes.normal) geo.computeVertexNormals();
+      if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+      if (g.baked) {
+        const mc = o.material.color; let ca = geo.attributes.color;
+        if (!ca) { ca = new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3); geo.setAttribute('color', ca); }
+        for (let i = 0; i < n; i++) ca.setXYZ(i, ca.getX(i) * mc.r, ca.getY(i) * mc.g, ca.getZ(i) * mc.b);
+      } else {
+        if (g.mat.vertexColors && !geo.attributes.color) geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+        if (!g.mat.vertexColors && geo.attributes.color) geo.deleteAttribute('color');
+      }
+      geo.applyMatrix4(o.matrixWorld);
+      parts.push(geo);
+    }
+    const merged = new THREE.BufferGeometry();
+    for (const k of ATTRS) {
+      if (!parts[0].attributes[k]) continue;
+      const sz = parts[0].attributes[k].itemSize, tot = parts.reduce((a, q) => a + q.attributes[k].count, 0), arr = new Float32Array(tot * sz);
+      let off = 0; for (const q of parts) { arr.set(q.attributes[k].array, off); off += q.attributes[k].array.length; }
+      merged.setAttribute(k, new THREE.BufferAttribute(arr, sz));
+    }
+    merged.computeBoundingSphere(); merged.computeBoundingBox();
+    const mm = new THREE.Mesh(merged, g.mat);
+    mm.castShadow = g.cast; mm.receiveShadow = g.recv; mm.matrixAutoUpdate = false;
+    mm.userData.real = 1; mm.userData.batched = true;
+    mapGroup.add(mm);
+    for (const q of parts) q.dispose();
+    for (const o of g.items) hide.push(o);
+  }
+  for (const o of hide) {
+    if (colMeshes.has(o)) { o.visible = false; o.castShadow = false; o.matrixAutoUpdate = false; o.updateMatrix(); }
+    else if (o.parent) { o.parent.remove(o); if (o.geometry && !o.userData.sharedGeo) { /* geometry may be shared; leave to GC */ } }
+  }
+}
 function applyRealism(m) {
   mapGroup.traverse(realizeMesh);
   scatterDecals(m);
+  batchStatics();
 }
 
 // ---------- Solid world ----------
@@ -706,7 +783,7 @@ function addSolid(x0, y0, z0, x1, y1, z1, mat, opts = {}) {
   const useMat = mat;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), useMat);
   mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-  mesh.castShadow = opts.shadow !== false;
+  mesh.castShadow = opts.shadow !== false && opts.tag !== 'rail';
   mesh.receiveShadow = true;
   mapGroup.add(mesh);
   const c = { x0, y0, z0, x1, y1, z1, mesh, tag: opts.tag || MAT_TAG.get(mat) || (mat === matMezz ? 'stairs' : null) };
@@ -3249,34 +3326,51 @@ const allyTex = (() => {
   g.fillStyle = '#5b8cff'; g.fill(); g.lineWidth = 5; g.strokeStyle = '#0b1530'; g.stroke();
   return new THREE.CanvasTexture(c);
 })();
+const botPartGeo = new Map(), matBotBody = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.15 });
 function makeBotMesh(team) {
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
   const tm = M(TEAM_HEX[team], 0.6), tmDark = M(new THREE.Color(TEAM_HEX[team]).multiplyScalar(0.45).getHex(), 0.8);
   const tmGlow = new THREE.MeshStandardMaterial({ color: TEAM_HEX[team], emissive: TEAM_HEX[team], emissiveIntensity: 0.9, roughness: 0.4 });
   const mk = (parent, w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
-  // legs pivot at the hip so they can swing
+  // Each rigid segment (leg, torso, head) is welded into ONE mesh with baked vertex colours — a bot is ~6 draw calls, not ~30.
+  const mkMulti = (parent, key, specs) => {
+    let geo = botPartGeo.get(key);
+    if (!geo) {
+      const pos = [], nor = [], col = [], idx = [];
+      for (const [w, h, d, mat, x, y, z] of specs) {
+        const bg = new THREE.BoxGeometry(w, h, d), base = pos.length / 3, c = mat.color;
+        for (let i = 0; i < bg.attributes.position.count; i++) {
+          pos.push(bg.attributes.position.getX(i) + x, bg.attributes.position.getY(i) + y, bg.attributes.position.getZ(i) + z);
+          nor.push(bg.attributes.normal.getX(i), bg.attributes.normal.getY(i), bg.attributes.normal.getZ(i)); col.push(c.r, c.g, c.b);
+        }
+        for (const i of bg.index.array) idx.push(base + i);
+        bg.dispose();
+      }
+      geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      geo.setIndex(idx); geo.computeBoundingSphere(); botPartGeo.set(key, geo);
+    }
+    const m = new THREE.Mesh(geo, matBotBody); m.castShadow = true; parent.add(m); return m;
+  };
   const legs = [-0.12, 0.12].map(x => {
-    const hip = new THREE.Group(); hip.position.set(x, 0.8, 0); inner.add(hip);
-    mk(hip, 0.19, 0.44, 0.22, matLegs, 0, -0.16, 0);                                   // thigh
-    mk(hip, 0.2, 0.32, 0.23, matLegs, 0, -0.56, 0);                                    // shin
-    mk(hip, 0.135, 0.09, 0.13, matPads, 0, -0.38, 0.11);                               // knee pad
-    mk(hip, 0.21, 0.1, 0.3, matBoots, 0, -0.75, -0.03);                                // boot
+    const hip = new THREE.Group(); hip.position.set(x, 0.8, 0); inner.add(hip);        // legs pivot at the hip so they can swing
+    mkMulti(hip, 'leg', [
+      [0.19, 0.44, 0.22, matLegs, 0, -0.16, 0],                                        // thigh
+      [0.2, 0.32, 0.23, matLegs, 0, -0.56, 0],                                         // shin
+      [0.135, 0.09, 0.13, matPads, 0, -0.38, 0.11],                                    // knee pad
+      [0.21, 0.1, 0.3, matBoots, 0, -0.75, -0.03]]);                                   // boot
     return hip;
   });
   const torso = new THREE.Group(); torso.position.y = 0.8; inner.add(torso);          // waist pivot
-  mk(torso, 0.46, 0.2, 0.3, matGaiter, 0, 0.1, 0);                                     // narrow waist
-  mk(torso, 0.1, 0.22, 0.32, matBelt, 0, 0.21, 0);                                     // belt line
-  mk(torso, 0.58, 0.5, 0.32, tm, 0, 0.42, 0);                                          // chest (broader than waist)
-  mk(torso, 0.52, 0.26, 0.37, tmDark, 0, 0.47, 0.01);                                  // plate carrier
-  mk(torso, 0.62, 0.1, 0.33, matPads, 0, 0.65, 0);                                     // shoulder yoke
-  for (const sx of [-0.33, 0.33]) mk(torso, 0.16, 0.12, 0.3, matPads, sx, 0.68, 0);     // shoulder pads
-  for (const px of [-0.1, 0.1]) mk(torso, 0.1, 0.11, 0.06, matBotDark, px, 0.45, -0.2); // chest rig pouches
+  mkMulti(torso, 'torso' + team, [
+    [0.46, 0.2, 0.3, matGaiter, 0, 0.1, 0], [0.1, 0.22, 0.32, matBelt, 0, 0.21, 0],
+    [0.58, 0.5, 0.32, tm, 0, 0.42, 0], [0.52, 0.26, 0.37, tmDark, 0, 0.47, 0.01], [0.62, 0.1, 0.33, matPads, 0, 0.65, 0],
+    [0.16, 0.12, 0.3, matPads, -0.33, 0.68, 0], [0.16, 0.12, 0.3, matPads, 0.33, 0.68, 0],
+    [0.1, 0.11, 0.06, matBotDark, -0.1, 0.45, -0.2], [0.1, 0.11, 0.06, matBotDark, 0.1, 0.45, -0.2]]);
   const head = new THREE.Group(); head.position.y = 0.8; torso.add(head);             // neck pivot
-  mk(head, 0.16, 0.08, 0.16, matSkin, 0, -0.1, 0);                                     // neck
-  mk(head, 0.24, 0.1, 0.24, matGaiter, 0, -0.03, 0);                                   // balaclava collar
-  mk(head, 0.26, 0.24, 0.26, matSkin, 0, 0.1, 0);                                      // face (slimmer than old head box)
-  mk(head, 0.29, 0.14, 0.29, tm, 0, 0.23, 0);                                          // helmet shell
-  mk(head, 0.3, 0.05, 0.3, matBotDark, 0, 0.15, 0);                                    // helmet brim
+  mkMulti(head, 'head' + team, [
+    [0.16, 0.08, 0.16, matSkin, 0, -0.1, 0], [0.24, 0.1, 0.24, matGaiter, 0, -0.03, 0], [0.26, 0.24, 0.26, matSkin, 0, 0.1, 0],
+    [0.29, 0.14, 0.29, tm, 0, 0.23, 0], [0.3, 0.05, 0.3, matBotDark, 0, 0.15, 0]]);
   mk(head, 0.24, 0.05, 0.03, tmGlow, 0, 0.09, -0.135);                                 // glowing visor strip
   const aim = new THREE.Group(); aim.position.set(0, 0.56, 0); torso.add(aim);         // shoulders: pitches with the aim
   if (team === 'A') {
@@ -3303,7 +3397,7 @@ function setBotWeapon(b, key) {
   b.rig = { bot: true, lhand: lhM, upper, fore, shoulder: V(-0.31, 0.04, 0), E: V(-0.2, -0.18, -0.24), rest: lh.clone() };
   b.gunInfo = gm; b.rlActive = false;
   applyReloadPose(gm, b.rig, reloadPose(gm, 0), 0.8);
-  aim.traverse(o => { o.castShadow = true; });
+  aim.traverse(o => { o.castShadow = false; });   // held gun/arms don't cast shadows (saves a draw call each)
 }
 function pickBotWeapon() {
   let total = 0; for (const k of PRIMARIES) total += WEAPONS[k].bias;
@@ -4478,7 +4572,7 @@ menuReady = true; renderMenu();
 
 // Test/debug hook (lets automated checks drive the real game loop)
 window.__fz = {
-  player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
+  renderer, camera, player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
   fire: fireShot, stats, effects,
   map: { mode: () => mapMode, cycle: cycleMap, draw: drawMap, layout: () => ML, xy: (x, z) => [mx(x), mz(z)] },
   teleport(x, y, z, yaw = 0) { player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.yaw = yaw; player.pitch = 0; player.isSliding = false; player.onGround = false; },
@@ -4520,9 +4614,25 @@ window.__fz = {
 
 const clock = new THREE.Clock();
 let frame = 0;
+// Adaptive quality: if frames run long, render at a lower resolution (and recover when there's headroom);
+// shadows refresh every other frame — bots/player still look smooth, and it halves the shadow-pass cost.
+const PERF = { ema: 16, ratio: Math.min(window.devicePixelRatio || 1, 1.5), max: Math.min(window.devicePixelRatio || 1, 1.5), cool: 0, tick: 0 };
+renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+function adaptQuality(rawDt) {
+  if (rawDt > 0.25) return;                                   // tab switch / pause hiccup, ignore
+  PERF.ema += (rawDt * 1000 - PERF.ema) * 0.05;
+  if (PERF.cool > 0) { PERF.cool -= rawDt; return; }
+  let r = PERF.ratio;
+  if (PERF.ema > 19 && r > 0.6) r = Math.max(0.6, r - 0.2);
+  else if (PERF.ema < 11.5 && r < PERF.max) r = Math.min(PERF.max, r + 0.1);
+  if (r !== PERF.ratio) { PERF.ratio = r; renderer.setPixelRatio(r); renderer.setSize(window.innerWidth, window.innerHeight); PERF.cool = 2.5; }
+}
 function animate() {
   requestAnimationFrame(animate);
-  const dt = Math.min(0.05, clock.getDelta());
+  const rawDt = clock.getDelta();
+  adaptQuality(rawDt);
+  renderer.shadowMap.needsUpdate = (PERF.tick++ & 1) === 0;
+  const dt = Math.min(0.05, rawDt);
   const running = !blockerVisible();
   // The pause/menu screen (Escape, lost pointer lock, match-over results) is meant to freeze the game —
   // but only updateMatch was ever gated on `running`. The player's own physics (gravity, slide timer,
