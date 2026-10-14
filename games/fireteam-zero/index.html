@@ -808,7 +808,7 @@ function batchStatics() {
       if (!canon.has(skey)) canon.set(skey, new THREE.MeshBasicMaterial({ vertexColors: true, side: mt.side }));   // glowing strips: unlit, colour in vertex colours
       gm = canon.get(skey);
     } else {
-      skey = 'S' + mt.type + mt.color.getHex() + '/' + mt.roughness.toFixed(2) + '/' + mt.metalness.toFixed(2) + '/' + (mt.emissive ? mt.emissive.getHex() + '/' + mt.emissiveIntensity : '') + '/' + (mt.map ? mt.map.uuid : '') + '/' + mt.vertexColors + '/' + mt.opacity + mt.transparent + mt.side + mt.flatShading;
+      skey = 'S' + mt.type + mt.color.getHex() + '/' + (mt.roughness || 0).toFixed(2) + '/' + (mt.metalness || 0).toFixed(2) + '/' + (mt.emissive ? mt.emissive.getHex() + '/' + mt.emissiveIntensity : '') + '/' + (mt.map ? mt.map.uuid : '') + '/' + mt.vertexColors + '/' + mt.opacity + mt.transparent + mt.side + mt.flatShading;
       gm = mt;
     }
     if (o.castShadow) { const bb = new THREE.Box3().setFromObject(o), d = [bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z].sort((a, b) => a - b); if (d[1] < 0.35) { o.castShadow = false; REAL.thin = (REAL.thin || 0) + 1; } }   // rods/beams/neon strips are thin in two axes: their baked shadow aliases into jagged hairlines
@@ -1066,6 +1066,63 @@ function scatterScenery(m, key) {
     else if (side === 2) { x = -58.9; z = a * 40; nx = 1; nz = 0; } else { x = 58.9; z = a * 40; nx = -1; nz = 0; }
     if (!clear(x + nx * 1.2, z + nz * 1.2, 0.8) || !inZone(x + nx * 1.5, z + nz * 1.5)) continue;
     addVines(x, 0.1, z, nx, nz, wd, hh, i * 11 + 3);
+  }
+}
+
+
+// ---------- Spawn hall dressing (visual only): team-coloured wainscot, ribs, emblem sign, banners, hazard door frame, light trusses, lockers ----------
+function signTex(lines, hex, w = 1024, h = 384) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d'), col = '#' + hex.toString(16).padStart(6, '0');
+  g.fillStyle = '#0c1018'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,255,255,0.035)'; for (let y = 0; y < h; y += 4) g.fillRect(0, y, w, 1);
+  g.strokeStyle = col; g.lineWidth = 10; g.strokeRect(14, 14, w - 28, h - 28); g.lineWidth = 3; g.strokeRect(30, 30, w - 60, h - 60);
+  g.fillStyle = col; g.globalAlpha = 0.9;
+  for (let k = 0; k < 3; k++) { const x = 70 + k * 62; g.beginPath(); g.moveTo(x, h / 2 - 70); g.lineTo(x + 50, h / 2); g.lineTo(x, h / 2 + 70); g.lineTo(x + 24, h / 2 + 70); g.lineTo(x + 74, h / 2); g.lineTo(x + 24, h / 2 - 70); g.closePath(); g.fill(); }
+  g.globalAlpha = 1; g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.font = '900 120px "Arial Black", Arial, sans-serif'; g.fillStyle = '#fff'; g.fillText(lines[0], 330, h / 2 - 36);
+  g.font = '700 54px Arial, sans-serif'; g.fillStyle = col; g.fillText(lines[1], 334, h / 2 + 62);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+function hazardTex() {
+  const cv = document.createElement('canvas'); cv.width = 64; cv.height = 256; const g = cv.getContext('2d');
+  g.fillStyle = '#d9b324'; g.fillRect(0, 0, 64, 256); g.fillStyle = '#15171c';
+  for (let y = -64; y < 320; y += 64) { g.beginPath(); g.moveTo(0, y + 64); g.lineTo(64, y); g.lineTo(64, y + 32); g.lineTo(0, y + 96); g.closePath(); g.fill(); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+function dressSpawnHalls(key) {
+  if (key !== 'atrium') return;
+  const hz = hazardTex();
+  for (const sgn of [-1, 1]) {
+    const team = sgn === -1 ? 0x3d7bff : 0xff4545, dark = sgn === -1 ? 0x141c34 : 0x341416, name = sgn === -1 ? 'TEAM A' : 'TEAM B';
+    const matDark = M(dark, 0.8), matRib = M(0x232834, 0.85), matSteel = M(0x2b2f3a, 0.5, 0.5), matLocker = M(0x3a4352, 0.55, 0.45);
+    const matGlow = new THREE.MeshStandardMaterial({ color: team, emissive: team, emissiveIntensity: 2.0, roughness: 0.4 });
+    const matBanner = new THREE.MeshStandardMaterial({ color: team, emissive: team, emissiveIntensity: 0.35, roughness: 0.9 });
+    const add = (mat, w, h, d, x, y, z, ry = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(sgn * x, y, z); m.rotation.y = ry; m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); return m; };
+    const X0 = 47.1, X1 = 58.9, Z = 13.9;
+    // wainscot + dado light + ribs on the back wall and both side walls
+    add(matDark, 0.14, 1.3, 27.6, X1 - 0.07, 0.65, 0); add(matGlow, 0.06, 0.07, 27.6, X1 - 0.17, 1.35, 0);
+    for (const zs of [-1, 1]) { add(matDark, X1 - X0, 1.3, 0.14, (X0 + X1) / 2, 0.65, zs * (Z - 0.07)); add(matGlow, X1 - X0, 0.07, 0.06, (X0 + X1) / 2, 1.35, zs * (Z - 0.17)); }
+    for (let z = -12; z <= 12; z += 3) add(matRib, 0.22, 11, 0.4, X1 - 0.11, 5.5, z);
+    for (const zs of [-1, 1]) for (let x = X0 + 1.5; x < X1 - 0.5; x += 3) add(matRib, 0.4, 11, 0.22, x, 5.5, zs * (Z - 0.11));
+    // emblem sign on the back wall + tall banners on the side walls
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 3.375), new THREE.MeshBasicMaterial({ map: signTex([name, 'SPAWN HALL'], team) }));
+    sign.position.set(sgn * (X1 - 0.3), 7, 0); sign.rotation.y = sgn === -1 ? Math.PI / 2 : -Math.PI / 2; mapGroup.add(sign);
+    for (const zs of [-1, 1]) for (const x of [50.5, 55]) {
+      add(matBanner, 1.5, 5.2, 0.05, x, 6.6, zs * (Z - 0.3)); add(matSteel, 1.7, 0.12, 0.1, x, 9.3, zs * (Z - 0.3)); add(matGlow, 0.5, 2.2, 0.06, x, 6.6, zs * (Z - 0.34));
+    }
+    // door frame with hazard stripes + a lit header
+    for (const zs of [-1, 1]) {
+      add(matSteel, 0.5, 6.2, 0.5, 46.55, 3.1, zs * 4.3);
+      const hs = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 6.0), new THREE.MeshBasicMaterial({ map: hz })); hs.material.map = hz.clone(); hs.material.map.repeat.set(1, 3); hs.material.map.needsUpdate = true;
+      hs.position.set(sgn * 46.28, 3.1, zs * 4.3); hs.rotation.y = sgn === -1 ? Math.PI / 2 : -Math.PI / 2; mapGroup.add(hs);
+    }
+    add(matSteel, 0.6, 0.7, 9.2, 46.55, 6.0, 0); add(matGlow, 0.12, 0.14, 8.4, 46.2, 5.55, 0);
+    // overhead light trusses across the hall
+    for (const x of [50, 54.5, 58]) { add(matSteel, 0.3, 0.3, 27.6, x, 9.8, 0); add(matGlow, 0.1, 0.1, 22, x, 9.58, 0); for (let z = -12; z <= 12; z += 4) add(matSteel, 0.12, 0.7, 0.12, x, 9.4, z); }
+    // lockers along both side walls
+    for (const zs of [-1, 1]) for (let x = X0 + 0.7; x < X1 - 0.6; x += 1.05) {
+      add(matLocker, 0.9, 2.0, 0.5, x, 1.0 + 0.0, zs * (Z - 0.45)); add(matGlow, 0.5, 0.05, 0.02, x, 1.75, zs * (Z - 0.72 + (zs > 0 ? 0 : 0)));
+    }
   }
 }
 
@@ -4470,6 +4527,7 @@ function loadMap(key) {
   m.buildNav();
   applySkyAndWeather(m);
   scatterScenery(m, key);
+  dressSpawnHalls(key);
   applyRealism(m);
   if (key === 'atrium') {   // shadow-only lids over both tunnel pits so the whole pit interior sits in even shade (no sun patches creeping down one wall only)
     const lidMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
