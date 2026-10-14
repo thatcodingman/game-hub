@@ -347,6 +347,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.autoClear = false;
+renderer.info.autoReset = false;
 document.body.appendChild(renderer.domElement);
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -4625,10 +4626,19 @@ function adaptQuality(rawDt) {
   let r = PERF.ratio;
   if (PERF.ema > 19 && r > 0.6) r = Math.max(0.6, r - 0.2);
   else if (PERF.ema < 11.5 && r < PERF.max) r = Math.min(PERF.max, r + 0.1);
+  // still slow at the lowest resolution -> drop shadows (the single most expensive pass); recover only if it's very fast
+  if (PERF.ema > 26 && r <= 0.6 && !PERF.noShadow) { PERF.noShadow = true; sun.castShadow = false; PERF.cool = 3; return; }
+  if (PERF.noShadow && PERF.ema < 9 && r >= PERF.max) { PERF.noShadow = false; sun.castShadow = true; renderer.shadowMap.needsUpdate = true; PERF.cool = 3; return; }
   if (r !== PERF.ratio) { PERF.ratio = r; renderer.setPixelRatio(r); renderer.setSize(window.innerWidth, window.innerHeight); PERF.cool = 2.5; }
 }
+const perfEl = document.createElement('div');
+perfEl.style.cssText = 'position:fixed;right:8px;top:8px;z-index:99;font:11px/1.4 monospace;color:#9f9;background:rgba(0,0,0,.65);padding:5px 8px;border-radius:4px;white-space:pre;pointer-events:none;display:none';
+document.body.appendChild(perfEl);
+let perfShow = false, perfAcc = 0, perfN = 0, perfCpu = 0, perfT = 0;
+window.addEventListener('keydown', (e) => { if (e.code === 'F3') { e.preventDefault(); perfShow = !perfShow; perfEl.style.display = perfShow ? 'block' : 'none'; } });
 function animate() {
   requestAnimationFrame(animate);
+  const cpu0 = performance.now();
   const rawDt = clock.getDelta();
   adaptQuality(rawDt);
   renderer.shadowMap.needsUpdate = (PERF.tick++ & 1) === 0;
@@ -4650,9 +4660,18 @@ function animate() {
   updateHud(frame++);
   updateMatchHud(dt);
   drawMap();
+  renderer.info.reset();
   renderer.clear();
   renderer.render(scene, camera);
   if (gun.visible) { renderer.clearDepth(); renderer.render(vmScene, vmCam); }   // viewmodel on top, never clipping into walls
+  if (perfShow) {
+    perfAcc += rawDt; perfN++; perfCpu += performance.now() - cpu0;
+    if (perfAcc >= 0.5) {
+      const i = renderer.info.render;
+      perfEl.textContent = `${(perfN / perfAcc).toFixed(0)} fps  ${(perfAcc / perfN * 1000).toFixed(1)} ms/frame\nCPU ${(perfCpu / perfN).toFixed(1)} ms (JS+submit)\nres ${PERF.ratio.toFixed(1)}x  shadows ${PERF.noShadow ? 'OFF' : 'on'}\ncalls ${i.calls}  tris ${(i.triangles / 1000).toFixed(0)}k`;
+      perfAcc = perfN = perfCpu = 0;
+    }
+  }
 }
 animate();
 </script>
