@@ -348,6 +348,9 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.autoClear = false;
 renderer.info.autoReset = false;
+renderer.shadowMap.autoUpdate = false;
+let shadowDirty = 3;                                   // map shadows are baked: re-render the shadow map only when the map changes
+function markShadowDirty() { shadowDirty = 3; }
 document.body.appendChild(renderer.domElement);
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -1890,6 +1893,7 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
   }
   grid.n = -1;
   collapsedSides.add(side);
+  markShadowDirty();
   tagLive['mezz' + side] = false;
   mapDirty = true;
   onWorldChanged();
@@ -1897,7 +1901,7 @@ function collapse(side) {        // 'W' | 'E' — removes that half of the Mezza
 function restoreMezz() {
   for (const c of fallen) { colliders.push(c); mapGroup.add(c.mesh); }
   grid.n = -1;
-  fallen.length = 0; collapsedSides.clear();
+  fallen.length = 0; collapsedSides.clear(); markShadowDirty();
   tagLive.mezzW = tagLive.mezzE = true;
   mapDirty = true;
 }
@@ -3328,12 +3332,18 @@ const allyTex = (() => {
   g.fillStyle = '#5b8cff'; g.fill(); g.lineWidth = 5; g.strokeStyle = '#0b1530'; g.stroke();
   return new THREE.CanvasTexture(c);
 })();
+const blobGeo = new THREE.PlaneGeometry(1.5, 1.5);
+const matBlob = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, map: (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 2, 32, 32, 31); gr.addColorStop(0, 'rgba(0,0,0,0.55)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+})() });
 const botPartGeo = new Map(), matBotBody = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.15 });
 function makeBotMesh(team) {
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
   const tm = M(TEAM_HEX[team], 0.6), tmDark = M(new THREE.Color(TEAM_HEX[team]).multiplyScalar(0.45).getHex(), 0.8);
   const tmGlow = new THREE.MeshStandardMaterial({ color: TEAM_HEX[team], emissive: TEAM_HEX[team], emissiveIntensity: 0.9, roughness: 0.4 });
-  const mk = (parent, w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
+  const mk = (parent, w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); m.castShadow = false; parent.add(m); return m; };
   // Each rigid segment (leg, torso, head) is welded into ONE mesh with baked vertex colours — a bot is ~6 draw calls, not ~30.
   const mkMulti = (parent, key, specs) => {
     let geo = botPartGeo.get(key);
@@ -3352,7 +3362,7 @@ function makeBotMesh(team) {
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
       geo.setIndex(idx); geo.computeBoundingSphere(); botPartGeo.set(key, geo);
     }
-    const m = new THREE.Mesh(geo, matBotBody); m.castShadow = true; parent.add(m); return m;
+    const m = new THREE.Mesh(geo, matBotBody); m.castShadow = false; parent.add(m); return m;
   };
   const legs = [-0.12, 0.12].map(x => {
     const hip = new THREE.Group(); hip.position.set(x, 0.8, 0); inner.add(hip);        // legs pivot at the hip so they can swing
@@ -3379,6 +3389,7 @@ function makeBotMesh(team) {
     const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: allyTex, depthTest: false, transparent: true }));
     marker.scale.setScalar(0.34); marker.position.y = 2.25; marker.renderOrder = 998; g.add(marker);
   }
+  { const blob = new THREE.Mesh(blobGeo, matBlob); blob.rotation.x = -Math.PI / 2; blob.position.y = 0.04; blob.renderOrder = 2; g.add(blob); }   // cheap contact shadow (the map's shadow map is static)
   g.visible = false;
   scene.add(g);
   return { g, inner, legs, torso, head, aim, tm };
@@ -4095,6 +4106,7 @@ function loadMap(key) {
   m.buildNav();
   applySkyAndWeather(m);
   applyRealism(m);
+  markShadowDirty();
   mapDirty = true;
 }
 
@@ -4619,7 +4631,7 @@ let frame = 0;
 // Adaptive quality: if frames run long, render at a lower resolution (and recover when there's headroom);
 // shadows refresh every other frame — bots/player still look smooth, and it halves the shadow-pass cost.
 const PERF = { ema: 16, ratio: Math.min(window.devicePixelRatio || 1, 1.5), max: Math.min(window.devicePixelRatio || 1, 1.5), cool: 0, tick: 0 };
-renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+renderer.shadowMap.autoUpdate = false;
 function adaptQuality(rawDt) {
   if (rawDt > 0.25) return;                                   // tab switch / pause hiccup, ignore
   PERF.ema += (rawDt * 1000 - PERF.ema) * 0.05;
@@ -4642,7 +4654,7 @@ function animate() {
   const cpu0 = performance.now();
   const rawDt = clock.getDelta();
   adaptQuality(rawDt);
-  renderer.shadowMap.needsUpdate = (PERF.tick++ & 1) === 0;
+  renderer.shadowMap.needsUpdate = shadowDirty > 0; if (shadowDirty > 0) shadowDirty--;
   const dt = Math.min(0.05, rawDt);
   const running = !blockerVisible();
   // The pause/menu screen (Escape, lost pointer lock, match-over results) is meant to freeze the game —
