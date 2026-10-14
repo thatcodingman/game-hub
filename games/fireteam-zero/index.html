@@ -941,6 +941,103 @@ function fixCoplanar() {
     P.needsUpdate = true; m.geometry.computeBoundingSphere();
   }
 }
+
+// ---------- Scenery: proper trees, bushes, flower beds, wall vines (all visual-only; placed only where no collider or bot path is) ----------
+const TREEM = {};
+function treeMats() {
+  if (TREEM.bark) return TREEM;
+  const f = (c) => { const m = M(c, 0.9); m.flatShading = true; return m; };
+  TREEM.bark = f(0x5b4332); TREEM.bark2 = f(0x6e5240);
+  TREEM.leaf = [f(0x2f6b3a), f(0x3c7a44), f(0x4b8f4f), f(0x2a5a35), f(0x5a9a52)];
+  TREEM.autumn = [f(0xb5792f), f(0xc98d3a), f(0x9a5a2a)];
+  TREEM.pine = [f(0x1f4a38), f(0x275a40), f(0x2f6a48)];
+  TREEM.flower = [f(0xff6fa8), f(0xffd23f), f(0xf4f4f0), f(0xff8a4a), f(0xb58cff)];
+  TREEM.soil = f(0x3a2a20); TREEM.planter = f(0x8a8f99); TREEM.hedge = f(0x2f6b3a);
+  return TREEM;
+}
+function leafBlob(r, seed, flat = 1) {
+  const g = new THREE.IcosahedronGeometry(r, 1), P = g.attributes.position;
+  for (let i = 0; i < P.count; i++) {
+    const x = P.getX(i), y = P.getY(i), z = P.getZ(i), k = 1 + (hash2(Math.round(x * 40 + seed * 7), Math.round(y * 40 + z * 40 + seed * 13)) - 0.5) * 0.38;
+    P.setXYZ(i, x * k, y * k * flat, z * k);
+  }
+  g.computeVertexNormals(); return g;
+}
+function addTree(x, y, z, s = 1, kind = 'oak', seed = 1) {
+  const T = treeMats(), g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = seed * 2.399;
+  const add = (geo, mat, px, py, pz, rx = 0, rz = 0, cast = true) => { const m = new THREE.Mesh(geo, mat); m.position.set(px, py, pz); m.rotation.set(rx, 0, rz); m.castShadow = cast; m.receiveShadow = true; g.add(m); return m; };
+  const pick = (arr, k) => arr[Math.floor(hash2(seed * 3 + k, k * 5 + 1) * arr.length) % arr.length];
+  if (kind === 'pine') {
+    add(new THREE.CylinderGeometry(0.14 * s, 0.26 * s, 2.0 * s, 7), T.bark, 0, 1.0 * s, 0);
+    for (let i = 0; i < 5; i++) add(new THREE.ConeGeometry((1.55 - i * 0.27) * s, 1.7 * s, 8), T.pine[(i + seed) % 3], 0, (1.7 + i * 1.05) * s, 0);
+  } else {
+    const autumn = hash2(seed, 77) > 0.82, pal = autumn ? T.autumn : T.leaf;
+    add(new THREE.CylinderGeometry(0.2 * s, 0.34 * s, 0.5 * s, 8), T.bark2, 0, 0.25 * s, 0);                    // root flare
+    add(new THREE.CylinderGeometry(0.15 * s, 0.24 * s, 2.5 * s, 8), T.bark, 0.05 * s, 1.5 * s, 0, 0, -0.05);      // trunk
+    add(new THREE.CylinderGeometry(0.07 * s, 0.12 * s, 1.5 * s, 6), T.bark, 0.55 * s, 2.9 * s, 0.1 * s, 0, -0.75);  // branches
+    add(new THREE.CylinderGeometry(0.07 * s, 0.12 * s, 1.4 * s, 6), T.bark, -0.5 * s, 2.8 * s, -0.2 * s, 0.2, 0.7);
+    const B = [[0, 3.9, 0, 1.55], [1.1, 3.4, 0.3, 1.1], [-1.05, 3.3, -0.4, 1.15], [0.3, 4.9, 0.1, 1.05], [0.2, 3.5, 1.1, 0.95], [-0.3, 3.7, -1.1, 0.95]];
+    B.forEach(([bx, by, bz, br], i) => add(leafBlob(br * s, seed + i, 0.85), pick(pal, i), bx * s, by * s, bz * s));
+  }
+  mapGroup.add(g); return g;
+}
+function addBush(x, y, z, s, seed) {
+  const T = treeMats(), g = new THREE.Group(); g.position.set(x, y, z);
+  for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(leafBlob((0.55 - i * 0.08) * s, seed + i, 0.8), T.leaf[(seed + i) % 5]); m.position.set((i - 1) * 0.55 * s, (0.4 + (i === 1 ? 0.12 : 0)) * s, (i % 2 - 0.5) * 0.35 * s); m.castShadow = true; m.receiveShadow = true; g.add(m); }
+  mapGroup.add(g); return g;
+}
+function addFlowerBed(x, y, z, seed) {
+  const T = treeMats(), g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = (seed % 2) * Math.PI / 2;
+  const box = (w, h, d, mat, px, py, pz) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(px, py, pz); m.castShadow = true; m.receiveShadow = true; g.add(m); };
+  box(2.6, 0.5, 1.2, T.planter, 0, 0.25, 0); box(2.4, 0.08, 1.0, T.soil, 0, 0.52, 0);
+  for (let i = 0; i < 4; i++) { const m = new THREE.Mesh(leafBlob(0.32, seed + i, 0.7), T.leaf[(i + seed) % 5]); m.position.set(-0.9 + i * 0.6, 0.72, 0); g.add(m); }
+  for (let i = 0; i < 16; i++) { const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.085, 0), T.flower[Math.floor(hash2(seed + i, i * 3) * 5) % 5]); m.position.set(-1.0 + (i % 8) * 0.29, 0.9 + hash2(i, seed) * 0.12, (i < 8 ? -0.2 : 0.2) + (hash2(seed, i) - 0.5) * 0.15); g.add(m); }
+  mapGroup.add(g); return g;
+}
+function addVines(x, y, z, nx, nz, w, h, seed) {          // a leafy patch pressed against a wall (normal nx,nz), hanging strands below
+  const T = treeMats(), g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = Math.atan2(nx, nz);
+  const n = Math.round(w * h * 1.6);
+  for (let i = 0; i < n; i++) {
+    const u = (hash2(seed + i, 3) - 0.5) * w, v = hash2(i * 7, seed) * h, edge = 1 - v / h;
+    if (Math.abs(u) > w * 0.5 * (0.35 + edge * 0.65)) continue;
+    const m = new THREE.Mesh(leafBlob(0.2 + hash2(i, seed + 5) * 0.14, seed + i, 0.55), T.leaf[(i + seed) % 5]);
+    m.scale.z = 0.5; m.position.set(u, v, 0.12 + hash2(seed, i) * 0.08); m.receiveShadow = true; g.add(m);
+  }
+  for (let i = 0; i < 4; i++) { const m = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.8 + hash2(i, seed) * 1.2, 0.04), T.bark); m.position.set((hash2(i, seed + 1) - 0.5) * w * 0.8, h * 0.4, 0.1); g.add(m); }
+  mapGroup.add(g); return g;
+}
+function scatterScenery(m, key) {
+  if (key !== 'atrium') return;
+  let sd = 12345; const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+  const cols = colliders.filter(c => c.y0 < 3 && c.y1 > 0.2 && !c.glass);
+  const ground = NAV.filter(n => Math.abs(n.y) < 1.5 || n.hold === false && false);
+  const segs = [];
+  for (const n of NAV) for (const l of n.links) { const o = NAV[l.to]; if (Math.abs(n.y) < 1.6 && Math.abs(o.y) < 1.6 && n.id < o.id) segs.push([n.x, n.z, o.x, o.z]); }
+  const dSeg = (px, pz, [ax, az, bx, bz]) => { const dx = bx - ax, dz = bz - az, t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz || 1))); return Math.hypot(px - ax - t * dx, pz - az - t * dz); };
+  const clear = (x, z, r) => {
+    for (const c of cols) if (x > c.x0 - r && x < c.x1 + r && z > c.z0 - r && z < c.z1 + r) return false;
+    for (const sg of segs) if (dSeg(x, z, sg) < r + 1.0) return false;
+    for (const n of ground) if (Math.hypot(n.x - x, n.z - z) < r + 1.5) return false;
+    for (const sp of [...(SPAWNS.A || []), ...(SPAWNS.B || [])]) if (Math.hypot(sp[0] - x, sp[1] - z) < r + 2) return false;
+    return true;
+  };
+  const inZone = (x, z) => !(Math.abs(x) < 26 && z < -22.5) && !(Math.abs(x) < 18.5 && Math.abs(z) < 18.5) && !(Math.abs(x) > 28 && Math.abs(x) < 42 && Math.abs(z) < 7) && !(Math.abs(x) > 45 && Math.abs(z) < 16.5) && !(Math.abs(x) > 48 && Math.abs(z) > 16 && Math.abs(z) < 28.5) && !(z > 29 && Math.abs(x) < 38.5);
+  const tryPlace = (fn, r, tries, xr, zr) => { for (let i = 0; i < tries; i++) { const x = (rnd() * 2 - 1) * xr, z = (rnd() * 2 - 1) * zr; if (inZone(x, z) && clear(x, z, r)) { fn(x, z); return true; } } return false; };
+  let n = 0;
+  for (let i = 0; i < 16; i++) if (tryPlace((x, z) => addTree(x, 0, z, 0.9 + rnd() * 0.5, rnd() < 0.3 ? 'pine' : 'oak', ++n), 1.9, 80, 56, 38)) { }
+  for (let i = 0; i < 22; i++) tryPlace((x, z) => addBush(x, 0, z, 0.9 + rnd() * 0.7, ++n), 1.0, 60, 57, 39);
+  for (let i = 0; i < 8; i++) tryPlace((x, z) => addFlowerBed(x, 0, z, ++n), 1.8, 60, 56, 38);
+  // vines on the perimeter walls (inner faces), wherever the ground in front is open
+  for (let i = 0; i < 26; i++) {
+    const side = i % 4, a = (rnd() * 2 - 1) * 0.92, wd = 2.5 + rnd() * 3, hh = 2.6 + rnd() * 3;
+    let x, z, nx, nz;
+    if (side === 0) { x = a * 58; z = -40.9; nx = 0; nz = 1; } else if (side === 1) { x = a * 58; z = 40.9; nx = 0; nz = -1; }
+    else if (side === 2) { x = -58.9; z = a * 40; nx = 1; nz = 0; } else { x = 58.9; z = a * 40; nx = -1; nz = 0; }
+    if (!clear(x + nx * 1.2, z + nz * 1.2, 0.8) || !inZone(x + nx * 1.5, z + nz * 1.5)) continue;
+    addVines(x, 0.1, z, nx, nz, wd, hh, i * 11 + 3);
+  }
+}
+
 function applyRealism(m) {
   mapGroup.traverse(realizeMesh);
   fixCoplanar();
@@ -1221,11 +1318,8 @@ for (const sgn of [-1, 1]) {
   const deco = (mesh, x, y, z, ry = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.castShadow = true; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
   const post = (x, z) => { deco(new THREE.Mesh(new THREE.BoxGeometry(0.12, 4.2, 0.12), matPost), x, 2.1, z); deco(new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), matLamp), x, 4.3, z); };
   for (const [x, z] of [[-30, -16], [30, -16], [-30, 16], [30, 16], [-20, -26], [20, -26], [-8, 20], [8, 20], [-44, 0], [44, 0], [-44, -22], [44, -22], [-44, 22], [44, 22]]) post(x, z);
-  function tree(x, z, s = 1) {
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22 * s, 0.3 * s, 2.2 * s, 7), matPot), x, 1.1 * s, z);
-    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.5 * s, 0), matLeaf), x, 3.2 * s, z);
-    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.1 * s, 0), matLeaf2), x + 0.5 * s, 4.1 * s, z + 0.3 * s);
-  }
+  let treeN = 100;
+  function tree(x, z, s = 1) { addTree(x, 0, z, s * 1.05, treeN % 3 === 0 ? 'pine' : 'oak', ++treeN); }
   for (const [x, z] of [[-56, 28], [56, 28], [-56, -28], [56, -28], [-46, 38], [46, 38], [-22, 14], [22, 14], [-22, -12], [22, -12]]) tree(x, z);
 })();
 
@@ -1257,11 +1351,7 @@ for (const sgn of [-1, 1]) {
   // --- garden: mint light lines along both retaining walls + miniature trees in the planters ---
   box(46, 0.1, 0.1, MINT, 0, -2.7, -24.6); box(46, 0.1, 0.1, MINT, 0, -2.7, -37.4);
   const matPot = M(0x7a4a33, 0.9), matLeaf = M(0x3c7a44, 0.85), matLeaf2 = M(0x2f5f38, 0.85), matHedge = M(0x2f6b3a, 0.9);
-  const tree = (x, z, s, y0) => {
-    deco(new THREE.Mesh(new THREE.CylinderGeometry(0.2 * s, 0.28 * s, 2.0 * s, 7), matPot), x, y0 + 1.0 * s, z);
-    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.35 * s, 0), matLeaf), x, y0 + 2.9 * s, z);
-    deco(new THREE.Mesh(new THREE.IcosahedronGeometry(1.0 * s, 0), matLeaf2), x + 0.45 * s, y0 + 3.7 * s, z + 0.25 * s);
-  };
+  const tree = (x, z, s, y0) => addTree(x, y0, z, s * 1.05, 'oak', Math.round(x * 3 + z));
   for (const [x, z] of [[-11, -33.75], [11, -28.25], [-3, -28.25], [3, -34.75], [-16.25, -27.25], [16.25, -34.75]]) tree(x, z, 0.6, -1.8);
   // --- hedges on top of the new plaza planters, fountain water + jets ---
   for (const sgn of [-1, 1]) {
@@ -4348,6 +4438,7 @@ function loadMap(key) {
   REAL.cache.clear(); REAL.wet = m.weather === 'rain' ? 1 : 0;   m.build();
   m.buildNav();
   applySkyAndWeather(m);
+  scatterScenery(m, key);
   applyRealism(m);
   if (key === 'atrium') {   // shadow-only lids over both tunnel pits so the whole pit interior sits in even shade (no sun patches creeping down one wall only)
     const lidMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
