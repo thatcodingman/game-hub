@@ -363,8 +363,8 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffdfb0, 0.85);
 sun.position.set(20, 60, 10);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.05;
+{ const sz = Math.min(4096, renderer.capabilities.maxTextureSize || 2048); sun.shadow.mapSize.set(sz, sz); }   // shadows are baked once per map, so we can afford a big map
+sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.035; sun.shadow.radius = 2.2;
 Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 40, bottom: -40, far: 200 });
 scene.add(sun);
 // Cool rim/fill light from the opposite side — cheap 2-point lighting so shadow faces read as
@@ -815,6 +815,21 @@ function setGlassVisible(c, on) {
   const pa = c.gMesh.geometry.attributes.position, a = pa.array, s0 = c.gRange.start * 3;
   if (on) a.set(c.gOrig, s0); else a.fill(0, s0, s0 + c.gRange.count * 3);
   pa.needsUpdate = true;
+}
+// Fit the sun's shadow frustum tightly around the actual map so every shadow texel is as small as possible (no wasted map area).
+function fitShadowToMap() {
+  if (!colliders.length) return;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, y1 = 0;
+  for (const c of colliders) { if (c.x0 < x0) x0 = c.x0; if (c.x1 > x1) x1 = c.x1; if (c.z0 < z0) z0 = c.z0; if (c.z1 > z1) z1 = c.z1; if (c.y1 > y1 && c.y1 < 20) y1 = c.y1; }
+  sun.updateMatrixWorld(true); sun.target.updateMatrixWorld(true);
+  const cam = sun.shadow.camera; sun.shadow.updateMatrices(sun);
+  let l = Infinity, r = -Infinity, b = Infinity, t = -Infinity, n = Infinity, f = -Infinity; const v = new THREE.Vector3();
+  for (const x of [x0, x1]) for (const y of [-8, y1 + 1]) for (const z of [z0, z1]) {
+    v.set(x, y, z).applyMatrix4(cam.matrixWorldInverse);
+    l = Math.min(l, v.x); r = Math.max(r, v.x); b = Math.min(b, v.y); t = Math.max(t, v.y); n = Math.min(n, -v.z); f = Math.max(f, -v.z);
+  }
+  Object.assign(cam, { left: l - 1, right: r + 1, bottom: b - 1, top: t + 1, near: Math.max(0.5, n - 5), far: f + 5 });
+  cam.updateProjectionMatrix();
 }
 function applyRealism(m) {
   mapGroup.traverse(realizeMesh);
@@ -4177,6 +4192,7 @@ function loadMap(key) {
   m.buildNav();
   applySkyAndWeather(m);
   applyRealism(m);
+  fitShadowToMap();
   markShadowDirty();
   mapDirty = true;
 }
