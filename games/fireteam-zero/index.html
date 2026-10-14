@@ -613,16 +613,16 @@ function getRealTex(kind) {
     const tu = (u * 2) % 1 - 0.25, tv = (v * 2) % 1 - 0.25; if (Math.hypot((tu % 0.5), (tv % 0.5)) < 0.012 && Math.hypot(tu, tv) < 2) x -= 0.18;
     return x;
   }, 1.4, 4);
-  else if (kind === 'wall') r = makeGrayTex(512, (u, v, i, j) => {      // precast concrete wall panels: chamfered 2 m seams, tie holes, rain streaks, efflorescence, per-panel tone
-    const pu = Math.floor(u * 2), pv = Math.floor(v * 2);
-    let x = 0.9 + (hash2(pu + 11, pv + 5) - 0.5) * 0.12 + (fbm(u, v, 5, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
-    const streak = vnoise(u * 48, v * 3, 48, 3); x -= Math.max(0, streak - 0.55) * 0.55;          // vertical rain staining
-    x += (vnoise(u * 7, v * 40, 7, 40) - 0.5) * 0.05;
-    x -= Math.max(0, fbm(u + 3.1, v + 1.7, 2, 3) - 0.62) * 0.45;
-    const fu = (u * 2) % 1, fv = (v * 2) % 1, e = Math.min(fu, 1 - fu, fv, 1 - fv);
-    if (e < 0.008) x *= 0.35; else if (e < 0.022) x *= (e < 0.015 ? 1.12 : 0.8);                    // chamfer: dark groove + bright lip
-    const tu = fu - 0.5, tv = fv - 0.5; if (Math.hypot(Math.abs(tu) - 0.38, Math.abs(tv) - 0.38) < 0.016) x -= 0.2;   // tie holes
-    if (hash2(i >> 2, (j >> 2) + 77) > 0.996) x -= 0.18;
+  else if (kind === 'wall') r = makeGrayTex(512, (u, v, i, j) => {      // board-formed brutalist concrete: horizontal formwork boards, grain, tie holes, rain streaks, efflorescence
+    const bv = Math.floor(v * 20), fv = (v * 20) % 1;                                  // 20 boards per 4 m tile = 0.2 m boards
+    let x = 0.86 + (hash2(bv, 41) - 0.5) * 0.1 + (fbm(u, v, 5, 5) - 0.5) * 0.2 + (vnoise(u * 3, v * 120, 3, 120) - 0.5) * 0.09 + (hash2(i, j) - 0.5) * 0.04;
+    if (fv < 0.07) x *= 0.62 + fv * 4; else if (fv > 0.96) x *= 1.06;                // board joint: dark line + lit lip
+    x -= Math.max(0, vnoise(u * 40, v * 2.5, 40, 2.5) - 0.55) * 0.5;                   // rain staining
+    x -= Math.max(0, fbm(u + 3.1, v + 1.7, 2, 3) - 0.6) * 0.4;
+    if (v > 0.9 || v < 0.06) x += (vnoise(u * 9, v * 20, 9, 20) - 0.45) * 0.1;         // pale salt bloom near the tile edge
+    const tu = (u * 4) % 1 - 0.5, tv = ((v * 20) % 5) / 5 - 0.5;                       // tie holes: one per 1 m, every 5th board
+    if (Math.hypot(tu, tv * 0.35) < 0.035) x -= 0.32;
+    if (hash2(i >> 2, (j >> 2) + 77) > 0.996) x -= 0.16;
     return x;
   }, 4, 4);
   else if (kind === 'pave') r = makeGrayTex(512, (u, v, i, j) => {     // 1 m paving slabs: per-slab hue (sandstone / slate / terracotta / mossy), grout with moss, grime, chips, worn edges
@@ -667,7 +667,7 @@ function realMatFor(base) {
     const kind = base.metalness > 0.25 ? 'metal' : (hsl.h > 0.04 && hsl.h < 0.13 && hsl.s > 0.3 && hsl.l < 0.5 ? 'wood' : (base === matFloor ? 'pave' : base === matWall ? 'wall' : 'concrete'));
     const t = getRealTex(kind);
     out = base.clone();
-    out.map = t.tex; out.color.multiplyScalar(kind === 'wall' ? 1.6 : 1.22);
+    out.map = t.tex; out.color.multiplyScalar(kind === 'wall' ? 2.3 : 1.22);
     out.vertexColors = true;
     out.roughness = Math.min(1, base.roughness * (kind === 'metal' ? 0.9 : 1.05) * ((kind === 'pave' || kind === 'concrete') && REAL.wet ? 0.5 : 1));
     out.userData.tile = t.tile;
@@ -1065,7 +1065,7 @@ function scatterScenery(m, key) {
     if (side === 0) { x = a * 58; z = -40.9; nx = 0; nz = 1; } else if (side === 1) { x = a * 58; z = 40.9; nx = 0; nz = -1; }
     else if (side === 2) { x = -58.9; z = a * 40; nx = 1; nz = 0; } else { x = 58.9; z = a * 40; nx = -1; nz = 0; }
     if (!clear(x + nx * 1.2, z + nz * 1.2, 0.8) || !inZone(x + nx * 1.5, z + nz * 1.5)) continue;
-    addVines(x, 0.1, z, nx, nz, wd, hh, i * 11 + 3);
+    addVines(x + nx * 0.5, 0.1, z + nz * 0.5, nx, nz, wd, hh, i * 11 + 3);
   }
 }
 
@@ -1099,16 +1099,14 @@ function dressSpawnHalls(key) {
     const matBanner = new THREE.MeshStandardMaterial({ color: team, emissive: team, emissiveIntensity: 0.35, roughness: 0.9 });
     const add = (mat, w, h, d, x, y, z, ry = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(sgn * x, y, z); m.rotation.y = ry; m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); return m; };
     const X0 = 47.1, X1 = 58.9, Z = 13.9;
-    // wainscot + dado light + ribs on the back wall and both side walls
-    add(matDark, 0.14, 1.3, 27.6, X1 - 0.07, 0.65, 0); add(matGlow, 0.06, 0.07, 27.6, X1 - 0.17, 1.35, 0);
-    for (const zs of [-1, 1]) { add(matDark, X1 - X0, 1.3, 0.14, (X0 + X1) / 2, 0.65, zs * (Z - 0.07)); add(matGlow, X1 - X0, 0.07, 0.06, (X0 + X1) / 2, 1.35, zs * (Z - 0.17)); }
-    for (let z = -12; z <= 12; z += 3) add(matRib, 0.22, 11, 0.4, X1 - 0.11, 5.5, z);
-    for (const zs of [-1, 1]) for (let x = X0 + 1.5; x < X1 - 0.5; x += 3) add(matRib, 0.4, 11, 0.22, x, 5.5, zs * (Z - 0.11));
+    // dado glow line on the back and side walls
+    add(matGlow, 0.06, 0.07, 27.6, X1 - 0.65, 1.35, 0);
+    for (const zs of [-1, 1]) add(matGlow, X1 - X0, 0.07, 0.06, (X0 + X1) / 2, 1.35, zs * (Z - 0.7));
     // emblem sign on the back wall + tall banners on the side walls
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 3.375), new THREE.MeshBasicMaterial({ map: signTex([name, 'SPAWN HALL'], team) }));
-    sign.position.set(sgn * (X1 - 0.3), 7, 0); sign.rotation.y = sgn === -1 ? Math.PI / 2 : -Math.PI / 2; mapGroup.add(sign);
+    sign.position.set(sgn * (X1 - 0.68), 6.2, 0); sign.rotation.y = sgn === -1 ? Math.PI / 2 : -Math.PI / 2; mapGroup.add(sign);
     for (const zs of [-1, 1]) for (const x of [50.5, 55]) {
-      add(matBanner, 1.5, 5.2, 0.05, x, 6.6, zs * (Z - 0.3)); add(matSteel, 1.7, 0.12, 0.1, x, 9.3, zs * (Z - 0.3)); add(matGlow, 0.5, 2.2, 0.06, x, 6.6, zs * (Z - 0.34));
+      add(matBanner, 1.5, 5.2, 0.05, x, 6.6, zs * (Z - 0.72)); add(matSteel, 1.7, 0.12, 0.1, x, 9.3, zs * (Z - 0.72)); add(matGlow, 0.5, 2.2, 0.06, x, 6.6, zs * (Z - 0.76));
     }
     // door frame with hazard stripes + a lit header
     for (const zs of [-1, 1]) {
@@ -1119,10 +1117,6 @@ function dressSpawnHalls(key) {
     add(matSteel, 0.6, 0.7, 9.2, 46.55, 6.0, 0); add(matGlow, 0.12, 0.14, 8.4, 46.2, 5.55, 0);
     // overhead light trusses across the hall
     for (const x of [50, 54.5, 58]) { add(matSteel, 0.3, 0.3, 27.6, x, 9.8, 0); add(matGlow, 0.1, 0.1, 22, x, 9.58, 0); for (let z = -12; z <= 12; z += 4) add(matSteel, 0.12, 0.7, 0.12, x, 9.4, z); }
-    // lockers along both side walls
-    for (const zs of [-1, 1]) for (let x = X0 + 0.7; x < X1 - 0.6; x += 1.05) {
-      add(matLocker, 0.9, 2.0, 0.5, x, 1.0 + 0.0, zs * (Z - 0.45)); add(matGlow, 0.5, 0.05, 0.02, x, 1.75, zs * (Z - 0.72 + (zs > 0 ? 0 : 0)));
-    }
   }
 }
 
@@ -1192,23 +1186,36 @@ addSolid(-PX, -4.4, PZ - 1, PX, WALL_H, PZ, matWall);
 addSolid(-PX, -4.4, -PZ, -PX + 1, WALL_H, PZ, matWall);
 addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
 
-// Perimeter dressing (visual only, no colliders): plinth, cornice, pilasters and lit slit-windows so the boundary reads as architecture, not a flat slab.
-(function dressPerimeter() {
-  const matTrimW = M(0x6a7388, 0.8), matPil = M(0x3b4252, 0.9), matSlit = new THREE.MeshStandardMaterial({ color: 0x20252f, emissive: 0xffd9a0, emissiveIntensity: 1.0, roughness: 0.5 });
-  const add = (mat, w, h, d, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); };
-  const side = (axis, fixed, dir, a0, a1) => {                                   // a wall running along `axis`, inner face at `fixed`, room lies in direction `dir`
-    const L = a1 - a0, c = (a0 + a1) / 2;
-    const put = (mat, along, h, depth, a, y, off) => axis === 'x' ? add(mat, along, h, depth, a, y, fixed + dir * off) : add(mat, depth, h, along, fixed + dir * off, y, a);
-    put(matTrimW, L, 0.6, 0.35, c, 0.3, 0.175);                                  // plinth
-    put(matTrimW, L, 0.5, 0.5, c, WALL_H - 0.25, 0.25);                          // cornice
-    put(matTrimW, L, 0.18, 0.3, c, WALL_H - 0.7, 0.15);
-    for (let a = a0 + 5; a < a1 - 2; a += 10) {
-      put(matPil, 0.9, WALL_H - 0.8, 0.4, a, (WALL_H - 0.8) / 2 + 0.6, 0.2);      // pilaster
-      for (const k of [-1, 1]) put(matSlit, 0.18, 2.4, 0.06, a + k * 2.5, 8.6, 0.03);   // slit windows between pilasters, warm lit
+// BRUTALIST WALLS: heavy buttresses every 6 m (real colliders — they also break up wall-runs), raised bay panels, a cantilevered cap slab, a plinth and warm uplights.
+(function brutalWalls() {
+  const matBut = matWall, matPanel = M(0x7a8192, 0.95), matCap = M(0x353a46, 0.9), matUp = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc27a, emissiveIntensity: 1.5, roughness: 0.5 });
+  const vis = (mat, w, h, d, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); };
+  const skipZ = (z) => Math.abs(z) > 16.2 && Math.abs(z) < 27.8;                       // overwatch decks sit against the east/west walls
+  // wall runs along x at z=±41 (north/south) and along z at x=±59 (east/west); `d` = direction the room lies in
+  const run = (axis, fixed, d, a0, a1, skip) => {
+    for (let a = a0 + 3; a <= a1 - 3; a += 6) {
+      if (skip && skip(a)) continue;
+      if (axis === 'x') addSolid(a - 0.65, 0, fixed + (d > 0 ? 0 : -0.6), a + 0.65, 11, fixed + (d > 0 ? 0.6 : 0), matBut);
+      else addSolid(fixed + (d > 0 ? 0 : -0.6), 0, a - 0.65, fixed + (d > 0 ? 0.6 : 0), 11, a + 0.65, matBut);
     }
+    // bays: two rows of slightly raised panels between buttresses, a dark plinth, a cap slab and uplights
+    for (let a = a0 + 6; a <= a1 - 6; a += 6) {
+      if (skip && (skip(a) || skip(a - 3) || skip(a + 3))) continue;
+      for (const [y, h] of [[2.9, 3.2], [7.1, 3.2]]) {
+        if (axis === 'x') vis(matPanel, 4.3, h, 0.12, a, y, fixed + d * 0.06); else vis(matPanel, 0.12, h, 4.3, fixed + d * 0.06, y, a);
+      }
+      if (axis === 'x') vis(matUp, 3.4, 0.08, 0.1, a, 0.35, fixed + d * 0.35); else vis(matUp, 0.1, 0.08, 3.4, fixed + d * 0.35, 0.35, a);
+    }
+    if (axis === 'x') { vis(matCap, a1 - a0, 0.8, 1.0, (a0 + a1) / 2, 11.0, fixed + d * 0.5); vis(matCap, a1 - a0, 0.45, 0.35, (a0 + a1) / 2, 0.22, fixed + d * 0.17); }
+    else { vis(matCap, 1.0, 0.8, a1 - a0, fixed + d * 0.5, 11.0, (a0 + a1) / 2); vis(matCap, 0.35, 0.45, a1 - a0, fixed + d * 0.17, 0.22, (a0 + a1) / 2); }
   };
-  side('x', -PZ + 1, 1, -PX + 1, PX - 1); side('x', PZ - 1, -1, -PX + 1, PX - 1);
-  side('z', -PX + 1, 1, -PZ + 1, PZ - 1); side('z', PX - 1, -1, -PZ + 1, PZ - 1);
+  run('x', -PZ + 1, 1, -PX + 1, PX - 1); run('x', PZ - 1, -1, -PX + 1, PX - 1);
+  run('z', -PX + 1, 1, -PZ + 1, PZ - 1, skipZ); run('z', PX - 1, -1, -PZ + 1, PZ - 1, skipZ);
+  // spawn hall side walls + door wall (inside faces): the same language
+  for (const sgn of [-1, 1]) {
+    for (const x of [51, 57]) for (const zs of [-1, 1]) { const xa = sgn * x; addSolid(xa - 0.65, 0, zs > 0 ? 13.4 : -14, xa + 0.65, 11, zs > 0 ? 14 : -13.4, matBut); }
+    for (const z of [-12, -8, 8, 12]) { const x0 = sgn > 0 ? 47 : -47.6, x1 = sgn > 0 ? 47.6 : -47; addSolid(x0, 0, z - 0.6, x1, 11, z + 0.6, matBut); }
+  }
 })();
 
 // ---------- Spawn halls (one big ground slab runs under everything, so there are no door-gap voids) ----------
@@ -1827,6 +1834,7 @@ const tagLive = {};          // which per-map destructible pieces (e.g. Atrium's
 const match = { mode: START_MODE, started: false, over: false, score: { A: 0, B: 0 }, timeLeft: MATCH_TIME };
 let diffKey = 'normal';
 let mapKey = 'atrium';   // which MAPS[] entry is selected in the pre-match menu; loadMap() runs lazily when a match actually starts on a different one
+let jumpBuf = 0, hopStreak = 0, lastLandT = -9;   // tap-jump buffer (s), chained-hop counter, time of the last landing
 let gameTime = 0;                                      // seconds of un-paused match time (the bots' clock)
 
 // Per-map spawn data — placeholders here, actually set by loadMap() once the selected map's data runs.
@@ -2078,7 +2086,8 @@ function updateWallRun(dt) {
       const dir = along >= 0 ? 1 : -1;                               // keep whichever way you were already headed
       b.vel.x = tx * dir * WALL_RUN_SPEED;
       b.vel.z = tz * dir * WALL_RUN_SPEED;
-      if (isDown('jump')) {
+      if (jumpBuf > 0) {
+        jumpBuf = 0;
         // Only the first wall-jump since your last ground touch gets the real boost + air-boost
         // refresh. Any further one (re-grabbing a wall after already using it) just peels you off
         // the wall with a small outward hop — enough not to get stuck on it, not enough to chain
@@ -2994,6 +3003,7 @@ window.addEventListener('keydown', (e) => {
   if (!fresh) return;
   if (e.code === settings.binds.fire) triggerReady = true;
   if (e.code === settings.binds.slide) tryStartSlide();
+  if (e.code === settings.binds.jump) jumpBuf = 0.12;                  // jump is a TAP: holding Space no longer auto-bunny-hops across the map
   if (e.code === settings.binds.airBoost) airBoost();
 });
 window.addEventListener('keyup', (e) => {
@@ -3314,14 +3324,20 @@ function updatePlayer(dt) {
   // Slide-cancel: jumping out of a slide keeps the slide's speed and launches it into the
   // air-strafe system above, instead of snapping back down to walk speed.
   let slideJumpCancel = false;
-  if (player.isSliding && isDown('jump') && player.onGround) {
+  if (jumpBuf > 0) jumpBuf = Math.max(0, jumpBuf - dt);
+  if (player.isSliding && jumpBuf > 0 && player.onGround) {
     slideJumpCancel = true; player.isSliding = false; player.slideCooldown = SLIDE_COOLDOWN;
   }
   // Horizontal velocity: normal walking, a committed slide burst, or (mid-air) strafing
-  if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT) * (gameTime < adrenUntil ? 1.15 : 1), dt);
+  const hopMul = Math.max(0.6, 1 - 0.13 * hopStreak);   // every re-tapped hop right after landing is slower than the last
+  if (player.onGround && gameTime - lastLandT > 0.5) hopStreak = 0;
+  if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT) * (gameTime < adrenUntil ? 1.15 : 1) * hopMul, dt);
   updateMantle(player);
   updateWallRun(dt);                 // may override vel.x/z to hug a wall, or kick off it on Space
-  integrate(player, dt, isDown('jump') && !player.wallRunning);
+  const wasG = player.onGround, wantJ = jumpBuf > 0 && !player.wallRunning;
+  integrate(player, dt, wantJ);
+  if (wantJ && wasG && !player.onGround && player.vel.y > 0) { jumpBuf = 0; hopStreak = (gameTime - lastLandT < 0.35) ? hopStreak + 1 : 0; }
+  if (!wasG && player.onGround) lastLandT = gameTime;
   player.lean += ((isDown('leanLeft') ? -1 : isDown('leanRight') ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
   // Footsteps: tick off distance traveled while grounded (not sliding) rather than a flat timer, so
   // sprinting steps faster than a slow walk, with a brighter sound on stairs/scaffold than floor.
@@ -5017,7 +5033,7 @@ menuReady = true; renderMenu();
 
 // Test/debug hook (lets automated checks drive the real game loop)
 window.__fz = {
-  renderer, camera, scene, player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
+  renderer, camera, scene, tapJump() { jumpBuf = 0.12; }, player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
   fire: fireShot, stats, effects,
   map: { mode: () => mapMode, cycle: cycleMap, draw: drawMap, layout: () => ML, xy: (x, z) => [mx(x), mz(z)] },
   teleport(x, y, z, yaw = 0) { player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.yaw = yaw; player.pitch = 0; player.isSliding = false; player.onGround = false; },
