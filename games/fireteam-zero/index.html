@@ -700,8 +700,9 @@ function scatterDecals(m) {
 // graph, hidden, purely as raycast targets for bullets; glass and collapsible Mezzanine pieces stay live.
 function batchStatics() {
   const keep = new Set();
-  for (const c of colliders) if (c.glass || c.tag === 'mezzW' || c.tag === 'mezzE' || c.tag === 'beamW' || c.tag === 'beamE') keep.add(c.mesh);
-  const colMeshes = new Set(colliders.map(c => c.mesh));
+  for (const c of colliders) if (c.tag === 'mezzW' || c.tag === 'mezzE' || c.tag === 'beamW' || c.tag === 'beamE') keep.add(c.mesh);
+  const colMeshes = new Set(colliders.map(c => c.mesh)), glassCols = colliders.filter(c => c.glass);
+  for (const c of glassCols) keep.add(c.mesh);
   const groups = new Map(), list = [];
   mapGroup.traverse(o => {
     if (!o.isMesh || o === skyDome || keep.has(o) || o.renderOrder !== 0 || Array.isArray(o.material) || o.isInstancedMesh || o.isSkinnedMesh) return;
@@ -710,23 +711,35 @@ function batchStatics() {
     if (!o.geometry || !o.geometry.attributes.position) return;
     list.push(o);
   });
-  const CH = 48, ATTRS = ['position', 'normal', 'uv', 'color'], canon = new Map();
+  const CH = 64, ATTRS = ['position', 'normal', 'uv', 'color'], canon = new Map();
   // Plain opaque materials all collapse into a handful of shared ones: colour moves into vertex colours.
-  const bakeable = (mt) => !mt.transparent && mt.isMeshStandardMaterial && !(mt.emissive && mt.emissive.getHex() !== 0 && mt.emissiveIntensity > 0.01);
+  const isEmis = (mt) => mt.emissive && mt.emissive.getHex() !== 0 && mt.emissiveIntensity > 0.01;
+  const bakeable = (mt) => !mt.transparent && mt.isMeshStandardMaterial && !isEmis(mt);
+  const emisBake = (mt) => !mt.transparent && mt.isMeshStandardMaterial && !mt.map && isEmis(mt);
+  const _ec = new THREE.Color();
   for (const o of list) {
     o.updateWorldMatrix(true, false);
     const mt = o.material;
     let skey, gm;
     if (bakeable(mt)) {
       skey = 'B' + (mt.map ? mt.map.uuid : '') + '/' + mt.roughness.toFixed(1) + '/' + mt.metalness.toFixed(1) + '/' + mt.side + mt.flatShading + (mt.roughnessMap ? 'r' : '');
-      if (!canon.has(skey)) { const c = mt.clone(); c.color.set(0xffffff); c.vertexColors = true; c.roughness = Math.round(mt.roughness * 10) / 10; c.metalness = Math.round(mt.metalness * 10) / 10; canon.set(skey, c); }
+      if (!canon.has(skey)) {
+        let c;
+        if (mt.metalness < 0.3) c = new THREE.MeshLambertMaterial({ map: mt.map || null, vertexColors: true, side: mt.side, flatShading: mt.flatShading });   // diffuse-only: far cheaper than PBR on the GPU
+        else { c = mt.clone(); c.color.set(0xffffff); c.vertexColors = true; c.roughness = Math.round(mt.roughness * 10) / 10; c.metalness = Math.round(mt.metalness * 10) / 10; }
+        canon.set(skey, c);
+      }
+      gm = canon.get(skey);
+    } else if (emisBake(mt)) {
+      skey = 'E' + mt.side;
+      if (!canon.has(skey)) canon.set(skey, new THREE.MeshBasicMaterial({ vertexColors: true, side: mt.side }));   // glowing strips: unlit, colour in vertex colours
       gm = canon.get(skey);
     } else {
       skey = 'S' + mt.type + mt.color.getHex() + '/' + mt.roughness.toFixed(2) + '/' + mt.metalness.toFixed(2) + '/' + (mt.emissive ? mt.emissive.getHex() + '/' + mt.emissiveIntensity : '') + '/' + (mt.map ? mt.map.uuid : '') + '/' + mt.vertexColors + '/' + mt.opacity + mt.transparent + mt.side + mt.flatShading;
       gm = mt;
     }
     const w = o.matrixWorld.elements, key = skey + '|' + (o.castShadow ? 1 : 0) + (o.receiveShadow ? 1 : 0) + '|' + Math.floor(w[12] / CH) + ',' + Math.floor(w[14] / CH);
-    let g = groups.get(key); if (!g) groups.set(key, g = { mat: gm, baked: skey[0] === 'B', cast: o.castShadow, recv: o.receiveShadow, items: [] });
+    let g = groups.get(key); if (!g) groups.set(key, g = { mat: gm, baked: skey[0] === 'B' || skey[0] === 'E', emis: skey[0] === 'E', cast: o.castShadow, recv: o.receiveShadow, items: [] });
     g.items.push(o);
   }
   const hide = [];
@@ -740,7 +753,7 @@ function batchStatics() {
       if (!geo.attributes.normal) geo.computeVertexNormals();
       if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
       if (g.baked) {
-        const mc = o.material.color; let ca = geo.attributes.color;
+        const mc = g.emis ? _ec.copy(o.material.emissive).multiplyScalar(Math.min(o.material.emissiveIntensity, 2)) : o.material.color; let ca = geo.attributes.color;
         if (!ca) { ca = new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3); geo.setAttribute('color', ca); }
         for (let i = 0; i < n; i++) ca.setXYZ(i, ca.getX(i) * mc.r, ca.getY(i) * mc.g, ca.getZ(i) * mc.b);
       } else {
@@ -770,10 +783,44 @@ function batchStatics() {
     else if (o.parent) { o.parent.remove(o); if (o.geometry && !o.userData.sharedGeo) { /* geometry may be shared; leave to GC */ } }
   }
 }
+function batchGlass() {
+  const cols = colliders.filter(c => c.glass && c.mesh && c.mesh.geometry && c.mesh.geometry.attributes.position);
+  const groups = new Map(), CH = 64;
+  for (const c of cols) {
+    c.mesh.updateWorldMatrix(true, false);
+    const w = c.mesh.matrixWorld.elements, key = c.mesh.material.uuid + '|' + Math.floor(w[12] / CH) + ',' + Math.floor(w[14] / CH);
+    let g = groups.get(key); if (!g) groups.set(key, g = { mat: c.mesh.material, items: [] });
+    g.items.push(c);
+  }
+  for (const g of groups.values()) {
+    const parts = g.items.map(c => { const geo = c.mesh.geometry.index ? c.mesh.geometry.toNonIndexed() : c.mesh.geometry.clone(); geo.applyMatrix4(c.mesh.matrixWorld); return geo; });
+    const tot = parts.reduce((a, q) => a + q.attributes.position.count, 0), pos = new Float32Array(tot * 3), nor = new Float32Array(tot * 3);
+    let off = 0;
+    parts.forEach((q, i) => {
+      pos.set(q.attributes.position.array, off * 3); nor.set(q.attributes.normal.array, off * 3);
+      const c = g.items[i]; c.gRange = { start: off, count: q.attributes.position.count }; c.gOrig = q.attributes.position.array.slice();
+      off += q.attributes.position.count; q.dispose();
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.computeBoundingSphere();
+    const mm = new THREE.Mesh(geo, g.mat); mm.renderOrder = 1; mm.matrixAutoUpdate = false; mm.frustumCulled = true;
+    mm.userData.real = 1; mm.userData.batched = true;
+    mapGroup.add(mm);
+    for (const c of g.items) { c.gMesh = mm; c.mesh.visible = false; c.mesh.matrixAutoUpdate = false; c.mesh.updateMatrix(); }
+  }
+}
+function setGlassVisible(c, on) {
+  if (!c.gRange) return;
+  const pa = c.gMesh.geometry.attributes.position, a = pa.array, s0 = c.gRange.start * 3;
+  if (on) a.set(c.gOrig, s0); else a.fill(0, s0, s0 + c.gRange.count * 3);
+  pa.needsUpdate = true;
+}
 function applyRealism(m) {
   mapGroup.traverse(realizeMesh);
   scatterDecals(m);
   batchStatics();
+  batchGlass();
 }
 
 // ---------- Solid world ----------
@@ -1858,7 +1905,7 @@ function shatterGlass(c) {
   if (c.broken) return;
   c.broken = true;
   const i = colliders.indexOf(c); if (i >= 0) colliders.splice(i, 1);
-  grid.n = -1; mapGroup.remove(c.mesh); mapDirty = true;
+  grid.n = -1; mapGroup.remove(c.mesh); setGlassVisible(c, false); mapDirty = true;
   brokenGlass.push({ c, t: 28 });
   const cx = (c.x0 + c.x1) / 2, cy = (c.y0 + c.y1) / 2, cz = (c.z0 + c.z1) / 2, sx = c.x1 - c.x0, sy = c.y1 - c.y0, sz = c.z1 - c.z0;
   const n = Math.min(26, 8 + Math.floor((sx + sz) * 2));
@@ -1881,7 +1928,7 @@ function restoreGlass(all) {
       const inside = (p) => p.pos.x > g.c.x0 - 0.5 && p.pos.x < g.c.x1 + 0.5 && p.pos.z > g.c.z0 - 0.5 && p.pos.z < g.c.z1 + 0.5 && p.pos.y + 1.8 > g.c.y0 && p.pos.y < g.c.y1;
       if (inside(player) || bots.some(b => !b.dead && inside(b))) { g.t = 2; continue; }
     }
-    g.c.broken = false; colliders.push(g.c); mapGroup.add(g.c.mesh); grid.n = -1; mapDirty = true;
+    g.c.broken = false; colliders.push(g.c); mapGroup.add(g.c.mesh); setGlassVisible(g.c, true); grid.n = -1; mapDirty = true;
     brokenGlass.splice(i, 1);
   }
 }
@@ -3394,6 +3441,29 @@ function makeBotMesh(team) {
   scene.add(g);
   return { g, inner, legs, torso, head, aim, tm };
 }
+// Weld every static box under `root` (the bot's held gun + fixed arm bits) into ONE vertex-coloured mesh; anything in `skip` (mag, slide, pump, support arm...) stays separate so reloads still animate.
+function weldStatic(root, skip) {
+  root.updateWorldMatrix(true, true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), rel = new THREE.Matrix4(), nm = new THREE.Matrix3();
+  const pos = [], nor = [], col = [], dead = [], v = new THREE.Vector3(), n = new THREE.Vector3();
+  root.traverse(o => {
+    if (!o.isMesh || o === root || skip.has(o) || !o.geometry || o.geometry.type !== 'BoxGeometry' || Array.isArray(o.material) || o.userData.noWeld) return;
+    const mt = o.material; if (mt.emissive && mt.emissive.getHex() !== 0 && mt.emissiveIntensity > 0.05) return;
+    rel.multiplyMatrices(inv, o.matrixWorld); nm.getNormalMatrix(rel);
+    const g = o.geometry, P = g.attributes.position, N = g.attributes.normal, I = g.index.array, c = mt.color;
+    for (let k = 0; k < I.length; k++) {
+      const i = I[k]; v.fromBufferAttribute(P, i).applyMatrix4(rel); n.fromBufferAttribute(N, i).applyMatrix3(nm).normalize();
+      pos.push(v.x, v.y, v.z); nor.push(n.x, n.y, n.z); col.push(c.r, c.g, c.b);
+    }
+    dead.push(o);
+  });
+  if (dead.length < 2) return;
+  for (const o of dead) o.parent.remove(o);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeBoundingSphere();
+  const m = new THREE.Mesh(geo, matBotBody); m.castShadow = false; root.add(m);
+}
 function setBotWeapon(b, key) {
   b.wk = key; b.w = WEAPONS[key];
   const aim = b.parts.aim;
@@ -3410,6 +3480,7 @@ function setBotWeapon(b, key) {
   b.rig = { bot: true, lhand: lhM, upper, fore, shoulder: V(-0.31, 0.04, 0), E: V(-0.2, -0.18, -0.24), rest: lh.clone() };
   b.gunInfo = gm; b.rlActive = false;
   applyReloadPose(gm, b.rig, reloadPose(gm, 0), 0.8);
+  weldStatic(aim, new Set([gm.magMesh, gm.chargeMesh, gm.slideMesh, gm.pumpMesh, gm.shellMesh, lhM, upper, fore, ...(gm.opticMeshes || [])]));
   aim.traverse(o => { o.castShadow = false; });   // held gun/arms don't cast shadows (saves a draw call each)
 }
 function pickBotWeapon() {
