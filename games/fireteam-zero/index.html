@@ -343,12 +343,9 @@ camera.rotation.order = 'YXZ';
 scene.add(camera);                                   // in the scene so the gun (a camera child) renders
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.75;
 renderer.autoClear = false;
 document.body.appendChild(renderer.domElement);
 window.addEventListener('resize', () => {
@@ -363,6 +360,7 @@ const sun = new THREE.DirectionalLight(0xffdfb0, 0.85);
 sun.position.set(20, 60, 10);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.05;
 Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 40, bottom: -40, far: 200 });
 scene.add(sun);
 // Cool rim/fill light from the opposite side — cheap 2-point lighting so shadow faces read as
@@ -605,10 +603,9 @@ function realMatFor(base) {
     const kind = base.metalness > 0.25 ? 'metal' : (hsl.h > 0.04 && hsl.h < 0.13 && hsl.s > 0.3 && hsl.l < 0.5 ? 'wood' : (base === matFloor ? 'pave' : 'concrete'));
     const t = getRealTex(kind);
     out = base.clone();
-    out.map = t.tex; out.bumpMap = t.tex; out.bumpScale = t.bump; out.roughnessMap = t.tex;
+    out.map = t.tex; out.color.multiplyScalar(1.22);
     out.vertexColors = true;
     out.roughness = Math.min(1, base.roughness * (kind === 'metal' ? 0.9 : 1.05) * ((kind === 'pave' || kind === 'concrete') && REAL.wet ? 0.5 : 1));
-    if (REAL.env) { out.envMap = REAL.env; out.envMapIntensity = kind === 'metal' ? 0.9 : 0.35 + REAL.wet * 0.5; }
     out.userData.tile = t.tile;
   }
   REAL.cache.set(base, out);
@@ -673,13 +670,13 @@ function scatterDecals(m) {
   const g = new THREE.Group(); g.name = 'decals';
   const geo = new THREE.PlaneGeometry(1, 1), mats = {};
   const dm = (k) => mats[k] || (mats[k] = k === 'puddle'
-    ? new THREE.MeshStandardMaterial({ color: 0x0a1018, roughness: 0.04, metalness: 0.7, transparent: true, opacity: 0.9, alphaMap: decalTex('stain'), envMap: REAL.env, envMapIntensity: 1.4, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+    ? new THREE.MeshStandardMaterial({ color: 0x0a1018, roughness: 0.3, metalness: 0.2, transparent: true, opacity: 0.55, alphaMap: decalTex('stain'), depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     : new THREE.MeshStandardMaterial({ map: decalTex(k), transparent: true, roughness: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
   const tops = colliders.filter(c => Math.min(c.x1 - c.x0, c.z1 - c.z0) >= 3 && c.y1 - c.y0 >= 0.15 && c.tag !== 'rail' && c.tag !== 'wall' && c.y1 < 14);
   if (!tops.length) return;
   const area = tops.map(c => (c.x1 - c.x0) * (c.z1 - c.z0)), tot = area.reduce((a, b) => a + b, 0);
   const wet = m.weather === 'rain', kinds = wet ? ['stain', 'crack', 'scuff', 'puddle', 'puddle', 'puddle'] : ['stain', 'crack', 'scuff', 'oil', 'stain', 'crack'];
-  const N = 170; let placed = 0, tries = 0;
+  const N = 45; let placed = 0, tries = 0;
   while (placed < N && tries++ < N * 8) {
     let r = Math.random() * tot, ci = 0; while (ci < tops.length - 1 && (r -= area[ci]) > 0) ci++;
     const c = tops[ci], k = kinds[Math.floor(Math.random() * kinds.length)], sz = k === 'puddle' ? 1.6 + Math.random() * 3.2 : (k === 'scuff' ? 3 + Math.random() * 3 : 1.6 + Math.random() * 3.4);
@@ -3998,8 +3995,7 @@ function loadMap(key) {
   Y_TOP = m.bounds.yTop; Y_BOT = m.bounds.yBot;
   FLANKS = m.flanks.slice();
   currentMap = m; currentMapKey = key;
-  REAL.cache.clear(); REAL.wet = m.weather === 'rain' ? 1 : 0; buildEnvFor(m);
-  m.build();
+  REAL.cache.clear(); REAL.wet = m.weather === 'rain' ? 1 : 0;   m.build();
   m.buildNav();
   applySkyAndWeather(m);
   applyRealism(m);
@@ -4532,10 +4528,11 @@ function animate() {
   // but only updateMatch was ever gated on `running`. The player's own physics (gravity, slide timer,
   // fall death) and viewmodel (ADS, reload countdown) kept ticking underneath the menu, so you could
   // resume mid-air, mid-slide, or with a reload that silently finished while the menu was up.
-  if (running && !window.__fzPause) updatePlayer(dt);
+  const nSub = Math.max(1, Math.ceil(dt / 0.0167)), sdt = dt / nSub;   // fixed small steps so a dropped frame can't tunnel / lurch
+  if (running && !window.__fzPause) for (let k = 0; k < nSub; k++) updatePlayer(sdt);
   fireCooldown = Math.max(0, fireCooldown - dt);
   if (running && (mouseHeld || isDown('fire'))) tryFire();           // auto-fire while the button is held
-  if (running && !window.__fzPause && match.started && match.mode === 'tdm' && !match.over) updateMatch(dt);
+  if (running && !window.__fzPause && match.started && match.mode === 'tdm' && !match.over) for (let k = 0; k < nSub; k++) updateMatch(sdt);
   for (const b of bots) syncBotMesh(b, dt);
   updateCamera();
   if (running) updateEffects(dt);
