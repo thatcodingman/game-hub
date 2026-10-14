@@ -611,6 +611,18 @@ function getRealTex(kind) {
     const tu = (u * 2) % 1 - 0.25, tv = (v * 2) % 1 - 0.25; if (Math.hypot((tu % 0.5), (tv % 0.5)) < 0.012 && Math.hypot(tu, tv) < 2) x -= 0.18;
     return x;
   }, 1.4, 4);
+  else if (kind === 'wall') r = makeGrayTex(512, (u, v, i, j) => {      // precast concrete wall panels: chamfered 2 m seams, tie holes, rain streaks, efflorescence, per-panel tone
+    const pu = Math.floor(u * 2), pv = Math.floor(v * 2);
+    let x = 0.9 + (hash2(pu + 11, pv + 5) - 0.5) * 0.12 + (fbm(u, v, 5, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
+    const streak = vnoise(u * 48, v * 3, 48, 3); x -= Math.max(0, streak - 0.55) * 0.55;          // vertical rain staining
+    x += (vnoise(u * 7, v * 40, 7, 40) - 0.5) * 0.05;
+    x -= Math.max(0, fbm(u + 3.1, v + 1.7, 2, 3) - 0.62) * 0.45;
+    const fu = (u * 2) % 1, fv = (v * 2) % 1, e = Math.min(fu, 1 - fu, fv, 1 - fv);
+    if (e < 0.008) x *= 0.35; else if (e < 0.022) x *= (e < 0.015 ? 1.12 : 0.8);                    // chamfer: dark groove + bright lip
+    const tu = fu - 0.5, tv = fv - 0.5; if (Math.hypot(Math.abs(tu) - 0.38, Math.abs(tv) - 0.38) < 0.016) x -= 0.2;   // tie holes
+    if (hash2(i >> 2, (j >> 2) + 77) > 0.996) x -= 0.18;
+    return x;
+  }, 4, 4);
   else if (kind === 'pave') r = makeGrayTex(512, (u, v, i, j) => {     // 1 m paving slabs with grout, per-slab tone, grime, chips
     const cu = Math.floor(u * 4), cv = Math.floor(v * 4);
     let x = 0.9 + (hash2(cu, cv) - 0.5) * 0.14 + (fbm(u, v, 6, 5) - 0.5) * 0.22 + (hash2(i, j) - 0.5) * 0.05;
@@ -643,10 +655,10 @@ function realMatFor(base) {
   let out = base;
   if (base.isMeshStandardMaterial && !base.transparent && !base.map && !(base.emissiveIntensity > 0.05 && base.emissive.getHex() !== 0)) {
     const hsl = {}; base.color.getHSL(hsl);
-    const kind = base.metalness > 0.25 ? 'metal' : (hsl.h > 0.04 && hsl.h < 0.13 && hsl.s > 0.3 && hsl.l < 0.5 ? 'wood' : (base === matFloor ? 'pave' : 'concrete'));
+    const kind = base.metalness > 0.25 ? 'metal' : (hsl.h > 0.04 && hsl.h < 0.13 && hsl.s > 0.3 && hsl.l < 0.5 ? 'wood' : (base === matFloor ? 'pave' : base === matWall ? 'wall' : 'concrete'));
     const t = getRealTex(kind);
     out = base.clone();
-    out.map = t.tex; out.color.multiplyScalar(1.22);
+    out.map = t.tex; out.color.multiplyScalar(kind === 'wall' ? 1.6 : 1.22);
     out.vertexColors = true;
     out.roughness = Math.min(1, base.roughness * (kind === 'metal' ? 0.9 : 1.05) * ((kind === 'pave' || kind === 'concrete') && REAL.wet ? 0.5 : 1));
     out.userData.tile = t.tile;
@@ -994,6 +1006,25 @@ addSolid(-PX, -4.4, -PZ, PX, WALL_H, -PZ + 1, matWall);
 addSolid(-PX, -4.4, PZ - 1, PX, WALL_H, PZ, matWall);
 addSolid(-PX, -4.4, -PZ, -PX + 1, WALL_H, PZ, matWall);
 addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
+
+// Perimeter dressing (visual only, no colliders): plinth, cornice, pilasters and lit slit-windows so the boundary reads as architecture, not a flat slab.
+(function dressPerimeter() {
+  const matTrimW = M(0x6a7388, 0.8), matPil = M(0x3b4252, 0.9), matSlit = new THREE.MeshStandardMaterial({ color: 0x20252f, emissive: 0xffd9a0, emissiveIntensity: 1.0, roughness: 0.5 });
+  const add = (mat, w, h, d, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); };
+  const side = (axis, fixed, dir, a0, a1) => {                                   // a wall running along `axis`, inner face at `fixed`, room lies in direction `dir`
+    const L = a1 - a0, c = (a0 + a1) / 2;
+    const put = (mat, along, h, depth, a, y, off) => axis === 'x' ? add(mat, along, h, depth, a, y, fixed + dir * off) : add(mat, depth, h, along, fixed + dir * off, y, a);
+    put(matTrimW, L, 0.6, 0.35, c, 0.3, 0.175);                                  // plinth
+    put(matTrimW, L, 0.5, 0.5, c, WALL_H - 0.25, 0.25);                          // cornice
+    put(matTrimW, L, 0.18, 0.3, c, WALL_H - 0.7, 0.15);
+    for (let a = a0 + 5; a < a1 - 2; a += 10) {
+      put(matPil, 0.9, WALL_H - 0.8, 0.4, a, (WALL_H - 0.8) / 2 + 0.6, 0.2);      // pilaster
+      for (const k of [-1, 1]) put(matSlit, 0.18, 2.4, 0.06, a + k * 2.5, 8.6, 0.03);   // slit windows between pilasters, warm lit
+    }
+  };
+  side('x', -PZ + 1, 1, -PX + 1, PX - 1); side('x', PZ - 1, -1, -PX + 1, PX - 1);
+  side('z', -PX + 1, 1, -PZ + 1, PZ - 1); side('z', PX - 1, -1, -PZ + 1, PZ - 1);
+})();
 
 // ---------- Spawn halls (one big ground slab runs under everything, so there are no door-gap voids) ----------
 for (const sgn of [-1, 1]) {
