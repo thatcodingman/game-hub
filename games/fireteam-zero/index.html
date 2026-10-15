@@ -1189,7 +1189,8 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
 // BRUTALIST WALLS: heavy buttresses every 6 m (real colliders — they also break up wall-runs), raised bay panels, a cantilevered cap slab, a plinth and warm uplights.
 (function brutalWalls() {
   const matBut = M(0x8e8b85, 0.95), matFace = M(0xa8a296, 0.9), matRib = M(0xc4beb2, 0.9), matDark = M(0x1b1f27, 0.7), matCap = M(0x6d6b69, 0.9), matSteel = M(0x4a505b, 0.45, 0.6);
-  const glow = [0x5fe0ff, 0xffb35a, 0xff7ab8].map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 1.9, roughness: 0.5 }));
+  const glow = [0xffd3a0, 0xffd3a0, 0xffd3a0].map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9, roughness: 0.5 }));   // one soft warm tone, not a rainbow
+  const pools = [];
   const matUp = glow[1];
   const vis = (mat, w, h, d, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); };
   const skipZ = (z) => Math.abs(z) > 16.2 && Math.abs(z) < 27.8;
@@ -1208,7 +1209,7 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
       bx(matFace, 4.5, 9.9, 0.16, 0, 5.65, 0.08);                           // pale raised facade slab
       for (const u of [-1.5, -0.5, 0.5, 1.5]) {                              // tall dark window slots, each with a glowing core
         bx(matDark, 0.55, 5.6, 0.06, u, 6.9, 0.19);
-        bx(acc, 0.14, 5.0, 0.05, u, 6.9, 0.23);
+        if (Math.abs(u) < 1) bx(acc, 0.12, 4.6, 0.05, u, 6.9, 0.23);
       }
       for (const y of [9.9, 4.0]) bx(matRib, 4.5, 0.24, 0.3, 0, y, 0.15);   // projecting horizontal ribs
       bx(matRib, 4.5, 0.2, 0.26, 0, 1.0, 0.13);
@@ -1216,7 +1217,7 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
       if (bayNo % 2 === 0) {                                                 // service door
         bx(matDark, 1.3, 2.3, 0.14, 0, 1.2, 0.27); bx(matRib, 1.55, 0.14, 0.2, 0, 2.43, 0.3);
         bx(matRib, 0.14, 2.3, 0.2, -0.72, 1.2, 0.3); bx(matRib, 0.14, 2.3, 0.2, 0.72, 1.2, 0.3);
-        bx(acc, 0.9, 0.1, 0.06, 0, 2.62, 0.3);
+        bx(matCap, 0.9, 0.1, 0.06, 0, 2.62, 0.3);
       } else {                                                               // louvre vent
         for (let k = 0; k < 6; k++) bx(matDark, 2.2, 0.11, 0.1, 0, 1.25 + k * 0.28, 0.27);
         bx(matRib, 2.4, 0.1, 0.18, 0, 1.05, 0.3); bx(matRib, 2.4, 0.1, 0.18, 0, 2.8, 0.3);
@@ -1232,6 +1233,7 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
       if (skip && skip(a)) continue;
       const bx2 = (mat, w, h, dp, y, o) => { if (axis === 'x') vis(mat, w, h, dp, a, y, fixed + d * o); else vis(mat, dp, h, w, fixed + d * o, y, a); };
       bx2(matSteel, 0.5, 0.18, 0.3, 4.6, 0.72); bx2(glow[1], 0.34, 0.5, 0.12, 4.6, 0.82);
+      pools.push(axis === 'x' ? [a, fixed + d * 2.6] : [fixed + d * 2.6, a]);
       bx2(matRib, 1.6, 0.18, 0.2, 10.55, 0.65); bx2(matRib, 1.6, 0.18, 0.2, 0.3, 0.65);   // pier cap + base mouldings
     }
     if (axis === 'x') { vis(matCap, a1 - a0, 0.8, 1.0, (a0 + a1) / 2, 11.0, fixed + d * 0.5); vis(matCap, a1 - a0, 0.45, 0.35, (a0 + a1) / 2, 0.22, fixed + d * 0.17); }
@@ -1239,6 +1241,27 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
   };
   run('x', -PZ + 1, 1, -PX + 1, PX - 1); run('x', PZ - 1, -1, -PX + 1, PX - 1);
   run('z', -PX + 1, 1, -PZ + 1, PZ - 1, skipZ); run('z', PX - 1, -1, -PZ + 1, PZ - 1, skipZ);
+  // spawn hall side walls: one team-tinted bay between the piers (x 51..57), same language as the perimeter but quieter
+  for (const sgn of [-1, 1]) for (const [fz, dz] of [[-14, 1], [14, -1]]) {
+    const tint = sgn === -1 ? 0x2c3d66 : 0x66302c, glowT = sgn === -1 ? 0x6f9bff : 0xff7b6b;
+    const mT = M(tint, 0.9), mG = new THREE.MeshStandardMaterial({ color: glowT, emissive: glowT, emissiveIntensity: 0.8, roughness: 0.5 });
+    const hb = (mat, w, h, dp, u, y, o) => vis(mat, w, h, dp, sgn * (54 + u), y, fz + dz * o);
+    hb(mT, 4.5, 9.9, 0.16, 0, 5.65, 0.08);
+    for (const u of [-1.5, -0.5, 0.5, 1.5]) { hb(matDark, 0.55, 5.6, 0.06, u, 6.9, 0.19); if (Math.abs(u) < 1) hb(mG, 0.12, 4.6, 0.05, u, 6.9, 0.23); }
+    for (const y of [9.9, 4.0]) hb(matRib, 4.5, 0.24, 0.3, 0, y, 0.15);
+    hb(matRib, 4.5, 0.2, 0.26, 0, 1.0, 0.13); hb(matSteel, 4.1, 2.0, 0.08, 0, 2.0, 0.2);
+    for (let k = 0; k < 6; k++) hb(matDark, 2.2, 0.11, 0.1, 0, 1.25 + k * 0.28, 0.27);
+    for (const u of [-2.05, 2.05]) hb(matSteel, 0.13, 8.9, 0.13, u, 5.75, 0.3);
+  }
+  // soft warm light pools on the floor under every pier lamp: ONE merged, unlit, additive mesh (no per-pixel lights)
+  { const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,205,140,0.55)'); gr.addColorStop(0.5, 'rgba(255,190,120,0.18)'); gr.addColorStop(1, 'rgba(255,190,120,0)'); g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c), P = [], U = [], R = 3.4;
+    for (const [px, pz] of pools) { const b = P.length / 3; P.push(px - R, 0.07, pz - R, px + R, 0.07, pz - R, px + R, 0.07, pz + R, px - R, 0.07, pz + R); U.push(0, 0, 1, 0, 1, 1, 0, 1); }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+    const idx = []; for (let i = 0; i < pools.length; i++) { const b = i * 4; idx.push(b, b + 2, b + 1, b, b + 3, b + 2); } geo.setIndex(idx);
+    const pm = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    pm.renderOrder = 1; pm.frustumCulled = false; mapGroup.add(pm); }
   // spawn hall side walls + door wall (inside faces): the same language
   for (const sgn of [-1, 1]) {
     for (const x of [51, 57]) for (const zs of [-1, 1]) { const xa = sgn * x; addSolid(xa - 0.65, 0, zs > 0 ? 13.4 : -14, xa + 0.65, 11, zs > 0 ? 14 : -13.4, matBut); }
@@ -4403,7 +4426,7 @@ MAPS.atrium = {
   sky: {
     dome: [0x5e8fd4, 0xffc988, 0x241f2c],
     fogColor: 0x2a2632, fogNear: 90, fogFar: 260,
-    hemi: [0xaec6ff, 0x4a4030, 1.45],
+    hemi: [0xb8c8f0, 0x6a5a44, 1.85],
     sun: [0xffdfb0, 0.85],
     fill: [0x7fa8d9, 0.3],
   },
