@@ -11,12 +11,16 @@
   }
   html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
   canvas { display: block; }
+  /* Hip-fire crosshair: four ticks + centre dot with a dark outline so it stays readable on any background, while running, sliding or shooting. It NEVER changes size or colour when you fire; hits show on the separate #hitmark. */
   #crosshair {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.9);
-    pointer-events: none; z-index: 13; box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    width: 26px; height: 26px; border-radius: 0; z-index: 13; pointer-events: none;
+    background:
+      linear-gradient(#fff, #fff) 0 50% / 7px 2px no-repeat, linear-gradient(#fff, #fff) 100% 50% / 7px 2px no-repeat,
+      linear-gradient(#fff, #fff) 50% 0 / 2px 7px no-repeat, linear-gradient(#fff, #fff) 50% 100% / 2px 7px no-repeat,
+      radial-gradient(circle, #fff 0 1.6px, transparent 1.9px);
+    filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) drop-shadow(0 0 2px rgba(0,0,0,0.7));
   }
-  #crosshair.hit { width: 14px; height: 14px; background: #ff4d4d; }
   #hud {
     position: fixed; bottom: 16px; left: 16px; color: #c3c7d6; font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 11px; background: var(--panel-bg); padding: 6px 10px 7px;
@@ -185,11 +189,11 @@
   @keyframes bindpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   #board { margin-top: 10px; }
   #blocker { overflow-y: auto; justify-content: safe center; }
-  #crosshair.ads { width: 5px; height: 5px; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; }
+  #crosshair.ads { width: 5px; height: 5px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; filter: none; }
   /* Holo sight: a wider ring+dot reticle instead of the red-dot's single point — easier to pick up
      moving targets up close, the trade a holo makes against a plain red dot's cleaner sight picture. */
   #crosshair.holo {
-    width: 16px; height: 16px; background: transparent; border-radius: 50%;
+    width: 16px; height: 16px; background: transparent; border-radius: 50%; filter: none;
     border: 1.5px solid #5be0ff; box-shadow: 0 0 5px rgba(91,224,255,0.9), inset 0 0 4px rgba(91,224,255,0.5);
   }
   #crosshair.holo::after {
@@ -2843,7 +2847,7 @@ function updateEffects(dt) {
   for (const g of brokenGlass) g.t -= dt;
   if (brokenGlass.length && brokenGlass.some(g => g.t <= 0)) restoreGlassDue();
   updateViewmodel(dt);
-  if (hitT > 0) { hitT -= dt; if (hitT <= 0) crosshairEl.classList.remove('hit'); }
+  if (hitT > 0) hitT -= dt;
 }
 const flashLight = new THREE.PointLight(0xffd9a0, 0, 14); flashLight.position.set(0.2, -0.05, -0.9); camera.add(flashLight);
 
@@ -2975,7 +2979,7 @@ function fireShot() {
     const hit = raycaster.intersectObjects(meshes, false)[0];
     const wallT = hit ? hit.distance : SHOT_RANGE;
     const ah = match.mode === 'tdm' && match.started ? actorHit(player, camera.position, _dir, wallT) : null;
-    if (hit && !ah) { const hc = colliders.find(c => c.mesh === hit.object); if (hc && hc.glass) { shatterGlass(hc); crosshairEl.classList.add('hit'); hitT = 0.08; } }
+    if (hit && !ah) { const hc = colliders.find(c => c.mesh === hit.object); if (hc && hc.glass) { shatterGlass(hc); hitT = 0.08; } }
     const end = camera.position.clone().addScaledVector(_dir, ah ? ah.t : wallT);
     addTracer(_v, end);
     if (ah) addSpark(end, 0xff3b3b); else if (hit) addSpark(hit.point);
@@ -3001,7 +3005,7 @@ function fireShot() {
   }
   if (beamHit) {
     stats.beamsHit++; collapse(beamHit.tag.slice(4));
-    crosshairEl.classList.add('hit'); hitT = 0.15;
+    hitT = 0.15;
   }
   if (ammo === 0) startReload();
 }
