@@ -977,7 +977,8 @@ function treeMats() {
   TREEM.soil = f(0x3a2a20); TREEM.planter = f(0x8a8f99); TREEM.hedge = f(0x2f6b3a);
   return TREEM;
 }
-const ALIVE = { sway: [], parts: [], time: { value: 0 }, dust: null, birds: null, t: 0 };
+const ALIVE = { sway: [], parts: [], time: { value: 0 }, dust: null, birds: null, t: 0, fans: null, steam: null, spray: null, ship: null };
+const AG = { parts: [], fans: [] };   // animated-glow parts (pulse / flicker / blink) and fan positions, collected while the atrium builds
 let _canopyMat = null;
 const canopyMat = () => {            // one shared Lambert material whose vertex shader sways leaves/grass: sway = f(time, per-vertex phase/speed/amp, height above ground)
   if (_canopyMat) return _canopyMat;
@@ -989,6 +990,28 @@ const canopyMat = () => {            // one shared Lambert material whose vertex
   };
   return _canopyMat;
 };
+let _animMat = null, _flagMat = null;
+const animMat = () => {              // ONE unlit material for every animated light: vertex colour x a per-vertex time function (mode 0 = slow pulse, 1 = flicker, 2 = blink)
+  if (_animMat) return _animMat;
+  _animMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: true });
+  _animMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = ALIVE.time;
+    sh.vertexShader = 'uniform float uTime;\nattribute vec4 aSway;\nvarying float vK;\n' + sh.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nfloat ph = aSway.x, sp = aSway.y; float md = aSway.z;\nfloat kp = 0.55 + 0.45 * sin(uTime * sp + ph);\nfloat fl = sin(uTime * sp * 3.1 + ph) * sin(uTime * sp * 7.3 + ph * 1.9);\nfloat kf = fl > 0.62 ? 0.25 : 1.0;\nfloat kb = sin(uTime * sp + ph) > 0.0 ? 1.0 : 0.12;\nvK = md < 0.5 ? kp : (md < 1.5 ? kf : kb);');
+    sh.fragmentShader = 'varying float vK;\n' + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= vK;');
+  };
+  return _animMat;
+};
+const flagMat = () => {              // cloth: displaced along its own normal by a travelling wave that grows with distance from the pole (aSway.z = distance from pole)
+  if (_flagMat) return _flagMat;
+  _flagMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  _flagMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = ALIVE.time;
+    sh.vertexShader = 'uniform float uTime;\nattribute vec4 aSway;\n' + sh.vertexShader.replace('#include <begin_vertex>',
+      'vec3 transformed = vec3(position);\nfloat fw = sin(uTime * aSway.y + aSway.x + aSway.z * 3.2) + 0.4 * sin(uTime * aSway.y * 2.1 + aSway.z * 5.0);\ntransformed += normal * fw * aSway.w * aSway.z;\ntransformed.y += sin(uTime * aSway.y * 1.3 + aSway.z * 2.0) * aSway.w * 0.25 * aSway.z;');
+  };
+  return _flagMat;
+};
 function mergeParts(parts) {                     // [{geo, c, x, y, z, ox, oy, oz, rot, ph, sp, amp}] (local pos + world origin/yaw) -> one world-space vertex-coloured BufferGeometry with sway attributes
   const P = [], N = [], C = [], W = [];
   for (const p of parts) {
@@ -997,7 +1020,7 @@ function mergeParts(parts) {                     // [{geo, c, x, y, z, ox, oy, o
       const lx = pa.getX(i) + p.x, ly = pa.getY(i) + p.y, lz = pa.getZ(i) + p.z;
       P.push((p.ox || 0) + lx * cr + lz * sr, (p.oy || 0) + ly, (p.oz || 0) - lx * sr + lz * cr);
       const nx = na.getX(i), nz = na.getZ(i); N.push(nx * cr + nz * sr, na.getY(i), -nx * sr + nz * cr);
-      C.push(p.c.r, p.c.g, p.c.b); W.push(p.ph || 0, p.sp || 1, Math.max(0, ly), p.amp || 0);
+      C.push(p.c.r, p.c.g, p.c.b); W.push(p.ph || 0, p.sp || 1, p.mode !== undefined ? p.mode : (p.uX ? pa.getX(i) : Math.max(0, ly)), p.amp || 0);
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -1062,8 +1085,8 @@ function addVines(x, y, z, nx, nz, w, h, seed) {          // a leafy patch press
   mapGroup.add(g); return g;
 }
 function scatterScenery(m, key) {
-  ALIVE.parts = []; ALIVE.dust = null; ALIVE.birds = null;
-  if (key !== 'atrium') return;
+  ALIVE.parts = []; ALIVE.dust = null; ALIVE.birds = null; ALIVE.fans = ALIVE.steam = ALIVE.spray = ALIVE.ship = null;
+  if (key !== 'atrium') { AG.parts = []; AG.fans = []; return; }
   let sd = 12345; const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
   const cols = colliders.filter(c => c.y0 < 3 && c.y1 > 0.2 && !c.glass);
   const ground = NAV.filter(n => Math.abs(n.y) < 1.5 || n.hold === false && false);
@@ -1121,6 +1144,53 @@ function scatterScenery(m, key) {
     for (const p of tp) ALIVE.parts.push(p);
   }
   if (ALIVE.parts.length) { const cm = new THREE.Mesh(mergeParts(ALIVE.parts), canopyMat()); cm.userData.noBatch = true; cm.castShadow = true; cm.receiveShadow = true; cm.frustumCulled = false; mapGroup.add(cm); }
+  // ---- more life: flags, steam vents, fountain spray, spinning vent fans, pulsing/blinking lights, a high airship ----
+  { const T = treeMats(), fp = [], cols = [new THREE.Color(0x3b5d8a), new THREE.Color(0xb88a3e), new THREE.Color(0xd8d4c6), new THREE.Color(0x4e8a6a)];
+    for (let i = 0; i < 9; i++) tryPlace((x, z) => {
+      const yaw = rnd() * 6.28, h = 5.2, pole = new THREE.Mesh(new THREE.BoxGeometry(0.09, h, 0.09), T.planter); pole.position.set(x, h / 2, z); pole.castShadow = true; mapGroup.add(pole);
+      const col = cols[i % 4], ph = rnd() * 6.28;
+      fp.push({ geo: new THREE.PlaneGeometry(2.2, 1.25, 10, 4), c: col, x: 1.1, y: h - 0.7, z: 0, ox: x, oy: 0, oz: z, rot: yaw, ph, sp: 2.4 + rnd() * 0.8, mode: undefined, amp: 0.13, uX: true });
+      // uX: flag distance from the pole is its local x (0..2.2); the plane is centred, so shift it by +1.1 and give the shader x+1.1
+    }, 1.2, 50, 56, 38);
+    for (const p of fp) { const g = p.geo; const pa = g.attributes.position; for (let k = 0; k < pa.count; k++) pa.setX(k, pa.getX(k)); }
+    if (fp.length) { const parts = fp.map(p => Object.assign({}, p, { x: 0, geo: (() => { const g = p.geo.clone(); const pa = g.attributes.position; for (let k = 0; k < pa.count; k++) pa.setX(k, pa.getX(k) + 1.1); return g; })() }));
+      const fm = new THREE.Mesh(mergeParts(parts), flagMat()); fm.userData.noBatch = true; fm.frustumCulled = false; fm.castShadow = false; mapGroup.add(fm); }
+  }
+  // steam vents: floor grates with rising mist (one Points draw)
+  { const vents = [], matG = M(0x20242c, 0.6, 0.5);
+    for (let i = 0; i < 8; i++) tryPlace((x, z) => { const g = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.05, 1.0), matG); g.position.set(x, 0.03, z); g.receiveShadow = true; mapGroup.add(g); vents.push([x, z]); }, 1.2, 60, 56, 38);
+    if (vents.length) {
+      const PER = 22, N = vents.length * PER, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), cv = document.createElement('canvas'); cv.width = cv.height = 64;
+      const g2 = cv.getContext('2d'), gr = g2.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g2.fillStyle = gr; g2.fillRect(0, 0, 64, 64);
+      const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      const pts = new THREE.Points(geo, new THREE.PointsMaterial({ map: new THREE.CanvasTexture(cv), size: 0.9, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+      pts.frustumCulled = false; pts.renderOrder = 2; mapGroup.add(pts); ALIVE.steam = { pts, vents, PER, ph: vents.map(() => rnd() * 10) };
+    }
+  }
+  // fountain spray + water shimmer (only where the basin actually exists)
+  if (colliders.some(c => c.tag === 'cover' && c.x0 < -35 && c.x1 > -35 && c.z0 < -32 && c.z1 > -32 && c.y1 < 1.1)) {
+    const N = 80, pos = new Float32Array(N * 3), geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xaee3ff, size: 0.1, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+    pts.frustumCulled = false; pts.renderOrder = 2; mapGroup.add(pts); ALIVE.spray = { pts, N, az: Array.from({ length: N }, () => rnd() * 6.28) };
+    AG.parts.push({ geo: new THREE.BoxGeometry(4.3, 0.02, 4.3), c: new THREE.Color(0x3d86b8).multiplyScalar(0.6), x: -35, y: 0.96, z: -32, ph: 0, sp: 1.7, mode: 0 });
+  }
+  // rail-yard signal beacon on the gantry: blinks amber
+  AG.parts.push({ geo: new THREE.BoxGeometry(0.25, 0.25, 0.25), c: new THREE.Color(0xff8a2a), x: 45.3, y: 3.8, z: -25.0, ph: 0, sp: 3.2, mode: 2 });
+  // all animated lights = ONE mesh; all vent fans = ONE instanced mesh (housings are ordinary batched statics)
+  if (AG.parts.length) { const am = new THREE.Mesh(mergeParts(AG.parts), animMat()); am.userData.noBatch = true; am.frustumCulled = false; mapGroup.add(am); }
+  if (AG.fans.length) {
+    const rot = [{ geo: new THREE.BoxGeometry(1.0, 0.09, 0.03), c: new THREE.Color(0x9aa3b2), x: 0, y: 0, z: 0 }, { geo: new THREE.BoxGeometry(0.09, 1.0, 0.03), c: new THREE.Color(0x9aa3b2), x: 0, y: 0, z: 0 }, { geo: new THREE.BoxGeometry(0.22, 0.22, 0.07), c: new THREE.Color(0x5a616e), x: 0, y: 0, z: 0.01 }];
+    const im = new THREE.InstancedMesh(mergeParts(rot), new THREE.MeshLambertMaterial({ vertexColors: true }), AG.fans.length); im.frustumCulled = false;
+    const fr = M(0x2a2e38, 0.6, 0.5);
+    ALIVE.fans = AG.fans.map((f, i) => { for (const [w, h, dx, dy] of [[1.15, 0.07, 0, 0.54], [1.15, 0.07, 0, -0.54], [0.07, 1.15, 0.54, 0], [0.07, 1.15, -0.54, 0]]) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.12), fr); m.position.set(f.x, f.y, f.z); m.rotation.y = f.yaw; m.translateX(dx); m.translateY(dy); mapGroup.add(m); } return Object.assign({}, f, { q: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), f.yaw), ph: rnd() * 6.28 }); });
+    mapGroup.add(im); ALIVE.fansMesh = im;
+  }
+  AG.parts = []; AG.fans = [];
+  // a slow airship far above the skyline with a blinking beacon
+  { const body = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: 0x232833, fog: false })); body.scale.set(26, 6, 6); body.position.y = 96; body.frustumCulled = false; mapGroup.add(body);
+    const bm = new THREE.MeshBasicMaterial({ color: 0xff3a2a, fog: false }), beacon = new THREE.Mesh(new THREE.SphereGeometry(0.9, 6, 6), bm); beacon.position.set(-24, 0, 0); body.add(beacon);
+    const gm = new THREE.MeshBasicMaterial({ color: 0x9fe8ff, fog: false }), g = new THREE.Mesh(new THREE.SphereGeometry(0.7, 6, 6), gm); g.position.set(0, -5.4, 0); body.add(g);
+    ALIVE.ship = { body, bm, gm }; }
   // drifting dust motes (one Points draw) and a small flock of birds (one InstancedMesh draw)
   { const N = 260, pos = new Float32Array(N * 3), seed = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) { seed[i * 3] = rnd() * 100; seed[i * 3 + 1] = rnd() * 100; seed[i * 3 + 2] = rnd() * 100; pos[i * 3] = (rnd() * 2 - 1) * 54; pos[i * 3 + 1] = 0.6 + rnd() * 9; pos[i * 3 + 2] = (rnd() * 2 - 1) * 38; }
@@ -1134,10 +1204,24 @@ function scatterScenery(m, key) {
   }
 }
 // per-frame life: trees sway, dust drifts, birds wheel overhead (all cheap CPU, no extra draw calls beyond the three meshes)
+const Z = new THREE.Vector3(0, 0, 1), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
 const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bp = new THREE.Vector3(), _be = new THREE.Euler();
 function updateAlive(dt) {
   ALIVE.t += dt; const t = ALIVE.t;
   ALIVE.time.value = t;
+  if (ALIVE.fans) { const im = ALIVE.fansMesh;
+    ALIVE.fans.forEach((f, i) => { _q2.setFromAxisAngle(Z, t * f.sp + f.ph); _bq.copy(f.q).multiply(_q2); _p.set(f.x, f.y, f.z); _m.compose(_p, _bq, _s); im.setMatrixAt(i, _m); }); im.instanceMatrix.needsUpdate = true; }
+  if (ALIVE.steam) { const { pts, vents, PER, ph } = ALIVE.steam, P = pts.geometry.attributes.position.array, C = pts.geometry.attributes.color.array;
+    for (let v = 0; v < vents.length; v++) for (let j = 0; j < PER; j++) {
+      const life = ((t * 0.28 + j / PER + ph[v]) % 1), k = (v * PER + j) * 3, sw = Math.sin(j * 12.9 + v), cw = Math.cos(j * 7.3 + v * 2);
+      P[k] = vents[v][0] + sw * 0.18 * (0.3 + life) + Math.sin(t * 0.5 + j) * 0.25 * life; P[k + 1] = 0.12 + life * 3.0; P[k + 2] = vents[v][1] + cw * 0.18 * (0.3 + life) + Math.cos(t * 0.4 + j) * 0.25 * life;
+      const f = Math.sin(life * Math.PI) * 0.16; C[k] = C[k + 1] = C[k + 2] = f;
+    }
+    pts.geometry.attributes.position.needsUpdate = true; pts.geometry.attributes.color.needsUpdate = true; }
+  if (ALIVE.spray) { const { pts, N, az } = ALIVE.spray, P = pts.geometry.attributes.position.array;
+    for (let i = 0; i < N; i++) { const p = (t * 0.9 + i / N) % 1, tau = p * 0.9, r = 0.12 + 1.9 * p; P[i * 3] = -35 + Math.cos(az[i]) * r; P[i * 3 + 1] = 3.45 + 3.2 * tau - 7 * tau * tau; P[i * 3 + 2] = -32 + Math.sin(az[i]) * r; }
+    pts.geometry.attributes.position.needsUpdate = true; }
+  if (ALIVE.ship) { const sh = ALIVE.ship, u = (t * 0.012) % 1; sh.body.position.x = -230 + u * 460; sh.body.position.z = -40; sh.bm.color.setRGB(Math.sin(t * 3) > 0.3 ? 1 : 0.12, 0.1, 0.08); sh.gm.color.setRGB(0.6 * (Math.sin(t * 1.4) > 0 ? 1 : 0.15), 0.9 * (Math.sin(t * 1.4) > 0 ? 1 : 0.15), 1 * (Math.sin(t * 1.4) > 0 ? 1 : 0.15)); }
   if (ALIVE.dust) { const a = ALIVE.dust.pts.geometry.attributes.position, p = a.array, b = ALIVE.dust.base, sd = ALIVE.dust.seed;
     for (let i = 0; i < p.length; i += 3) { p[i] = b[i] + Math.sin(t * 0.13 + sd[i]) * 1.6; p[i + 1] = b[i + 1] + Math.sin(t * 0.21 + sd[i + 1]) * 0.7; p[i + 2] = b[i + 2] + Math.cos(t * 0.11 + sd[i + 2]) * 1.4; }
     a.needsUpdate = true; }
@@ -1268,6 +1352,8 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
 
 // BRUTALIST WALLS: heavy buttresses every 6 m (real colliders — they also break up wall-runs), raised bay panels, a cantilevered cap slab, a plinth and warm uplights.
 (function brutalWalls() {
+  AG.parts = []; AG.fans = [];
+  const warm = new THREE.Color(0xffd3a0).multiplyScalar(0.95);
   const matBut = M(0x8e8b85, 0.95), matFace = M(0xa8a296, 0.9), matRib = M(0xc4beb2, 0.9), matDark = M(0x1b1f27, 0.7), matCap = M(0x6d6b69, 0.9), matSteel = M(0x4a505b, 0.45, 0.6);
   const glow = [0xffd3a0, 0xffd3a0, 0xffd3a0].map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9, roughness: 0.5 }));   // one soft warm tone, not a rainbow
   const pools = [];
@@ -1286,10 +1372,14 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
       // bx: along-wall size, height, depth out from the wall, along-wall offset from bay centre, height centre, depth centre
       const bx = (mat, w, h, dp, u, y, o) => { if (axis === 'x') vis(mat, w, h, dp, a + u, y, fixed + d * o); else vis(mat, dp, h, w, fixed + d * o, y, a + u); };
       const acc = glow[bayNo % 3];
+      const agc = (w, h, dp, u, y, o, ph, col, mode = 0, sp = 0.9) => {      // animated glow part on this bay
+        const P = axis === 'x' ? [a + u, y, fixed + d * o] : [fixed + d * o, y, a + u], g = axis === 'x' ? new THREE.BoxGeometry(w, h, dp) : new THREE.BoxGeometry(dp, h, w);
+        AG.parts.push({ geo: g, c: col || warm, x: P[0], y: P[1], z: P[2], ph, sp, mode });
+      };
       bx(matFace, 4.5, 9.9, 0.16, 0, 5.65, 0.08);                           // pale raised facade slab
       for (const u of [-1.5, -0.5, 0.5, 1.5]) {                              // tall dark window slots, each with a glowing core
         bx(matDark, 0.55, 5.6, 0.06, u, 6.9, 0.19);
-        if (Math.abs(u) < 1) bx(acc, 0.12, 4.6, 0.05, u, 6.9, 0.23);
+        if (Math.abs(u) < 1) agc(0.12, 4.6, 0.05, u, 6.9, 0.23, bayNo * 0.7 + u * 0.9 + a * 0.12);
       }
       for (const y of [9.9, 4.0]) bx(matRib, 4.5, 0.24, 0.3, 0, y, 0.15);   // projecting horizontal ribs
       bx(matRib, 4.5, 0.2, 0.26, 0, 1.0, 0.13);
@@ -1298,9 +1388,11 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
         bx(matDark, 1.3, 2.3, 0.14, 0, 1.2, 0.27); bx(matRib, 1.55, 0.14, 0.2, 0, 2.43, 0.3);
         bx(matRib, 0.14, 2.3, 0.2, -0.72, 1.2, 0.3); bx(matRib, 0.14, 2.3, 0.2, 0.72, 1.2, 0.3);
         bx(matCap, 0.9, 0.1, 0.06, 0, 2.62, 0.3);
+        agc(0.16, 0.1, 0.06, 0.5, 2.75, 0.31, bayNo * 1.3 + a, new THREE.Color(bayNo % 4 === 0 ? 0xff5a3a : 0x5dff98).multiplyScalar(0.8), 2, 0.55);   // door status LED
       } else {                                                               // louvre vent
         for (let k = 0; k < 6; k++) bx(matDark, 2.2, 0.11, 0.1, 0, 1.25 + k * 0.28, 0.27);
         bx(matRib, 2.4, 0.1, 0.18, 0, 1.05, 0.3); bx(matRib, 2.4, 0.1, 0.18, 0, 2.8, 0.3);
+        AG.fans.push({ x: axis === 'x' ? a : fixed + d * 0.36, y: 1.95, z: axis === 'x' ? fixed + d * 0.36 : a, yaw: axis === 'x' ? 0 : Math.PI / 2, sp: 4 + (bayNo % 5) });
       }
       for (const u of [-2.05, 2.05]) {                                       // conduit run with clamps
         bx(matSteel, 0.13, 8.9, 0.13, u, 5.75, 0.3);
@@ -1312,7 +1404,8 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
     for (let a = a0 + 3; a <= a1 - 3; a += 6) {
       if (skip && skip(a)) continue;
       const bx2 = (mat, w, h, dp, y, o) => { if (axis === 'x') vis(mat, w, h, dp, a, y, fixed + d * o); else vis(mat, dp, h, w, fixed + d * o, y, a); };
-      bx2(matSteel, 0.5, 0.18, 0.3, 4.6, 0.72); bx2(glow[1], 0.34, 0.5, 0.12, 4.6, 0.82);
+      bx2(matSteel, 0.5, 0.18, 0.3, 4.6, 0.72);
+      AG.parts.push({ geo: axis === 'x' ? new THREE.BoxGeometry(0.34, 0.5, 0.12) : new THREE.BoxGeometry(0.12, 0.5, 0.34), c: warm, x: axis === 'x' ? a : fixed + d * 0.82, y: 4.6, z: axis === 'x' ? fixed + d * 0.82 : a, ph: a * 0.3, sp: 0.6, mode: 0 });
       pools.push(axis === 'x' ? [a, fixed + d * 2.6] : [fixed + d * 2.6, a]);
       bx2(matRib, 1.6, 0.18, 0.2, 10.55, 0.65); bx2(matRib, 1.6, 0.18, 0.2, 0.3, 0.65);   // pier cap + base mouldings
     }
@@ -1327,11 +1420,27 @@ addSolid(PX - 1, -4.4, -PZ, PX, WALL_H, PZ, matWall);
     const mT = M(tint, 0.9), mG = new THREE.MeshStandardMaterial({ color: glowT, emissive: glowT, emissiveIntensity: 0.8, roughness: 0.5 });
     const hb = (mat, w, h, dp, u, y, o) => vis(mat, w, h, dp, sgn * (54 + u), y, fz + dz * o);
     hb(mT, 4.5, 9.9, 0.16, 0, 5.65, 0.08);
-    for (const u of [-1.5, -0.5, 0.5, 1.5]) { hb(matDark, 0.55, 5.6, 0.06, u, 6.9, 0.19); if (Math.abs(u) < 1) hb(mG, 0.12, 4.6, 0.05, u, 6.9, 0.23); }
+    for (const u of [-1.5, -0.5, 0.5, 1.5]) { hb(matDark, 0.55, 5.6, 0.06, u, 6.9, 0.19); if (Math.abs(u) < 1) AG.parts.push({ geo: new THREE.BoxGeometry(0.12, 4.6, 0.05), c: new THREE.Color(glowT).multiplyScalar(0.9), x: sgn * (54 + u), y: 6.9, z: fz + dz * 0.23, ph: u * 1.1 + sgn, sp: 0.8, mode: 0 }); }
     for (const y of [9.9, 4.0]) hb(matRib, 4.5, 0.24, 0.3, 0, y, 0.15);
     hb(matRib, 4.5, 0.2, 0.26, 0, 1.0, 0.13); hb(matSteel, 4.1, 2.0, 0.08, 0, 2.0, 0.2);
     for (let k = 0; k < 6; k++) hb(matDark, 2.2, 0.11, 0.1, 0, 1.25 + k * 0.28, 0.27);
+    AG.fans.push({ x: sgn * 54, y: 1.95, z: fz + dz * 0.36, yaw: 0, sp: 5 });
     for (const u of [-2.05, 2.05]) hb(matSteel, 0.13, 8.9, 0.13, u, 5.75, 0.3);
+  }
+  // plaza-facing door walls of both spawn halls (the big slabs either side of each doorway): team-tinted bays, same language as the perimeter
+  for (const sgn of [-1, 1]) {
+    const tint = sgn === -1 ? 0x34476f : 0x6f3a34, glowT = sgn === -1 ? 0x7ea6ff : 0xff8574, mT = M(tint, 0.9);
+    const mG = new THREE.MeshStandardMaterial({ color: glowT, emissive: glowT, emissiveIntensity: 0.8, roughness: 0.5 });
+    for (const zc of [-11.3, -6.7, 6.7, 11.3]) {
+      const tb = (mat, w, h, dp, u, y, o) => vis(mat, dp, h, w, sgn * (46 - o), y, zc + u);
+      tb(mT, 4.2, 9.9, 0.16, 0, 5.65, 0.08);
+      for (const u of [-1.35, -0.45, 0.45, 1.35]) { tb(matDark, 0.5, 5.6, 0.06, u, 6.9, 0.19); if (Math.abs(u) < 1) AG.parts.push({ geo: new THREE.BoxGeometry(0.05, 4.6, 0.11), c: new THREE.Color(glowT).multiplyScalar(0.9), x: sgn * (46 - 0.23), y: 6.9, z: zc + u, ph: u * 1.1 + zc * 0.3, sp: 0.8, mode: 0 }); }
+      for (const y of [9.9, 4.0]) tb(matRib, 4.2, 0.24, 0.3, 0, y, 0.15);
+      tb(matRib, 4.2, 0.2, 0.26, 0, 1.0, 0.13); tb(matSteel, 3.8, 2.0, 0.08, 0, 2.0, 0.2);
+      if (Math.abs(zc) > 9) { for (let k = 0; k < 6; k++) tb(matDark, 2.0, 0.11, 0.1, 0, 1.25 + k * 0.28, 0.27); AG.fans.push({ x: sgn * (46 - 0.36), y: 1.95, z: zc, yaw: Math.PI / 2, sp: 4.5 }); }
+      else { tb(matDark, 1.2, 2.3, 0.14, 0, 1.2, 0.27); tb(matRib, 1.45, 0.14, 0.2, 0, 2.43, 0.3); tb(matRib, 0.14, 2.3, 0.2, -0.66, 1.2, 0.3); tb(matRib, 0.14, 2.3, 0.2, 0.66, 1.2, 0.3); }
+      for (const u of [-1.95, 1.95]) tb(matSteel, 0.13, 8.9, 0.13, u, 5.75, 0.3);
+    }
   }
   // soft warm light pools on the floor under every pier lamp: ONE merged, unlit, additive mesh (no per-pixel lights)
   { const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
@@ -2152,6 +2261,20 @@ function tryLaunch(b) {
     return;
   }
 }
+// FALL DAMAGE: drops up to ~4 m are free, then it ramps up: ~6 m = 27 hp, ~10 m = 72 hp, ~13 m+ = lethal. Sliding on landing halves it.
+const FALL_SAFE = 13.9, FALL_DMG = 9;
+function landImpact(v) {
+  gunKick = Math.max(gunKick, Math.min(1, (v - 9) / 14));                         // the gun dips on every hard landing
+  if (v > 11) playTone(90 + Math.min(60, v * 2), 0.14, 0.18, 'triangle', 55);   // thud
+  if (v <= FALL_SAFE || player.dead || player.spawnProt > 0 || match.over || !match.started) return;
+  let dmg = (v - FALL_SAFE) * FALL_DMG * (player.isSliding ? 0.5 : 1);
+  if (gameTime < resistUntil) dmg *= (1 - resistAmt);
+  player.hp -= dmg; player.lastHurt = gameTime; hurtT = 0.5; playTone(70, 0.3, 0.3, 'sawtooth', 40);
+  if (player.hp <= 0) {
+    const fake = { name: 'GRAVITY', team: 'Z', kills: 0, deaths: 0, pos: player.pos.clone() }; match.score.Z = 0;
+    killActor(player, fake, false); delete match.score.Z;
+  }
+}
 function integrate(b, dt, wantJump) {
   const wasGround = b.onGround;
   if (wantJump && b.onGround) { b.vel.y = JUMP; b.onGround = false; }
@@ -2800,20 +2923,21 @@ let slot = 0, curKey = 'ar', curW = WEAPONS.ar, camo = 'none';
 const slotAmmo = [WEAPONS.ar.mag, WEAPONS.pistol.mag];
 let ammo = curW.mag, reloadT = 0, spray = 0, recoilPitch = 0, recoilYaw = 0;
 let adsHeld = false, adsT = 0, swapT = 0, bobPhase = 0, triggerReady = true, realT = 0, lastFireReal = -1e9;
-const SWAP_TIME = 0.35;
+const SWAP_TIME = 0.4;
+let swapPending = false;                      // the new model is built at the midpoint of the swap, once the old gun is lowered
+const _eo = (t) => 1 - Math.pow(1 - t, 3), _eb = (t) => 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);   // ease-out / ease-out-back
 function equip(s) {
   if (s === slot || player.dead) return;
   slotAmmo[slot] = ammo;
   slot = s; curKey = s ? loadout.secondary : loadout.primary; curW = WEAPONS[curKey];
   ammo = slotAmmo[slot]; reloadT = 0; spray = 0; adsT = Math.min(adsT, 0.3);
   swapT = SWAP_TIME; fireCooldown = Math.max(fireCooldown, 0.1);
-  buildViewmodel(curKey); applyCamo();
-  playTone(420, 0.06, 0.06, 'square');
+  swapPending = true; playTone(300, 0.05, 0.05, 'square');   // model swaps at the midpoint (see updateViewmodel)
 }
 function resetWeapons() {
   slotAmmo[0] = WEAPONS[loadout.primary].mag; slotAmmo[1] = WEAPONS[loadout.secondary].mag;
   slot = 0; curKey = loadout.primary; curW = WEAPONS[curKey];
-  ammo = slotAmmo[0]; reloadT = 0; spray = 0; adsT = 0; swapT = 0;
+  ammo = slotAmmo[0]; reloadT = 0; spray = 0; adsT = 0; swapT = 0; swapPending = false;
   buildViewmodel(curKey); applyCamo();
 }
 function applyCamo() {
@@ -2901,9 +3025,15 @@ function updateViewmodel(dt) {
   const bob = Math.min(1, hv / SPEED) * (1 - 0.85 * e);
   const hy = HIP.y + (vmInfo.pistol ? 0.035 : 0), hx = HIP.x - (vmInfo.pistol ? 0.03 : 0);
   let x = hx * (1 - e) + Math.sin(bobPhase) * 0.012 * bob;
-  let y = hy + (-vmInfo.sightY - hy) * e - Math.abs(Math.cos(bobPhase)) * 0.012 * bob - 0.3 * (swapT / SWAP_TIME);
+  let y = hy + (-vmInfo.sightY - hy) * e - Math.abs(Math.cos(bobPhase)) * 0.012 * bob;
   let z = HIP.z + (-0.3 - HIP.z) * e + gunKick * (0.05 - 0.03 * e);
   let rx = gunKick * (0.07 - 0.04 * e), rz = 0;
+  if (swapT > 0 || swapPending) {                                // weapon swap: lower the old gun (tilting away), swap the model at the bottom, bring the new one up with a small overshoot
+    const p = 1 - swapT / SWAP_TIME, SPLIT = 0.38;
+    if (swapPending && p >= SPLIT) { swapPending = false; buildViewmodel(curKey); applyCamo(); playTone(520, 0.05, 0.07, 'square', 380); }
+    const off = p < SPLIT ? _eo(p / SPLIT) : 1 - _eb(Math.min(1, (p - SPLIT) / (1 - SPLIT)));
+    y -= 0.34 * off; z += 0.05 * off; rx += 0.55 * off; rz += 0.3 * off; x += 0.05 * off;
+  }
   if (reloadT > 0) {                                           // physical reload: tilt the gun, swap the mag by hand, rack the action
     const p = _c01(1 - reloadT / w.reload), o = reloadPose(vmInfo, p);
     rz += o.roll; y += o.dy; rx += o.pitch;
@@ -3464,8 +3594,9 @@ function updatePlayer(dt) {
   if (!slideJumpCancel) applyHorizontal(player, wishDir(), SPEED * curW.speed * (1 - 0.25 * adsT) * (gameTime < adrenUntil ? 1.15 : 1) , dt);
   updateMantle(player);
   updateWallRun(dt);                 // may override vel.x/z to hug a wall, or kick off it on Space
-  const wasG = player.onGround, wantJ = jumpBuf > 0 && jumpCd <= 0 && !player.wallRunning;
+  const wasG = player.onGround, wantJ = jumpBuf > 0 && jumpCd <= 0 && !player.wallRunning, vy0 = player.vel.y;
   integrate(player, dt, wantJ);
+  if (!wasG && player.onGround && vy0 < -9) landImpact(-vy0);
   if (wantJ && wasG && !player.onGround && player.vel.y > 0) { jumpBuf = 0; jumpCd = 1.5; }   // one ground jump per 1.5 s
   player.lean += ((isDown('leanLeft') ? -1 : isDown('leanRight') ? 1 : 0) - player.lean) * Math.min(1, dt * 8);
   // Footsteps: tick off distance traveled while grounded (not sliding) rather than a flat timer, so
