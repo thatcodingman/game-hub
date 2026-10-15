@@ -14,12 +14,12 @@
   /* Hip-fire crosshair: four ticks + centre dot with a dark outline so it stays readable on any background, while running, sliding or shooting. It NEVER changes size or colour when you fire; hits show on the separate #hitmark. */
   #crosshair {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 26px; height: 26px; border-radius: 0; z-index: 13; pointer-events: none;
+    width: 46px; height: 46px; border-radius: 0; z-index: 13; pointer-events: none;
     background:
-      linear-gradient(#fff, #fff) 0 50% / 7px 2px no-repeat, linear-gradient(#fff, #fff) 100% 50% / 7px 2px no-repeat,
-      linear-gradient(#fff, #fff) 50% 0 / 2px 7px no-repeat, linear-gradient(#fff, #fff) 50% 100% / 2px 7px no-repeat,
-      radial-gradient(circle, #fff 0 1.6px, transparent 1.9px);
-    filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) drop-shadow(0 0 2px rgba(0,0,0,0.7));
+      linear-gradient(#fff, #fff) 0 50% / 13px 3px no-repeat, linear-gradient(#fff, #fff) 100% 50% / 13px 3px no-repeat,
+      linear-gradient(#fff, #fff) 50% 0 / 3px 13px no-repeat, linear-gradient(#fff, #fff) 50% 100% / 3px 13px no-repeat,
+      radial-gradient(circle, #fff 0 2.2px, transparent 2.6px);
+    filter: drop-shadow(1.5px 0 0 #000) drop-shadow(-1.5px 0 0 #000) drop-shadow(0 1.5px 0 #000) drop-shadow(0 -1.5px 0 #000) drop-shadow(0 0 4px rgba(0,0,0,0.85));
   }
   #hud {
     position: fixed; bottom: 16px; left: 16px; color: #c3c7d6; font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -286,6 +286,16 @@
         <input type="range" id="sensSlider" min="0.2" max="3" step="0.05" value="1">
         <span id="sensVal">1.00x</span>
         <button data-invert="1" id="invertBtn" type="button">INVERT Y</button>
+      </div>
+      <div class="row" id="tprow">
+        <span>TRACKPAD MODE</span>
+        <button data-tp="on" id="tpOn" type="button">OFF</button>
+        <button data-tp="toggleAim" id="tpAim" type="button">TOGGLE AIM</button>
+        <button data-tp="fireLatch" id="tpFire" type="button">FIRE LATCH</button>
+      </div>
+      <div class="row" id="tprow2">
+        <span>TRACKPAD SENS</span><input type="range" id="tpSens" min="0.2" max="3" step="0.05" value="1"><span id="tpSensVal">1.00x</span>
+        <span>SMOOTH</span><input type="range" id="tpSmooth" min="0" max="0.9" step="0.05" value="0.4"><span id="tpSmoothVal">0.40</span>
       </div>
       <div id="keybinds"></div>
       <div class="row">
@@ -2463,14 +2473,15 @@ function airBoost() {            // one extra mid-air kick per jump (resets on l
 
 // ---- look + control settings: sensitivity, invert, keybinds — saved per-browser ----
 const SETTINGS_KEY = 'fz_settings_v1';
+const TP_DEF = { on: false, toggleAim: true, fireLatch: false, sens: 1, smooth: 0.4 };   // Trackpad mode: its own block, off by default, read only where noted
 function loadSettings() {
-  const fallback = { sens: 1, invertY: false, binds: { ...DEFAULT_BINDS } };
+  const fallback = { sens: 1, invertY: false, binds: { ...DEFAULT_BINDS }, tp: { ...TP_DEF } };
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     // Merge per-key, not just Object.assign — a saved binds object (from an older save, or one missing
     // a key added in a later update) must still fall back to the matching default per action, not drop
     // every other default the moment the player has rebound even one key.
-    return Object.assign({}, fallback, saved, { binds: Object.assign({}, DEFAULT_BINDS, saved.binds) });
+    return Object.assign({}, fallback, saved, { binds: Object.assign({}, DEFAULT_BINDS, saved.binds), tp: Object.assign({}, TP_DEF, saved.tp) });
   } catch { return fallback; }
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
@@ -2488,7 +2499,19 @@ function applyLook(dx, dy) {
   if (!isFinite(dx) || !isFinite(dy)) return;
   dx = Math.max(-300, Math.min(300, dx)); dy = Math.max(-300, Math.min(300, dy));   // swallow browser spike glitches
   dx /= DPR_FIX; dy /= DPR_FIX;
-  const sens = 0.0022 * (camera.fov / 75) * settings.sens;   // slower while zoomed in, scaled by user sensitivity
+  if (settings.tp.on && settings.tp.smooth > 0) { lookPendX += dx; lookPendY += dy; return; }   // Trackpad mode: queue the swipe, flushLook() eases it in
+  lookApply(dx, dy);
+}
+let lookPendX = 0, lookPendY = 0;
+function flushLook(dt) {
+  if (!lookPendX && !lookPendY) return;
+  const k = settings.tp.on ? settings.tp.smooth : 0, a = 1 - Math.pow(k, Math.min(0.1, dt) * 60);   // k = 0 applies everything at once
+  let ax = lookPendX * a, ay = lookPendY * a;
+  if (Math.abs(lookPendX - ax) < 0.02) ax = lookPendX; if (Math.abs(lookPendY - ay) < 0.02) ay = lookPendY;
+  lookPendX -= ax; lookPendY -= ay; lookApply(ax, ay);
+}
+function lookApply(dx, dy) {
+  const sens = 0.0022 * (camera.fov / 75) * (settings.tp.on ? settings.tp.sens : settings.sens);   // slower while zoomed in, scaled by user sensitivity (own slider in Trackpad mode)
   player.yaw -= dx * sens;
   const dyS = settings.invertY ? -dy : dy;
   player.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, player.pitch - dyS * sens));
@@ -2926,6 +2949,8 @@ const loadout = { primary: 'ar', secondary: 'pistol' };   // primary comes from 
 let slot = 0, curKey = 'ar', curW = WEAPONS.ar, camo = 'none';
 const slotAmmo = [WEAPONS.ar.mag, WEAPONS.pistol.mag];
 let ammo = curW.mag, reloadT = 0, spray = 0, recoilPitch = 0, recoilYaw = 0;
+let adsLatch = false, fireLatched = false;
+const tpAimToggle = () => settings.tp.on && settings.tp.toggleAim;
 let adsHeld = false, adsT = 0, swapT = 0, bobPhase = 0, triggerReady = true, realT = 0, lastFireReal = -1e9;
 const SWAP_TIME = 0.4;
 let swapPending = false;                      // the new model is built at the midpoint of the swap, once the old gun is lowered
@@ -3019,7 +3044,8 @@ const scopeEl = document.getElementById('scope');
 function updateViewmodel(dt) {
   realT += dt;
   const w = curW;
-  const wantAds = (adsHeld || isDown('ads')) && !player.dead && reloadT <= 0 && swapT <= 0 && !player.isSliding && !blockerVisible();
+  if (player.dead) adsLatch = false;
+  const wantAds = (tpAimToggle() ? adsLatch : (adsHeld || isDown('ads'))) && !player.dead && reloadT <= 0 && swapT <= 0 && !player.isSliding && !blockerVisible();
   adsT = Math.max(0, Math.min(1, adsT + (wantAds ? 1 : -1.5) * dt / w.adsTime));
   const e = adsT * adsT * (3 - 2 * adsT);
   swapT = Math.max(0, swapT - dt);
@@ -3163,7 +3189,16 @@ function renderMenu() {
   }).join('');
   sensSlider.value = settings.sens; sensVal.textContent = settings.sens.toFixed(2) + 'x';
   invertBtn.classList.toggle('sel', settings.invertY);
+  const tp = settings.tp;
+  document.getElementById('tpOn').textContent = tp.on ? 'ON' : 'OFF'; document.getElementById('tpOn').classList.toggle('sel', tp.on);
+  document.getElementById('tpAim').classList.toggle('sel', tp.on && tp.toggleAim); document.getElementById('tpFire').classList.toggle('sel', tp.on && tp.fireLatch);
+  document.getElementById('tprow2').style.opacity = tp.on ? '1' : '0.45';
+  tpSensEl.value = tp.sens; tpSensVal.textContent = tp.sens.toFixed(2) + 'x'; tpSmoothEl.value = tp.smooth; tpSmoothVal.textContent = tp.smooth.toFixed(2);
 }
+const tpSensEl = document.getElementById('tpSens'), tpSensVal = document.getElementById('tpSensVal'), tpSmoothEl = document.getElementById('tpSmooth'), tpSmoothVal = document.getElementById('tpSmoothVal');
+tpSensEl.addEventListener('input', () => { settings.tp.sens = +tpSensEl.value; tpSensVal.textContent = settings.tp.sens.toFixed(2) + 'x'; saveSettings(); });
+tpSmoothEl.addEventListener('input', () => { settings.tp.smooth = +tpSmoothEl.value; tpSmoothVal.textContent = settings.tp.smooth.toFixed(2); saveSettings(); });
+for (const el of [tpSensEl, tpSmoothEl]) for (const ev of ['click', 'pointerdown', 'mousedown']) el.addEventListener(ev, (e) => e.stopPropagation());
 sensSlider.addEventListener('input', () => {
   settings.sens = +sensSlider.value; sensVal.textContent = settings.sens.toFixed(2) + 'x'; saveSettings();
 });
@@ -3185,7 +3220,12 @@ blockerEl.addEventListener('click', (e) => {
   if (e.target.closest && e.target.closest('#menu-settings')) {
     // Nothing inside the settings panel should ever start a match, even a click on blank space in it.
     const b = e.target.closest('button');
-    if (b && b.dataset.bind) startBindCapture(b.dataset.bind);
+    if (b && b.dataset.tp) {
+      const k = b.dataset.tp; settings.tp[k] = !settings.tp[k];
+      if (k === 'on' || k === 'toggleAim') { adsLatch = false; adsHeld = false; }
+      if (k === 'on' || k === 'fireLatch') fireLatched = false;
+      lookPendX = lookPendY = 0; saveSettings(); applyInputMode(); renderMenu();
+    } else if (b && b.dataset.bind) startBindCapture(b.dataset.bind);
     else if (b && b.dataset.resetBinds) { settings.binds = { ...DEFAULT_BINDS }; saveSettings(); applyInputMode(); renderMenu(); }
     return;
   }
@@ -3260,6 +3300,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   relockPointer();                                        // a keypress is a user gesture too — try to restore mouse-look
+  if (settings.tp.on && !e.repeat) {                       // Trackpad mode extras (never run otherwise)
+    if (settings.tp.toggleAim && e.code === settings.binds.ads) adsLatch = !adsLatch;
+    if (settings.tp.fireLatch && e.code === settings.binds.fire) fireLatched = !fireLatched;
+  }
   if (e.code === settings.binds.reload) startReload();
   if (e.code === settings.binds.equip1) equip(0);
   if (e.code === settings.binds.equip2) equip(1);
@@ -3307,14 +3351,14 @@ document.addEventListener('mousedown', (e) => {
   if (bindCapture && BIND_KIND[bindCapture] === 'mouse') { e.preventDefault(); finishBindCapture(e.button); return; }
   if (blockerVisible()) return;
   relockPointer();                                                        // any click is a user gesture — try to restore proper mouse-look
-  if (e.button === settings.binds.mouseAds) { adsHeld = true; return; }    // right-click by default (two-finger click on a trackpad) = aim
+  if (e.button === settings.binds.mouseAds) { if (tpAimToggle()) adsLatch = !adsLatch; else adsHeld = true; return; }    // right-click by default (two-finger click on a trackpad) = aim; Trackpad mode: click toggles it
   if (e.button !== settings.binds.mouseFire) return;
   triggerReady = true;
   if (pointerLocked) { mouseHeld = true; tryFire(); }                     // click = shoot, hold = auto-fire
   else { dragLook = true; dragDist = 0; lastX = e.clientX; lastY = e.clientY; }
 });
 document.addEventListener('mouseup', (e) => {
-  if (e.button === settings.binds.mouseAds) { adsHeld = false; return; }
+  if (e.button === settings.binds.mouseAds) { if (!tpAimToggle()) adsHeld = false; return; }
   if (e.button !== settings.binds.mouseFire) return;
   mouseHeld = false; triggerReady = true;
   if (dragLook && dragDist < 4) tryFire();                                // pointer lock unavailable: a plain click still shoots
@@ -3330,7 +3374,7 @@ function applyInputMode() {
     `WASD / Arrows move · ${bl('jump')} jump (or kick off a wall-run) · ${bl('slide')} slide · run at a wall airborne to wall-run · `
     + `${bl('airBoost')} air-boost · ${bl('leanLeft')}/${bl('leanRight')} lean · ${bl('reload')} reload · 1/2 or wheel: swap · ${bl('map')} map · ${bl('scoreboard')} scores`;
   document.getElementById('look-line').textContent =
-    `Mouse / trackpad: LOOK · ${bindLabel('mouseFire')} / ${bl('fire')}: shoot (hold = auto-fire) · ${bindLabel('mouseAds')} / ${bl('ads')}: aim · Esc: pause`;
+    `Mouse / trackpad: LOOK · ${bindLabel('mouseFire')} / ${bl('fire')}: shoot (hold = auto-fire) · ${bindLabel('mouseAds')} / ${bl('ads')}: aim${tpAimToggle() ? ' (toggle)' : ''}${settings.tp.on && settings.tp.fireLatch ? ' · ' + bl('fire') + ' latches fire' : ''} · Esc: pause`;
   const title = document.getElementById('blocker-title'), text = document.getElementById('blocker-text');
   renderMenu();
   if (hasMouse) {
@@ -5297,6 +5341,7 @@ menuReady = true; renderMenu();
 
 // Test/debug hook (lets automated checks drive the real game loop)
 window.__fz = {
+  get fireLatched() { return fireLatched; }, get adsLatch() { return adsLatch; }, get adsT() { return adsT; }, get ammo() { return ammo; }, settings,
   renderer, camera, scene, tapJump() { jumpBuf = 0.12; }, player, colliders, keys, step: updatePlayer, camStep: updateCamera, blockedAt, groundAt, respawn, collapse, startGame, applyLook,
   fire: fireShot, stats, effects,
   map: { mode: () => mapMode, cycle: cycleMap, draw: drawMap, layout: () => ML, xy: (x, z) => [mx(x), mz(z)] },
@@ -5375,9 +5420,11 @@ function animate() {
   const nSub = Math.max(1, Math.ceil(dt / 0.0167)), sdt = dt / nSub;   // fixed small steps so a dropped frame can't tunnel / lurch
   if (running && !window.__fzPause) for (let k = 0; k < nSub; k++) updatePlayer(sdt);
   fireCooldown = Math.max(0, fireCooldown - dt);
-  if (running && (mouseHeld || isDown('fire'))) tryFire();           // auto-fire while the button is held
+  if (running && (mouseHeld || isDown('fire') || fireLatched)) tryFire();           // auto-fire while the button is held
   if (running && !window.__fzPause && match.started && match.mode === 'tdm' && !match.over) for (let k = 0; k < nSub; k++) updateMatch(sdt);
   for (const b of bots) syncBotMesh(b, dt);
+  if (running) flushLook(dt); else lookPendX = lookPendY = 0;
+  if (player.dead || !running || ammo <= 0) fireLatched = false;
   updateCamera();
   if (running) updateEffects(dt);
   updateWeather(dt);
