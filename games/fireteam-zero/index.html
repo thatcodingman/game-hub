@@ -988,6 +988,7 @@ function treeMats() {
   return TREEM;
 }
 const ALIVE = { sway: [], parts: [], time: { value: 0 }, dust: null, birds: null, t: 0, fans: null, steam: null, spray: null, ship: null };
+const LOUNGE_PL = [[15.85, -9, 3], [15.85, -4.5, 3], [15.85, 6, 3]];                    // [x centre, z centre, length] stone planters along the outer rail
 const AG = { parts: [], fans: [] };   // animated-glow parts (pulse / flicker / blink) and fan positions, collected while the atrium builds
 let _canopyMat = null;
 const canopyMat = () => {            // one shared Lambert material whose vertex shader sways leaves/grass: sway = f(time, per-vertex phase/speed/amp, height above ground)
@@ -1153,6 +1154,9 @@ function scatterScenery(m, key) {
     }
     for (const p of tp) ALIVE.parts.push(p);
   }
+  // rooftop garden lounge (y 10): bushes on the planters + a small tree in each corner planter
+  for (const [px, pz, len] of LOUNGE_PL) for (let k = 0; k < 3; k++) addBush(px, 10.6, pz - len / 2 + 0.5 + k * (len - 1) / 2, 0.7, px * 3 + pz + k);
+  addTree(15.4, 10.6, 15.4, 0.55, 'oak', 51); addTree(15.4, 10.6, -15.4, 0.5, 'oak', 52);
   if (ALIVE.parts.length) { const cm = new THREE.Mesh(mergeParts(ALIVE.parts), canopyMat()); cm.userData.noBatch = true; cm.castShadow = true; cm.receiveShadow = true; cm.frustumCulled = false; mapGroup.add(cm); }
   // ---- more life: flags, steam vents, fountain spray, spinning vent fans, pulsing/blinking lights, a high airship ----
   { const T = treeMats(), fp = [], cols = [new THREE.Color(0x3b5d8a), new THREE.Color(0xb88a3e), new THREE.Color(0xd8d4c6), new THREE.Color(0x4e8a6a)];
@@ -1263,6 +1267,63 @@ function hazardTex() {
   for (let y = -64; y < 320; y += 64) { g.beginPath(); g.moveTo(0, y + 64); g.lineTo(64, y); g.lineTo(64, y + 32); g.lineTo(0, y + 96); g.closePath(); g.fill(); }
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
 }
+// ---------- Twin Spires (Monsoon) life + lobby dressing: visual only, no colliders, layout untouched ----------
+function dressMonsoonLife() {
+  AG.parts = []; AG.fans = [];
+  let sd = 777; const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+  const T = treeMats(), hz = hazardTex();
+  const box = (mat, w, h, d, x, y, z, ry = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.rotation.y = ry; m.castShadow = false; m.receiveShadow = true; mapGroup.add(m); return m; };
+  const glowMat = (c, i = 2.0) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: i, roughness: 0.4 });
+  const flags = [];
+  const pole = (x, y0, z, h, col, ph) => {
+    box(T.planter, 0.09, h, 0.09, x, y0 + h / 2, z);
+    const g = new THREE.PlaneGeometry(2.0, 1.1, 10, 4), pa = g.attributes.position; for (let k = 0; k < pa.count; k++) pa.setX(k, pa.getX(k) + 1.1);
+    flags.push({ geo: g, c: new THREE.Color(col), x: 0, y: h - 0.65, z: 0, ox: x, oy: y0, oz: z, rot: ph, ph, sp: 2.6 + rnd() * 0.6, amp: 0.13, uX: true });
+  };
+  for (const sgn of [-1, 1]) {
+    const team = sgn === -1 ? 0x3d7bff : 0xff4545, dark = sgn === -1 ? 0x141c34 : 0x341416, name = sgn === -1 ? 'TEAM A' : 'TEAM B';
+    const glow = glowMat(team), matBanner = new THREE.MeshStandardMaterial({ color: team, emissive: team, emissiveIntensity: 0.35, roughness: 0.9 });
+    const matSteel = M(0x2b2f3a, 0.5, 0.5), matDark = M(dark, 0.8);
+    // lobby: emblem sign + glow dado on the back wall, glow dado on the side walls (not across the door gap), team banners, lit ceiling strips
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 2.8), new THREE.MeshBasicMaterial({ map: signTex([name, 'SPAWN TOWER'], team) }));
+    sign.position.set(sgn * 44.92, 3.5, 0); sign.rotation.y = sgn === -1 ? Math.PI / 2 : -Math.PI / 2; mapGroup.add(sign);
+    box(glow, 0.06, 0.07, 25.6, sgn * 44.93, 1.25, 0);
+    for (const zs of [-1, 1]) {
+      box(glow, 13, 0.07, 0.06, sgn * 33.5, 1.25, zs * 12.93);
+      for (const x of [36, 31]) { box(matBanner, 1.4, 3.2, 0.05, sgn * x, 3.2, zs * 12.9); box(matSteel, 1.6, 0.1, 0.1, sgn * x, 4.85, zs * 12.88); box(glow, 0.4, 1.8, 0.06, sgn * x, 3.2, zs * 12.86); }
+    }
+    for (const z of [-6, 0, 6]) { box(matSteel, 15, 0.12, 0.3, sgn * 37, 5.42, z); box(glow, 14.5, 0.05, 0.1, sgn * 37, 5.35, z); }
+    // hazard-striped door frame posts on the street side of the north/south doors
+    for (const zs of [-1, 1]) for (const x of [44, 40]) { const hs = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 4.8), new THREE.MeshBasicMaterial({ map: hz.clone() })); hs.material.map.repeat.set(1, 2.4); hs.material.map.needsUpdate = true; hs.position.set(sgn * x, 2.45, zs * 12.88); hs.rotation.y = zs > 0 ? Math.PI : 0; mapGroup.add(hs); }
+    // roof flags in team colour + aviation beacons
+    for (const zs of [-1, 1]) { pole(sgn * 44.4, 18, zs * 12.8, 4.2, team, rnd() * 6.28); AG.parts.push({ geo: new THREE.BoxGeometry(0.22, 0.22, 0.22), c: new THREE.Color(0xff3a2a), x: sgn * 44.4, y: 22.3, z: zs * 12.8, ph: sgn + zs, sp: 3.0, mode: 2 }); }
+  }
+  // the Mast: four blinking beacons on the top platform + a flag on top
+  for (const [x, z] of [[-4.6, -4.6], [4.6, -4.6], [-4.6, 4.6], [4.6, 4.6]]) AG.parts.push({ geo: new THREE.BoxGeometry(0.22, 0.22, 0.22), c: new THREE.Color(0xff3a2a), x, y: 18.35, z, ph: x + z, sp: 2.4, mode: 2 });
+  pole(0, 18, 0, 5.2, 0x3fd8ff, 1.2);
+  // night-market lanterns in the Bazaar: two strings of softly pulsing paper lanterns, plus two flickering neon signs on the street front
+  const lan = [0xffb35a, 0xff5fae, 0xffd23f, 0x5fe0ff];
+  for (const z of [24.8, 28.4]) { box(M(0x15161a, 0.8), 34, 0.03, 0.03, 0, 4.15, z); for (let i = 0, x = -16; x <= 16; x += 2.2, i++) AG.parts.push({ geo: new THREE.BoxGeometry(0.34, 0.42, 0.34), c: new THREE.Color(lan[i % 4]).multiplyScalar(0.75), x, y: 3.95, z, ph: i * 0.8 + z, sp: 1.1 + (i % 3) * 0.3, mode: 0 }); }
+  for (const [x, c] of [[-15, 0xff3fa4], [15, 0x3fd8ff]]) AG.parts.push({ geo: new THREE.BoxGeometry(2.6, 0.5, 0.1), c: new THREE.Color(c), x, y: 3.5, z: 19.9, ph: x, sp: 2.2, mode: 1 });
+  // steam vents in the streets (one Points draw; shared with the Helix's updater)
+  { const vents = [[-20, 15], [20, 15], [-20, -16], [20, -16], [-8, 17.5], [8, 17.5], [-56, 6], [56, -6]], matG = M(0x20242c, 0.6, 0.5);
+    for (const [x, z] of vents) box(matG, 1.0, 0.05, 1.0, x, 0.03, z);
+    const PER = 22, N = vents.length * PER, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const g2 = cv.getContext('2d'), gr = g2.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g2.fillStyle = gr; g2.fillRect(0, 0, 64, 64);
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ map: new THREE.CanvasTexture(cv), size: 0.9, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+    pts.frustumCulled = false; pts.renderOrder = 2; mapGroup.add(pts); ALIVE.steam = { pts, vents, PER, ph: vents.map(() => rnd() * 10) };
+  }
+  // greenery: wind-swayed bushes along the perimeter walls (wet, tropical) + vines on the long walls
+  let n = 0;
+  for (const z of [-30, -22, -6, 6, 22, 30]) for (const sx of [-1, 1]) addBush(sx * 57.2, 0, z, 1.0 + rnd() * 0.6, ++n);
+  for (const x of [-50, -38, -26, -14, 14, 26, 38, 50]) for (const sz of [-1, 1]) addBush(x, 0, sz * 36.6, 1.0 + rnd() * 0.6, ++n);
+  for (const x of [-48, -30, 30, 48]) { addVines(x, 0.1, 36.2, 0, -1, 3.5 + rnd() * 2, 3 + rnd() * 3, ++n * 5); addVines(x, 0.1, -36.2, 0, 1, 3.5 + rnd() * 2, 3 + rnd() * 3, ++n * 5); }
+  if (ALIVE.parts.length) { const cm = new THREE.Mesh(mergeParts(ALIVE.parts), canopyMat()); cm.userData.noBatch = true; cm.castShadow = false; cm.receiveShadow = true; cm.frustumCulled = false; mapGroup.add(cm); }
+  if (flags.length) { const fm = new THREE.Mesh(mergeParts(flags), flagMat()); fm.userData.noBatch = true; fm.frustumCulled = false; mapGroup.add(fm); }
+  if (AG.parts.length) { const am = new THREE.Mesh(mergeParts(AG.parts), animMat()); am.userData.noBatch = true; am.frustumCulled = false; mapGroup.add(am); }
+  AG.parts = [];
+}
 function dressSpawnHalls(key) {
   if (key !== 'atrium') return;
   const hz = hazardTex();
@@ -1342,16 +1403,16 @@ function subtract(a, b) {
 function buildAtriumGeometry() {
 // ---------- THE HELIX (Atrium) — a LARGE map (~120 x 84 m) ----------
 // One continuous square-spiral ramp (a "track") winds twice around an open core, rising 8 m, then 2 m, to
-// a 10 m Sniper Deck with two walled corner nests. The ramp is a solid plinth; the deck floats on corner masts. Under the
+// a 10 m rooftop garden lounge. The ramp is a solid plinth; the terrace floats on corner masts. Under the
 // core runs a basement tunnel that connects the two spawn sides and pops out in the middle of the open
 // core ("THE CORE"), looking straight up the whole tower. Around the tower: a big plaza, a sunken Garden
 // to the south and a covered Arcade with a terrace + skybridge to the north — three very different
-// fighting layers (plaza/garden, tunnel/core, spiral/sniper deck) instead of one ring-and-shaft skeleton.
+// fighting layers (plaza/garden, tunnel/core, spiral/roof garden) instead of one ring-and-shaft skeleton.
 const PX = 60, PZ = 42;                                   // plaza half-extents
 const C = 14, HW = 2.5, IN = C - HW, OUT = C + HW;        // track centreline half-size / half-width -> inner 11.5, outer 16.5
 const STEPS = 15, SIDE_RISE = 2.0,  SOLID_TOP = 8.01, RAIL_H = 1.1, CY = 10;   // the spiral's second turn is gone: one more south-side ramp (8 -> 10) leads to the Sniper Deck at y 10
 const matPlinth = M(0x59627a, 0.75, 0.25), matTrack = M(0x8592b0, 0.5, 0.3), matMast = M(0x2b2f3a, 0.5, 0.5);
-const matGlassRail = new THREE.MeshBasicMaterial({ color: 0x8fb8dc, transparent: true, opacity: 0.3, depthWrite: false });   // unlit: glass is the priciest overdraw on the map
+const matGlassRail = new THREE.MeshBasicMaterial({ color: 0xa9d2f0, transparent: true, opacity: 0.15, depthWrite: false });   // unlit: glass is the priciest overdraw on the map
 const noShadow = { shadow: false };
 
 // ---------- Perimeter ----------
@@ -1515,9 +1576,9 @@ addSolid(1.5, -4, -7.2, 4.5, -2.8, -5.7, matCover); addSolid(3.5, -4, 5.7, 6.5, 
 
 // ---------- CORE LAUNCH PADS: four pads on the core floor throw you to four different levels of the spiral ----------
 addPad(-6.5, -4, -2, -14, 7.25, -2, { color: 0x3fe0ff });          // -> turn 1 west ramp (y ~7)
-addPad(6.5, -4, 3, 14, 10.05, 3, { color: 0xffb347 });                // -> the Sniper Deck (east side)
-addPad(-4, -4, -5.5, -2, 8.88, -14, { color: 0xff4fa8, clear: 2.4 });   // -> the south ramp up to the Sniper Deck
-addPad(-4, -4, 6.5, 14, 10.05, 8, { color: 0x5dffb0 });               // -> the Sniper Deck, further north
+addPad(6.5, -4, 3, 14, 10.05, 3, { color: 0xffb347 });                // -> the roof garden (east side)
+addPad(-4, -4, -5.5, -2, 8.88, -14, { color: 0xff4fa8, clear: 2.4 });   // -> the south ramp up to the roof garden
+addPad(-4, -4, 6.5, 14, 10.05, 8, { color: 0x5dffb0 });               // -> the roof garden, further north
 
 // ---------- THE HELIX: 2 turns x 4 sides, 15 steps each, 2 m rise per side ----------
 const SIDES = [
@@ -1560,40 +1621,37 @@ for (let t = 0; t < 2; t++) for (let c = 0; c < 4; c++) {
   const opts = {};
   if (t === 0 && c === 0) opts.noX = true;                                              // SE landing: east edge is the stair entrance
   if (t === 0 && c === 2) opts.gapZ = [-15.5, -12.5];                                   // NW landing: north edge opens onto the skybridge
-  if (!(t === 1 && c === 0)) landingRails(cx, cz, h, opts);                            // (the SE corner of turn 2 is a sniper nest, walled instead)
+  landingRails(cx, cz, h, opts);
 }
-// SNIPER DECK at y=10: the south ramp (8 -> 10) arrives at the SE nest, a long open deck runs north along the east side
-// to the NE nest. Both corner nests are walled + roofed on their outer sides with a firing window, open toward the core.
-addSolid(IN, CY - 0.5, -IN, OUT, CY, IN, matTrack, { tag: 'spiral' });                 // east deck
-addSolid(IN, CY - 0.5, IN, OUT, CY, OUT, matTrack, { tag: 'spiral' });                 // NE nest floor
+// ROOFTOP GARDEN LOUNGE at y=10: the south ramp (8 -> 10) arrives at the SE corner and a long open terrace runs north along
+// the east side to the NE corner. Low planters (cover), benches, a pergola in the middle and a couple of small trees —
+// open to the sky and the core, with plenty of waist-high cover but nothing walled in.
+addSolid(IN, CY - 0.5, -IN, OUT, CY, IN, matTrack, { tag: 'spiral' });                 // east terrace
+addSolid(IN, CY - 0.5, IN, OUT, CY, OUT, matTrack, { tag: 'spiral' });                 // NE corner floor
 {
   const rail = (x0, z0, x1, z1) => addSolid(x0, CY, z0, x1, CY + RAIL_H, z1, matGlassRail, { tag: 'rail', ...noShadow });
-  rail(OUT - 0.25, -IN, OUT, IN);                                                      // east deck: outer rail
+  rail(OUT - 0.25, -IN, OUT, IN);                                                      // outer rail
   rail(IN, -IN, IN + 0.25, 0.5); rail(IN, 5.5, IN + 0.25, IN);                         // inner rail, open where the orange pad lands
-  rail(IN, IN, IN + 0.25, OUT);                                                        // NE nest: west edge
-  const T = 0.3, H = 3.0;                                                              // wall thickness, nest height
-  const nest = (cz) => {                                                               // cz = +1 (NE) or -1 (SE); the nest sits on the east edge
-    const z0 = cz > 0 ? IN : -OUT, z1 = cz > 0 ? OUT : -IN;
-    const run = (alongX, fixed0, fixed1, lo, hi) => {                                  // a wall with a 2.6 m firing window in the middle
-      const add = (a0, a1, y0, y1) => alongX ? addSolid(a0, CY + y0, fixed0, a1, CY + y1, fixed1, matWall, { tag: 'nest' }) : addSolid(fixed0, CY + y0, a0, fixed1, CY + y1, a1, matWall, { tag: 'nest' });
-      const mid = (lo + hi) / 2, w0 = mid - 1.3, w1 = mid + 1.3;
-      add(lo, hi, 0, 1.0);                                                             // sill (chest-high cover)
-      add(lo, w0, 1.0, 2.0); add(w1, hi, 1.0, 2.0);                                    // pillars either side of the window
-      add(lo, hi, 2.0, H);                                                             // lintel
-    };
-    run(false, OUT - T, OUT, z0, z1);                                                  // east wall
-    run(true, cz > 0 ? OUT - T : -OUT, cz > 0 ? OUT : -OUT + T, IN, OUT);              // outer north / south wall
-    const rx0 = OUT - 3.5, rz0 = cz > 0 ? OUT - 3.5 : -OUT, rz1 = cz > 0 ? OUT : -OUT + 3.5;
-    addSolid(rx0, CY + H, rz0, OUT, CY + H + 0.3, rz1, matMezz, { tag: 'nest' });      // roof over the outer 3.5 m only
-    const pz = cz > 0 ? rz0 : rz1 - 0.3;
-    addSolid(rx0, CY, pz, rx0 + 0.3, CY + H, pz + 0.3, matWall, { tag: 'nest' });      // one post under the roof's inner corner
-  };
-  nest(1); nest(-1);
+  rail(IN, IN, IN + 0.25, OUT);                                                        // NE corner: west edge
+  rail(OUT - 0.25, IN, OUT, OUT); rail(IN, OUT - 0.25, OUT, OUT);                      // NE corner: east + north edges
+  for (const [px, pz, len] of LOUNGE_PL) addSolid(px - 0.35, CY, pz - len / 2, px + 0.35, CY + 0.6, pz + len / 2, matPlinth, { tag: 'planter' });
+  addSolid(14.6, CY, 14.6, 16.2, CY + 0.6, 16.2, matPlinth, { tag: 'planter' });       // corner planters (a small tree each)
+  addSolid(14.6, CY, -16.2, 16.2, CY + 0.6, -14.6, matPlinth, { tag: 'planter' });
+  addSolid(11.9, CY, -10.8, 12.4, CY + 0.45, -9.2, matScaffold, { tag: 'bench' });     // benches against the inner rail
+  addSolid(11.9, CY, 9.0, 12.4, CY + 0.45, 10.6, matScaffold, { tag: 'bench' });
+  // pergola: four posts, two long beams, cross-slats overhead (3 m up, so nothing to bump into) and a row of warm bulbs
+  for (const [px, pz] of [[12.2, -8], [12.2, -2], [15.0, -8], [15.0, -2]]) addSolid(px, CY, pz, px + 0.25, CY + 3.0, pz + 0.25, matScaffold, { tag: 'pergola' });
+  addSolid(12.1, CY + 3.0, -8.1, 12.55, CY + 3.2, -1.7, matScaffold, { tag: 'pergola' }); addSolid(14.9, CY + 3.0, -8.1, 15.35, CY + 3.2, -1.7, matScaffold, { tag: 'pergola' });
+  for (let i = 0; i < 9; i++) {
+    const z = -8 + i * 0.7;
+    addSolid(11.8, CY + 3.2, z, 15.7, CY + 3.32, z + 0.22, matScaffold, { tag: 'pergola' });
+    if (i % 2 === 0) AG.parts.push({ geo: new THREE.BoxGeometry(0.16, 0.16, 0.16), c: new THREE.Color(0xffc46b), x: 13.7, y: CY + 2.92, z: z + 0.11, ph: i * 0.9, sp: 1.3, mode: 0 });
+  }
 }
 // Four corner masts carry the glass tower visually (outside the walkway, so they never block it)
 for (const [cx, cz] of CORNERS) {
   const x0 = cx > 0 ? OUT : -OUT - 1, z0 = cz > 0 ? OUT : -OUT - 1;
-  addSolid(x0, -0.4, z0, x0 + 1, CY + (cx > 0 ? 3.3 : 1.5), z0 + 1, matMast, { tag: 'mast' });
+  addSolid(x0, -0.4, z0, x0 + 1, CY + 1.5, z0 + 1, matMast, { tag: 'mast' });
 }
 // Entrance stairs onto the SE landing (y 2.0): 4 steps of 0.5 from the east plaza
 for (let i = 0; i < 4; i++) addSolid(OUT + (3 - i), -0.4, -OUT, OUT + (4 - i), 0.5 * (i + 1) + 0, -IN, matMezz);
@@ -1843,7 +1901,7 @@ const PX = 60, PZ = 38, RAIL_H = 1.1;
 const matStreet = M(0x66717f, 0.85), matBldg = M(0x56606e, 0.95), matStall = M(0x4f8a72), matDeck = M(0x8794b4, 0.6, 0.3);
 const matPad = [M(0x3a66c8), M(0xcc3a3a)];
 const matContA = M(0x8a3b2e, 0.7), matContB = M(0x2e6b6b, 0.7), matContC = M(0xb0873a, 0.7), matContD = M(0x2f4f8a, 0.7);
-const matGlassRail = new THREE.MeshBasicMaterial({ color: 0x8fb8dc, transparent: true, opacity: 0.3, depthWrite: false });   // unlit: glass is the priciest overdraw on the map
+const matGlassRail = new THREE.MeshBasicMaterial({ color: 0xa9d2f0, transparent: true, opacity: 0.15, depthWrite: false });   // unlit: glass is the priciest overdraw on the map
 const rail = (x0, y, z0, x1, z1, h = RAIL_H) => addSolid(x0, y, z0, x1, y + h, z1, matGlassRail, { tag: 'rail', shadow: false });
 const mirrorPut = (sgn) => (xa, y0, z0, xb, y1, z1, mat, o) => {
   const a = sgn === -1 ? xa : -xb, b = sgn === -1 ? xb : -xa;
@@ -2551,13 +2609,13 @@ function aimedBeam(maxDist) {
 }
 
 // ---------- BREAKABLE GLASS: every glass panel (rails, windows) shatters when shot, then grows back after a while ----------
-const brokenGlass = [];
+const brokenGlass = [], GLASS_RESPAWN = 180;   // a shot-out pane grows back after 3 minutes
 function shatterGlass(c) {
   if (c.broken) return;
   c.broken = true;
   const i = colliders.indexOf(c); if (i >= 0) colliders.splice(i, 1);
   grid.n = -1; mapGroup.remove(c.mesh); setGlassVisible(c, false); mapDirty = true;
-  brokenGlass.push({ c, t: 28 });
+  brokenGlass.push({ c, t: GLASS_RESPAWN });
   const cx = (c.x0 + c.x1) / 2, cy = (c.y0 + c.y1) / 2, cz = (c.z0 + c.z1) / 2, sx = c.x1 - c.x0, sy = c.y1 - c.y0, sz = c.z1 - c.z0;
   const n = Math.min(26, 8 + Math.floor((sx + sz) * 2));
   for (let k = 0; k < n; k++) {
@@ -3839,7 +3897,7 @@ function L(a, b, o = {}) {
 }
 // The Helix's topology: a plaza ring, a basement tunnel that surfaces in the open core, a long spiral
 // that can be walked in either direction (entered at ground level, from the east stair, or over the
-// north skybridge), the Sniper Deck dead end at the top, a sunken Garden to the south and an Arcade + terrace
+// north skybridge), the Roof Garden dead end at the top, a sunken Garden to the south and an Arcade + terrace
 // to the north. Node names ending in A/B are the west/east mirror pair.
 function buildAtriumNav() {
   const N2 = (id, x, y, z, o) => { N(id + 'A', x, y, z, o); N(id + 'B', -x, y, z, o); };
@@ -3863,9 +3921,9 @@ function buildAtriumNav() {
   // helix entrances
   N('spPre', -9.2, 0, -19.5); N('spIn', -9.2, 0.25, -14, { hold: 1 });
   N('seIn', 22, 0, -14);
-  // helix landings, in walking order up the spiral (y 2..8, then the south ramp to the Sniper Deck at y 10)
+  // helix landings, in walking order up the spiral (y 2..8, then the south ramp to the roof garden at y 10)
   N('L0SE', 14, 2, -14, { w: 0.8, hold: 1 }); N('L0NE', 14, 4, 14, { w: 0.8 }); N('L0NW', -14, 6, 14, { w: 0.8, hold: 1 }); N('L0SW', -14, 8, -14, { w: 0.8 });
-  N('rampS', 0, 9, -14, { w: 0.8 }); N('nestSE', 14, 10, -14, { w: 0.9, hold: 1 }); N('deckE', 14, 10, 0, { w: 0.8 }); N('nestNE', 14, 10, 14, { w: 0.9, hold: 1 });
+  N('rampS', 0, 9, -14, { w: 0.8 }); N('gardenS', 14, 10, -14, { w: 0.9, hold: 1 }); N('deckE', 14, 10, 0, { w: 0.8 }); N('gardenN', 14, 10, 14, { w: 0.9, hold: 1 });
   // east rail yard gantry
   N('cwFoot', 32, 0, -31.5); N('cwTop', 32, 3, -25); N('cwEnd', 44, 3, -25, { w: 1.2, hold: 1 });
   // north arcade (ground) + terrace (y 6) + skybridge
@@ -3893,7 +3951,7 @@ function buildAtriumNav() {
   // helix entrances + spiral
   L('rSA', 'spPre'); L('rSC', 'spPre'); L('spPre', 'spIn'); L('spIn', 'L0SE');
   L('rSB', 'seIn'); L('seIn', 'L0SE');
-  L('L0SE', 'L0NE'); L('L0NE', 'L0NW'); L('L0NW', 'L0SW'); L('L0SW', 'rampS'); L('rampS', 'nestSE'); L('nestSE', 'deckE'); L('deckE', 'nestNE'); L('padEland', 'deckE'); L('padNland', 'deckE'); L('padCland', 'rampS');
+  L('L0SE', 'L0NE'); L('L0NE', 'L0NW'); L('L0NW', 'L0SW'); L('L0SW', 'rampS'); L('rampS', 'gardenS'); L('gardenS', 'deckE'); L('deckE', 'gardenN'); L('padEland', 'deckE'); L('padNland', 'deckE'); L('padCland', 'rampS');
   L('rSB', 'cwFoot'); L('cwFoot', 'cwTop', { climb: true }); L('cwTop', 'cwEnd');
   // north arcade, terrace, skybridge
   LL('nwc*', 'rN*'); LL('nwc*', 'stBot*'); LL('stBot*', 'stTop*', { climb: true });
@@ -4723,7 +4781,7 @@ MAPS.atrium = {
     if (y > 15.2) return 'THE CROWN';
     if (ax <= 17 && az <= 17) {
       if (y < -1.5) return 'THE CORE';
-      return y > 1 ? 'THE HELIX · TURN ' + (y > 8 ? '2 · SNIPER DECK' : '1') : 'HELIX BASE';
+      return y > 1 ? 'THE HELIX · TURN ' + (y > 8 ? '2 · ROOF GARDEN' : '1') : 'HELIX BASE';
     }
     if (z > 16.5 && z < 30 && x > -16 && x < -12 && y > 4.5) return 'THE SKYBRIDGE';
     if (z >= 30) return y > 4.5 ? 'NORTH TERRACE' : 'THE ARCADE';
@@ -4738,10 +4796,10 @@ MAPS.atrium = {
     legend: [['wall', '#0d0e13', '#a7adc8'], ['cover', '#5f8a5f'], ['stairs', '#4a5db0'],
       ['helix track', '#6f86d6'], ['tunnel / garden', 'rgba(47,209,200,0.45)', '#2fd1c8']],
     spawnBox: { A: [-60, -14, -47, 14], B: [47, -14, 60, 14] },
-    sideLabels: [[10, 'y 10  the sniper deck'], [8, 'y 8  end of turn 1'], [6, 'y 6  terrace'], [0, 'y 0  plaza'], [-3, 'y −3  garden'], [-4.4, 'y −4.4  tunnel']],
+    sideLabels: [[10, 'y 10  the roof garden'], [8, 'y 8  end of turn 1'], [6, 'y 6  terrace'], [0, 'y 0  plaza'], [-3, 'y −3  garden'], [-4.4, 'y −4.4  tunnel']],
     labels: [
       { text: 'SPAWN A', x: -54, z: 0 }, { text: 'SPAWN B', x: 54, z: 0 },
-      { text: 'THE HELIX', textBig: 'THE HELIX — a spiral ramp, one turn up to a 10 m sniper deck', x: 0, z: 14, compact: true },
+      { text: 'THE HELIX', textBig: 'THE HELIX — a spiral ramp, one turn up to a 10 m roof garden', x: 0, z: 14, compact: true },
       { text: 'THE CORE', textBig: 'THE CORE — the tunnel surfaces here, under the whole open tower', x: 0, z: 0 },
       { text: 'NORTH ARCADE', textBig: 'NORTH ARCADE — covered shops, terrace + skybridge above (y 6)', x: 0, z: 35 },
       { text: 'THE GARDEN', textBig: 'THE GARDEN — sunken court (y −3)', x: 0, z: -31 },
@@ -4879,6 +4937,7 @@ function loadMap(key) {
   applySkyAndWeather(m);
   scatterScenery(m, key);
   dressSpawnHalls(key);
+  if (key === 'monsoon') dressMonsoonLife();
   applyRealism(m);
   if (key === 'atrium') {   // shadow-only lids over both tunnel pits so the whole pit interior sits in even shade (no sun patches creeping down one wall only)
     const lidMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
