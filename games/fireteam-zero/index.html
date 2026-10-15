@@ -1298,6 +1298,7 @@ function dressMonsoonLife() {
     // roof flags in team colour + aviation beacons
     for (const zs of [-1, 1]) { pole(sgn * 44.4, 18, zs * 12.8, 4.2, team, rnd() * 6.28); AG.parts.push({ geo: new THREE.BoxGeometry(0.22, 0.22, 0.22), c: new THREE.Color(0xff3a2a), x: sgn * 44.4, y: 22.3, z: zs * 12.8, ph: sgn + zs, sp: 3.0, mode: 2 }); }
   }
+  for (const p of AGM) AG.parts.push(Object.assign({}, p));   // rack LEDs from the tower rooms
   // the Mast: four blinking beacons on the top platform + a flag on top
   for (const [x, z] of [[-4.6, -4.6], [4.6, -4.6], [-4.6, 4.6], [4.6, 4.6]]) AG.parts.push({ geo: new THREE.BoxGeometry(0.22, 0.22, 0.22), c: new THREE.Color(0xff3a2a), x, y: 18.35, z, ph: x + z, sp: 2.4, mode: 2 });
   pole(0, 18, 0, 5.2, 0x3fd8ff, 1.2);
@@ -1889,7 +1890,55 @@ for (const sgn of [-1, 1]) for (const zs of [1, -1]) {
 // middle by a sunken flood pit with NO ground-level path around it, so the only way from its south
 // half to its north half is up and over the roof deck — via two offset, non-mirrored ladders, not
 // one shared stair. Two levels (street + roof deck) plus the pit, instead of Atrium's four.
+// ---------- TWIN SPIRES tower rooms: each of the two enclosed floors (y 6, y 12) is a hallway from the bridge, one big room on
+// the south side and two rooms on the north side joined by a wide opening (which is where the stair lives). Coordinates are
+// the WEST tower's (x -46 back wall .. -26 bridge side, z -14 .. 14); `put` mirrors them for the east tower. ----------
+const AGM = [];     // blinking rack LEDs etc. collected while the map builds, merged into one animated mesh by dressMonsoonLife()
+function buildTowerRooms(put, y, variant, sgn, matGlassRail) {
+  const matW = M(0x56606e, 0.95), matTrim = M(0x2b2f3a, 0.5, 0.5), matRack = M(0x1b1e26, 0.5, 0.5), matDesk = M(0x3a4150, 0.6, 0.3);
+  const matCrate = M(0x8a6a3a, 0.8), matCrate2 = M(0x4d5d44, 0.8), matShelf = M(0x6b707c, 0.5, 0.5);
+  const glowM = (c, i = 1.6) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: i, roughness: 0.4 });
+  const H = 5.5;
+  const wall = (x0, z0, x1, z1, y0 = 0, y1 = H, m = matW) => put(x0, y + y0, z0, x1, y + y1, z1, m);
+  const glass = (x0, z0, x1, z1) => put(x0, y + 1.0, z0, x1, y + 4.4, z1, matGlassRail, { tag: 'rail', shadow: false });
+  const win = (x0, z0, x1, z1) => { wall(x0, z0, x1, z1, 0, 1.0); glass(x0, z0, x1, z1); wall(x0, z0, x1, z1, 4.4, H); };
+  // exterior: window walls on the back (west), north and south sides, and on the bridge side either side of the hallway mouth
+  win(-46, -14, -45.5, 14); win(-46, 13.5, -26, 14); win(-46, -14, -26, -13.5);
+  win(-26.5, -14, -26, -2); win(-26.5, 2, -26, 14); wall(-26.5, -2, -26, 2, 4.4, H);
+  // hallway walls (z = +-2 .. 2.5) with two doors each; lintels over the doors
+  const hw = (z0, z1, gaps) => { let x = -46; for (const [a, b] of gaps) { if (a > x) wall(x, z0, a, z1); wall(a, z0, b, z1, 3.4, H); x = b; } if (x < -26) wall(x, z0, -26, z1); };
+  hw(-2.5, -2, [[-40, -34], [-32, -26.5]]);      // south side doors: one toward the back (stair S3 side), one by the bridge (stair S1 side)
+  hw(2, 2.5, [[-37, -33], [-32, -26.5]]);        // north side doors, both into the north-east room
+  // divider between the two north rooms: only the first part, the rest is the wide opening (the stair stands in it)
+  wall(-38.5, 2.5, -38, 8);
+  // ceiling light strips in every room + the hallway
+  for (const [x0, z0, x1, z1] of [[-44, -8, -30, -7.8], [-44, -5, -30, -4.8], [-35, 5, -28, 5.2], [-45, 5, -39.5, 5.2], [-44, -0.1, -28, 0.1]])
+    put(x0, y + 5.35, z0, x1, y + 5.45, z1, glowM(0xcfe6ff, 1.2), { collide: false, shadow: false });
+  // ---- room contents (non-blocking for the bots' lines: the stair strips, door lines and the x -29..-26.5 corridors stay clear) ----
+  const rack = (x0, z0, x1, z1) => { put(x0, y, z0, x1, y + 2.4, z1, matRack, { tag: 'cover' });
+    const f = z1 > z0 && (z1 - z0) > (x1 - x0) ? 1 : 0; const n = Math.max(2, Math.floor(Math.max(x1 - x0, z1 - z0) * 1.6));
+    for (let i = 0; i < n; i++) { const t = (i + 0.5) / n, lx = f ? (x1 + 0.02) : x0 + t * (x1 - x0), lz = f ? z0 + t * (z1 - z0) : (z1 + 0.02);
+      const c = [0x44ff88, 0x44aaff, 0xffb347][i % 3]; AGM.push({ geo: new THREE.BoxGeometry(f ? 0.05 : 0.14, 0.08, f ? 0.14 : 0.05), c: new THREE.Color(c), x: sgn === -1 ? lx : -lx, y: y + 0.6 + (i % 4) * 0.45, z: lz, sp: 1.6 + (i % 5) * 0.7, ph: i * 1.3 + x0, mode: i % 2 ? 2 : 1 }); } };
+  const crates = (list) => { for (const [x0, z0, x1, z1, h, k] of list) put(x0, y, z0, x1, y + h, z1, k ? matCrate2 : matCrate, { tag: 'cover' }); };
+  const shelf = (x0, z0, x1, z1) => put(x0, y, z0, x1, y + 2.2, z1, matShelf, { tag: 'cover' });
+  const desk = (x0, z0, x1, z1) => { put(x0, y, z0, x1, y + 0.95, z1, matDesk, { tag: 'cover' }); put(x0 + 0.1, y + 0.95, z0 + 0.1, x1 - 0.1, y + 1.35, z0 + 0.22, glowM(0x58d6ff, 1.8), { collide: false, shadow: false }); };
+  const screens = (x, z0, z1, c) => put(x, y + 1.6, z0, x + 0.12, y + 3.6, z1, glowM(c, 1.5), { collide: false, shadow: false });
+  const server = (a) => { for (const [x0, z0, x1, z1] of a) rack(x0, z0, x1, z1); };
+  // SOUTH room (x -46..-26, z -14..-2.5): stair well along the south wall at z -12..-9, node corridor at x -29..-26.5
+  const south = () => variant === 'A'
+    ? server([[-45.5, -6.6, -41.5, -5.4], [-45.5, -5.2, -41.5, -4.0], [-37.8, -6.6, -34.2, -5.4], [-37.8, -5.2, -34.2, -4.0], [-32.5, -8.6, -30.5, -7.4]])         // SERVER ROOM
+    : (() => { desk(-33, -6.2, -30.4, -5.2); desk(-33, -4.4, -30.4, -3.4); desk(-45.5, -6.4, -43.6, -4.2); screens(-45.9, -7, -3.5, 0x44ffa0); screens(-26.55, -9, -4, 0x66d4ff); })();   // CONTROL ROOM
+  // NORTH-EAST room (x -38..-26, z 2.5..14), the stair's base is in the wide opening at its west end
+  const northE = () => variant === 'A'
+    ? (() => { desk(-37.8, 3.2, -36.2, 4.4); desk(-31.6, 3.4, -29.2, 4.4); desk(-37.8, 5.4, -36.2, 6.6); screens(-26.55, 3.5, 9, 0xff6fb0); screens(-26.55, 3.5, 8, 0x66d4ff); })()   // CONTROL ROOM (big window on the bridge side)
+    : crates([[-37.8, 3.2, -36.2, 5.0, 1.4, 0], [-31.8, 3.4, -29.6, 5.0, 2.4, 1], [-37.8, 5.4, -36.2, 6.8, 1.2, 1], [-31.8, 6.8, -29.8, 8.2, 2.4, 0]]);   // STORAGE
+  // NORTH-WEST room (x -46..-38.5, z 2.5..14)
+  const northW = () => { if (variant === 'A') { crates([[-45.5, 3.2, -43, 5.6, 2.4, 0], [-45.5, 6.0, -43.6, 7.8, 1.2, 1], [-42.8, 3.4, -40.6, 4.8, 1.4, 1]]); shelf(-45.5, 9, -45, 13.4); shelf(-42.5, 13, -39.2, 13.4); }   // STORAGE / ARMORY
+    else server([[-45.5, 3.4, -41.7, 4.6], [-45.5, 4.8, -41.7, 6.0], [-45.5, 6.6, -41.7, 7.8], [-45.5, 12.4, -41.7, 13.4]]); };                       // SERVER ROOM
+  south(); northE(); northW();
+}
 function buildMonsoonGeometry() {
+AGM.length = 0;
 // ---------- TWIN SPIRES (Monsoon) — a LARGE map (~120 x 76 m) ----------
 // Each team owns an open-frame tower (spawn lobby + two open decks + roof). Between them lies THE DRAIN,
 // a flooded 3 m-deep canyon with a three-level central Mast; at heights 6 / 12 / 18 m a skybridge runs
@@ -1972,11 +2021,13 @@ for (const sgn of [-1, 1]) {
   // perimeter rails on every deck (bridge gap on the east edge), and rails around each stair hole
   for (const [y, hz0, hz1] of [[6, -12, -9], [12, 9, 12], [18, -12, -9]]) {
     const h = y === 18 ? 1.3 : RAIL_H;
-    put(-46, y, -14, -45.75, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
-    put(-46, y, 13.75, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
-    put(-46, y, -14, -26, y + h, -13.75, matGlassRail, { tag: 'rail', shadow: false });
-    put(-26.25, y, -14, -26, y + h, -2, matGlassRail, { tag: 'rail', shadow: false });
-    put(-26.25, y, 2, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+    if (y === 18) {                                                                       // (decks 6 and 12 are enclosed rooms now, see below)
+      put(-46, y, -14, -45.75, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+      put(-46, y, 13.75, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+      put(-46, y, -14, -26, y + h, -13.75, matGlassRail, { tag: 'rail', shadow: false });
+      put(-26.25, y, -14, -26, y + h, -2, matGlassRail, { tag: 'rail', shadow: false });
+      put(-26.25, y, 2, -26, y + h, 14, matGlassRail, { tag: 'rail', shadow: false });
+    }
     put(-40.25, y, hz0, -40, y + RAIL_H, hz1, matGlassRail, { tag: 'rail', shadow: false });
     put(-40, y, hz0 - 0.25, -28, y + RAIL_H, hz0, matGlassRail, { tag: 'rail', shadow: false });
     put(-40, y, hz1, -28, y + RAIL_H, hz1 + 0.25, matGlassRail, { tag: 'rail', shadow: false });
@@ -1988,8 +2039,9 @@ for (const sgn of [-1, 1]) {
   // corner pillars for the open frame
   for (const [x0, z0] of [[-46, -14], [-46, 12.5], [-27.5, -14], [-27.5, 12.5], [-37, -14], [-37, 12.5]]) put(x0, 0, z0, x0 + 1.5, 18, z0 + 1.5, matBldg, { tag: 'mast' });
   // deck cover (crates)
-  for (const [y, list] of [[6, [[-41, -4.5, -38.5, -3], [-35, 3.5, -32, 5]]], [12, [[-41, 3.5, -38.5, 5], [-35, -5, -32, -3.5]]], [18, [[-41, -4.5, -38.5, -3], [-35, 3.5, -32, 5]]]])
+  for (const [y, list] of [[18, [[-41, -4.5, -38.5, -3], [-35, 3.5, -32, 5]]]])
     for (const [x0, z0, x1, z1] of list) put(x0, y, z0, x1, y + 1.2, z1, matCover);
+  buildTowerRooms(put, 6, 'A', sgn, matGlassRail); buildTowerRooms(put, 12, 'B', sgn, matGlassRail);
 }
 
 // ---------- NORTH: THE BAZAAR (covered hall with a walkable roof at y 5) ----------
@@ -3990,7 +4042,7 @@ function buildMonsoonNav() {
   N2('lobN', -42, 0, 13.5, { hold: 1 }); N2('lobS', -42, 0, -13.5, { hold: 1 });
   // --- tower stairs + decks (y 6 / 12 / 18), mirrored ---
   N2('s1b', -41.5, 0, -10.5); N2('s1t', -27.2, 6, -10.5);
-  N2('d1E', -27.2, 6, 0, { w: 0.5 }); N2('d1C', -34, 6, 0, { w: 1 }); N2('s2b', -41.5, 6, 10.5);
+  N2('d1E', -27.2, 6, 0, { w: 0.5 }); N2('d1C', -34, 6, 0, { w: 1 }); N2('n1m', -35, 6, 7); N2('s2b', -41.5, 6, 10.5);
   N2('s2t', -27.2, 12, 10.5);
   N2('d2E', -27.2, 12, 0, { w: 0.5 }); N2('d2C', -34, 12, 0, { w: 1 }); N2('s3b', -41.5, 12, -10.5);
   N2('s3t', -27.2, 18, -10.5);
@@ -4026,7 +4078,7 @@ function buildMonsoonNav() {
   LL('spawn*', 'lobC*'); LL('lobC*', 'lobE*'); LL('spawn*', 'lobN*'); LL('spawn*', 'lobS*');
   // lobby -> serpentine stair
   LL('lobS*', 's1b*'); LL('s1b*', 's1t*', { climb: true }); LL('s1t*', 'd1E*'); LL('d1E*', 'd1C*');
-  LL('d1C*', 's2b*'); LL('s2b*', 's2t*', { climb: true }); LL('s2t*', 'd2E*'); LL('d2E*', 'd2C*');
+  LL('d1C*', 'n1m*'); LL('n1m*', 's2b*'); LL('s2b*', 's2t*', { climb: true }); LL('s2t*', 'd2E*'); LL('d2E*', 'd2C*');
   LL('d2C*', 's3b*'); LL('s3b*', 's3t*', { climb: true }); LL('s3t*', 'rE*'); LL('rE*', 'rC*');
   // bridges to the Mast
   LL('d1E*', 'br1*'); LL('br1*', 'hub1'); LL('d2E*', 'br2*'); LL('br2*', 'hub2'); LL('rE*', 'br3*'); LL('br3*', 'hub3');
