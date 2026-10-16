@@ -433,11 +433,12 @@
   const vel = new THREE.Vector2(0,0);
   let ballY = 0, ballVY = 0;
   let strokes = 0, holeDone = false;
-  let aimAngle = 0;
+  let aimAngle = 0, aimAngleTarget = 0;
   let swingState = "aim"; // aim -> power -> accuracy -> flight -> rolling
   let powerStart = 0, lockedPower = 0;
   let accStart = 0, lockedAcc = 0;
-  const POWER_CYCLE = 1.05, ACC_CYCLE = 0.62;
+  const POWER_CYCLE = 1.7, ACC_CYCLE = 1.15;
+  const ACC_DEADZONE = 0.07; // small off-center clicks still count as a straight shot
   let flightTarget = null;
 
   function toast(msg){
@@ -494,7 +495,14 @@
   renderer.domElement.addEventListener("mousemove",(e)=>{
     if(swingState!=="aim") return;
     const nx = (e.clientX/window.innerWidth)*2-1;
-    aimAngle = THREE.MathUtils.clamp(nx,-0.9,0.9) * (Math.PI*0.3);
+    aimAngleTarget = THREE.MathUtils.clamp(nx,-0.95,0.95) * (Math.PI*0.3);
+  });
+  window.addEventListener("keydown",(e)=>{
+    if(swingState!=="aim") return;
+    const nudge = THREE.MathUtils.degToRad(0.4); // fine keyboard adjustment for precise lines
+    if(e.key==="ArrowLeft"){ aimAngleTarget -= nudge; e.preventDefault(); }
+    else if(e.key==="ArrowRight"){ aimAngleTarget += nudge; e.preventDefault(); }
+    aimAngleTarget = THREE.MathUtils.clamp(aimAngleTarget, -Math.PI*0.3, Math.PI*0.3);
   });
   renderer.domElement.addEventListener("mousedown",()=>{
     sfxCtx();
@@ -512,7 +520,9 @@
       swingState="accuracy"; accStart=performance.now()/1000;
       document.getElementById("accuracy-track").classList.add("show");
     } else if(swingState==="accuracy"){
-      lockedAcc = currentAccuracy();
+      let acc = currentAccuracy();
+      if(Math.abs(acc) < ACC_DEADZONE) acc = 0; // forgive near-center clicks
+      lockedAcc = acc;
       executeShot(lockedPower, lockedAcc);
     }
   });
@@ -641,8 +651,9 @@
   }
   function aimToPin(){
     const dx = PIN_X-ball.position.x, dz = PIN_Z-ball.position.z;
-    aimAngle = Math.atan2(dx,dz);
-    aimAngle = THREE.MathUtils.clamp(aimAngle, -Math.PI*0.3, Math.PI*0.3);
+    let a = Math.atan2(dx,dz);
+    a = THREE.MathUtils.clamp(a, -Math.PI*0.3, Math.PI*0.3);
+    aimAngle = a; aimAngleTarget = a; // snap instantly, no lerp-in after a shot settles
   }
 
   function sinkBall(){
@@ -669,7 +680,7 @@
     document.getElementById("sink-panel").classList.remove("show");
     strokes=0; holeDone=false; vel.set(0,0); ballY=0; ballVY=0;
     ball.position.copy(ballStart); ball.scale.setScalar(1);
-    clubIndex=0; refreshClubUI(); aimAngle=0;
+    clubIndex=0; refreshClubUI(); aimAngle=0; aimAngleTarget=0;
     swingState="aim"; updateHud();
     document.getElementById("hint").style.opacity=0.55;
     aimCamera(true);
@@ -684,6 +695,9 @@
     const now = performance.now();
     const dt = Math.min(0.033,(now-last)/1000); last = now;
 
+    if(swingState==="aim"){
+      aimAngle = THREE.MathUtils.lerp(aimAngle, aimAngleTarget, Math.min(1, dt*14));
+    }
     stepPhysics(dt);
     updateAimIndicator();
 
