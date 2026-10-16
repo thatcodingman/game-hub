@@ -216,6 +216,9 @@
   scene.add(sun);
   scene.add(new THREE.AmbientLight(0x9fb8c9, 0.55));
   scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x3a4a2e, 0.45));
+  const camFill = new THREE.DirectionalLight(0xfff1e2, 0.75);
+  camFill.position.set(-6, 9, -12);
+  scene.add(camFill);
 
   const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 700);
 
@@ -382,111 +385,216 @@
   // tee markers
   const teeMarkMat = new THREE.MeshStandardMaterial({ color:0xfdf8ec, roughness:0.5 });
   [-1.4,1.4].forEach(x=>{
-    const m = new THREE.Mesh(new THREE.SphereGeometry(0.1,10,8), teeMarkMat);
-    m.position.set(x,0.1,1.2); scene.add(m);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,0.035,20), teeMarkMat);
+    m.position.set(x,0.02,1.2); scene.add(m);
   });
 
-  /* ---------- golfer: tall, sharp-dressed caddy at the ball — built from rounded
-     capsule/sphere anatomy (no boxes) so the silhouette reads as a human figure ---------- */
+  /* ---------- golfer: smooth lofted anatomy, IK-posed in a real golf address stance ---------- */
+  function sstep(t){ return t*t*(3-2*t); }
+  // body of revolution along +Y with smoothly blended radius keys and rounded end caps
+  function loft(keys, opts){
+    opts = opts || {};
+    const seg = opts.seg || 36, n = opts.n || 44;
+    const capB = opts.capB !== undefined ? opts.capB : 0.03, capT = opts.capT !== undefined ? opts.capT : 0.03;
+    const pts = [];
+    const y0 = keys[0][0], r0 = keys[0][1];
+    const y1 = keys[keys.length-1][0], r1 = keys[keys.length-1][1];
+    for(let i=0;i<=6;i++){ const a=i/6*Math.PI/2; pts.push(new THREE.Vector2(Math.max(0.0001, r0*Math.sin(a)), y0 - capB*Math.cos(a))); }
+    for(let i=1;i<n;i++){
+      const y = y0 + (y1-y0)*i/n;
+      let k = 0; while(k < keys.length-2 && y > keys[k+1][0]) k++;
+      const t = sstep(THREE.MathUtils.clamp((y-keys[k][0])/(keys[k+1][0]-keys[k][0]),0,1));
+      pts.push(new THREE.Vector2(THREE.MathUtils.lerp(keys[k][1], keys[k+1][1], t), y));
+    }
+    for(let i=0;i<=6;i++){ const a=i/6*Math.PI/2; pts.push(new THREE.Vector2(Math.max(0.0001, r1*Math.cos(a)), y1 + capT*Math.sin(a))); }
+    return new THREE.LatheGeometry(pts, seg);
+  }
+  // fine pinstripe for the suit
+  const pinTex = (function(){
+    const c = document.createElement("canvas"); c.width = 32; c.height = 8;
+    const x = c.getContext("2d");
+    x.fillStyle = "#7b36cc"; x.fillRect(0,0,32,8);
+    x.fillStyle = "rgba(225,190,255,0.32)"; x.fillRect(0,0,1.5,8);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(26,1); t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  })();
+
   function makeGolfer(){
     const g = new THREE.Group();
-    const skinMat   = new THREE.MeshStandardMaterial({ color:0x4a3221, roughness:0.55 });
-    const hairMat   = new THREE.MeshStandardMaterial({ color:0x15110d, roughness:0.9 });
-    const suitMat   = new THREE.MeshStandardMaterial({ color:0x6b2fb3, roughness:0.32, metalness:0.08 });
-    const suitDarkMat = new THREE.MeshStandardMaterial({ color:0x4f1f8a, roughness:0.3, metalness:0.06 });
-    const shirtMat  = new THREE.MeshStandardMaterial({ color:0xf4ecd8, roughness:0.5 });
-    const shoeMat   = new THREE.MeshStandardMaterial({ color:0x120f0c, roughness:0.2, metalness:0.25 });
-    const glassMat  = new THREE.MeshStandardMaterial({ color:0x0a0a0a, roughness:0.12, metalness:0.5 });
-    const cigarMat  = new THREE.MeshStandardMaterial({ color:0x5a3a1e, roughness:0.6 });
-    const emberMat  = new THREE.MeshBasicMaterial({ color:0xff6a2a });
-    const cap = (r,len,rad=12,cs=6)=> new THREE.CapsuleGeometry(r,len,cs,rad);
+    const M = (o)=> new THREE.MeshStandardMaterial(o);
+    const skin   = M({ color:0xb07a55, roughness:0.45 });
+    const lipMat = M({ color:0x7d4238, roughness:0.4 });
+    const eyeW   = M({ color:0xf2eee6, roughness:0.3 });
+    const irisM  = M({ color:0x2a170c, roughness:0.2 });
+    const lensM2 = new THREE.MeshStandardMaterial({ color:0x2a1c10, roughness:0.08, metalness:0.5, transparent:true, opacity:0.62 });
+    const soleM  = M({ color:0x3a2616, roughness:0.55 });
+    const hairMat= M({ color:0x120e0b, roughness:1 });
+    const suit   = M({ map:pinTex, roughness:0.5, metalness:0.05 });
+    const shirt  = M({ color:0xf4efe3, roughness:0.5 });
+    const shoeM  = M({ color:0x1a1410, roughness:0.22, metalness:0.25 });
+    const lensM  = M({ color:0x050505, roughness:0.08, metalness:0.6 });
+    const steel  = M({ color:0xcfd3d8, roughness:0.25, metalness:0.8 });
+    const gripM  = M({ color:0x1a1a1a, roughness:0.8 });
+    const headM  = M({ color:0x1b1b1f, roughness:0.3, metalness:0.6 });
+    const gold   = M({ color:0xc9a24b, roughness:0.3, metalness:0.7 });
+    const cigarM = M({ color:0x5a3a1e, roughness:0.6 });
+    const emberM = new THREE.MeshBasicMaterial({ color:0xff6a2a });
+    const UP = new THREE.Vector3(0,1,0), XAX = new THREE.Vector3(1,0,0);
 
-    // 6'6" scaled to this game's yard-ish units (~2.15 units tall total)
+    function ball(parent, mat, r, x,y,z, sx,sy,sz){
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r,28,20), mat);
+      m.position.set(x,y,z); m.scale.set(sx||1, sy||1, sz||1); m.castShadow = true; parent.add(m); return m;
+    }
+    function limb(parent, keys, from, to, mat){
+      const dir = to.clone().sub(from); const len = dir.length();
+      const k = keys.map(function(a){ return [a[0]*len, a[1]]; });
+      const m = new THREE.Mesh(loft(k,{capB:0.02,capT:0.02,seg:28}), mat);
+      m.position.copy(from); m.quaternion.setFromUnitVectors(UP, dir.normalize());
+      m.castShadow = true; parent.add(m); return m;
+    }
+    // two-bone IK: returns elbow/knee and end positions
+    function ik(from, to, A, B, pole){
+      const T = to.clone().sub(from); let d = T.length();
+      const dmax = (A+B)*0.995; if(d > dmax){ T.multiplyScalar(dmax/d); d = dmax; }
+      const u = T.clone().normalize();
+      const a = (A*A - B*B + d*d)/(2*d);
+      const h = Math.sqrt(Math.max(0, A*A - a*a));
+      const p = pole.clone(); p.sub(u.clone().multiplyScalar(p.dot(u))).normalize();
+      return { mid: from.clone().add(u.clone().multiplyScalar(a)).add(p.multiplyScalar(h)), end: from.clone().add(T) };
+    }
+
+    const LEAN = 0.42;
     const hips = new THREE.Group(); hips.position.y = 1.05; g.add(hips);
 
-    // pelvis — slim, rounded capsule
-    const pelvis = new THREE.Mesh(cap(0.13,0.06), suitMat);
-    pelvis.rotation.z = Math.PI/2; pelvis.position.y = 0.02;
-    pelvis.castShadow = true; hips.add(pelvis);
+    // pelvis / trouser waist
+    const pel = new THREE.Mesh(loft([[-0.17,0.12],[-0.04,0.152],[0.08,0.15],[0.14,0.13]],{capB:0.04,capT:0.01}), suit);
+    pel.scale.set(1.15,1,0.8); pel.castShadow = true; hips.add(pel);
 
-    // torso — slim tapered capsule (athletic build, not stocky)
-    const torso = new THREE.Mesh(cap(0.145,0.36), suitMat);
-    torso.position.y = 0.42; torso.scale.set(1.0,1,0.75);
-    torso.castShadow = true; hips.add(torso);
-    // shirt sliver at the collar, and two thin rounded lapels (cylinders, not boxes)
-    const shirt = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.065,0.3,10), shirtMat);
-    shirt.position.set(0,0.58,0.1); shirt.rotation.x = 0.05; hips.add(shirt);
-    function lapel(side){
-      const l = new THREE.Mesh(new THREE.CylinderGeometry(0.014,0.014,0.38,6), suitDarkMat);
-      l.position.set(side*0.07,0.56,0.1); l.rotation.z = side*0.3; l.rotation.x = 0.05;
-      hips.add(l);
-    }
-    lapel(-1); lapel(1);
+    // legs: thigh + shin skinned tubes, blended through hip and knee spheres
+    [-1,1].forEach(function(s){
+      const hip = new THREE.Vector3(s*0.085,-0.03,0);
+      const ankle = new THREE.Vector3(s*0.15,-0.965,-0.03);
+      const r = ik(hip, ankle, 0.5, 0.5, new THREE.Vector3(s*0.2,0,1));
+      limb(hips, [[0,0.103],[0.5,0.088],[1,0.06]], hip, r.mid, suit);
+      limb(hips, [[0,0.06],[0.25,0.064],[1,0.045]], r.mid, r.end, suit);
+      ball(hips, suit, 0.103, hip.x,hip.y,hip.z);
+      ball(hips, suit, 0.06, r.mid.x,r.mid.y,r.mid.z);
+      const sh = new THREE.Group(); sh.position.set(r.end.x,-1.05,r.end.z-0.065); sh.rotation.y = s>0 ? 0.32 : -0.14; hips.add(sh);
+      const upper = new THREE.Mesh(loft([[0,0.044],[0.05,0.056],[0.13,0.05],[0.21,0.059],[0.27,0.047],[0.31,0.012]],{capB:0.035,capT:0.01,seg:32}), shoeM);
+      upper.rotation.x = Math.PI/2; upper.scale.set(0.92,1,0.74); upper.position.set(0,0.07,0); upper.castShadow = true; sh.add(upper);
+      const sole = new THREE.Mesh(loft([[0,0.045],[0.05,0.057],[0.13,0.051],[0.21,0.06],[0.27,0.048],[0.312,0.012]],{capB:0.036,capT:0.01,seg:32}), soleM);
+      sole.rotation.x = Math.PI/2; sole.scale.set(0.93,1,0.13); sole.position.set(0,0.014,0); sole.castShadow = true; sh.add(sole);
+      const heel = new THREE.Mesh(new THREE.CylinderGeometry(0.036,0.04,0.03,18), soleM);
+      heel.position.set(0,0.03,0.015); sh.add(heel);
+      const toe = new THREE.Mesh(new THREE.TorusGeometry(0.036,0.004,8,20,Math.PI), soleM);   // toe-cap seam
+      toe.rotation.set(-Math.PI/2+0.45,0,0); toe.position.set(0,0.078,0.215); toe.scale.set(1,1,0.8); sh.add(toe);
+      const hemDir = r.end.clone().sub(r.mid).normalize();
+      const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.047,0.009,10,24), suit);
+      cuff.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), hemDir); cuff.position.copy(r.end).sub(hemDir.clone().multiplyScalar(0.012)); hips.add(cuff);
+    });
 
-    // legs — thigh + shin capsules joined by a knee sphere for a real limb taper
-    function leg(x){
-      const thigh = new THREE.Mesh(cap(0.072,0.32), suitMat);
-      thigh.position.set(x,-0.2,0); thigh.castShadow = true; hips.add(thigh);
-      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.062,10,8), suitMat);
-      knee.position.set(x,-0.42,0); hips.add(knee);
-      const shin = new THREE.Mesh(cap(0.056,0.3), suitMat);
-      shin.position.set(x,-0.6,0); shin.castShadow = true; hips.add(shin);
-      const shoe = new THREE.Mesh(cap(0.058,0.1), shoeMat);
-      shoe.rotation.x = Math.PI/2; shoe.scale.set(1,1,1.6);
-      shoe.position.set(x,-0.73,0.05); shoe.castShadow = true; hips.add(shoe);
-      return thigh;
-    }
-    leg(-0.075); leg(0.075);
+    // torso group, leaning forward over the ball
+    const torso = new THREE.Group(); torso.rotation.x = LEAN; hips.add(torso);
+    const jacket = new THREE.Mesh(loft([[-0.17,0.152],[-0.06,0.166],[0.1,0.14],[0.26,0.128],[0.42,0.152],[0.54,0.168],[0.62,0.15],[0.69,0.07]],{capB:0.02,capT:0.02}), suit);
+    jacket.scale.set(1.25,1,0.72); jacket.castShadow = true; torso.add(jacket);
+    // shoulders and neck
+    [-1,1].forEach(function(s){ ball(torso, suit, 0.072, s*0.205,0.575,0, 1,1.0,1); });
+    const neck = new THREE.Mesh(loft([[0.62,0.052],[0.76,0.046]],{capB:0.02,capT:0.02}), skin); torso.add(neck);
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(0.058,0.016,12,28), shirt);
+    collar.rotation.x = Math.PI/2; collar.position.y = 0.665; collar.scale.set(1.05,1.05,1); torso.add(collar);
+    // lapel pin
+    ball(torso, gold, 0.012, 0.11,0.5,0.093);
 
-    // arms — shoulder sphere, upper-arm + forearm capsules, hand sphere; pivot group
-    // rotates the whole arm for the swing animation
-    function arm(x, side){
-      const grp = new THREE.Group(); grp.position.set(x,0.63,0);
-      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.065,10,8), suitMat);
-      grp.add(shoulder);
-      const upper = new THREE.Mesh(cap(0.05,0.24), suitMat);
-      upper.position.y = -0.18; upper.castShadow = true; grp.add(upper);
-      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.044,8,7), suitMat);
-      elbow.position.y = -0.32; grp.add(elbow);
-      const fore = new THREE.Mesh(cap(0.04,0.22), suitMat);
-      fore.position.y = -0.45; fore.castShadow = true; grp.add(fore);
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.05,10,8), skinMat);
-      hand.position.y = -0.58; hand.castShadow = true; grp.add(hand);
-      grp.userData.side = side;
-      hips.add(grp);
-      return grp;
-    }
-    const armL = arm(-0.185,"L"), armR = arm(0.185,"R");
+    // head: a lofted, longer-than-round skull with a defined jaw, brow, nose and lips
+    const head = new THREE.Group(); head.position.set(0,0.87,0.03); head.rotation.x = 0.3; torso.add(head);
+    const skull = new THREE.Mesh(loft([[-0.125,0.032],[-0.105,0.064],[-0.07,0.085],[-0.02,0.094],[0.04,0.098],[0.09,0.09],[0.125,0.066]],{capB:0.02,capT:0.012,seg:40,n:56}), skin);
+    skull.scale.set(0.9,1,1.1); skull.castShadow = true; head.add(skull);
+    ball(head, skin, 0.03, 0,-0.098,0.072, 1.15,0.85,1);                 // chin
+    [-1,1].forEach(function(s2){
+      ball(head, skin, 0.03, s2*0.068,-0.07,0.0, 0.7,1,1);                // jaw angles
+      ball(head, skin, 0.024, s2*0.062,-0.008,0.07, 1,0.8,1);             // cheekbones
+      ball(head, skin, 1, s2*0.092,0.0,-0.005, 0.012,0.034,0.026);        // ears
+      ball(head, hairMat, 1, s2*0.088,0.04,0.04, 0.007,0.032,0.028);     // sideburns
+      ball(head, eyeW, 0.013, s2*0.034,0.022,0.098);                      // eyes
+      ball(head, irisM, 0.0075, s2*0.034,0.022,0.109);
+      ball(head, lensM2, 1, s2*0.046,0.022,0.125, 0.047,0.036,0.01);      // tinted lenses (eyes show through)
+      const brow = new THREE.Mesh(new THREE.CapsuleGeometry(0.006,0.044,4,8), hairMat);
+      brow.rotation.z = Math.PI/2 + s2*0.12; brow.position.set(s2*0.04,0.07,0.103); head.add(brow);
+      const tmp = new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,0.13,8), lensM);
+      tmp.rotation.x = Math.PI/2; tmp.position.set(s2*0.092,0.03,0.055); head.add(tmp);   // temples
+      ball(head, skin, 0.014, s2*0.018,-0.036,0.117, 1,0.9,1);            // nostril wings
+    });
+    ball(head, skin, 1, 0,-0.018,0.116, 0.02,0.034,0.03);                 // nose bridge
+    ball(head, skin, 0.019, 0,-0.032,0.133);                              // nose tip
+    ball(head, lipMat, 1, 0,-0.058,0.1, 0.03,0.008,0.012);                // upper lip
+    ball(head, lipMat, 1, 0,-0.071,0.098, 0.028,0.01,0.012);              // lower lip
+    const bridge = new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,0.03,8), lensM);
+    bridge.rotation.z = Math.PI/2; bridge.position.set(0,0.032,0.126); head.add(bridge);
+    // afro: raised so the hairline sits at the forehead and never covers the face
+    const afroGeo = new THREE.SphereGeometry(0.16, 56, 40);
+    { const p = afroGeo.attributes.position, nrm = afroGeo.attributes.normal, v = new THREE.Vector3();
+      for(let i=0;i<p.count;i++){
+        v.fromBufferAttribute(p,i); const n = v.clone().normalize();
+        const bump = Math.sin(n.x*23+n.y*9)*Math.sin(n.y*27+n.z*13)*Math.sin(n.z*21+n.x*7);
+        v.copy(n).multiplyScalar(0.16 + bump*0.011); p.setXYZ(i,v.x,v.y,v.z);
+        nrm.setXYZ(i,n.x,n.y,n.z);            // smooth, seam-free shading
+      } }
+    const afro = new THREE.Mesh(afroGeo, hairMat);
+    afro.position.set(0,0.095,-0.085); afro.scale.set(0.9,0.84,0.92); afro.castShadow = true; head.add(afro);
+    // cigar from the corner of the mouth
+    const cDir = new THREE.Vector3(0.22,-0.18,1).normalize();
+    const cigar = new THREE.Mesh(new THREE.CylinderGeometry(0.011,0.013,0.15,10), cigarM);
+    const cBase = new THREE.Vector3(0.014,-0.064,0.104);
+    cigar.quaternion.setFromUnitVectors(UP, cDir); cigar.position.copy(cBase).add(cDir.clone().multiplyScalar(0.06)); head.add(cigar);
+    const ember = ball(head, emberM, 0.012, 0,0,0); ember.castShadow = false;
+    ember.position.copy(cBase).add(cDir.clone().multiplyScalar(0.136));
 
-    const neck = new THREE.Mesh(cap(0.044,0.05), skinMat);
-    neck.position.y = 0.7; hips.add(neck);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12,20,16), skinMat);
-    head.position.y = 0.81; head.castShadow = true; hips.add(head);
-    // jaw taper so the head reads less perfectly spherical
-    head.scale.set(1,1.08,0.92);
-    const afro = new THREE.Mesh(new THREE.SphereGeometry(0.175,16,12), hairMat);
-    afro.position.y = 0.87; afro.scale.set(1,0.92,1); afro.castShadow = true; hips.add(afro);
-    const glasses = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,0.035,16), glassMat);
-    glasses.rotation.z = Math.PI/2; glasses.position.set(0,0.815,0.108); hips.add(glasses);
+    // arms + club: one rig pivoting at the shoulders so hands and club move as a unit
+    const rig = new THREE.Group(); rig.position.set(0,0.575,0); torso.add(rig);
+    const toRig = function(vHips){ return vHips.clone().applyAxisAngle(XAX,-LEAN).sub(rig.position); };
+    const gripH = new THREE.Vector3(0,-0.02,0.36);
+    const headH = new THREE.Vector3(0,-0.99,0.98);
+    const sDir = headH.clone().sub(gripH).normalize();
+    [-1,1].forEach(function(s){
+      const sh = new THREE.Vector3(s*0.205,0,0);
+      const handPos = toRig(gripH.clone().add(sDir.clone().multiplyScalar(s>0 ? -0.05 : 0.05)));   // left hand higher on the grip
+      const r = ik(sh, handPos, 0.31, 0.29, new THREE.Vector3(s*0.8,-0.2,-0.3));
+      limb(rig, [[0,0.058],[0.5,0.052],[1,0.044]], sh, r.mid, suit);
+      limb(rig, [[0,0.044],[0.3,0.047],[1,0.034]], r.mid, r.end, suit);
+      ball(rig, suit, 0.046, r.mid.x,r.mid.y,r.mid.z);
+      const fdir = r.end.clone().sub(r.mid).normalize();
+      const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.036,0.036,0.03,18), shirt);
+      cuff.quaternion.setFromUnitVectors(UP, fdir); cuff.position.copy(r.end).sub(fdir.clone().multiplyScalar(0.012)); rig.add(cuff);
+      ball(rig, skin, 1, r.end.x,r.end.y,r.end.z, 0.042,0.05,0.046);
+    });
+    // club
+    const gH = toRig(gripH), hH = toRig(headH);
+    const sd = hH.clone().sub(gH); const sl = sd.length(); const sdn = sd.clone().normalize();
+    const shaftTop = gH.clone().sub(sdn.clone().multiplyScalar(0.14));
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.008,0.006,sl+0.14,10), steel);
+    shaft.quaternion.setFromUnitVectors(UP, sdn); shaft.position.copy(shaftTop).add(sdn.clone().multiplyScalar((sl+0.14)/2)); shaft.castShadow = true; rig.add(shaft);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.014,0.012,0.3,12), gripM);
+    grip.quaternion.setFromUnitVectors(UP, sdn); grip.position.copy(shaftTop).add(sdn.clone().multiplyScalar(0.15)); rig.add(grip);
+    ball(rig, headM, 1, hH.x,hH.y,hH.z, 0.05,0.042,0.088);
 
-    const cigar = new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.014,0.15,8), cigarMat);
-    cigar.rotation.z = Math.PI/2.3;
-    cigar.position.set(0.1,0.785,0.12); hips.add(cigar);
-    const ember = new THREE.Mesh(new THREE.SphereGeometry(0.014,8,6), emberMat);
-    ember.position.set(0.168,0.776,0.133); hips.add(ember);
-
-    // a small, slow-drifting wisp of smoke (billboard plane, animated in loop)
-    const smokeMat = new THREE.MeshBasicMaterial({ color:0xd8d8d8, transparent:true, opacity:0.22 });
-    const smoke = new THREE.Mesh(new THREE.PlaneGeometry(0.12,0.12), smokeMat);
-    smoke.position.set(0.18,0.85,0.14);
-    hips.add(smoke);
-
-    g.userData = { hips, armL, armR, head, smoke, smokeT:Math.random()*10 };
+    g.userData = { hips, torso, rig, head, ember, LEAN };
     return g;
   }
   const golfer = makeGolfer();
-  golfer.position.set(-0.75, 0, 0.75);
   scene.add(golfer);
+  let golferSwingT0 = Infinity, golferAmp = 0.6, pendingShot = null;
+  const smokeTex = (function(){
+    const c = document.createElement("canvas"); c.width = c.height = 64;
+    const x = c.getContext("2d"); const gr = x.createRadialGradient(32,32,2,32,32,31);
+    gr.addColorStop(0,"rgba(255,255,255,0.9)"); gr.addColorStop(0.5,"rgba(255,255,255,0.35)"); gr.addColorStop(1,"rgba(255,255,255,0)");
+    x.fillStyle = gr; x.fillRect(0,0,64,64);
+    return new THREE.CanvasTexture(c);
+  })();
+  const smokeMat = new THREE.MeshBasicMaterial({ map:smokeTex, color:0xdadada, transparent:true, opacity:0.2, depthWrite:false });
+  const smoke = new THREE.Mesh(new THREE.PlaneGeometry(0.14,0.14), smokeMat);
+  scene.add(smoke);
+  const _tmpV = new THREE.Vector3();
 
   /* ---------- ball ---------- */
   const BALL_R = 0.12;
@@ -646,11 +754,16 @@
     return (v*2-1); // -1..1
   }
 
-  let golferSwingT0 = -10;
+  const SW_BACK = 0.55, SW_IMPACT = 0.68, SW_END = 1.25;
   function executeShot(power, acc){
     strokes++; updateHud();
     document.getElementById("swing-wrap").classList.remove("show");
     golferSwingT0 = performance.now()/1000;
+    golferAmp = CLUBS[clubIndex].name==="Putter" ? 0.18 : 0.6 + 0.4*power;
+    pendingShot = { power, acc };
+    swingState = "swing";
+  }
+  function launchShot(power, acc){
     const club = CLUBS[clubIndex];
     const dir = new THREE.Vector3(Math.sin(aimAngle),0,Math.cos(aimAngle));
     if(club.name==="Putter"){
@@ -756,14 +869,15 @@
     document.getElementById("hint").style.opacity=0.55;
   }
   function placeGolferAtBall(){
-    const perpX = Math.cos(aimAngle), perpZ = -Math.sin(aimAngle);
-    const back = new THREE.Vector3(Math.sin(aimAngle),0,Math.cos(aimAngle)).multiplyScalar(-0.35);
+    golferSwingT0 = Infinity; pendingShot = null;
+    const sa = Math.sin(aimAngle), ca = Math.cos(aimAngle);
+    // stand on the right of the target line, facing it; ball sits just ahead of the club head
     golfer.position.set(
-      ball.position.x + perpX*0.62 + back.x,
+      ball.position.x + ca*1.0 - sa*0.19,
       heightAt(ball.position.x, ball.position.z),
-      ball.position.z + perpZ*0.62 + back.z
+      ball.position.z - sa*1.0 - ca*0.19
     );
-    golfer.rotation.y = aimAngle;
+    golfer.rotation.y = aimAngle - Math.PI/2;
   }
   function aimToPin(){
     const dx = PIN_X-ball.position.x, dz = PIN_Z-ball.position.z;
@@ -830,31 +944,36 @@
     }
     posAttr.needsUpdate = true;
 
-    // golfer: face the aim line, idle sway, swing motion on contact, cigar smoke drift
+    // golfer: track the aim line, breathe at address, swing club + arms as one rig, drift cigar smoke
     if(swingState==="aim" || swingState==="power" || swingState==="accuracy"){
-      golfer.rotation.y = THREE.MathUtils.lerp(golfer.rotation.y, aimAngle, Math.min(1, dt*10));
+      const sa = Math.sin(aimAngle), ca = Math.cos(aimAngle);
+      golfer.position.x = ball.position.x + ca*1.0 - sa*0.19;
+      golfer.position.z = ball.position.z - sa*1.0 - ca*0.19;
+      golfer.rotation.y = aimAngle - Math.PI/2;
     }
     const gd = golfer.userData;
     const swingT = now/1000 - golferSwingT0;
-    if(swingT >= 0 && swingT < 0.5){
-      const p = swingT/0.5;
-      const backswing = Math.sin(Math.min(1,p*2.2)*Math.PI*0.5);
-      const follow = p>0.45 ? Math.sin((p-0.45)/0.55*Math.PI) : 0;
-      gd.armR.rotation.x = -backswing*1.6 + follow*2.1;
-      gd.armL.rotation.x = -backswing*1.1 + follow*1.6;
-      gd.hips.rotation.z = -backswing*0.12 + follow*0.16;
-      gd.hips.rotation.x = follow*0.1;
-    } else {
-      const idle = Math.sin(now*0.0012)*0.02;
-      gd.armR.rotation.x = idle; gd.armL.rotation.x = -idle;
-      gd.hips.rotation.z = THREE.MathUtils.lerp(gd.hips.rotation.z,0,0.1);
-      gd.hips.rotation.x = THREE.MathUtils.lerp(gd.hips.rotation.x,0,0.1);
+    let psi = 0, coil = 0;
+    if(swingT >= 0){
+      const A = golferAmp;
+      if(swingT < SW_BACK){ psi = -2.2*A*sstep(swingT/SW_BACK); }
+      else if(swingT < SW_IMPACT){ const p=(swingT-SW_BACK)/(SW_IMPACT-SW_BACK); psi = THREE.MathUtils.lerp(-2.2*A, 0.12, p*p); }
+      else { const p=Math.min(1,(swingT-SW_IMPACT)/(SW_END-SW_IMPACT)); psi = THREE.MathUtils.lerp(0.12, 2.0*A, 1-(1-p)*(1-p)); }
+      coil = THREE.MathUtils.clamp(-psi/2.2, -0.9, 1);
+      if(swingState==="swing" && pendingShot && swingT >= SW_IMPACT){
+        const ps = pendingShot; pendingShot = null; launchShot(ps.power, ps.acc);
+      }
     }
-    gd.smokeT += dt;
-    gd.smoke.position.y = 0.82 + (gd.smokeT%2.2)*0.1;
-    gd.smoke.material.opacity = Math.max(0, 0.22 - (gd.smokeT%2.2)*0.1);
-    gd.smoke.scale.setScalar(1 + (gd.smokeT%2.2)*0.5);
-    gd.smoke.quaternion.copy(camera.quaternion);
+    gd.rig.rotation.z = THREE.MathUtils.lerp(gd.rig.rotation.z, psi, swingT>=0 ? 1 : 0.2);
+    gd.torso.rotation.y = THREE.MathUtils.lerp(gd.torso.rotation.y, -coil*0.7, 0.35);
+    gd.hips.rotation.y = THREE.MathUtils.lerp(gd.hips.rotation.y, -coil*0.3, 0.35);
+    gd.torso.rotation.x = gd.LEAN + Math.sin(now*0.0016)*0.012;   // slow breathing at address
+    gd.ember.getWorldPosition(_tmpV);
+    const st = (now/1000*0.45) % 1;
+    smoke.position.set(_tmpV.x, _tmpV.y + 0.05 + st*0.5, _tmpV.z);
+    smoke.material.opacity = 0.35*(1-st);
+    smoke.scale.setScalar(1 + st*2.2);
+    smoke.quaternion.copy(camera.quaternion);
 
     if(swingState==="power"){
       document.getElementById("power-fill").style.width = (currentPower()*100).toFixed(0)+"%";
