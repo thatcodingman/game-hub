@@ -167,6 +167,22 @@
     src.connect(filt); filt.connect(g); g.connect(ctx.destination);
     src.start();
   }
+  function sfxCrowd(level){
+    const ctx = sfxCtx(), sr = ctx.sampleRate, dur = 1.4 + level*2.6, len = Math.floor(sr*dur);
+    const buf = ctx.createBuffer(1, len, sr), d = buf.getChannelData(0);
+    const claps = Math.floor(dur*(220+level*380));
+    for(let k=0;k<claps;k++){ const t=Math.random(), env=Math.sin(Math.PI*Math.min(1,t*1.0))*(0.35+0.65*(1-t)), pos=Math.floor(t*(len-400)), amp=(0.25+Math.random()*0.75)*env;
+      for(let j=0;j<260;j++) d[pos+j]+=(Math.random()*2-1)*Math.exp(-j/38)*amp; }
+    const src=ctx.createBufferSource(); src.buffer=buf;
+    const hp=ctx.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=900;
+    const g=ctx.createGain(); g.gain.value=0.07+level*0.16;
+    src.connect(hp); hp.connect(g); g.connect(ctx.destination); src.start();
+    // roar: soft filtered noise swell for the big moments
+    if(level>0.5){ const rl=Math.floor(sr*dur), rb=ctx.createBuffer(1,rl,sr), rd=rb.getChannelData(0); for(let i=0;i<rl;i++) rd[i]=(Math.random()*2-1);
+      const rs=ctx.createBufferSource(); rs.buffer=rb; const bp=ctx.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=650; bp.Q.value=0.7;
+      const rg=ctx.createGain(); const t0=ctx.currentTime; rg.gain.setValueAtTime(0,t0); rg.gain.linearRampToValueAtTime(0.05*level,t0+0.25); rg.gain.exponentialRampToValueAtTime(0.0005,t0+dur);
+      rs.connect(bp); bp.connect(rg); rg.connect(ctx.destination); rs.start(); }
+  }
   function sfxSand(){
     const ctx = sfxCtx();
     const bufferSize = ctx.sampleRate*0.18;
@@ -801,6 +817,95 @@
     });
   }
 
+
+  /* ---------- tour crowd: roped galleries, green-side ring, grandstands; cheers react to shots ---------- */
+  const crowdU = { value:0 };
+  function crowdCheer(level){ crowdU.value = Math.min(1, Math.max(crowdU.value, level)); sfxCrowd(level); }
+  const CROWD = (function(){
+    const mergeG=function(list){ let n=0; const gs=list.map(function(g){ g=g.index?g.toNonIndexed():g; n+=g.attributes.position.count; return g; });
+      const P=new Float32Array(n*3), N=new Float32Array(n*3); let o=0; gs.forEach(function(g){ P.set(g.attributes.position.array,o*3); N.set(g.attributes.normal.array,o*3); o+=g.attributes.position.count; });
+      const r=new THREE.BufferGeometry(); r.setAttribute('position',new THREE.BufferAttribute(P,3)); r.setAttribute('normal',new THREE.BufferAttribute(N,3)); return r; };
+    const T=function(g,x,y,z,sx,sy,sz,rz){ const m=new THREE.Matrix4().compose(new THREE.Vector3(x,y,z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,rz||0)), new THREE.Vector3(sx||1,sy||1,sz||1)); const c=g.clone(); c.applyMatrix4(m); return c; };
+    const cyl=new THREE.CylinderGeometry(1,1,1,10), sph=new THREE.SphereGeometry(1,14,10);
+    const legsG = mergeG([T(cyl,-0.1,0.43,0,0.075,0.86,0.075), T(cyl,0.1,0.43,0,0.075,0.86,0.075)]);
+    const bodyG = mergeG([T(cyl,0,1.17,0,0.2,0.62,0.12), T(sph,0,1.5,0,0.2,0.1,0.12), T(cyl,-0.255,1.12,0,0.05,0.62,0.05,0.12), T(cyl,0.255,1.12,0,0.05,0.62,0.05,-0.12)]);
+    const headG = mergeG([T(sph,0,1.64,0.005,0.105,0.125,0.115), T(cyl,0,1.54,0,0.045,0.1,0.045)]);
+    const hairG = mergeG([T(sph,0,1.69,-0.012,0.118,0.085,0.125)]);
+    const armsLift = function(sh){ // arms raise and clap when the crowd cheers
+      sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\n if(abs(position.x)>0.16 && position.y>0.8){ float k=smoothstep(1.45,0.8,position.y); transformed.y += uCrowd*k*0.62; transformed.x -= sign(position.x)*uCrowd*k*0.2; transformed.z += uCrowd*k*0.12; }'); };
+    const mk=function(g,hasArms){ const m=new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.88 });
+      m.onBeforeCompile=function(sh){ sh.uniforms.uCrowd=crowdU; sh.uniforms.uT=windU;
+        sh.vertexShader='uniform float uCrowd; uniform float uT;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\n { float ph=instanceMatrix[3].x*1.7+instanceMatrix[3].z*2.3; transformed.y += uCrowd*(0.5+0.5*sin(uT*9.0+ph))*0.16 + max(0.0,sin(uT*0.9+ph))*0.0; transformed.x += sin(uT*1.1+ph)*0.012*position.y; }');
+        if(hasArms) armsLift(sh); };
+      seeThrough(m); return m; };
+    return { legsG:legsG, bodyG:bodyG, headG:headG, hairG:hairG, mats:[mk(legsG),mk(bodyG,true),mk(headG),mk(hairG)] };
+  })();
+  { const pts=[];   // [x,z,yaw,scale,y]
+    const hwAt=function(z){ return fairwayHalfWidth(Math.max(z,0)); };
+    const treeNear=function(x,z){ for(let i=0;i<TREE_PTS.length;i++){ const t=TREE_PTS[i]; if(t[3]==="shrub") continue; const dx=t[0]-x, dz=t[1]-z; if(dx*dx+dz*dz<5.5) return true; } return false; };
+    const okSurf=function(x,z){ const sf=surfaceAt(x,z); return sf==="rough"||sf==="fairway"||sf==="tee"; };
+    // galleries behind the ropes along both sides of the fairway, in clumps
+    [-1,1].forEach(function(sd){
+      for(let z=4; z<PIN_Z-34; z+=1.15){
+        const clump=dnoise(z*0.045+sd*9.1, sd*4.7), edge=(z<70?0.45:0)+(z>PIN_Z-130?0.4:0), dens=clump>0.5?0.95:clump>0.4?0.4:0.05+edge*0.4;
+        if(WR()>dens+edge*0.4) continue;
+        const rows=1+Math.floor(WR()*3);
+        for(let r=0;r<rows;r++){
+          if(WR()<0.2) continue;
+          const x=cx(z)+sd*(hwAt(z)+6.6+r*1.05+WR()*0.5), zz=z+WR()*0.9;
+          if(x>96||!okSurf(x,zz)||treeNear(x,zz)) continue;
+          const yaw=Math.atan2(cx(zz)-x, 5*(WR()-0.4)+1.5);
+          pts.push([x,zz,yaw+(WR()-0.5)*0.6,0.9+WR()*0.18]);
+        }
+      }
+    });
+    // ring around the green (open on the approach side)
+    for(let k=0;k<300;k++){
+      const a=WR()*6.283, d=GREEN_R+6.8+Math.floor(WR()*3)*1.05+WR()*0.5, x=PIN_X+Math.cos(a)*d, z=PIN_Z+Math.sin(a)*d;
+      if(Math.abs(Math.atan2(Math.sin(a-Math.PI*1.5),Math.cos(a-Math.PI*1.5)))<0.55) continue;
+      if(x>104||!okSurf(x,z)||treeNear(x,z)) continue;
+      pts.push([x,z,Math.atan2(PIN_X-x,PIN_Z-z)+(WR()-0.5)*0.5,0.9+WR()*0.18]);
+    }
+    // grandstand behind the green
+    const GS={ x:PIN_X-2, z:PIN_Z+GREEN_R+17, w:30, rows:5 };
+    const gbase=Math.min.apply(null,[-15,0,15].map(function(o){ return heightAt(GS.x+o,GS.z+2); }));
+    const gmat=new THREE.MeshStandardMaterial({ color:0x2f4a38, roughness:0.8 }), gmat2=new THREE.MeshStandardMaterial({ color:0xe8e4d6, roughness:0.7 });
+    const gs=new THREE.Group(); scene.add(gs);
+    for(let r=0;r<GS.rows;r++){
+      const top=gbase+0.55+r*0.75, step=new THREE.Mesh(new THREE.BoxGeometry(GS.w,top-gbase+4,1.15), gmat);
+      step.position.set(GS.x, (top+gbase-4)/2, GS.z+r*1.15); step.castShadow=true; step.receiveShadow=true; gs.add(step);
+      const lip=new THREE.Mesh(new THREE.BoxGeometry(GS.w,0.06,0.2), gmat2); lip.position.set(GS.x, top+0.03, GS.z+r*1.15-0.5); gs.add(lip);
+      for(let q=0;q<Math.floor(GS.w/1.0);q++){ if(WR()<0.12) continue; const x=GS.x-GS.w/2+0.6+q*1.0+(WR()-0.5)*0.3; pts.push([x,GS.z+r*1.15+(WR()-0.5)*0.2,Math.PI+(WR()-0.5)*0.35,0.88+WR()*0.18,top]); }
+    }
+    const back=new THREE.Mesh(new THREE.BoxGeometry(GS.w+0.6,GS.rows*0.75+2.2,0.25), gmat); back.position.set(GS.x, gbase+(GS.rows*0.75+2.2)/2+0.2, GS.z+GS.rows*1.15+0.3); gs.add(back);
+    const roof=new THREE.Mesh(new THREE.BoxGeometry(GS.w+1.6,0.18,GS.rows*1.15+1.6), gmat2); roof.position.set(GS.x, gbase+GS.rows*0.75+3.0, GS.z+GS.rows*0.575); roof.castShadow=true; gs.add(roof);
+    [-1,1].forEach(function(sx){ const post=new THREE.Mesh(new THREE.BoxGeometry(0.2,GS.rows*0.75+3.0,0.2), gmat2); post.position.set(GS.x+sx*(GS.w/2), gbase+(GS.rows*0.75+3.0)/2, GS.z+0.1); gs.add(post); });
+    // build instanced people
+    const n=pts.length, shirts=[0xf2f2ee,0x1d3557,0xb23a48,0x2a9d8f,0xe9c46a,0x7a9e3a,0xd8d8d0,0x3b4f7a,0xc96a2b,0x8fb8de,0xe0a1b5,0x2f2f33,0x6b3fa0,0xf7f1c8],
+      pants=[0xb9a27a,0x24324a,0x3d5a80,0x55565a,0x1b1b1e,0xcbbd9a,0x5b4a3a], skins=[0xf0c8a0,0xdca67a,0xc68642,0x9c6a3f,0x6f4a2d,0x4a3020,0xe6b896],
+      hairs=[0x16110d,0x2b1d12,0x4a3320,0x8a6a3a,0xc9b27a,0xb8b8b8,0x0e0b09], hats=[0xb23a48,0xf2f2ee,0x1d3557,0x2a9d8f,0xe9c46a,0x2f2f33];
+    const ims=[CROWD.legsG,CROWD.bodyG,CROWD.headG,CROWD.hairG].map(function(g,i){ const im=new THREE.InstancedMesh(g,CROWD.mats[i],n); im.castShadow=(i===1); im.frustumCulled=false; scene.add(im); return im; });
+    const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler(), sc=new THREE.Vector3(), ps=new THREE.Vector3(), c=new THREE.Color();
+    const pick=function(a){ return a[Math.floor(WR()*a.length)]; };
+    pts.forEach(function(p,i){
+      const y=p[4]!==undefined?p[4]:landY(p[0],p[1]); e.set(0,p[2],0); q.setFromEuler(e); sc.set(p[3],p[3],p[3]); ps.set(p[0],y-0.02,p[1]); m4.compose(ps,q,sc);
+      ims.forEach(function(im){ im.setMatrixAt(i,m4); });
+      ims[0].setColorAt(i,c.setHex(pick(pants))); ims[1].setColorAt(i,c.setHex(pick(shirts))); ims[2].setColorAt(i,c.setHex(pick(skins))); ims[3].setColorAt(i,c.setHex(WR()<0.38?pick(hats):pick(hairs)));
+    });
+    ims.forEach(function(im){ im.instanceMatrix.needsUpdate=true; if(im.instanceColor) im.instanceColor.needsUpdate=true; });
+    // ropes and stanchions
+    const ropeMat=new THREE.MeshStandardMaterial({ color:0xf1efe6, roughness:0.7 }), postMat=new THREE.MeshStandardMaterial({ color:0x24402c, roughness:0.6 });
+    const segs=[], posts=[];
+    [-1,1].forEach(function(sd){ let prev=null; for(let z=2; z<=PIN_Z-34; z+=6){ const x=cx(z)+sd*(hwAt(z)+5.4), cur=[x,z]; if(!okSurf(x,z)){ prev=null; continue; } posts.push(cur); if(prev) segs.push([prev,cur]); prev=cur; } });
+    { let prev=null; for(let a=0;a<=Math.PI*2+0.01;a+=0.22){ const x=PIN_X+Math.cos(a)*(GREEN_R+5.4), z=PIN_Z+Math.sin(a)*(GREEN_R+5.4), open=Math.abs(Math.atan2(Math.sin(a-Math.PI*1.5),Math.cos(a-Math.PI*1.5)))<0.55; if(open||!okSurf(x,z)){ prev=null; continue; } const cur=[x,z]; posts.push(cur); if(prev) segs.push([prev,cur]); prev=cur; } }
+    const pim=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.04,0.05,1.05,8),postMat,posts.length), rim=new THREE.InstancedMesh(new THREE.BoxGeometry(1,0.035,1),ropeMat,segs.length);
+    posts.forEach(function(pp,i){ m4.compose(ps.set(pp[0],landY(pp[0],pp[1])+0.52,pp[1]),q.identity(),sc.set(1,1,1)); pim.setMatrixAt(i,m4); });
+    segs.forEach(function(sg,i){ const a=sg[0], b=sg[1], dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz); e.set(0,Math.atan2(dx,dz),0); q.setFromEuler(e);
+      m4.compose(ps.set((a[0]+b[0])/2,(landY(a[0],a[1])+landY(b[0],b[1]))/2+0.9,(a[1]+b[1])/2),q,sc.set(0.035,1,len)); rim.setMatrixAt(i,m4); });
+    pim.castShadow=rim.castShadow=true; pim.frustumCulled=rim.frustumCulled=false; scene.add(pim); scene.add(rim);
+    CROWD.count=n;
+  }
+
   // lighthouse on the headland
   { const lh=new THREE.Group();
     const white=new THREE.MeshStandardMaterial({color:0xf3efe6, roughness:0.7}), red=new THREE.MeshStandardMaterial({color:0xb83a2e, roughness:0.7});
@@ -956,7 +1061,7 @@
     const jacket = (function(){
       const K=[ // y, halfWidth, frontDepth, backDepth
         [-0.27,0.150,0.088,0.096],[-0.17,0.185,0.100,0.114],[-0.08,0.190,0.100,0.114],[0.08,0.166,0.094,0.100],[0.24,0.172,0.104,0.100],
-        [0.38,0.200,0.124,0.104],[0.50,0.226,0.138,0.106],[0.57,0.240,0.122,0.098],[0.61,0.222,0.096,0.088],[0.655,0.140,0.074,0.074],[0.695,0.070,0.056,0.056]];
+        [0.38,0.200,0.124,0.104],[0.50,0.212,0.136,0.104],[0.565,0.214,0.115,0.094],[0.61,0.168,0.088,0.082],[0.655,0.100,0.068,0.068],[0.695,0.070,0.056,0.056]];
       const cr=function(i,t,k){ const g=function(j){ return K[Math.max(0,Math.min(K.length-1,j))][k]; }, p0=g(i-1),p1=g(i),p2=g(i+1),p3=g(i+2);
         return 0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t*t+(-p0+3*p1-3*p2+p3)*t*t*t); };
       const rows=[], R=64, NY=70;
@@ -1027,7 +1132,7 @@
     // afro: dark undercoat + ~1500 instanced curl clumps with a shaped hairline, faded sides and tonal variation
     { const base = new THREE.Mesh(new THREE.SphereGeometry(0.15, 40, 30), M({ color:0x070605, roughness:1 }));
       base.position.set(0,0.095,-0.085); base.scale.set(0.9,0.84,0.92); head.add(base);
-      const cg = new THREE.IcosahedronGeometry(1,1), N=1700, curls = new THREE.InstancedMesh(cg, M({ color:0xffffff, roughness:0.82 }), N);
+      const cg = new THREE.IcosahedronGeometry(1,1), N=3200, curls = new THREE.InstancedMesh(cg, M({ color:0xffffff, roughness:0.92 }), N);
       const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler(), sc=new THREE.Vector3(), ps=new THREE.Vector3(), col=new THREE.Color();
       let n=0, tries=0, rs=7;
       const rnd=function(){ rs=(rs*16807)%2147483647; return rs/2147483647; };
@@ -1037,10 +1142,10 @@
         const front=Math.max(0,Math.min(1,(0.08-pz)/0.18)), ymin=0.1-0.17*front*front*(3-2*front);       // hairline: forehead -> temples -> nape
         let lim=ymin; if(Math.abs(px)>0.078 && pz>-0.04) lim=Math.max(lim,0.012+0.05*Math.max(0,(pz+0.04)/0.12));   // faded sides above the ears
         if(py<lim) continue;
-        const r=0.016+rnd()*0.012, out=0.004+rnd()*0.008;
+        const r=0.011+rnd()*0.009, out=0.003+rnd()*0.007;
         ps.set(px+nx*out*0.9, py+ny*out*0.84, pz+nz*out*0.92);
         e.set(rnd()*6.28,rnd()*6.28,rnd()*6.28); q.setFromEuler(e); sc.set(r*(0.9+rnd()*0.4),r*(0.75+rnd()*0.3),r*(0.9+rnd()*0.4)); m4.compose(ps,q,sc); curls.setMatrixAt(n,m4);
-        const tone=0.05+0.06*rnd()+0.07*Math.max(0,ny)*rnd(); col.setRGB(tone*1.0,tone*0.82,tone*0.66); curls.setColorAt(n,col); n++; }
+        const tone=0.035+0.045*rnd()+0.05*Math.max(0,ny)*rnd(); col.setRGB(tone*1.0,tone*0.82,tone*0.66); curls.setColorAt(n,col); n++; }
       curls.count=n; curls.castShadow=true; curls.frustumCulled=false; head.add(curls); }
     // cigar from the corner of the mouth
     const cDir = new THREE.Vector3(0.22,-0.18,1).normalize();
@@ -1057,11 +1162,10 @@
     const headH = new THREE.Vector3(0,-0.99,0.98);
     const sDir = headH.clone().sub(gripH).normalize();
     [-1,1].forEach(function(s){
-      const sh = new THREE.Vector3(s*0.255,0,0);
+      const sh = new THREE.Vector3(s*0.226,-0.062,0);
       const handPos = toRig(gripH.clone().add(sDir.clone().multiplyScalar(s>0 ? -0.05 : 0.05)));   // left hand higher on the grip
       const r = ik(sh, handPos, 0.31, 0.29, new THREE.Vector3(s*0.8,-0.2,-0.3));
-      limb(rig, [[0,0.074],[0.25,0.07],[0.5,0.06],[1,0.048]], sh, r.mid, suit);
-      { const dl=ball(rig, suit, 0.07, s*0.255,-0.062,0, 0.95,1.15,1.05); }   // deltoid cap
+      limb(rig, [[0,0.052],[0.1,0.068],[0.26,0.066],[0.55,0.056],[0.8,0.049],[1,0.045]], sh, r.mid, suit);   // one tapering upper arm: deltoid -> bicep -> elbow, no stuck-on ball
       limb(rig, [[0,0.05],[0.3,0.054],[1,0.037]], r.mid, r.end, suit);
       ball(rig, suit, 0.054, r.mid.x,r.mid.y,r.mid.z);
       const fdir = r.end.clone().sub(r.mid).normalize();
@@ -1367,6 +1471,9 @@
   function finishRoll(){
     swingState = "aim";
     const d = currentDistance();
+    { const sf=surfaceAt(ball.position.x, ball.position.z);
+      if(sf==="green"){ crowdCheer(d<4 ? 0.85 : d<12 ? 0.6 : 0.45); }
+      else if(sf==="fairway" && strokes<=2){ crowdCheer(0.3); } }
     document.getElementById("distVal").textContent = Math.round(d)+" yd";
     if(onGreen()){ clubIndex = CLUBS.length-1; } else { clubIndex = suggestClub(d); }
     refreshClubUI();
@@ -1397,7 +1504,7 @@
 
   function sinkBall(){
     swingState = "sunk"; holeDone = true; vel.set(0,0);
-    sfxSink();
+    sfxSink(); crowdCheer(1);
     const startY = ball.position.y, dropTarget = startY-0.32;
     const t0 = performance.now();
     (function anim(){
@@ -1630,6 +1737,7 @@
     { const tt = performance.now()/1000; skyMat.uniforms.t.value = tt; oceanMat.uniforms.t.value = tt; windU.value = tt;
       sun.position.set(golfer.position.x+55, 85, golfer.position.z-35); sun.target.position.copy(golfer.position); sun.target.updateMatrixWorld(); }
     { const dPin = currentDistance(); const bo = dPin>50 && !holeDone ? 1 : 0; beam.visible = beamGlow.visible = bo>0; const pulse = 0.85+0.15*Math.sin(performance.now()/500); beam.material.opacity = 0.4*pulse; }
+    crowdU.value = Math.max(0, crowdU.value - dt*0.4);
     seeThru.cam.value.copy(camera.position); if(swingState==='flight'||swingState==='sunk') seeThru.foc.value.copy(ball.position); else seeThru.foc.value.set(golfer.position.x,golfer.position.y+1.2,golfer.position.z);
     updateNearGrass(false); drawMinimap(); updatePinMarker();
     renderer.render(scene,camera);
