@@ -952,10 +952,32 @@
 
     // torso group, leaning forward over the ball
     const torso = new THREE.Group(); torso.rotation.x = LEAN; hips.add(torso);
-    const jacket = new THREE.Mesh(loft([[-0.27,0.1],[-0.22,0.13],[-0.17,0.15],[-0.08,0.165],[0.08,0.138],[0.24,0.126],[0.38,0.158],[0.5,0.18],[0.6,0.172],[0.66,0.11],[0.69,0.07]],{capB:0.02,capT:0.02}), suit);
-    jacket.scale.set(1.38,1,0.76); jacket.castShadow = true; torso.add(jacket);
-    // shoulders and neck
-    [-1,1].forEach(function(s){ ball(torso, suit, 0.088, s*0.255,0.585,0, 1,0.95,1); });
+    // jacket: a sculpted torso (V-taper, pecs, flatter back, trapezius slope into the neck) instead of a scaled barrel
+    const jacket = (function(){
+      const K=[ // y, halfWidth, frontDepth, backDepth
+        [-0.27,0.150,0.088,0.096],[-0.17,0.185,0.100,0.114],[-0.08,0.190,0.100,0.114],[0.08,0.166,0.094,0.100],[0.24,0.172,0.104,0.100],
+        [0.38,0.200,0.124,0.104],[0.50,0.226,0.138,0.106],[0.57,0.240,0.122,0.098],[0.61,0.222,0.096,0.088],[0.655,0.140,0.074,0.074],[0.695,0.070,0.056,0.056]];
+      const cr=function(i,t,k){ const g=function(j){ return K[Math.max(0,Math.min(K.length-1,j))][k]; }, p0=g(i-1),p1=g(i),p2=g(i+1),p3=g(i+2);
+        return 0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t*t+(-p0+3*p1-3*p2+p3)*t*t*t); };
+      const rows=[], R=64, NY=70;
+      rows.push({y:-0.285,sc:0.02,i:0,t:0}); rows.push({y:-0.277,sc:0.8,i:0,t:0});
+      for(let r=0;r<=NY;r++){ const u=r/NY*(K.length-1), i=Math.min(K.length-2,Math.floor(u)), t=u-i; rows.push({y:cr(i,t,0)*0+ (K[i][0]+(K[i+1][0]-K[i][0])*t), sc:1, i:i, t:t}); }
+      rows.push({y:0.699,sc:0.8,i:K.length-2,t:1}); rows.push({y:0.703,sc:0.02,i:K.length-2,t:1});
+      const pos=[], uv=[], idx=[];
+      rows.forEach(function(row,ri){
+        const W=cr(row.i,row.t,1)*row.sc, Df=cr(row.i,row.t,2)*row.sc, Db=cr(row.i,row.t,3)*row.sc, y=row.y, ex=2/(row.y>0.3?2.5:2.2);
+        for(let k=0;k<=R;k++){ const th=k/R*Math.PI*2, c=Math.cos(th), sn=Math.sin(th);
+          const x=W*Math.sign(c)*Math.pow(Math.abs(c),ex); let z=(sn>=0?Df:Db)*Math.sign(sn)*Math.pow(Math.abs(sn),ex);
+          if(sn>0) z+=0.014*Math.exp(-Math.pow((Math.abs(x)-0.095)/0.065,2))*Math.exp(-Math.pow((y-0.47)/0.075,2))*row.sc;   // pecs
+          pos.push(x,y,z); uv.push(k/R, (y+0.285)/0.99); } });
+      for(let ri=0;ri<rows.length-1;ri++) for(let k=0;k<R;k++){ const a0=ri*(R+1)+k, b0=a0+1, c0=a0+R+1, d0=c0+1; idx.push(a0,b0,c0,b0,d0,c0); }
+      const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2)); g.setIndex(idx); g.computeVertexNormals();
+      { const pa=g.attributes.position, na=g.attributes.normal, map={};   // weld normals across the seam
+        for(let i=0;i<pa.count;i++){ const kk=Math.round(pa.getX(i)*4000)+","+Math.round(pa.getY(i)*4000)+","+Math.round(pa.getZ(i)*4000); (map[kk]||(map[kk]=[])).push(i); }
+        Object.keys(map).forEach(function(kk){ const ids=map[kk]; if(ids.length<2) return; let x=0,y=0,z=0; ids.forEach(function(i){ x+=na.getX(i); y+=na.getY(i); z+=na.getZ(i); }); const l=Math.hypot(x,y,z)||1; ids.forEach(function(i){ na.setXYZ(i,x/l,y/l,z/l); }); }); }
+      const m=new THREE.Mesh(g,suit); m.castShadow=true; return m;
+    })();
+    torso.add(jacket);
     const neck = new THREE.Mesh(loft([[0.6,0.068],[0.76,0.056]],{capB:0.02,capT:0.02}), skin); torso.add(neck);
     const collar = new THREE.Mesh(new THREE.TorusGeometry(0.072,0.016,12,28), shirt);
     collar.rotation.x = Math.PI/2; collar.position.y = 0.665; collar.scale.set(1.05,1.05,1); torso.add(collar);
@@ -964,12 +986,30 @@
 
     // head: a lofted, longer-than-round skull with a defined jaw, brow, nose and lips
     const head = new THREE.Group(); head.position.set(0,0.87,0.03); head.rotation.x = 0.3; torso.add(head);
-    const skull = new THREE.Mesh(loft([[-0.125,0.032],[-0.105,0.064],[-0.07,0.085],[-0.02,0.094],[0.04,0.098],[0.09,0.09],[0.125,0.066]],{capB:0.02,capT:0.012,seg:40,n:56}), skin);
-    skull.scale.set(0.9,1,1.1); skull.castShadow = true; head.add(skull);
-    ball(head, skin, 0.034, 0,-0.094,0.068, 1.5,0.8,1.05);                 // chin
+    const skull = new THREE.Mesh(loft([[-0.125,0.032],[-0.105,0.064],[-0.07,0.085],[-0.02,0.094],[0.04,0.098],[0.09,0.09],[0.125,0.066]],{capB:0.02,capT:0.012,seg:112,n:130}), skin);
+    { // sculpt the face as ONE smooth surface (soft gaussian bumps) instead of stuck-on spheres, and weld normals across the lathe seam
+      const g=skull.geometry; g.scale(0.9,1,1.1);
+      const weld=function(){ g.computeVertexNormals(); const pa=g.attributes.position, na=g.attributes.normal, map={};
+        for(let i=0;i<pa.count;i++){ const k=Math.round(pa.getX(i)*4000)+","+Math.round(pa.getY(i)*4000)+","+Math.round(pa.getZ(i)*4000); (map[k]||(map[k]=[])).push(i); }
+        Object.keys(map).forEach(function(k){ const ids=map[k]; if(ids.length<2) return; let x=0,y=0,z=0; ids.forEach(function(i){ x+=na.getX(i); y+=na.getY(i); z+=na.getZ(i); }); const l=Math.hypot(x,y,z)||1; ids.forEach(function(i){ na.setXYZ(i,x/l,y/l,z/l); }); }); };
+      weld();
+      const B=[ // x,y,z, sigma, amplitude
+        [0,-0.094,0.085,0.030, 0.014],
+        [-0.07,-0.07,0.01,0.040, 0.010],[0.07,-0.07,0.01,0.040, 0.010],
+        [-0.062,-0.012,0.07,0.032, 0.007],[0.062,-0.012,0.07,0.032, 0.007],
+        [0,0.00,0.108,0.022, 0.011],
+        [0,-0.03,0.118,0.021, 0.020],
+        [-0.02,-0.04,0.108,0.016, 0.007],[0.02,-0.04,0.108,0.016, 0.007],
+        [-0.036,0.05,0.098,0.030, 0.006],[0.036,0.05,0.098,0.030, 0.006]
+      ];
+      const pa=g.attributes.position, na=g.attributes.normal;
+      for(let i=0;i<pa.count;i++){ const x=pa.getX(i), y=pa.getY(i), z=pa.getZ(i); let d=0;
+        for(let k=0;k<B.length;k++){ const q=B[k], r2=(x-q[0])*(x-q[0])+(y-q[1])*(y-q[1])+(z-q[2])*(z-q[2]); d+=q[4]*Math.exp(-r2/(2*q[3]*q[3])); }
+        pa.setXYZ(i, x+na.getX(i)*d, y+na.getY(i)*d, z+na.getZ(i)*d); }
+      weld();
+    }
+    skull.castShadow = true; head.add(skull);
     [-1,1].forEach(function(s2){
-      ball(head, skin, 0.034, s2*0.066,-0.068,0.0, 0.75,1,1.1);                // jaw angles
-      ball(head, skin, 0.02, s2*0.062,-0.012,0.066, 1,0.7,0.8);             // cheekbones
       ball(head, skin, 1, s2*0.092,0.0,-0.005, 0.01,0.032,0.024);        // ears
       ball(head, hairMat, 1, s2*0.088,0.04,0.04, 0.007,0.032,0.028);     // sideburns
       ball(head, eyeW, 0.013, s2*0.034,0.022,0.098);                      // eyes
@@ -979,25 +1019,29 @@
       brow.rotation.z = Math.PI/2 + s2*0.12; brow.position.set(s2*0.04,0.07,0.103); head.add(brow);
       const tmp = new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,0.13,8), lensM);
       tmp.rotation.x = Math.PI/2; tmp.position.set(s2*0.092,0.03,0.055); head.add(tmp);   // temples
-      ball(head, skin, 0.01, s2*0.017,-0.036,0.12, 1,0.9,1);            // nostril wings
     });
-    ball(head, skin, 1, 0,-0.018,0.116, 0.016,0.034,0.026);                 // nose bridge
-    ball(head, skin, 0.015, 0,-0.032,0.131);                              // nose tip
-    ball(head, lipMat, 1, 0,-0.058,0.1, 0.03,0.008,0.012);                // upper lip
-    ball(head, lipMat, 1, 0,-0.071,0.098, 0.028,0.01,0.012);              // lower lip
+    ball(head, lipMat, 1, 0,-0.058,0.102, 0.03,0.007,0.008);                // upper lip
+    ball(head, lipMat, 1, 0,-0.07,0.1, 0.027,0.008,0.009);              // lower lip
     const bridge = new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,0.03,8), lensM);
     bridge.rotation.z = Math.PI/2; bridge.position.set(0,0.032,0.126); head.add(bridge);
-    // afro: raised so the hairline sits at the forehead and never covers the face
-    const afroGeo = new THREE.SphereGeometry(0.16, 56, 40);
-    { const p = afroGeo.attributes.position, nrm = afroGeo.attributes.normal, v = new THREE.Vector3();
-      for(let i=0;i<p.count;i++){
-        v.fromBufferAttribute(p,i); const n = v.clone().normalize();
-        const bump = Math.sin(n.x*23+n.y*9)*Math.sin(n.y*27+n.z*13)*Math.sin(n.z*21+n.x*7);
-        v.copy(n).multiplyScalar(0.16 + bump*0.011); p.setXYZ(i,v.x,v.y,v.z);
-        nrm.setXYZ(i,n.x,n.y,n.z);            // smooth, seam-free shading
-      } }
-    const afro = new THREE.Mesh(afroGeo, hairMat);
-    afro.position.set(0,0.095,-0.085); afro.scale.set(0.9,0.84,0.92); afro.castShadow = true; head.add(afro);
+    // afro: dark undercoat + ~1500 instanced curl clumps with a shaped hairline, faded sides and tonal variation
+    { const base = new THREE.Mesh(new THREE.SphereGeometry(0.15, 40, 30), M({ color:0x070605, roughness:1 }));
+      base.position.set(0,0.095,-0.085); base.scale.set(0.9,0.84,0.92); head.add(base);
+      const cg = new THREE.IcosahedronGeometry(1,1), N=1700, curls = new THREE.InstancedMesh(cg, M({ color:0xffffff, roughness:0.82 }), N);
+      const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler(), sc=new THREE.Vector3(), ps=new THREE.Vector3(), col=new THREE.Color();
+      let n=0, tries=0, rs=7;
+      const rnd=function(){ rs=(rs*16807)%2147483647; return rs/2147483647; };
+      while(n<N && tries<60000){ tries++;
+        const u=rnd()*2-1, th=rnd()*6.283, rr=Math.sqrt(1-u*u), nx=rr*Math.cos(th), ny=u, nz=rr*Math.sin(th);
+        const px=0.0+nx*0.152*0.9, py=0.095+ny*0.152*0.84, pz=-0.085+nz*0.152*0.92;
+        const front=Math.max(0,Math.min(1,(0.08-pz)/0.18)), ymin=0.1-0.17*front*front*(3-2*front);       // hairline: forehead -> temples -> nape
+        let lim=ymin; if(Math.abs(px)>0.078 && pz>-0.04) lim=Math.max(lim,0.012+0.05*Math.max(0,(pz+0.04)/0.12));   // faded sides above the ears
+        if(py<lim) continue;
+        const r=0.016+rnd()*0.012, out=0.004+rnd()*0.008;
+        ps.set(px+nx*out*0.9, py+ny*out*0.84, pz+nz*out*0.92);
+        e.set(rnd()*6.28,rnd()*6.28,rnd()*6.28); q.setFromEuler(e); sc.set(r*(0.9+rnd()*0.4),r*(0.75+rnd()*0.3),r*(0.9+rnd()*0.4)); m4.compose(ps,q,sc); curls.setMatrixAt(n,m4);
+        const tone=0.05+0.06*rnd()+0.07*Math.max(0,ny)*rnd(); col.setRGB(tone*1.0,tone*0.82,tone*0.66); curls.setColorAt(n,col); n++; }
+      curls.count=n; curls.castShadow=true; curls.frustumCulled=false; head.add(curls); }
     // cigar from the corner of the mouth
     const cDir = new THREE.Vector3(0.22,-0.18,1).normalize();
     const cigar = new THREE.Mesh(new THREE.CylinderGeometry(0.011,0.013,0.15,10), cigarM);
@@ -1016,7 +1060,8 @@
       const sh = new THREE.Vector3(s*0.255,0,0);
       const handPos = toRig(gripH.clone().add(sDir.clone().multiplyScalar(s>0 ? -0.05 : 0.05)));   // left hand higher on the grip
       const r = ik(sh, handPos, 0.31, 0.29, new THREE.Vector3(s*0.8,-0.2,-0.3));
-      limb(rig, [[0,0.07],[0.4,0.062],[1,0.048]], sh, r.mid, suit);
+      limb(rig, [[0,0.074],[0.25,0.07],[0.5,0.06],[1,0.048]], sh, r.mid, suit);
+      { const dl=ball(rig, suit, 0.07, s*0.255,-0.062,0, 0.95,1.15,1.05); }   // deltoid cap
       limb(rig, [[0,0.05],[0.3,0.054],[1,0.037]], r.mid, r.end, suit);
       ball(rig, suit, 0.054, r.mid.x,r.mid.y,r.mid.z);
       const fdir = r.end.clone().sub(r.mid).normalize();
@@ -1231,8 +1276,14 @@
       swingState = "rolling";
     } else {
       sfxSwing(power);
-      const distYd = club.carry * power;
-      const angOff = (acc) * THREE.MathUtils.degToRad(club.maxDev) * (0.4+Math.abs(acc));
+      // realistic swing: efficiency tops out near 92% effort, over-swinging adds distance only slowly and costs accuracy; lie matters
+      const lie = surfaceAt(ball.position.x, ball.position.z);
+      const lieDist = lie==="bunker" ? 0.7 : lie==="rough" ? 0.85 : lie==="tee" ? 1.02 : 1;
+      const lieDev  = lie==="bunker" ? 1.5 : lie==="rough" ? 1.35 : 1;
+      const eff  = power<=0.92 ? power : 0.92 + (power-0.92)*0.45;
+      const over = Math.max(0,(power-0.88)/0.12);
+      const distYd = club.carry * eff * lieDist * (1 + (Math.random()-0.5)*0.03*(0.5+power));
+      const angOff = (acc) * THREE.MathUtils.degToRad(club.maxDev) * (0.4+Math.abs(acc)) * lieDev * (1 + over*1.0) * (0.75 + 0.25*power);
       const a2 = aimAngle + angOff;
       const g = 24; // fictional gravity, yd/s^2 equivalent tuned for feel
       const theta = THREE.MathUtils.degToRad(club.launch);
