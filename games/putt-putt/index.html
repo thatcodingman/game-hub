@@ -1175,6 +1175,14 @@
     return t;
   })();
 
+  // black jacket cloth: near-black with a barely-there tonal pinstripe
+  const jacketTex = (function(){
+    const c = document.createElement("canvas"); c.width = 32; c.height = 8;
+    const x = c.getContext("2d"); x.fillStyle = "#121215"; x.fillRect(0,0,32,8);
+    x.fillStyle = "rgba(120,120,135,0.22)"; x.fillRect(0,0,1.2,8);
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(26,1); t.colorSpace = THREE.SRGBColorSpace; return t;
+  })();
+
   function makeGolfer(){
     const g = new THREE.Group();
     const M = (o)=> new THREE.MeshStandardMaterial(o);
@@ -1186,6 +1194,9 @@
     const soleM  = M({ color:0x3a2616, roughness:0.55 });
     const hairMat= M({ color:0x120e0b, roughness:1 });
     const suit   = M({ map:pinTex, roughness:0.5, metalness:0.05 });
+    const jMat   = M({ map:jacketTex, roughness:0.55, metalness:0.04 });
+    const lapelM = M({ color:0x08080a, roughness:0.28, metalness:0.15 });
+    const tieM   = M({ color:0x7b36cc, roughness:0.4 });
     const shirt  = M({ color:0xf4efe3, roughness:0.5 });
     const shoeM  = M({ color:0x1a1410, roughness:0.22, metalness:0.25 });
     const lensM  = M({ color:0x050505, roughness:0.08, metalness:0.6 });
@@ -1219,28 +1230,23 @@
       return { mid: from.clone().add(u.clone().multiplyScalar(a)).add(p.multiplyScalar(h)), end: from.clone().add(T) };
     }
 
-    const LEAN = 0.42;
-    const hips = new THREE.Group(); hips.position.y = 1.05; g.add(hips);
+    const LEAN = 0.5, HIPY = 0.97;
+    const hips = new THREE.Group(); hips.position.y = HIPY; g.add(hips);
 
-    // pelvis / trouser waist
-    const pel = new THREE.Mesh(loft([[-0.17,0.12],[-0.04,0.152],[0.04,0.14],[0.09,0.09]],{capB:0.04,capT:0.01}), suit);
-    pel.scale.set(1.2,1,0.88); pel.castShadow = true; hips.add(pel);
-    // glutes + hip blend so the seat flows into the thighs
-    [-1,1].forEach(function(s3){
-      ball(hips, suit, 0.1, s3*0.075,-0.075,-0.045, 1,1.1,0.85);
-      ball(hips, suit, 0.1, s3*0.11,-0.04,-0.02, 1,1.2,1);
-    });
+    // pelvis + seat: one smooth mass, tilted forward at the hips (the seat sits back naturally), blending into the thighs
+    const pel = new THREE.Mesh(loft([[-0.2,0.092],[-0.12,0.135],[-0.03,0.152],[0.05,0.142],[0.11,0.095]],{capB:0.05,capT:0.01}), suit);
+    pel.scale.set(1.25,1,0.9); pel.rotation.x = 0.2; pel.position.z = -0.012; pel.castShadow = true; hips.add(pel);
 
     // legs: thigh + shin skinned tubes, blended through hip and knee spheres
     [-1,1].forEach(function(s){
       const hip = new THREE.Vector3(s*0.085,-0.03,0);
-      const ankle = new THREE.Vector3(s*0.15,-0.965,-0.03);
-      const r = ik(hip, ankle, 0.5, 0.5, new THREE.Vector3(s*0.2,0,1));
+      const ankle = new THREE.Vector3(s*0.25,-(HIPY-0.085),-0.03);
+      const r = ik(hip, ankle, 0.5, 0.5, new THREE.Vector3(s*0.35,0,1));
       limb(hips, [[0,0.112],[0.35,0.098],[1,0.062]], hip, r.mid, suit);
       limb(hips, [[0,0.06],[0.25,0.064],[1,0.045]], r.mid, r.end, suit);
       ball(hips, suit, 0.112, hip.x,hip.y,hip.z);
       ball(hips, suit, 0.06, r.mid.x,r.mid.y,r.mid.z);
-      const sh = new THREE.Group(); sh.position.set(r.end.x,-1.05,r.end.z-0.065); sh.rotation.y = s>0 ? 0.32 : -0.14; hips.add(sh);
+      const sh = new THREE.Group(); sh.position.set(r.end.x,-HIPY,r.end.z-0.065); sh.rotation.y = s>0 ? 0.4 : -0.2; hips.add(sh);
       const upper = new THREE.Mesh(loft([[0,0.044],[0.05,0.056],[0.13,0.05],[0.21,0.059],[0.27,0.047],[0.31,0.012]],{capB:0.035,capT:0.01,seg:32}), shoeM);
       upper.rotation.x = Math.PI/2; upper.scale.set(0.92,1,0.74); upper.position.set(0,0.07,0); upper.castShadow = true; sh.add(upper);
       const sole = new THREE.Mesh(loft([[0,0.045],[0.05,0.057],[0.13,0.051],[0.21,0.06],[0.27,0.048],[0.312,0.012]],{capB:0.036,capT:0.01,seg:32}), soleM);
@@ -1259,12 +1265,12 @@
     // jacket: a sculpted torso (V-taper, pecs, flatter back, trapezius slope into the neck) instead of a scaled barrel
     const jacket = (function(){
       const K=[ // y, halfWidth, frontDepth, backDepth
-        [-0.27,0.150,0.088,0.096],[-0.17,0.185,0.100,0.114],[-0.08,0.190,0.100,0.114],[0.08,0.166,0.094,0.100],[0.24,0.172,0.104,0.100],
+        [-0.34,0.206,0.114,0.14],[-0.24,0.208,0.11,0.136],[-0.13,0.2,0.105,0.126],[-0.04,0.192,0.1,0.116],[0.08,0.166,0.094,0.100],[0.24,0.172,0.104,0.100],
         [0.38,0.200,0.124,0.104],[0.50,0.212,0.136,0.104],[0.565,0.214,0.115,0.094],[0.61,0.168,0.088,0.082],[0.655,0.100,0.068,0.068],[0.695,0.070,0.056,0.056]];
       const cr=function(i,t,k){ const g=function(j){ return K[Math.max(0,Math.min(K.length-1,j))][k]; }, p0=g(i-1),p1=g(i),p2=g(i+1),p3=g(i+2);
         return 0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t*t+(-p0+3*p1-3*p2+p3)*t*t*t); };
       const rows=[], R=64, NY=70;
-      rows.push({y:-0.285,sc:0.02,i:0,t:0}); rows.push({y:-0.277,sc:0.8,i:0,t:0});
+      rows.push({y:-0.355,sc:0.02,i:0,t:0}); rows.push({y:-0.347,sc:0.86,i:0,t:0});
       for(let r=0;r<=NY;r++){ const u=r/NY*(K.length-1), i=Math.min(K.length-2,Math.floor(u)), t=u-i; rows.push({y:cr(i,t,0)*0+ (K[i][0]+(K[i+1][0]-K[i][0])*t), sc:1, i:i, t:t}); }
       rows.push({y:0.699,sc:0.8,i:K.length-2,t:1}); rows.push({y:0.703,sc:0.02,i:K.length-2,t:1});
       const pos=[], uv=[], idx=[];
@@ -1273,15 +1279,39 @@
         for(let k=0;k<=R;k++){ const th=k/R*Math.PI*2, c=Math.cos(th), sn=Math.sin(th);
           const x=W*Math.sign(c)*Math.pow(Math.abs(c),ex); let z=(sn>=0?Df:Db)*Math.sign(sn)*Math.pow(Math.abs(sn),ex);
           if(sn>0) z+=0.014*Math.exp(-Math.pow((Math.abs(x)-0.095)/0.065,2))*Math.exp(-Math.pow((y-0.47)/0.075,2))*row.sc;   // pecs
-          pos.push(x,y,z); uv.push(k/R, (y+0.285)/0.99); } });
+          { const w=sstep(THREE.MathUtils.clamp(-y/0.3,0,1)), cL=Math.cos(LEAN), sL=Math.sin(LEAN), y2=y*cL+z*sL, z2=-y*sL+z*cL; pos.push(x, y+(y2-y)*w, z+(z2-z)*w); } uv.push(k/R, (y+0.355)/1.06); } });
       for(let ri=0;ri<rows.length-1;ri++) for(let k=0;k<R;k++){ const a0=ri*(R+1)+k, b0=a0+1, c0=a0+R+1, d0=c0+1; idx.push(a0,b0,c0,b0,d0,c0); }
       const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2)); g.setIndex(idx); g.computeVertexNormals();
       { const pa=g.attributes.position, na=g.attributes.normal, map={};   // weld normals across the seam
         for(let i=0;i<pa.count;i++){ const kk=Math.round(pa.getX(i)*4000)+","+Math.round(pa.getY(i)*4000)+","+Math.round(pa.getZ(i)*4000); (map[kk]||(map[kk]=[])).push(i); }
         Object.keys(map).forEach(function(kk){ const ids=map[kk]; if(ids.length<2) return; let x=0,y=0,z=0; ids.forEach(function(i){ x+=na.getX(i); y+=na.getY(i); z+=na.getZ(i); }); const l=Math.hypot(x,y,z)||1; ids.forEach(function(i){ na.setXYZ(i,x/l,y/l,z/l); }); }); }
-      const m=new THREE.Mesh(g,suit); m.castShadow=true; return m;
+      const m=new THREE.Mesh(g,jMat); m.castShadow=true;
+      // front surface helper so shirt / tie / lapels hug the jacket exactly
+      m.userData.front=function(y,x){ let i=0; while(i<K.length-2 && y>K[i+1][0]) i++; const t=Math.max(0,Math.min(1,(y-K[i][0])/(K[i+1][0]-K[i][0])));
+        const W=cr(i,t,1), Df=cr(i,t,2), ex=2/(y>0.3?2.5:2.2), q=Math.min(0.999,Math.abs(x)/W);
+        let z=Df*Math.pow(Math.max(0,1-Math.pow(q,2/ex)),ex/2);
+        z+=0.014*Math.exp(-Math.pow((Math.abs(x)-0.095)/0.065,2))*Math.exp(-Math.pow((y-0.47)/0.075,2)); return z; };
+      return m;
     })();
     torso.add(jacket);
+    // shirt V, tie and satin lapels, built as thin strips that follow the jacket surface
+    (function(){
+      const fr=jacket.userData.front;
+      const strip=function(mat, y0, y1, xin, xout, off, N){   // band between xin(y) and xout(y), both sides of centre
+        const pos=[], idx=[];
+        for(let side=-1; side<=1; side+=2){ const base=pos.length/3;
+          for(let r=0;r<=N;r++){ const y=y0+(y1-y0)*r/N, u=r/N, a=xin(u), b=xout(u);
+            [a,b].forEach(function(xx){ pos.push(side*xx, y, fr(y,xx)+off); }); }
+          for(let r=0;r<N;r++){ const p=base+r*2; if(side>0) idx.push(p,p+1,p+2,p+1,p+3,p+2); else idx.push(p,p+2,p+1,p+1,p+2,p+3); } }
+        const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setIndex(idx); g.computeVertexNormals();
+        const m=new THREE.Mesh(g,mat); m.material.side=THREE.DoubleSide; torso.add(m); return m; };
+      // white shirt, a V from the collar down to the button
+      strip(shirt, 0.64, 0.27, function(u){ return 0; }, function(u){ return 0.058*(1-u); }, 0.003, 14);
+      // purple tie, widening to the tip
+      strip(tieM, 0.625, 0.33, function(u){ return 0; }, function(u){ return 0.011+0.016*Math.sin(Math.min(1,u*1.15)*1.4); }, 0.007, 14);
+      // satin lapels flanking the V
+      strip(lapelM, 0.655, 0.27, function(u){ return 0.058*(1-u); }, function(u){ return 0.058*(1-u)+0.052*Math.sin(Math.PI*Math.min(1,u*0.9+0.08))*0.85+0.012; }, 0.006, 16);
+    })();
     const neck = new THREE.Mesh(loft([[0.6,0.068],[0.76,0.056]],{capB:0.02,capT:0.02}), skin); torso.add(neck);
     const collar = new THREE.Mesh(new THREE.TorusGeometry(0.072,0.016,12,28), shirt);
     collar.rotation.x = Math.PI/2; collar.position.y = 0.665; collar.scale.set(1.05,1.05,1); torso.add(collar);
@@ -1357,16 +1387,16 @@
     // arms + club: one rig pivoting at the shoulders so hands and club move as a unit
     const rig = new THREE.Group(); rig.position.set(0,0.585,0); torso.add(rig);
     const toRig = function(vHips){ return vHips.clone().applyAxisAngle(XAX,-LEAN).sub(rig.position); };
-    const gripH = new THREE.Vector3(0,-0.02,0.36);
-    const headH = new THREE.Vector3(0,-0.99,0.98);
+    const gripH = new THREE.Vector3(0,-0.02,0.4);
+    const headH = new THREE.Vector3(0,-(HIPY-0.06),0.98);
     const sDir = headH.clone().sub(gripH).normalize();
     [-1,1].forEach(function(s){
       const sh = new THREE.Vector3(s*0.226,-0.062,0);
       const handPos = toRig(gripH.clone().add(sDir.clone().multiplyScalar(s>0 ? -0.05 : 0.05)));   // left hand higher on the grip
       const r = ik(sh, handPos, 0.31, 0.29, new THREE.Vector3(s*0.8,-0.2,-0.3));
-      limb(rig, [[0,0.052],[0.1,0.068],[0.26,0.066],[0.55,0.056],[0.8,0.049],[1,0.045]], sh, r.mid, suit);   // one tapering upper arm: deltoid -> bicep -> elbow, no stuck-on ball
-      limb(rig, [[0,0.05],[0.3,0.054],[1,0.037]], r.mid, r.end, suit);
-      ball(rig, suit, 0.054, r.mid.x,r.mid.y,r.mid.z);
+      limb(rig, [[0,0.052],[0.1,0.068],[0.26,0.066],[0.55,0.056],[0.8,0.049],[1,0.045]], sh, r.mid, jMat);   // one tapering upper arm: deltoid -> bicep -> elbow, no stuck-on ball
+      limb(rig, [[0,0.05],[0.3,0.054],[1,0.037]], r.mid, r.end, jMat);
+      ball(rig, jMat, 0.054, r.mid.x,r.mid.y,r.mid.z);
       const fdir = r.end.clone().sub(r.mid).normalize();
       const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.03,18), shirt);
       cuff.quaternion.setFromUnitVectors(UP, fdir); cuff.position.copy(r.end).sub(fdir.clone().multiplyScalar(0.012)); rig.add(cuff);
