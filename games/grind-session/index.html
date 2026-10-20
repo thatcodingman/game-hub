@@ -71,7 +71,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v3 · PUSH ANIMATION</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v4 · REAL PUSH</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -236,20 +236,23 @@ function makeSkater(){
 const skMesh=makeSkater(); scene.add(skMesh);
 function pushFoot(p){
   const e=function(u){ return u*u*(3-2*u); }, X=0.28;
-  if(p<0.12){ const u=e(p/0.12); return [lerp(0,X,u),lerp(0.16,0.06,u)+Math.sin(u*Math.PI)*0.06,lerp(-0.30,-0.14,u)]; }
-  if(p<0.5){ const u=(p-0.12)/0.38; return [X,0.05,lerp(-0.14,-0.92,u)]; }
-  if(p<0.82){ const u=e((p-0.5)/0.32); return [X,0.05+Math.sin(u*Math.PI)*0.16,lerp(-0.92,-0.14,u)]; }
-  const u=e((p-0.82)/0.18); return [lerp(X,0,u),lerp(0.05,0.16,u),lerp(-0.14,-0.30,u)];
+  if(p<0.12){ const u=e(p/0.12); return [lerp(0,X,u),lerp(0.16,0.06,u)+Math.sin(u*Math.PI)*0.06,lerp(-0.30,-0.12,u)]; }
+  if(p<0.5){ const u=(p-0.12)/0.38; return [X,0.05,lerp(-0.12,-0.68,u)]; }
+  if(p<0.82){ const u=e((p-0.5)/0.32); return [X,0.05+Math.sin(u*Math.PI)*0.3,lerp(-0.68,-0.12,u)]; }
+  const u=e((p-0.82)/0.18); return [lerp(X,0,u),lerp(0.05,0.16,u),lerp(-0.12,-0.30,u)];
 }
 function poseSkater(S){
-  const U=skMesh.userData, pa=S.pushAmt, ba=S.brakeAmt, crouch=Math.min(1.25,S.crouch+pa*0.95+ba*0.6), ty=S.tumble, bail=S.mode==="bail", bt=S.bailT||0;
-  const py=1.135-crouch*0.30, lean=S.lean, st=S.stance;                 // st: 0 = facing forward (push / stand), 1 = sideways (ride / tricks)
+  const U=skMesh.userData, pa=S.pushAmt, ba=S.brakeAmt, crouch=Math.min(1.25,S.crouch+pa*0.3+ba*0.4), ty=S.tumble, bail=S.mode==="bail", bt=S.bailT||0;
+  let py=1.135-crouch*0.30; const lean=S.lean, st=S.stance;                 // st: 0 = facing forward (push / stand), 1 = sideways (ride / tricks)
   const yaw=lerp(-1.5,S.bodyTwist,st), yS=yaw-S.bodyTwist;              // torso yaw, and its offset from the sideways baseline
   const rot=function(x,z,t){ return [x*Math.cos(t)+z*Math.sin(t), -x*Math.sin(t)+z*Math.cos(t)]; };
   const V=function(x,y,z){ return new THREE.Vector3(x,y,z); };
   const hy=yS*0.5, hF=rot(0,0.12,hy), hB=rot(0,-0.12,hy);
-  const hipF=V(hF[0],py,hF[1]+0.12*pa), hipB=V(hB[0],py,hB[1]+0.12*pa);
   const footF=V(0.0,0.16,0.30), footB=V(0.0,0.16,-0.30);
+  { // keep the leg standing on the board straight while rolling / pushing: raise the hips until the front leg is fully extended
+    const wS=bail?0:clamp(1-(S.crouch-0.1)*4,0,1), dz=hF[1]-footF.z, d2=hF[0]*hF[0]+dz*dz, pyS=0.21+Math.sqrt(Math.max(0.05,0.94*0.94-d2))-0.03;
+    py=lerp(py,pyS,wS); py=lerp(py,0.95,pa*(bail?0:1)); }   // pushing: hips sink back behind the board foot so that leg stays straight AND the kicking foot reaches the ground
+  const HZ=-0.40*pa, UZ=-0.14*pa, hipF=V(hF[0],py,hF[1]+HZ), hipB=V(hB[0],py,hB[1]+HZ);
   if(S.grab>0.5){ footF.y+=0.1*S.grab; footB.y+=0.12*S.grab; }
   if(pa>0.01){ const pf=pushFoot(S.pushPhase); footB.lerp(V(pf[0],pf[1],pf[2]),pa); }
   if(ba>0.01){ footB.lerp(V(0.26,0.04,-0.46),ba); }
@@ -259,13 +262,15 @@ function poseSkater(S){
   limbIK(U.thighB,U.shinB,hipB,footB.clone().add(V(0,0.05,0)),kneeHint,0.47,0.47);
   U.shoeF.position.copy(footF); U.shoeB.position.copy(footB);
   const fd=rot(1,0,yaw), fw=[Math.cos(yaw),-Math.sin(yaw)];                 // facing direction in the board plane
-  U.torso.position.set(0.03*fw[0]+pa*0.06*fw[0],py+0.31,0.03*fw[1]+pa*0.06*fw[1]+0.12*pa);
-  U.torso.rotation.set(lean*0.9,yaw,-pa*0.32+ba*0.18); U.torso.rotation.order="YXZ";
+  U.torso.position.set(0.03*fw[0]+pa*0.06*fw[0],py+0.31,0.03*fw[1]+pa*0.06*fw[1]+UZ);
+  U.torso.rotation.set(lean*0.9,yaw,-pa*0.5+ba*0.18); U.torso.rotation.order="YXZ";
   const sy=py+0.52, sF=rot(0.02+pa*0.1,0.22,yS), sB=rot(0.02+pa*0.1,-0.22,yS);
-  const shF=V(sF[0],sy-pa*0.06,sF[1]+0.12*pa), shB=V(sB[0],sy-pa*0.06,sB[1]+0.12*pa);
+  const shF=V(sF[0],sy-pa*0.06,sF[1]+UZ), shB=V(sB[0],sy-pa*0.06,sB[1]+UZ);
   const sw=S.armSwing, gr=S.grab;
   const hdF=rot(0.14+sw*0.22,0.46+sw*0.12,yS), hdB=rot(0.1-sw*0.18,-0.44-sw*0.1,yS);
   let handF=V(hdF[0],sy-0.52+0.1*sw,hdF[1]), handB=V(hdB[0],sy-0.50-0.05*sw,hdB[1]);
+  { const wA=(1-gr)*(bail?0:1)*(S.mode==="grind"?0.5:1), R2=0.575;   // arms: fully extended, hands placed at full reach from the shoulders
+    const sh=[shF,shB], hd=[handF,handB]; for(let i=0;i<2;i++){ const dv=hd[i].clone().sub(sh[i]); if(dv.length()<0.001) dv.set(0,-1,0); const tgt=sh[i].clone().add(dv.normalize().multiplyScalar(R2)); hd[i].lerp(tgt,wA); } }
   if(gr>0){ handF.lerp(V(0.0,0.18,0.12),gr); }
   if(bail){ handF.y+=0.7+0.3*Math.sin(bt*14); handB.y+=0.7+0.3*Math.sin(bt*14+1.7); handF.x+=0.3*Math.sin(bt*11); handB.x-=0.3*Math.sin(bt*11); }
   const eF=rot(0.2,0.6,yS), eB=rot(0.2,-0.6,yS);
@@ -273,7 +278,7 @@ function poseSkater(S){
   limbIK(U.uaB,U.faB,shB,handB,V(eB[0],-0.5,eB[1]),0.29,0.29);
   // head always looks ahead (down the board), even in the sideways stance
   const hdy=-1.3, hOff=rot(0.05+lean*0.1+pa*0.1,0,yS*0.4);
-  U.head.position.set(hOff[0],py+0.72-pa*0.04,hOff[1]+0.12*pa); U.head.rotation.y=hdy; U.cap.position.copy(U.head.position); U.cap.rotation.y=hdy; U.hair.position.copy(U.head.position); U.hair.rotation.y=hdy;
+  U.head.position.set(hOff[0],py+0.72-pa*0.04,hOff[1]+UZ+0.05*pa); U.head.rotation.y=hdy; U.cap.position.copy(U.head.position); U.cap.rotation.y=hdy; U.hair.position.copy(U.head.position); U.hair.rotation.y=hdy;
   U.brim.position.set(U.head.position.x+0.19*Math.cos(hdy),py+0.74-pa*0.04,U.head.position.z-0.19*Math.sin(hdy)); U.brim.rotation.y=hdy+Math.PI/2;
   U.bodyG.rotation.set(0,0,0);
   if(ty!==0){ U.bodyG.rotation.set(ty*1.0,0,ty*0.4); U.bodyG.position.y=0.32*Math.min(1,Math.abs(ty)*1.5)+Math.max(0,Math.sin(ty*0.5))*0.3; } else U.bodyG.position.y=0;
@@ -410,7 +415,7 @@ function stepSkater(dt,inp){
     if(inp.jump){ S.charging=true; S.charge=Math.min(1,S.charge+dt/0.32); } else if(S.charging){ pop(); return; }
     S.heading+=steer*(2.6/(1+Math.abs(S.spd)*0.09))*dt*(Math.abs(S.spd)<0.6?0.45:1);
     // kicks: W starts a kick, holding W chains them, releasing W finishes the current kick. Speed is only gained during the ground-drag part of a kick.
-    const canPush=inp.push&&!inp.brake&&!inp.jump&&S.spd<GAIN.maxPush*0.96&&S.spd>-1;
+    const canPush=inp.push&&!inp.brake&&!inp.jump&&S.spd>-1;   // legs keep kicking while W is held at any speed; the speed gain below fades to zero at top speed
     if(canPush||S.pushPhase>0){ S.pushPhase+=dt/(0.95-0.3*clamp(S.spd/12,0,1)); if(S.pushPhase>=1) S.pushPhase=canPush?S.pushPhase-1:0; }
     if(S.pushPhase>0&&(inp.brake||inp.jump)) S.pushPhase=0;
     if(S.pushPhase>=0.12&&S.pushPhase<0.5) S.spd+=GAIN.push*2.7*clamp(1-S.spd/GAIN.maxPush,0,1)*dt;
@@ -477,7 +482,7 @@ function animateRig(dt){
   S.stance=damp(S.stance, S.mode==="ground"? ((S.pushPhase>0||S.pushAmt>0.3||S.braking||Math.abs(S.spd)<2.5)&&!S.charging?0:1) : 1, 14, dt);
   S.brakeAmt=damp(S.brakeAmt,(S.mode==="ground"&&S.braking)?1:0,14,dt);
   S.pushAmt=damp(S.pushAmt,(S.mode==="ground"&&S.pushPhase>0)?1:0,12,dt);
-  if(S.mode==="ground"&&S.pushPhase>=0.12&&S.pushPhase<0.5&&game.t%0.04<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), u=(S.pushPhase-0.12)/0.38, lx=0.28, lz=-0.14-0.78*u; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,-Math.sin(S.heading)*-1.2+(R()-0.5)*0.8,0.5+R()*0.7,-Math.cos(S.heading)*-1.2+(R()-0.5)*0.8,0.55,0.32,[0.9,0.86,0.78],-1,0.9,0.6); }   // scuff puffs where the kicking foot drags
+  if(S.mode==="ground"&&S.pushPhase>=0.12&&S.pushPhase<0.5&&game.t%0.04<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), u=(S.pushPhase-0.12)/0.38, lx=0.28, lz=-0.12-0.56*u; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,-Math.sin(S.heading)*-1.2+(R()-0.5)*0.8,0.5+R()*0.7,-Math.cos(S.heading)*-1.2+(R()-0.5)*0.8,0.55,0.32,[0.9,0.86,0.78],-1,0.9,0.6); }   // scuff puffs where the kicking foot drags
   if(S.brakeAmt>0.6&&Math.abs(S.spd)>2.5&&game.t%0.05<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), lx=0.26, lz=-0.46; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,(R()-0.5)*1.2,0.5+R()*0.8,(R()-0.5)*1.2,0.5,0.3,[0.85,0.8,0.72],-1,0.8,0.5); }
   S.grab=damp(S.grab, (S.mode==="air"&&S.air.grabbed)?1:0, 14, dt);
   if(S.mode!=="grind") S.lean=damp(S.lean,0,8,dt);
