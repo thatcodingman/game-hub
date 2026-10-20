@@ -233,26 +233,34 @@ function makeSkater(){
   return g;
 }
 const skMesh=makeSkater(); scene.add(skMesh);
+function pushFoot(p){
+  const e=function(u){ return u*u*(3-2*u); };
+  if(p<0.18){ const u=e(p/0.18); return [lerp(0,0.30,u),lerp(0.16,0.05,u)+Math.sin(u*Math.PI)*0.12,lerp(-0.30,-0.10,u)]; }
+  if(p<0.55){ const u=(p-0.18)/0.37; return [0.30,0.04,lerp(-0.10,-0.85,u)]; }
+  if(p<0.85){ const u=(p-0.55)/0.30; return [lerp(0.30,0.12,u),0.04+Math.sin(u*Math.PI)*0.28,lerp(-0.85,-0.36,e(u))]; }
+  const u=e((p-0.85)/0.15); return [lerp(0.12,0,u),lerp(0.04,0.16,u),lerp(-0.36,-0.30,u)];
+}
 function poseSkater(S){
-  const U=skMesh.userData, crouch=S.crouch, ty=S.tumble;
+  const U=skMesh.userData, pa=S.pushAmt, crouch=Math.min(1.25,S.crouch+pa*0.95), ty=S.tumble;
   const py=1.135-crouch*0.30;
   const lean=S.lean;  // torso lean (balance)
-  const hipF=new THREE.Vector3(0.0,py,0.12), hipB=new THREE.Vector3(0.0,py,-0.12);
+  const hipF=new THREE.Vector3(0.0,py,0.12+0.12*pa), hipB=new THREE.Vector3(0.0,py,-0.12+0.12*pa);
   const tw=S.bodyTwist;
   const footF=new THREE.Vector3(0.0,0.16,0.30), footB=new THREE.Vector3(0.0,0.16,-0.30);
   if(S.grab>0.5){ footF.y+=0.1*S.grab; footB.y+=0.12*S.grab; }
+  if(pa>0.01){ const pf=pushFoot(S.pushPhase); footB.lerp(new THREE.Vector3(pf[0],pf[1],pf[2]),pa); }
   const kneeHint=new THREE.Vector3(1,0,0);
   limbIK(U.thighF,U.shinF,hipF,footF.clone().add(new THREE.Vector3(0,0.05,0)),kneeHint,0.47,0.47);
   limbIK(U.thighB,U.shinB,hipB,footB.clone().add(new THREE.Vector3(0,0.05,0)),kneeHint,0.47,0.47);
   U.shoeF.position.copy(footF); U.shoeB.position.copy(footB);
-  U.torso.position.set(0.03+lean*0.0,py+0.31,0); U.torso.rotation.set(lean*0.9,tw,0.0); U.torso.rotation.order="YXZ";
-  const sy=py+0.52, shF=new THREE.Vector3(0.02,sy,0.22), shB=new THREE.Vector3(0.02,sy,-0.22);
+  U.torso.position.set(0.03+pa*0.05,py+0.31,0.12*pa); U.torso.rotation.set(lean*0.9,tw,-pa*0.32); U.torso.rotation.order="YXZ";
+  const sy=py+0.52, shF=new THREE.Vector3(0.02+pa*0.1,sy-pa*0.06,0.22+0.12*pa), shB=new THREE.Vector3(0.02+pa*0.1,sy-pa*0.06,-0.22+0.12*pa);
   const sw=S.armSwing, gr=S.grab;
   let handF=new THREE.Vector3(0.14+sw*0.22,sy-0.52+0.1*sw,0.46+sw*0.12), handB=new THREE.Vector3(0.1-sw*0.18,sy-0.50-0.05*sw,-0.44-sw*0.1);
   if(gr>0){ handF.lerp(new THREE.Vector3(0.0,0.18,0.12),gr); }
   limbIK(U.uaF,U.faF,shF,handF,new THREE.Vector3(0.2,-0.5,0.6),0.29,0.29);
   limbIK(U.uaB,U.faB,shB,handB,new THREE.Vector3(0.2,-0.5,-0.6),0.29,0.29);
-  U.head.position.set(0.05+lean*0.1,py+0.74,0.0); U.cap.position.copy(U.head.position); U.brim.position.set(0.19+lean*0.1,py+0.76,0); U.brim.rotation.y=Math.PI/2; U.hair.position.copy(U.head.position);
+  U.head.position.set(0.05+lean*0.1+pa*0.2,py+0.72-pa*0.04,0.12*pa); U.cap.position.copy(U.head.position); U.brim.position.set(0.19+lean*0.1+pa*0.2,py+0.74-pa*0.04,0.12*pa); U.brim.rotation.y=Math.PI/2; U.hair.position.copy(U.head.position);
   U.hair.rotation.y=0; U.cap.rotation.y=0;
   U.bodyG.rotation.set(0,0,0);
   if(ty!==0){ U.bodyG.rotation.set(ty*1.0,0,ty*0.4); U.bodyG.position.y=Math.max(0,Math.sin(ty*0.5)*0.4); } else U.bodyG.position.y=0;
@@ -263,7 +271,7 @@ const SESSION=120, MEDALS=[[30000,"GOLD"],[15000,"SILVER"],[5000,"BRONZE"]];
 const game={ state:"menu", t:0, countdown:0, time:SESSION, score:0, best:store.get("best",0), camMode:0, shake:0 };
 const S={ mode:"ground", pos:new THREE.Vector3(), vel:new THREE.Vector3(), heading:Math.PI, spd:0, vyG:0, y:0, vy:0, charge:0, charging:false, crouch:0, lean:0, bodyTwist:0.35, armSwing:0, grab:0, tumble:0,
   air:{ t:0, spinAcc:0, spinAwarded:0, spinRate:0, flip:null, grabT:0, trickCount:0, startY:0, maxY:0 }, flip:{ type:null, t:0, dur:0.5 }, boardRoll:0, boardYaw:0, boardPitch:0,
-  grind:null, grindCd:0, bailT:0, popCd:0, landT:0, stuckT:0, rollSnd:0 };
+  pushPhase:0, pushAmt:0, grind:null, grindCd:0, bailT:0, popCd:0, landT:0, stuckT:0, rollSnd:0 };
 const combo={ pts:0, n:0, names:[], timer:0, alive:false, live:0 };
 const keys={}, touch={ l:false, r:false, p:false, o:false, f:false, g:false };
 const SPAWN={ x:0, z:28, h:Math.PI };
@@ -332,7 +340,7 @@ function bankCombo(silent){
   resetCombo();
 }
 function bail(why){
-  if(S.mode==="bail") return; const hadCombo=combo.alive; S.mode="bail"; S.bailT=0; S.grind=null; S.charging=false; S.flip.type=null; snd("bail"); game.shake=0.8;
+  if(S.mode==="bail") return; const hadCombo=combo.alive; S.mode="bail"; S.pushPhase=0; S.bailT=0; S.grind=null; S.charging=false; S.flip.type=null; snd("bail"); game.shake=0.8;
   resetCombo(); flashChain(why||"BAIL","bad",1.3); if(hadCombo) banner("BAILED",why&&why!=="BAIL"?why:"",900);
   S.tumbleDir=R()<0.5?-1:1;
 }
@@ -343,7 +351,7 @@ function slopeBack(x,z,dx,dz){ const e=0.22; return (hAt(x,z)-hAt(x-dx*e,z-dz*e)
 const BOUND_X=60.4, BOUND_Z=42.4;
 function clampBounds(){ let hit=false; if(S.pos.x>BOUND_X){ S.pos.x=BOUND_X; hit=true; } if(S.pos.x<-BOUND_X){ S.pos.x=-BOUND_X; hit=true; } if(S.pos.z>BOUND_Z){ S.pos.z=BOUND_Z; hit=true; } if(S.pos.z<-BOUND_Z){ S.pos.z=-BOUND_Z; hit=true; } return hit; }
 function startAir(vy,popped){
-  S.mode="air"; const a=S.air; const pk=S.slPeak||0;
+  S.mode="air"; S.pushPhase=0; const a=S.air; const pk=S.slPeak||0;
   if(pk>1.4&&!popped){ const hs=Math.abs(S.spd)/Math.sqrt(1+pk*pk), sg=Math.sign(S.spd||1); S.vel.set(Math.sin(S.heading)*hs*sg,0,Math.cos(S.heading)*hs*sg); vy=Math.min(vy,Math.abs(S.spd)*pk/Math.sqrt(1+pk*pk))*0.78; }
   S.vy=vy; const hs0=Math.hypot(S.vel.x,S.vel.z);
   a.assist=(pk>2.2&&hs0>0.3)? { ax:-S.vel.x/hs0, az:-S.vel.z/hs0, acc:2.4*hs0/(2*Math.max(1,vy)/G) } : null; a.t=0; a.spinAcc=0; a.spinAwarded=0; a.spinRate=0; a.grabT=0; a.startY=S.y; a.maxY=S.y; a.popped=!!popped; a.tricks=0; a.hadTrick=false; S.landT=0;
@@ -388,7 +396,8 @@ function stepSkater(dt,inp){
     // ollie charge
     if(inp.jump){ S.charging=true; S.charge=Math.min(1,S.charge+dt/0.32); } else if(S.charging){ pop(); return; }
     S.heading+=steer*(2.6/(1+Math.abs(S.spd)*0.09))*dt*(Math.abs(S.spd)<0.6?0.45:1);
-    if(inp.push) S.spd+=GAIN.push*clamp(1-S.spd/GAIN.maxPush,0,1)*dt; if(inp.brake) S.spd-=Math.sign(S.spd||1)*11*dt*(Math.abs(S.spd)>0.3?1:0);
+    if(inp.push||S.pushPhase>0){ S.pushPhase+=dt/(0.95-0.25*clamp(S.spd/12,0,1)); if(S.pushPhase>=1) S.pushPhase=inp.push?S.pushPhase-1:0; }
+    if(inp.push&&!inp.jump){ const kick=S.pushPhase>=0.18&&S.pushPhase<0.55; S.spd+=GAIN.push*(kick?2.3:0.2)*clamp(1-S.spd/GAIN.maxPush,0,1)*dt; } if(inp.brake) S.spd-=Math.sign(S.spd||1)*11*dt*(Math.abs(S.spd)>0.3?1:0);
     S.spd-=S.spd*0.075*dt+Math.sign(S.spd)*0.28*dt;
     const sl=slopeBack(x,z,Math.sin(S.heading)*Math.sign(S.spd||1),Math.cos(S.heading)*Math.sign(S.spd||1)), slc=clamp(sl,-6,6); S.lastSl=slc; S.slPeak=Math.max(slc,(S.slPeak||0)*Math.exp(-dt/0.12));
     S.spd-=G*slc/Math.sqrt(1+slc*slc)*0.9*dt; if(slc>1.2) S.spd-=S.spd*0.45*dt*clamp((slc-1.2)/3,0,1);
@@ -448,6 +457,7 @@ function stepSkater(dt,inp){
 function animateRig(dt){
   S.crouch=damp(S.crouch, S.mode==="ground"? (S.charging? 0.35+0.55*S.charge : (S.landT>0?S.crouch:0.02+clamp(Math.abs(S.spd)/60,0,0.05))) : (S.mode==="air"? (S.air.grabbed?0.6:0.3) : (S.mode==="grind"?0.15:0.1)), 12, dt);
   S.armSwing=damp(S.armSwing, S.mode==="air"? 1.0*Math.sign(S.air.spinRate||1) : (S.mode==="grind"? -S.grind.bal*1.3 : clamp(S.spd/20,0,0.6)), 8, dt);
+  S.pushAmt=damp(S.pushAmt,(S.mode==="ground"&&S.pushPhase>0)?1:0,12,dt);
   S.grab=damp(S.grab, (S.mode==="air"&&S.air.grabbed)?1:0, 14, dt);
   if(S.mode!=="grind") S.lean=damp(S.lean,0,8,dt);
   S.bodyTwist=damp(S.bodyTwist, S.mode==="air"? 0.35+S.air.spinRate*0.04 : 0.35, 8, dt);
