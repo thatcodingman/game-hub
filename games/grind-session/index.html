@@ -71,7 +71,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v15 · HIPS</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v17 · SKINNED</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -206,7 +206,8 @@ addPiece(14,15,Math.PI/2,4.6,[[0,0],[3.2,0.9],[3.2,0]],0xb98b57);
 }
 
 /* ---------- skater rig ---------- */
-const UPV=new THREE.Vector3(0,1,0), _q=new THREE.Quaternion();
+const UPV=new THREE.Vector3(0,1,0), _q=new THREE.Quaternion(), _v1=new THREE.Vector3(), _v2=new THREE.Vector3(), _v3=new THREE.Vector3(), _bm=new THREE.Matrix4();
+function setBone(b,pos,dir,ref){ b.position.copy(pos); const y=_v1.copy(dir).multiplyScalar(-1).normalize(), x=_v2.copy(ref); x.addScaledVector(y,-x.dot(y)); if(x.lengthSq()<1e-5){ x.set(0,0,1); x.addScaledVector(y,-y.z); } x.normalize(); const z=_v3.crossVectors(x,y); _bm.makeBasis(x,y,z); b.quaternion.setFromRotationMatrix(_bm); }   // bone frame: y = back along the segment, x = bend-plane reference
 function seg(mesh,p0,p1){ const d=new THREE.Vector3().subVectors(p1,p0), l=d.length()||1e-4; mesh.position.copy(p0).addScaledVector(d,0.5); mesh.scale.set(1,l,1); mesh.quaternion.setFromUnitVectors(UPV,d.multiplyScalar(1/l)); }
 function limbIK(m1,m2,p0,p1,hint,L1,L2){
   const ax=new THREE.Vector3().subVectors(p1,p0), d=Math.min(ax.length(),(L1+L2)*0.999); ax.normalize(); const target=p0.clone().addScaledVector(ax,d);
@@ -235,13 +236,14 @@ function makeSkater(){
   const SPH=new THREE.SphereGeometry(1,20,14);
   const limb=function(m,rEnd,rStart,ns){ const o=new THREE.Mesh(new THREE.CylinderGeometry(rEnd,rStart,1,ns||14,1,false),m); o.castShadow=true; bodyG.add(o); return o; };   // rEnd = radius at the far end (knee/elbow/foot), rStart = near end
   const pantsM=fmat(PAL.pants,"twill",3,3,0.85,0.7), hoodieM=fmat(PAL.hoodie,"fleece",3,3,0.95,0.8), hoodieDM=fmat(PAL.hoodieDark,"fleece",2,2,0.95,0.8), ribM=fmat(PAL.hoodieDark,"rib",6,1,0.95,1.2);
-  const thighF=limb(pantsM,0.084,0.108), shinF=limb(pantsM,0.07,0.082), thighB=limb(pantsM,0.082,0.104), shinB=limb(pantsM,0.07,0.08);
-  const uaF=limb(hoodieM,0.058,0.066), faF=limb(hoodieM,0.052,0.058), uaB=limb(hoodieM,0.058,0.066), faB=limb(hoodieM,0.052,0.058);
+  const dm=function(){ return new THREE.Object3D(); };   // IK helper targets only; the visible limbs are the skinned meshes below
+  const thighF=dm(), shinF=dm(), thighB=dm(), shinB=dm();
+  const uaF=dm(), faF=dm(), uaB=dm(), faB=dm();
   const cuffLF=new THREE.Mesh(new THREE.CylinderGeometry(0.078,0.075,1,16),pantsM), cuffLB=cuffLF.clone(), cuffAF=new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.056,1,14),ribM), cuffAB=cuffAF.clone();
   [cuffLF,cuffLB,cuffAF,cuffAB].forEach(function(o){ o.castShadow=true; bodyG.add(o); });
-  const kneeF=ell(SPH,pantsM,0.082,0.082,0.082,0,0,0,bodyG), kneeB=ell(SPH,pantsM,0.08,0.08,0.08,0,0,0,bodyG);
-  const elbF=ell(SPH,hoodieM,0.058,0.058,0.058,0,0,0,bodyG), elbB=ell(SPH,hoodieM,0.058,0.058,0.058,0,0,0,bodyG);
-  const shJF=ell(SPH,hoodieM,0.082,0.082,0.082,0,0,0,bodyG), shJB=ell(SPH,hoodieM,0.082,0.082,0.082,0,0,0,bodyG);
+  const kneeF=dm(), kneeB=dm();
+  const elbF=dm(), elbB=dm();
+  const shJF=dm(), shJB=dm();
   const makeHand=function(){ const h=new THREE.Group(); ell(SPH,skinM,0.034,0.05,0.022,0,0.045,0,h); ell(SPH,skinM,0.032,0.04,0.019,0,0.095,0,h); ell(SPH,skinM,0.014,0.04,0.016,0.03,0.05,0.004,h).rotation.z=-0.5; bodyG.add(h); return h; };
   const handGF=makeHand(), handGB=makeHand();
   const makeShoe=function(){
@@ -280,16 +282,18 @@ function makeSkater(){
     const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(pos,3)); g.setAttribute("uv",new THREE.Float32BufferAttribute(uv,2)); g.setIndex(idx); g.computeVertexNormals();
     const m=new THREE.Mesh(g,material); m.castShadow=true; return m; };
   // torso = shaped hoodie body (x = front, z = shoulder width): fitted waist, athletic chest and shoulders
-  const torso=ringLoft([[-0.28,0.108,0.15],[-0.22,0.113,0.153],[-0.1,0.108,0.15],[0.06,0.118,0.168],[0.17,0.126,0.19],[0.25,0.112,0.205],[0.3,0.07,0.12],[0.33,0.05,0.05]],28,2.4,hoodieM); bodyG.add(torso);
-  { const hem=new THREE.Mesh(new THREE.CylinderGeometry(1,1,0.07,28,1,false),ribM); hem.scale.set(0.115,1,0.156); hem.position.y=-0.265; hem.castShadow=true; torso.add(hem);          // ribbed hem band
+  const torso=new THREE.Bone(); torso.position.set(0,0.245,0); bodyG.add(torso);
+  { // ribbed hem band
     const pocket=ell(new THREE.BoxGeometry(1,1,1),hoodieDM,0.028,0.1,0.22,0.113,-0.1,0,torso); pocket.geometry=new THREE.BoxGeometry(1,1,1,1,1,1);                                         // kangaroo pocket
     const hood=new THREE.Mesh(new THREE.TorusGeometry(0.1,0.042,12,26),hoodieM); hood.rotation.x=Math.PI/2; hood.scale.set(0.95,1.25,1.1); hood.position.set(-0.012,0.295,0); hood.castShadow=true; torso.add(hood);     // hood collar around the neck
     ell(SPH,hoodieM,0.085,0.075,0.15,-0.09,0.26,0,torso);                                                                                                                                              // hood bunched behind the neck
   }
   const strF=new THREE.Group(), strB=new THREE.Group(); strF.position.set(0.121,0.205,0.05); strB.position.set(0.121,0.205,-0.05); torso.add(strF,strB);
   [strF,strB].forEach(function(sg){ const sm=new THREE.MeshStandardMaterial({ color:PAL.string, roughness:0.7 }); const c=new THREE.Mesh(new THREE.CylinderGeometry(0.0065,0.0065,0.15,6),sm); c.position.y=-0.075; sg.add(c); ell(SPH,sm,0.011,0.017,0.011,0,-0.155,0,sg); });
-  const pelvis=new THREE.Mesh(SPH,pantsM); pelvis.scale.set(0.1,0.07,0.15); pelvis.castShadow=true; bodyG.add(pelvis);
-  const hipJF=new THREE.Mesh(new THREE.SphereGeometry(0.086,14,10),pantsM), hipJB=hipJF.clone(); hipJF.castShadow=hipJB.castShadow=true; bodyG.add(hipJF,hipJB);
+  const pelvis=new THREE.Bone(); pelvis.position.set(0,0.02,0); bodyG.add(pelvis);
+
+
+  const hipJF=dm(), hipJB=dm();
   // head: faces +x. skull, jaw, ears, nose, eyes with eyelids, brows, mouth, short hair, beanie
   const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.046,0.052,1,12),skinM); neck.castShadow=true; bodyG.add(neck);
   const head=new THREE.Group(); bodyG.add(head);
@@ -311,8 +315,40 @@ function makeSkater(){
     ell(SPH,bnM,0.052,0.062,0.058,-0.08,0.062,0,beanie);                                                                                   // slouch at the back
     const cuff=new THREE.Mesh(new THREE.CylinderGeometry(1,1,0.05,32,1,false),bcM); cuff.scale.set(0.12,1,0.106); cuff.position.y=0.014; cuff.castShadow=true; beanie.add(cuff); }
   const cap=new THREE.Object3D(), brim=new THREE.Object3D(), hair=new THREE.Object3D();   // legacy slots kept so older pose code stays valid
+  // ---------- skinned body: hips, rear, legs and torso/arms are continuous meshes bound to bones, so everything bends and blends smoothly ----------
+  const bone=function(x,y,z){ const b=new THREE.Bone(); b.position.set(x,y,z); bodyG.add(b); return b; };
+  const bThF=bone(0,0,0.12), bShF=bone(0,-0.47,0.12), bThB=bone(0,0,-0.12), bShB=bone(0,-0.47,-0.12), bUaF=bone(0,0.52,0.22), bFaF=bone(0,0.23,0.22), bUaB=bone(0,0.52,-0.22), bFaB=bone(0,0.23,-0.22);
+  const BN=[pelvis,torso,bThF,bShF,bThB,bShB,bUaF,bFaF,bUaB,bFaB];   // 0 pelvis, 1 torso, 2-5 legs, 6-9 arms
+  const SB=function(){ this.p=[]; this.uv=[]; this.si=[]; this.sw=[]; this.ix=[]; };
+  SB.prototype.loft=function(rows,wts,M,ex){ const base=this.p.length/3, ep=2/ex, n=rows.length;
+    const push=function(self,x,y,z,u,v,w){ self.p.push(x,y,z); self.uv.push(u,v); let tot=0; for(let q=0;q<w.length;q++) tot+=w[q][1]; for(let q=0;q<4;q++){ const e=w[q]; self.si.push(e?e[0]:0); self.sw.push(e?e[1]/tot:0); } };
+    for(let i=0;i<n;i++){ const r=rows[i], aF=r[1], b=r[2], aB=r[3]==null?aF:r[3], cx=r[4]||0, cz=r[5]||0;
+      for(let k=0;k<M;k++){ const an=TAU*k/M, c=Math.cos(an), sn=Math.sin(an); push(this, cx+(c>=0?aF*Math.pow(c,ep):-aB*Math.pow(-c,ep)), r[0], cz+b*Math.sign(sn)*Math.pow(Math.abs(sn),ep), k/M*2, r[0]*2, wts[i]); } }
+    for(let i=0;i<n-1;i++) for(let k=0;k<M;k++){ const a=base+i*M+k, b2=base+i*M+(k+1)%M, c=base+(i+1)*M+k, d=base+(i+1)*M+(k+1)%M; this.ix.push(a,c,b2, b2,c,d); }
+    const c0=this.p.length/3; push(this,rows[0][4]||0,rows[0][0],rows[0][5]||0,0,rows[0][0]*2,wts[0]); const c1=c0+1; push(this,rows[n-1][4]||0,rows[n-1][0],rows[n-1][5]||0,0,rows[n-1][0]*2,wts[n-1]);
+    for(let k=0;k<M;k++){ this.ix.push(c0,base+k,base+(k+1)%M); this.ix.push(c1,base+(n-1)*M+(k+1)%M,base+(n-1)*M+k); } };
+  SB.prototype.mesh=function(material){ const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(this.p,3)); g.setAttribute("uv",new THREE.Float32BufferAttribute(this.uv,2)); g.setAttribute("skinIndex",new THREE.Uint16BufferAttribute(this.si,4)); g.setAttribute("skinWeight",new THREE.Float32BufferAttribute(this.sw,4)); g.setIndex(this.ix); g.computeVertexNormals();
+    const m=new THREE.SkinnedMesh(g,material); m.castShadow=true; m.frustumCulled=false; return m; };
+  const P=0,T=1;
+  const pants=new SB();
+  { // pelvis with a real rear: wider and deeper at the back
+    pants.loft([[0.09,0.108,0.16,0.108],[0.03,0.114,0.178,0.122],[-0.03,0.118,0.19,0.138],[-0.09,0.108,0.19,0.138],[-0.16,0.094,0.172,0.11],[-0.22,0.072,0.13,0.07],[-0.27,0.04,0.07,0.04]],
+      [[[P,0.6],[T,0.4]],[[P,1]],[[P,1]],[[P,1]],[[P,1]],[[P,1]],[[P,1]]],28,2.3);
+    [[2,3,0.12],[4,5,0.12*-1]].forEach(function(l){ const th=l[0], sh=l[1], cz=l[2], th0=[[P,0.7],[th,0.3]], th1=[[P,0.4],[th,0.6]], th2=[[P,0.12],[th,0.88]];
+      pants.loft([[0.05,0.092,0.092,0.092,0,cz],[0,0.104,0.104,0.104,0,cz],[-0.06,0.108,0.108,0.108,0,cz],[-0.14,0.106,0.106,0.106,0,cz],[-0.24,0.1,0.1,0.1,0,cz],[-0.34,0.092,0.092,0.092,0,cz],[-0.42,0.087,0.087,0.087,0,cz],[-0.47,0.085,0.085,0.085,0,cz],[-0.53,0.085,0.085,0.085,0,cz],[-0.62,0.086,0.086,0.086,0,cz],[-0.72,0.083,0.083,0.083,0,cz],[-0.82,0.077,0.077,0.077,0,cz],[-0.9,0.073,0.073,0.073,0,cz],[-0.94,0.071,0.071,0.071,0,cz]],
+        [th0,th1,th2,[[th,1]],[[th,1]],[[th,1]],[[th,0.85],[sh,0.15]],[[th,0.5],[sh,0.5]],[[th,0.15],[sh,0.85]],[[sh,1]],[[sh,1]],[[sh,1]],[[sh,1]],[[sh,1]]],16,2); }); }
+  const hood=new SB();
+  { hood.loft([[-0.035,0.112,0.152,0.112],[0.025,0.113,0.153,0.113],[0.145,0.108,0.15,0.108],[0.305,0.118,0.168,0.118],[0.415,0.126,0.19,0.126],[0.495,0.112,0.205,0.112],[0.545,0.07,0.12,0.07],[0.575,0.05,0.05,0.05]],
+      [[[P,0.5],[T,0.5]],[[P,0.15],[T,0.85]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]]],30,2.4);
+    [[6,7,0.22],[8,9,-0.22]].forEach(function(l){ const ua=l[0], fa=l[1], cz=l[2];
+      hood.loft([[0.585,0.03,0.03,0.03,0,cz],[0.57,0.05,0.05,0.05,0,cz],[0.545,0.062,0.062,0.062,0,cz],[0.52,0.069,0.069,0.069,0,cz],[0.45,0.067,0.067,0.067,0,cz],[0.37,0.064,0.064,0.064,0,cz],[0.3,0.062,0.062,0.062,0,cz],[0.23,0.059,0.059,0.059,0,cz],[0.17,0.058,0.058,0.058,0,cz],[0.1,0.055,0.055,0.055,0,cz],[0.03,0.052,0.052,0.052,0,cz],[-0.06,0.05,0.05,0.05,0,cz]],
+        [[[T,0.6],[ua,0.4]],[[T,0.6],[ua,0.4]],[[T,0.45],[ua,0.55]],[[T,0.25],[ua,0.75]],[[T,0.08],[ua,0.92]],[[ua,1]],[[ua,1]],[[ua,0.5],[fa,0.5]],[[ua,0.2],[fa,0.8]],[[fa,1]],[[fa,1]],[[fa,1]]],14,2); }); }
+  const pantsSkin=pants.mesh(pantsM), hoodSkin=hood.mesh(hoodieM); bodyG.add(pantsSkin,hoodSkin);
+  g.updateMatrixWorld(true);
+  const skel=new THREE.Skeleton(BN); pantsSkin.bind(skel,pantsSkin.matrixWorld); hoodSkin.bind(skel,hoodSkin.matrixWorld);
+  const bThF_=bThF;
   const shadow=new THREE.Mesh(new THREE.CircleGeometry(0.75,20),new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 })); shadow.rotation.x=-Math.PI/2; shadow.scale.set(0.7,1.1,1); scene.add(shadow);
-  g.userData={ board, bodyG, thighF, shinF, thighB, shinB, uaF, faF, uaB, faB, shoeF, shoeB, torso, pelvis, neck, kneeF, kneeB, elbF, elbB, shJF, shJB, cuffLF, cuffLB, cuffAF, cuffAB, handGF, handGB, strF, strB, eyes, brows, mouth, beanie, hipJF, hipJB, head, cap, brim, hair, shadow };
+  g.userData={ board, bodyG, bThF, bShF, bThB, bShB, bUaF, bFaF, bUaB, bFaB, thighF, shinF, thighB, shinB, uaF, faF, uaB, faB, shoeF, shoeB, torso, pelvis, neck, kneeF, kneeB, elbF, elbB, shJF, shJB, cuffLF, cuffLB, cuffAF, cuffAB, handGF, handGB, strF, strB, eyes, brows, mouth, beanie, hipJF, hipJB, head, cap, brim, hair, shadow };
   return g;
 }
 const skMesh=makeSkater(); scene.add(skMesh);
@@ -362,6 +398,9 @@ function poseSkater(S){
   if(bail){ handF.y+=0.7+0.3*Math.sin(bt*14); handB.y+=0.7+0.3*Math.sin(bt*14+1.7); handF.x+=0.3*Math.sin(bt*11); handB.x-=0.3*Math.sin(bt*11); }
   const eF=rot(0.2,0.6,yS), eB=rot(0.2,-0.6,yS);
   const emF=limbIK(U.uaF,U.faF,shF,handF,V(eF[0],-0.5,eF[1]),0.29,0.29), emB=limbIK(U.uaB,U.faB,shB,handB,V(eB[0],-0.5,eB[1]),0.29,0.29);
+  { const hF2=V(eF[0],0,eF[1]), hB2=V(eB[0],0,eB[1]);
+    setBone(U.bUaF,shF,emF.clone().sub(shF),hF2); setBone(U.bFaF,emF,handF.clone().sub(emF),hF2); setBone(U.bUaB,shB,emB.clone().sub(shB),hB2); setBone(U.bFaB,emB,handB.clone().sub(emB),hB2);
+    setBone(U.bThF,hipF,kmF.clone().sub(hipF),kneeHint); setBone(U.bShF,kmF,ankF.clone().sub(kmF),kneeHint); setBone(U.bThB,hipB,kmB.clone().sub(hipB),kneeHint); setBone(U.bShB,kmB,ankB.clone().sub(kmB),kneeHint); }
   U.elbF.position.copy(emF); U.elbB.position.copy(emB); U.shJF.position.copy(shF); U.shJB.position.copy(shB);
   { const arms=[[U.cuffAF,U.handGF,handF,emF],[U.cuffAB,U.handGB,handB,emB]]; arms.forEach(function(a){ const d=a[2].clone().sub(a[3]); if(d.length()>0.58) d.setLength(0.58); d.normalize(); const wr=a[2].clone(); seg(a[0],wr.clone().addScaledVector(d,-0.085),wr.clone().addScaledVector(d,-0.015)); a[1].position.copy(wr).addScaledVector(d,-0.012); a[1].quaternion.setFromUnitVectors(UPV,d); }); }
   // head always looks ahead (down the board), even in the sideways stance
