@@ -71,7 +71,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v4 · REAL PUSH</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v13 · NEW SKATER</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -111,10 +111,11 @@ const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, depthWrite:false, f
       gl_FragColor=vec4(c,1.0); }` });
 const sky=new THREE.Mesh(new THREE.SphereGeometry(1200,32,16),skyMat); scene.add(sky);
 scene.fog=new THREE.Fog(0xf2c49a,120,720);
-const sun=new THREE.DirectionalLight(0xffd7a0,3.3); sun.castShadow=true; sun.shadow.mapSize.set(2048,2048);
-{ const c=sun.shadow.camera; c.left=-48; c.right=48; c.top=48; c.bottom=-48; c.near=1; c.far=300; sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.06; }
+const sun=new THREE.DirectionalLight(0xffd7a0,3.3); sun.castShadow=true; sun.shadow.mapSize.set(4096,4096);
+{ const c=sun.shadow.camera; c.left=-36; c.right=36; c.top=36; c.bottom=-36; c.near=1; c.far=300; sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.06; }
 scene.add(sun); scene.add(sun.target);
 scene.add(new THREE.HemisphereLight(0xa8c0ff,0x9a8460,1.35));
+const rim=new THREE.DirectionalLight(0xffb48a,0.9); rim.position.set(40,30,60); scene.add(rim);   // soft rim light so the skater pops off the ground
 const SUN_OFF=new THREE.Vector3(-70,95,-90);
 
 /* ---------- textures ---------- */
@@ -220,25 +221,106 @@ function makeSkater(){
     const tr=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.035,0.05),mat(0xb0b4bc,0.3)); tr.position.set(0,0.075,s*0.27); board.add(tr);
     [-1,1].forEach(function(w){ const wh=new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.052,0.045,12),mat(0xf4efe0,0.5)); wh.rotation.z=Math.PI/2; wh.position.set(w*0.13,0.052,s*0.27); board.add(wh); }); });
   const bodyG=new THREE.Group(); g.add(bodyG);
-  const limb=function(c,r1,r2){ const m=new THREE.Mesh(new THREE.CylinderGeometry(r1,r2,1,8),mat(c)); m.castShadow=true; bodyG.add(m); return m; };
-  const thighF=limb(0x2d4270,0.075,0.062), shinF=limb(0x2d4270,0.062,0.05), thighB=limb(0x2d4270,0.075,0.062), shinB=limb(0x2d4270,0.062,0.05);
-  const uaF=limb(0xff7a3c,0.05,0.045), faF=limb(0xe0a97d,0.045,0.04), uaB=limb(0xff7a3c,0.05,0.045), faB=limb(0xe0a97d,0.045,0.04);
-  const shoeG=new THREE.BoxGeometry(0.14,0.08,0.26), shoeF=new THREE.Mesh(shoeG,mat(0xf2f2f2,0.6)), shoeB=new THREE.Mesh(shoeG,mat(0xf2f2f2,0.6)); shoeF.castShadow=shoeB.castShadow=true; bodyG.add(shoeF,shoeB);
-  const torso=new THREE.Mesh(new THREE.BoxGeometry(0.24,0.56,0.4),mat(0xff7a3c,0.8)); torso.castShadow=true; bodyG.add(torso);
-  const head=new THREE.Mesh(new THREE.SphereGeometry(0.125,16,12),mat(0xe0a97d)); head.castShadow=true; bodyG.add(head);
-  const cap=new THREE.Mesh(new THREE.SphereGeometry(0.133,16,8,0,TAU,0,Math.PI*0.52),mat(0x1a1a22)); bodyG.add(cap);
-  const brim=new THREE.Mesh(new THREE.BoxGeometry(0.22,0.02,0.12),mat(0x1a1a22)); bodyG.add(brim);
-  const hair=new THREE.Mesh(new THREE.SphereGeometry(0.128,12,8,0,TAU,Math.PI*0.45,Math.PI*0.3),mat(0x3a2418)); bodyG.add(hair);
+  // ---------- character look (all colours in one place so a picker can drive them later) ----------
+  const PAL={ hoodie:0xd9a13b, hoodieDark:0xb98427, pants:0x2f4372, skin:0xe0a97d, hair:0x2a1b12, beanie:0x2b2f38, beanieCuff:0xe9e2d0, string:0xf1ecdf, brow:0x23160f };
+  const fabric=function(hex,kind,rx,ry){ const c=document.createElement("canvas"); c.width=c.height=128; const x=c.getContext("2d"), r=(hex>>16)&255, gg=(hex>>8)&255, b=hex&255;
+    x.fillStyle="rgb("+r+","+gg+","+b+")"; x.fillRect(0,0,128,128);
+    if(kind==="rib"){ for(let i=0;i<128;i+=4){ x.fillStyle="rgba(0,0,0,0.10)"; x.fillRect(i,0,2,128); x.fillStyle="rgba(255,255,255,0.06)"; x.fillRect(i+2,0,2,128); } }
+    else if(kind==="twill"){ x.strokeStyle="rgba(255,255,255,0.07)"; x.lineWidth=1; for(let i=-128;i<256;i+=3){ x.beginPath(); x.moveTo(i,0); x.lineTo(i+128,128); x.stroke(); } x.strokeStyle="rgba(0,0,0,0.12)"; for(let i=-128;i<256;i+=6){ x.beginPath(); x.moveTo(i+1.5,0); x.lineTo(i+129.5,128); x.stroke(); } }
+    for(let i=0;i<1400;i++){ const v=Math.random(); x.fillStyle=v<0.5?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.07)"; x.fillRect(Math.random()*128,Math.random()*128,1.5,1.5); }
+    const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(rx||2,ry||2); t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=4; return t; };
+  const fmat=function(hex,kind,rx,ry,rough,bump){ const t=fabric(hex,kind,rx,ry); return new THREE.MeshStandardMaterial({ map:t, bumpMap:t, bumpScale:bump==null?0.9:bump, roughness:rough==null?0.88:rough, side:THREE.DoubleSide }); };
+  const skinM=new THREE.MeshStandardMaterial({ color:PAL.skin, roughness:0.62 });
+  const ell=function(geo,m,sx,sy,sz,x,y,z,parent){ const o=new THREE.Mesh(geo,m); o.scale.set(sx,sy,sz); o.position.set(x,y,z); o.castShadow=true; if(parent) parent.add(o); return o; };
+  const SPH=new THREE.SphereGeometry(1,20,14);
+  const limb=function(m,rEnd,rStart,ns){ const o=new THREE.Mesh(new THREE.CylinderGeometry(rEnd,rStart,1,ns||14,1,false),m); o.castShadow=true; bodyG.add(o); return o; };   // rEnd = radius at the far end (knee/elbow/foot), rStart = near end
+  const pantsM=fmat(PAL.pants,"twill",3,3,0.85,0.7), hoodieM=fmat(PAL.hoodie,"fleece",3,3,0.95,0.8), hoodieDM=fmat(PAL.hoodieDark,"fleece",2,2,0.95,0.8), ribM=fmat(PAL.hoodieDark,"rib",6,1,0.95,1.2);
+  const thighF=limb(pantsM,0.084,0.108), shinF=limb(pantsM,0.07,0.082), thighB=limb(pantsM,0.082,0.104), shinB=limb(pantsM,0.07,0.08);
+  const uaF=limb(hoodieM,0.058,0.066), faF=limb(hoodieM,0.052,0.058), uaB=limb(hoodieM,0.058,0.066), faB=limb(hoodieM,0.052,0.058);
+  const cuffLF=new THREE.Mesh(new THREE.CylinderGeometry(0.078,0.075,1,16),pantsM), cuffLB=cuffLF.clone(), cuffAF=new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.056,1,14),ribM), cuffAB=cuffAF.clone();
+  [cuffLF,cuffLB,cuffAF,cuffAB].forEach(function(o){ o.castShadow=true; bodyG.add(o); });
+  const kneeF=ell(SPH,pantsM,0.082,0.082,0.082,0,0,0,bodyG), kneeB=ell(SPH,pantsM,0.08,0.08,0.08,0,0,0,bodyG);
+  const elbF=ell(SPH,hoodieM,0.058,0.058,0.058,0,0,0,bodyG), elbB=ell(SPH,hoodieM,0.058,0.058,0.058,0,0,0,bodyG);
+  const shJF=ell(SPH,hoodieM,0.082,0.082,0.082,0,0,0,bodyG), shJB=ell(SPH,hoodieM,0.082,0.082,0.082,0,0,0,bodyG);
+  const makeHand=function(){ const h=new THREE.Group(); ell(SPH,skinM,0.034,0.05,0.022,0,0.045,0,h); ell(SPH,skinM,0.032,0.04,0.019,0,0.095,0,h); ell(SPH,skinM,0.014,0.04,0.016,0.03,0.05,0.004,h).rotation.z=-0.5; bodyG.add(h); return h; };
+  const handGF=makeHand(), handGB=makeHand();
+  const makeShoe=function(){
+    const sh=new THREE.Group(), L=0.30, Z0=-0.15, sm=function(a,b,x){ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };
+    const HT=[0,0.08,0.2,0.3,0.45,0.6,0.8,0.93,1], HV=[0.05,0.1,0.118,0.108,0.088,0.072,0.054,0.038,0.02];
+    const W=function(t){ const r=Math.abs(2*t-1), cap=Math.pow(Math.max(0,1-Math.pow(r,4.2)),0.5); return 0.07*(0.8+0.2*sm(0,0.3,t))*(1-0.1*sm(0.6,1,t))*cap; };
+    const H=function(t){ for(let k=0;k<HT.length-1;k++){ if(t<=HT[k+1]){ const u=(t-HT[k])/(HT[k+1]-HT[k]); return lerp(HV[k],HV[k+1],u*u*(3-2*u)); } } return HV[HV.length-1]; };
+    const loft=function(t0,t1,sc,col,rough){ const N=Math.max(6,Math.round(40*(t1-t0))), M=22, pos=[], idx=[];
+      for(let a=0;a<=N;a++){ const t=lerp(t0,t1,a/N), w=W(t)*sc, h=H(t)*sc, z=Z0+L*t; for(let k=0;k<=M;k++){ const an=Math.PI*k/M; pos.push(w*Math.cos(an),h*Math.pow(Math.sin(an),0.7),z); } }
+      for(let a=0;a<N;a++) for(let k=0;k<M;k++){ const v=a*(M+1)+k, n=M+1; idx.push(v,v+1,v+n, v+1,v+n+1,v+n); }
+      const c0=pos.length/3; pos.push(0,0,Z0+L*t0); const c1=c0+1; pos.push(0,0,Z0+L*t1);
+      for(let k=0;k<M;k++){ idx.push(c0,k+1,k); idx.push(c1,N*(M+1)+k,N*(M+1)+k+1); }
+      const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(pos,3)); g.setIndex(idx); g.computeVertexNormals();
+      const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({ color:col, roughness:rough||0.65, side:THREE.DoubleSide })); m.castShadow=true; sh.add(m); return m; };
+    const plan=function(pad){ const sp=new THREE.Shape(), n=22; for(let a=0;a<=n;a++){ const t=a/n; sp.lineTo? 0:0; const x=W(t)+pad, y=-(Z0+L*t); if(a===0) sp.moveTo(x,y); else sp.lineTo(x,y); } for(let a=n;a>=0;a--){ const t=a/n; sp.lineTo(-(W(t)+pad),-(Z0+L*t)); } return sp; };
+    const sole=function(pad,depth,y0,col,rough){ const g=new THREE.ExtrudeGeometry(plan(pad),{ depth:depth, bevelEnabled:true, bevelThickness:0.005, bevelSize:0.005, bevelSegments:3, curveSegments:12 }); g.rotateX(-Math.PI/2); const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({ color:col, roughness:rough })); m.position.y=y0; m.castShadow=true; sh.add(m); return m; };
+    sole(0.012,0.010,-0.042,0xc9a46b,0.9);                  // gum outsole
+    sole(0.011,0.020,-0.030,0xf6f1e4,0.55);                  // midsole
+    loft(0,1,1.0,0xf4f4f6,0.6);                              // main upper
+    loft(0.74,1,1.045,0xe8472f,0.6);                         // toe cap
+    loft(0,0.2,1.04,0xe8472f,0.6);                           // heel counter
+    // collar (padded opening) + inner darkness
+    const col=new THREE.Mesh(new THREE.TorusGeometry(0.047,0.011,8,18),new THREE.MeshStandardMaterial({ color:0x1a1a22, roughness:0.9 })); col.rotation.x=Math.PI/2; col.scale.set(1.05,1,1.2); col.position.set(0,H(0.2)-0.004,Z0+L*0.2); col.castShadow=true; sh.add(col);
+    const tongue=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,0.014),new THREE.MeshStandardMaterial({ color:0x2d4270, roughness:0.8 })); tongue.position.set(0,H(0.3)+0.018,Z0+L*0.3-0.005); tongue.rotation.x=-0.35; sh.add(tongue);
+    for(let k=0;k<5;k++){ const t=0.38+k*0.07, lc=new THREE.Mesh(new THREE.BoxGeometry(0.085,0.007,0.011),new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.5 })); lc.position.set(0,H(t)+0.005,Z0+L*t); lc.rotation.x=-Math.atan((H(t+0.02)-H(t-0.02))/(L*0.04)); sh.add(lc); }
+    const tab=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.04,0.012),new THREE.MeshStandardMaterial({ color:0xe8472f, roughness:0.6 })); tab.position.set(0,H(0.04)+0.014,Z0+L*0.0+0.012); tab.rotation.x=0.25; tab.castShadow=true; sh.add(tab);   // heel pull tab
+    [-1,1].forEach(function(sd){ for(let k=0;k<5;k++){ const t=0.38+k*0.07, ey=new THREE.Mesh(new THREE.BoxGeometry(0.006,0.008,0.012),new THREE.MeshStandardMaterial({ color:0x1a1a22, roughness:0.4, metalness:0.5 })); ey.position.set(sd*(W(t)*0.0+0.044),H(t)*0.9,Z0+L*t); ey.rotation.z=sd*0.5; sh.add(ey); } });
+    [-1,1].forEach(function(sd){ const st=new THREE.Mesh(new THREE.BoxGeometry(0.005,0.03,0.12),new THREE.MeshStandardMaterial({ color:0x2d4270, roughness:0.6 })); st.position.set(sd*(W(0.5)*0.86+0.002),H(0.5)*0.5,Z0+L*0.5); st.rotation.z=sd*0.3; st.rotation.x=-0.1; sh.add(st); });
+    return sh; };
+  const shoeF=makeShoe(), shoeB=makeShoe(); bodyG.add(shoeF,shoeB);
+  const ringLoft=function(prof,M,ex,material){ const pos=[],uv=[],idx=[], n=prof.length, ep=2/ex;
+    for(let i=0;i<n;i++) for(let k=0;k<M;k++){ const an=TAU*k/M, c=Math.cos(an), s=Math.sin(an); pos.push((prof[i][3]||0)+prof[i][1]*Math.sign(c)*Math.pow(Math.abs(c),ep), prof[i][0], prof[i][2]*Math.sign(s)*Math.pow(Math.abs(s),ep)); uv.push(k/M*2,i/(n-1)*2); }
+    for(let i=0;i<n-1;i++) for(let k=0;k<M;k++){ const a=i*M+k, b=i*M+(k+1)%M, c=(i+1)*M+k, d=(i+1)*M+(k+1)%M; idx.push(a,c,b, b,c,d); }
+    const c0=pos.length/3; pos.push(prof[0][3]||0,prof[0][0],0); uv.push(0,0); const c1=c0+1; pos.push(prof[n-1][3]||0,prof[n-1][0],0); uv.push(0,2);
+    for(let k=0;k<M;k++){ idx.push(c0,k,(k+1)%M); idx.push(c1,(n-1)*M+(k+1)%M,(n-1)*M+k); }
+    const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(pos,3)); g.setAttribute("uv",new THREE.Float32BufferAttribute(uv,2)); g.setIndex(idx); g.computeVertexNormals();
+    const m=new THREE.Mesh(g,material); m.castShadow=true; return m; };
+  // torso = shaped hoodie body (x = front, z = shoulder width): fitted waist, athletic chest and shoulders
+  const torso=ringLoft([[-0.28,0.108,0.15],[-0.22,0.113,0.153],[-0.1,0.108,0.15],[0.06,0.118,0.168],[0.17,0.126,0.19],[0.25,0.112,0.205],[0.3,0.07,0.12],[0.33,0.05,0.05]],28,2.4,hoodieM); bodyG.add(torso);
+  { const hem=new THREE.Mesh(new THREE.CylinderGeometry(1,1,0.07,28,1,false),ribM); hem.scale.set(0.115,1,0.156); hem.position.y=-0.265; hem.castShadow=true; torso.add(hem);          // ribbed hem band
+    const pocket=ell(new THREE.BoxGeometry(1,1,1),hoodieDM,0.028,0.1,0.22,0.113,-0.1,0,torso); pocket.geometry=new THREE.BoxGeometry(1,1,1,1,1,1);                                         // kangaroo pocket
+    const hood=new THREE.Mesh(new THREE.TorusGeometry(0.1,0.042,12,26),hoodieM); hood.rotation.x=Math.PI/2; hood.scale.set(0.95,1.25,1.1); hood.position.set(-0.012,0.295,0); hood.castShadow=true; torso.add(hood);     // hood collar around the neck
+    ell(SPH,hoodieM,0.085,0.075,0.15,-0.09,0.26,0,torso);                                                                                                                                              // hood bunched behind the neck
+  }
+  const strF=new THREE.Group(), strB=new THREE.Group(); strF.position.set(0.121,0.205,0.05); strB.position.set(0.121,0.205,-0.05); torso.add(strF,strB);
+  [strF,strB].forEach(function(sg){ const sm=new THREE.MeshStandardMaterial({ color:PAL.string, roughness:0.7 }); const c=new THREE.Mesh(new THREE.CylinderGeometry(0.0065,0.0065,0.15,6),sm); c.position.y=-0.075; sg.add(c); ell(SPH,sm,0.011,0.017,0.011,0,-0.155,0,sg); });
+  const pelvis=new THREE.Mesh(SPH,pantsM); pelvis.scale.set(0.108,0.075,0.14); pelvis.castShadow=true; bodyG.add(pelvis);
+  const hipJF=new THREE.Mesh(new THREE.SphereGeometry(0.098,14,10),pantsM), hipJB=hipJF.clone(); hipJF.castShadow=hipJB.castShadow=true; bodyG.add(hipJF,hipJB);
+  // head: faces +x. skull, jaw, ears, nose, eyes with eyelids, brows, mouth, short hair, beanie
+  const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.046,0.052,1,12),skinM); neck.castShadow=true; bodyG.add(neck);
+  const head=new THREE.Group(); bodyG.add(head);
+  { const sk=ringLoft([[-0.15,0.02,0.02,0.03],[-0.135,0.05,0.045,0.035],[-0.1,0.078,0.068,0.02],[-0.05,0.095,0.082,0.008],[0,0.102,0.088,0],[0.06,0.098,0.086,-0.002],[0.11,0.075,0.066,-0.004],[0.13,0.04,0.035,-0.004],[0.14,0.01,0.01,-0.004]],28,2,skinM); sk.scale.y=0.86; head.add(sk); }   // skull + jaw as one smooth shape
+  ell(SPH,skinM,0.014,0.034,0.012,-0.004,-0.01,0.089,head); ell(SPH,skinM,0.014,0.034,0.012,-0.004,-0.01,-0.089,head);   // ears
+  ell(SPH,skinM,0.022,0.03,0.02,0.102,-0.016,0,head);                                // nose
+  const eyeW=new THREE.MeshStandardMaterial({ color:0xf6f4ef, roughness:0.35 }), irisM=new THREE.MeshStandardMaterial({ color:0x3a2a1c, roughness:0.3 }), hlM=new THREE.MeshBasicMaterial({ color:0xffffff });
+  const eyes=[-1,1].map(function(sd){ const e=new THREE.Group(); e.position.set(0.091,0.016,sd*0.04); head.add(e);
+    ell(SPH,eyeW,0.011,0.016,0.018,0,0,0,e); ell(SPH,irisM,0.0065,0.0105,0.0105,0.007,0,0,e); ell(SPH,hlM,0.002,0.003,0.003,0.0115,0.004,0.003*sd,e);
+    const lid=ell(SPH,skinM,0.0125,0.0185,0.0205,0.0008,0,0,e); lid.scale.y=0.001; return { g:e, lid:lid }; });
+  const browM=new THREE.MeshStandardMaterial({ color:PAL.brow, roughness:0.8 });
+  const brows=[-1,1].map(function(sd){ const b=ell(new THREE.BoxGeometry(1,1,1),browM,0.008,0.008,0.042,0.094,0.046,sd*0.04,head); return b; });
+  const mouth=ell(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({ color:0x7a3a36, roughness:0.6 }),0.004,0.004,0.034,0.1,-0.05,0,head);
+  const hairM=new THREE.MeshStandardMaterial({ color:PAL.hair, roughness:0.9 });
+  ell(SPH,hairM,0.094,0.098,0.086,-0.03,0.0,0,head);                                    // short hair at the back and sides
+  const beanie=new THREE.Group(); beanie.position.set(-0.006,0.062,0); beanie.rotation.z=0.12; head.add(beanie);
+  const bnM=fmat(PAL.beanie,"rib",7,3,0.95,0.5), bcM=fmat(PAL.beanieCuff,"rib",9,1,0.95,0.5);
+  { const dome=new THREE.Mesh(new THREE.SphereGeometry(1,28,16,0,TAU,0,Math.PI*0.55),bnM); dome.scale.set(0.112,0.118,0.098); dome.position.y=0.012; dome.castShadow=true; beanie.add(dome);
+    ell(SPH,bnM,0.052,0.062,0.058,-0.08,0.062,0,beanie);                                                                                   // slouch at the back
+    const cuff=new THREE.Mesh(new THREE.CylinderGeometry(1,1,0.05,32,1,false),bcM); cuff.scale.set(0.12,1,0.106); cuff.position.y=0.014; cuff.castShadow=true; beanie.add(cuff); }
+  const cap=new THREE.Object3D(), brim=new THREE.Object3D(), hair=new THREE.Object3D();   // legacy slots kept so older pose code stays valid
   const shadow=new THREE.Mesh(new THREE.CircleGeometry(0.75,20),new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 })); shadow.rotation.x=-Math.PI/2; shadow.scale.set(0.7,1.1,1); scene.add(shadow);
-  g.userData={ board, bodyG, thighF, shinF, thighB, shinB, uaF, faF, uaB, faB, shoeF, shoeB, torso, head, cap, brim, hair, shadow };
+  g.userData={ board, bodyG, thighF, shinF, thighB, shinB, uaF, faF, uaB, faB, shoeF, shoeB, torso, pelvis, neck, kneeF, kneeB, elbF, elbB, shJF, shJB, cuffLF, cuffLB, cuffAF, cuffAB, handGF, handGB, strF, strB, eyes, brows, mouth, beanie, hipJF, hipJB, head, cap, brim, hair, shadow };
   return g;
 }
 const skMesh=makeSkater(); scene.add(skMesh);
 function pushFoot(p){
   const e=function(u){ return u*u*(3-2*u); }, X=0.28;
   if(p<0.12){ const u=e(p/0.12); return [lerp(0,X,u),lerp(0.16,0.06,u)+Math.sin(u*Math.PI)*0.06,lerp(-0.30,-0.12,u)]; }
-  if(p<0.5){ const u=(p-0.12)/0.38; return [X,0.05,lerp(-0.12,-0.68,u)]; }
-  if(p<0.82){ const u=e((p-0.5)/0.32); return [X,0.05+Math.sin(u*Math.PI)*0.3,lerp(-0.68,-0.12,u)]; }
+  if(p<0.5){ const u=(p-0.12)/0.38; return [X,0.05,lerp(-0.12,-0.52,u)]; }
+  if(p<0.82){ const u=e((p-0.5)/0.32); return [X,0.05+Math.sin(u*Math.PI)*0.3,lerp(-0.52,-0.12,u)]; }
   const u=e((p-0.82)/0.18); return [lerp(X,0,u),lerp(0.05,0.16,u),lerp(-0.12,-0.30,u)];
 }
 function poseSkater(S){
@@ -248,38 +330,52 @@ function poseSkater(S){
   const rot=function(x,z,t){ return [x*Math.cos(t)+z*Math.sin(t), -x*Math.sin(t)+z*Math.cos(t)]; };
   const V=function(x,y,z){ return new THREE.Vector3(x,y,z); };
   const hy=yS*0.5, hF=rot(0,0.12,hy), hB=rot(0,-0.12,hy);
-  const footF=V(0.0,0.16,0.30), footB=V(0.0,0.16,-0.30);
+  const idl=S.idleAmt, footF=V(0.04*idl,0.16,0.30+0.04*idl), footB=V(0,0.16,-0.30);
+  footB.lerp(V(0.28,0.05,-0.14),idl);   // idle: back foot rests on the ground beside the board, ready to kick   // idle: feet out over the trucks
   { // keep the leg standing on the board straight while rolling / pushing: raise the hips until the front leg is fully extended
     const wS=bail?0:clamp(1-(S.crouch-0.1)*4,0,1), dz=hF[1]-footF.z, d2=hF[0]*hF[0]+dz*dz, pyS=0.21+Math.sqrt(Math.max(0.05,0.94*0.94-d2))-0.03;
-    py=lerp(py,pyS,wS); py=lerp(py,0.95,pa*(bail?0:1)); }   // pushing: hips sink back behind the board foot so that leg stays straight AND the kicking foot reaches the ground
-  const HZ=-0.40*pa, UZ=-0.14*pa, hipF=V(hF[0],py,hF[1]+HZ), hipB=V(hB[0],py,hB[1]+HZ);
+    py=lerp(py,pyS,wS); py=lerp(py,0.99,Math.max(pa,idl*0.9)*(bail?0:1)); }   // pushing: hips sink back behind the board foot so that leg stays straight AND the kicking foot reaches the ground
+  const HZ=-0.30*Math.max(pa,idl*0.9), UZ=-0.10*Math.max(pa,idl*0.9), hipF=V(hF[0],py,hF[1]+HZ), hipB=V(hB[0],py,hB[1]+HZ);
   if(S.grab>0.5){ footF.y+=0.1*S.grab; footB.y+=0.12*S.grab; }
   if(pa>0.01){ const pf=pushFoot(S.pushPhase); footB.lerp(V(pf[0],pf[1],pf[2]),pa); }
   if(ba>0.01){ footB.lerp(V(0.26,0.04,-0.46),ba); }
   if(bail){ footF.y+=0.25+0.3*Math.sin(bt*13); footB.y+=0.25+0.3*Math.sin(bt*13+2); footF.x+=0.2*Math.sin(bt*9); footB.x-=0.2*Math.sin(bt*9); }
   const kh=rot(1,0,hy), kneeHint=V(kh[0],0,kh[1]);
-  limbIK(U.thighF,U.shinF,hipF,footF.clone().add(V(0,0.05,0)),kneeHint,0.47,0.47);
-  limbIK(U.thighB,U.shinB,hipB,footB.clone().add(V(0,0.05,0)),kneeHint,0.47,0.47);
+  const ankF=footF.clone().add(V(0,0.05,0)), ankB=footB.clone().add(V(0,0.05,0));
+  const kmF=limbIK(U.thighF,U.shinF,hipF,ankF,kneeHint,0.47,0.47), kmB=limbIK(U.thighB,U.shinB,hipB,ankB,kneeHint,0.47,0.47);
+  U.kneeF.position.copy(kmF); U.kneeB.position.copy(kmB);
+  { const dF=ankF.clone().sub(kmF).normalize(), dB=ankB.clone().sub(kmB).normalize(); seg(U.cuffLF,ankF.clone().addScaledVector(dF,-0.075),ankF.clone().addScaledVector(dF,0.012)); seg(U.cuffLB,ankB.clone().addScaledVector(dB,-0.075),ankB.clone().addScaledVector(dB,0.012)); }
   U.shoeF.position.copy(footF); U.shoeB.position.copy(footB);
   const fd=rot(1,0,yaw), fw=[Math.cos(yaw),-Math.sin(yaw)];                 // facing direction in the board plane
-  U.torso.position.set(0.03*fw[0]+pa*0.06*fw[0],py+0.31,0.03*fw[1]+pa*0.06*fw[1]+UZ);
-  U.torso.rotation.set(lean*0.9,yaw,-pa*0.5+ba*0.18); U.torso.rotation.order="YXZ";
+  U.pelvis.position.set((hipF.x+hipB.x)/2,py+0.02,(hipF.z+hipB.z)/2); U.pelvis.rotation.set(0,yaw,-pa*0.2); U.pelvis.rotation.order="YXZ"; U.hipJF.position.copy(hipF); U.hipJB.position.copy(hipB);   // pelvis + hip joints close the gap between legs and torso
+  U.torso.position.set(0.03*fw[0]+pa*0.06*fw[0],py+0.27,0.03*fw[1]+pa*0.06*fw[1]+UZ);
+  U.torso.rotation.set(lean*0.9+0.025*Math.sin(game.t*1.7)*S.idleAmt,yaw,-pa*0.5+ba*0.18-0.1*S.idleAmt); U.torso.rotation.order="YXZ";
   const sy=py+0.52, sF=rot(0.02+pa*0.1,0.22,yS), sB=rot(0.02+pa*0.1,-0.22,yS);
   const shF=V(sF[0],sy-pa*0.06,sF[1]+UZ), shB=V(sB[0],sy-pa*0.06,sB[1]+UZ);
   const sw=S.armSwing, gr=S.grab;
   const hdF=rot(0.14+sw*0.22,0.46+sw*0.12,yS), hdB=rot(0.1-sw*0.18,-0.44-sw*0.1,yS);
   let handF=V(hdF[0],sy-0.52+0.1*sw,hdF[1]), handB=V(hdB[0],sy-0.50-0.05*sw,hdB[1]);
-  { const wA=(1-gr)*(bail?0:1)*(S.mode==="grind"?0.5:1), R2=0.575;   // arms: fully extended, hands placed at full reach from the shoulders
+  if(idl>0.01&&!bail){ { const oF=rot(0.05,0.12,yS), oB=rot(0.05,-0.12,yS); handF.lerp(V(shF.x+oF[0],shF.y-0.5,shF.z+oF[1]),idl); handB.lerp(V(shB.x+oB[0],shB.y-0.5,shB.z+oB[1]),idl); } }
+  { const wA=(1-gr)*(bail?0:1)*(S.mode==="grind"?0.5:1), R2=0.575-0.06*idl;   // arms: fully extended, hands placed at full reach from the shoulders
     const sh=[shF,shB], hd=[handF,handB]; for(let i=0;i<2;i++){ const dv=hd[i].clone().sub(sh[i]); if(dv.length()<0.001) dv.set(0,-1,0); const tgt=sh[i].clone().add(dv.normalize().multiplyScalar(R2)); hd[i].lerp(tgt,wA); } }
   if(gr>0){ handF.lerp(V(0.0,0.18,0.12),gr); }
   if(bail){ handF.y+=0.7+0.3*Math.sin(bt*14); handB.y+=0.7+0.3*Math.sin(bt*14+1.7); handF.x+=0.3*Math.sin(bt*11); handB.x-=0.3*Math.sin(bt*11); }
   const eF=rot(0.2,0.6,yS), eB=rot(0.2,-0.6,yS);
-  limbIK(U.uaF,U.faF,shF,handF,V(eF[0],-0.5,eF[1]),0.29,0.29);
-  limbIK(U.uaB,U.faB,shB,handB,V(eB[0],-0.5,eB[1]),0.29,0.29);
+  const emF=limbIK(U.uaF,U.faF,shF,handF,V(eF[0],-0.5,eF[1]),0.29,0.29), emB=limbIK(U.uaB,U.faB,shB,handB,V(eB[0],-0.5,eB[1]),0.29,0.29);
+  U.elbF.position.copy(emF); U.elbB.position.copy(emB); U.shJF.position.copy(shF); U.shJB.position.copy(shB);
+  { const arms=[[U.cuffAF,U.handGF,handF,emF],[U.cuffAB,U.handGB,handB,emB]]; arms.forEach(function(a){ const d=a[2].clone().sub(a[3]); if(d.length()>0.58) d.setLength(0.58); d.normalize(); const wr=a[2].clone(); seg(a[0],wr.clone().addScaledVector(d,-0.085),wr.clone().addScaledVector(d,-0.015)); a[1].position.copy(wr).addScaledVector(d,-0.012); a[1].quaternion.setFromUnitVectors(UPV,d); }); }
   // head always looks ahead (down the board), even in the sideways stance
-  const hdy=-1.3, hOff=rot(0.05+lean*0.1+pa*0.1,0,yS*0.4);
-  U.head.position.set(hOff[0],py+0.72-pa*0.04,hOff[1]+UZ+0.05*pa); U.head.rotation.y=hdy; U.cap.position.copy(U.head.position); U.cap.rotation.y=hdy; U.hair.position.copy(U.head.position); U.hair.rotation.y=hdy;
-  U.brim.position.set(U.head.position.x+0.19*Math.cos(hdy),py+0.74-pa*0.04,U.head.position.z-0.19*Math.sin(hdy)); U.brim.rotation.y=hdy+Math.PI/2;
+  const hdy=-1.3, hOff=rot(0.05+lean*0.1+pa*0.1,0,yS*0.4), tt=game.t;
+  const nod=Math.sin(tt*2.2)*0.012*S.idleAmt;   // tiny head bob so he never looks frozen
+  U.head.position.set(hOff[0],py+0.7-pa*0.04+nod,hOff[1]+UZ+0.05*pa); U.head.rotation.set(0,hdy,-0.12*pa-0.05*S.crouch+(S.mode==="air"?0.08:0)+(bail?0.3*Math.sin(bt*12):0)); U.head.rotation.order="YXZ";
+  { const tp=new THREE.Vector3(0,0.31,0).applyEuler(U.torso.rotation).add(U.torso.position), hp=U.head.position.clone().add(V(0,-0.1,0)); seg(U.neck,tp.clone().add(V(0,-0.04,0)),hp); }   // neck joins torso and head
+  const bp=(tt%3.9)/3.9, bl=bp<0.04?Math.sin(bp/0.04*Math.PI):((tt%7.3)/7.3<0.03?Math.sin((tt%7.3)/7.3/0.03*Math.PI):0), wide=bail?1:0;
+  U.eyes.forEach(function(e){ e.lid.scale.y=Math.max(0.001,bl*1.0); e.g.scale.set(1,1+0.25*wide,1+0.25*wide); });
+  U.brows.forEach(function(b,k){ b.position.y=0.046+0.014*wide+0.005*(S.mode==="air"?1:0); b.rotation.x=(k?1:-1)*(0.12-0.3*wide); });
+  U.mouth.scale.set(0.004+0.01*wide,0.004+0.02*wide,0.034-0.008*wide); U.mouth.position.y=-0.05-0.006*wide;
+  const br=Math.sin(tt*2.3); U.torso.scale.set(1+0.012*br,1+0.008*br,1+0.012*br);   // breathing
+  const strSw=Math.sin(tt*2.9)*0.06, kick=Math.sin(S.pushPhase*TAU)*0.22*pa;
+  U.strF.rotation.z=0.04+strSw+kick+S.crouch*0.15; U.strB.rotation.z=0.04+Math.sin(tt*2.9+0.7)*0.06+kick*0.9+S.crouch*0.15;   // hoodie drawstrings sway with his motion
   U.bodyG.rotation.set(0,0,0);
   if(ty!==0){ U.bodyG.rotation.set(ty*1.0,0,ty*0.4); U.bodyG.position.y=0.32*Math.min(1,Math.abs(ty)*1.5)+Math.max(0,Math.sin(ty*0.5))*0.3; } else U.bodyG.position.y=0;
 }
@@ -289,7 +385,7 @@ const SESSION=120, MEDALS=[[30000,"GOLD"],[15000,"SILVER"],[5000,"BRONZE"]];
 const game={ state:"menu", t:0, countdown:0, time:SESSION, score:0, best:store.get("best",0), camMode:0, shake:0 };
 const S={ mode:"ground", pos:new THREE.Vector3(), vel:new THREE.Vector3(), heading:Math.PI, spd:0, vyG:0, y:0, vy:0, charge:0, charging:false, crouch:0, lean:0, bodyTwist:0.35, armSwing:0, grab:0, tumble:0,
   air:{ t:0, spinAcc:0, spinAwarded:0, spinRate:0, flip:null, grabT:0, trickCount:0, startY:0, maxY:0 }, flip:{ type:null, t:0, dur:0.5 }, boardRoll:0, boardYaw:0, boardPitch:0,
-  pushPhase:0, pushAmt:0, brakeAmt:0, braking:false, pump:0, slPrev:0, stance:0, grind:null, grindCd:0, bailT:0, popCd:0, landT:0, stuckT:0, rollSnd:0 };
+  pushPhase:0, idleAmt:0, pushAmt:0, brakeAmt:0, braking:false, pump:0, slPrev:0, stance:0, grind:null, grindCd:0, bailT:0, popCd:0, landT:0, stuckT:0, rollSnd:0 };
 const combo={ pts:0, n:0, names:[], timer:0, alive:false, live:0 };
 const keys={}, touch={ l:false, r:false, p:false, o:false, f:false, g:false };
 const SPAWN={ x:0, z:28, h:Math.PI };
@@ -416,9 +512,10 @@ function stepSkater(dt,inp){
     S.heading+=steer*(2.6/(1+Math.abs(S.spd)*0.09))*dt*(Math.abs(S.spd)<0.6?0.45:1);
     // kicks: W starts a kick, holding W chains them, releasing W finishes the current kick. Speed is only gained during the ground-drag part of a kick.
     const canPush=inp.push&&!inp.brake&&!inp.jump&&S.spd>-1;   // legs keep kicking while W is held at any speed; the speed gain below fades to zero at top speed
-    if(canPush||S.pushPhase>0){ S.pushPhase+=dt/(0.95-0.3*clamp(S.spd/12,0,1)); if(S.pushPhase>=1) S.pushPhase=canPush?S.pushPhase-1:0; }
+    if(canPush&&S.pushPhase===0&&S.spd<1.5) S.pushPhase=0.12;   // from a standstill the foot is already on the ground: start dragging straight away
+  if(canPush||S.pushPhase>0){ S.pushPhase+=dt/(0.58-0.2*clamp(S.spd/12,0,1)); if(S.pushPhase>=1) S.pushPhase=canPush?S.pushPhase-1:0; }
     if(S.pushPhase>0&&(inp.brake||inp.jump)) S.pushPhase=0;
-    if(S.pushPhase>=0.12&&S.pushPhase<0.5) S.spd+=GAIN.push*2.7*clamp(1-S.spd/GAIN.maxPush,0,1)*dt;
+    if(S.pushPhase>=0.12&&S.pushPhase<0.5) S.spd+=GAIN.push*1.9*clamp(1-S.spd/GAIN.maxPush,0,1)*dt;
     S.braking=!!inp.brake&&S.spd>1.5; if(inp.brake) S.spd-=Math.sign(S.spd||1)*11*dt*(Math.abs(S.spd)>0.3?1:0);
     S.spd-=S.spd*0.075*dt+Math.sign(S.spd)*0.28*dt;
     const sl=slopeBack(x,z,Math.sin(S.heading)*Math.sign(S.spd||1),Math.cos(S.heading)*Math.sign(S.spd||1)), slc=clamp(sl,-6,6); S.lastSl=slc; const dsl=(slc-S.slPrev)/dt; S.slPrev=slc; S.pump=damp(S.pump,clamp(dsl*0.1,-1,1),10,dt); if(S.pump<-0.05&&slc>0.3) S.spd+=3.2*(-S.pump)*dt; S.slPeak=Math.max(slc,(S.slPeak||0)*Math.exp(-dt/0.12));
@@ -480,9 +577,10 @@ function animateRig(dt){
   S.crouch=damp(S.crouch, S.mode==="ground"? (S.charging? 0.35+0.55*S.charge : (S.landT>0?S.crouch:0.06+clamp(Math.abs(S.spd)/60,0,0.04)+0.5*Math.max(S.pump,0)-0.1*Math.max(-S.pump,0))) : (S.mode==="air"? (S.air.grabbed?0.6:0.3) : (S.mode==="grind"?0.25:0.1)), 12, dt);
   S.armSwing=damp(S.armSwing, S.mode==="air"? 1.0*Math.sign(S.air.spinRate||1) : (S.mode==="grind"? -S.grind.bal*1.3 : clamp(S.spd/20,0,0.6)), 8, dt);
   S.stance=damp(S.stance, S.mode==="ground"? ((S.pushPhase>0||S.pushAmt>0.3||S.braking||Math.abs(S.spd)<2.5)&&!S.charging?0:1) : 1, 14, dt);
+  S.idleAmt=damp(S.idleAmt,(S.mode==="ground"&&S.pushPhase===0&&!S.braking&&!S.charging&&Math.abs(S.spd)<1.2&&S.landT<=0)?1:0,6,dt);
   S.brakeAmt=damp(S.brakeAmt,(S.mode==="ground"&&S.braking)?1:0,14,dt);
   S.pushAmt=damp(S.pushAmt,(S.mode==="ground"&&S.pushPhase>0)?1:0,12,dt);
-  if(S.mode==="ground"&&S.pushPhase>=0.12&&S.pushPhase<0.5&&game.t%0.04<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), u=(S.pushPhase-0.12)/0.38, lx=0.28, lz=-0.12-0.56*u; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,-Math.sin(S.heading)*-1.2+(R()-0.5)*0.8,0.5+R()*0.7,-Math.cos(S.heading)*-1.2+(R()-0.5)*0.8,0.55,0.32,[0.9,0.86,0.78],-1,0.9,0.6); }   // scuff puffs where the kicking foot drags
+  if(S.mode==="ground"&&S.pushPhase>=0.12&&S.pushPhase<0.5&&game.t%0.04<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), u=(S.pushPhase-0.12)/0.38, lx=0.28, lz=-0.12-0.40*u; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,-Math.sin(S.heading)*-1.2+(R()-0.5)*0.8,0.5+R()*0.7,-Math.cos(S.heading)*-1.2+(R()-0.5)*0.8,0.55,0.32,[0.9,0.86,0.78],-1,0.9,0.6); }   // scuff puffs where the kicking foot drags
   if(S.brakeAmt>0.6&&Math.abs(S.spd)>2.5&&game.t%0.05<dt){ const c=Math.cos(S.heading), sn=Math.sin(S.heading), lx=0.26, lz=-0.46; emit(S.pos.x+lx*c+lz*sn,S.y+0.05,S.pos.z-lx*sn+lz*c,(R()-0.5)*1.2,0.5+R()*0.8,(R()-0.5)*1.2,0.5,0.3,[0.85,0.8,0.72],-1,0.8,0.5); }
   S.grab=damp(S.grab, (S.mode==="air"&&S.air.grabbed)?1:0, 14, dt);
   if(S.mode!=="grind") S.lean=damp(S.lean,0,8,dt);
