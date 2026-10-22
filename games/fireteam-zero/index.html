@@ -1759,6 +1759,112 @@ for (const [x0, z0, x1, z1] of [[-33, 32.5, -29, 34], [-16, 38, -11, 39.5], [-6,
 for (const [x0, z0, x1, z1] of [[-30, 33, -28.5, 36.5]]) addSolid(x0, 0, z0, x1, 2.2, z1, matChoke);   // a kiosk
 for (const [x0, z0, x1, z1] of [[-12, 37, -6, 38], [8, 37, 14, 38], [22, 37, 28, 38]]) addSolid(x0, 6, z0, x1, 7.2, z1, matCover);   // terrace cover
 
+// ---------- THE FLOODED LOWER LEVEL: both tunnels and the core pit become a sewer canal with raised side walkways ----------
+// Gameplay stays the same lanes: the channel floor is still y -4, walkways are 0.3 m curbs (auto-stepped), a few crates/barrels give crouch cover.
+(function sewerCanal() {
+  const FL = -4, WK = FL + 0.3, WL = FL + 0.14;                                  // channel bed, walkway top, water surface
+  const matConc = M(0x565c64, 0.95), matConcD = M(0x2e3238, 0.95), matCurb = M(0x8a8f96, 0.9), matPipe = M(0x6b5a48, 0.5, 0.5), matPipeB = M(0x3f5560, 0.55, 0.5);
+  const matSlime = M(0x2f5e3c, 0.95), matValve = M(0xc0392b, 0.45, 0.3), matCrate = M(0x7a6240, 0.9), matDark = M(0x14161b, 0.7), matBarrel = M(0x3f6a8a, 0.6, 0.3), matBarrelR = M(0x8a3a2a, 0.6, 0.3);
+  const water = new THREE.MeshStandardMaterial({ color: 0x1f8497, emissive: 0x0a4455, emissiveIntensity: 1.0, roughness: 0.06, metalness: 0.3, transparent: true, opacity: 0.72, depthWrite: false });
+  const deco = (mesh, x, y, z, ry = 0, rz = 0) => { mesh.position.set(x, y, z); mesh.rotation.y = ry; mesh.rotation.z = rz; mesh.castShadow = false; mesh.receiveShadow = true; mapGroup.add(mesh); return mesh; };
+  const box = (w, h, d, mat, x, y, z, ry = 0, rz = 0) => deco(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat), x, y, z, ry, rz);
+  const cyl = (r, h, mat, x, y, z, rx = 0, rz = 0) => { const m = deco(new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 12), mat), x, y, z); m.rotation.x = rx; m.rotation.z = rz; return m; };
+  const glow = (geo, col, x, y, z, ph, sp, mode, k = 1) => AG.parts.push({ geo, c: new THREE.Color(col).multiplyScalar(k), x, y, z, ph, sp, mode });
+  const ripGeo = () => new THREE.RingGeometry(0.12, 0.2, 18).rotateX(-Math.PI / 2);
+  let seed = 31; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const hz = hazardTex(); const hazard = (len, h, x, y, z, ry) => { const t = hz.clone(); t.needsUpdate = true; t.repeat.set(len / h, 0.25); const m = new THREE.Mesh(new THREE.PlaneGeometry(len, h), new THREE.MeshStandardMaterial({ map: t, roughness: 0.8 })); return deco(m, x, y, z, ry); };
+  const sign = (lines, hex, w, h, x, y, z, ry) => deco(new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: signTex(lines, hex) })), x, y, z, ry);
+  const XA = -31.9, XB = -IN;                                                   // tunnel span (west tunnel coordinates; the east one is mirrored)
+  const LEN = XB - XA, XC = (XA + XB) / 2;
+
+  for (const mir of [1, -1]) {
+    const X = (x) => mir * x, sol = (x0, y0, z0, x1, y1, z1, mat, o) => { const a = X(x0), b = X(x1); addSolid(Math.min(a, b), y0, z0, Math.max(a, b), y1, z1, mat, o); };
+    const ry = (face) => face > 0 ? 0 : Math.PI;                                  // wall plane facing +z (0) or -z (PI)
+    const spawnHex = mir === 1 ? 0x3d7bff : 0xff4545, spawnName = mir === 1 ? 'TEAM A EXIT' : 'TEAM B EXIT';
+
+    // --- raised walkways along both walls (real 0.3 m curbs) with a lighter kerb strip; the channel runs between them ---
+    sol(XA, FL, -5, XB, WK, -2.4, matConc, { tag: 'ramp' }); sol(XA, FL, 2.4, XB, WK, 5, matConc, { tag: 'ramp' });
+    for (const z of [-2.4, 2.4]) box(LEN, 0.06, 0.16, matCurb, X(XC), WK + 0.02, z + (z < 0 ? -0.08 : 0.08));
+    // --- the water, plus slow shimmering highlights, a foam line where it pools at the stair foot and a weir at the core ---
+    deco(new THREE.Mesh(new THREE.BoxGeometry(LEN, 0.03, 4.8), water), X(XC), WL, 0);
+    for (let i = 0; i < 12; i++) glow(new THREE.BoxGeometry(0.9 + rnd() * 1.1, 0.01, 0.07), 0x9fe8ff, X(XA + 1 + i * (LEN - 2) / 11), WL + 0.025, (rnd() - 0.5) * 3.8, i * 1.3, 0.7 + (i % 4) * 0.25, 0, 0.7);
+    glow(new THREE.BoxGeometry(0.2, 0.02, 4.7), 0xe8fbff, X(XA + 0.25), WL + 0.03, 0, 0, 1.2, 0, 0.7);
+    glow(new THREE.BoxGeometry(0.25, 0.02, 4.7), 0xe8fbff, X(XB - 0.2), WL + 0.03, 0, 1.7, 1.0, 0, 0.6);
+    // --- panelled wall: dark seams, a slime tide-line, hazard band, grime streaks ---
+    for (const zf of [-1, 1]) {
+      const zw = zf * 4.97, face = -zf;                                           // wall inner face; plane faces the tunnel
+      box(LEN, 0.5, 0.05, matSlime, X(XC), WK + 0.28, zw);
+      hazard(LEN, 0.28, X(XC), -1.35, zw - zf * 0.005, ry(face));
+      box(LEN, 0.1, 0.06, matDark, X(XC), -1.62, zw); box(LEN, 0.1, 0.06, matDark, X(XC), -1.08, zw);
+      for (let x = XA + 1.5; x < XB; x += 3) box(0.1, 4.0, 0.06, matDark, X(x), -2.0, zw);
+      for (let i = 0; i < 9; i++) { const h = 0.5 + rnd() * 1.1; box(0.12 + rnd() * 0.1, h, 0.05, matSlime, X(XA + 1 + rnd() * (LEN - 2)), -1.0 - h / 2, zw); }
+    }
+    // --- direction plates ---
+    sign(['CORE', 'FLOOD CONTROL'], 0x2fd1c8, 3.3, 1.24, X(-16.5), -2.55, -4.95, 0);            // -z wall: arrows read toward +x (the core, on the west side)
+    sign(['LINE ' + (mir === 1 ? 'A' : 'B'), 'CULVERT 3 · AUX'], 0xf2c14e, 3.3, 1.24, X(-27), -2.55, -4.95, 0);
+    sign(['EXIT', spawnName], spawnHex, 3.3, 1.24, X(-27), -2.55, 4.95, Math.PI);
+    sign(['CORE', 'FLOOD CONTROL'], 0x2fd1c8, 3.3, 1.24, X(-16.5), -2.55, 4.95, Math.PI);
+    // --- ceiling: concrete ribs, two long pipes with brackets and valve wheels, a cable tray ---
+    for (let x = XA + 1.2; x < XB; x += 3) box(0.4, 0.45, 9.98, matConcD, X(x), -0.22, 0);
+    for (const [z, mat] of [[-3.9, matPipe], [3.9, matPipeB]]) {
+      cyl(0.2, LEN, mat, X(XC), -0.62, z, 0, Math.PI / 2);
+      for (let x = XA + 1.2; x < XB; x += 3) box(0.14, 0.4, 0.5, matDark, X(x), -0.55, z);
+    }
+    for (const [x, z] of [[-26, -3.9], [-19.5, 3.9], [-14.5, -3.9]]) { const v = deco(new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.04, 6, 14), matValve), X(x), -0.95, z + (z < 0 ? 0.28 : -0.28)); v.rotation.x = Math.PI / 2; }
+    box(LEN, 0.08, 0.55, matDark, X(XC), -0.12, 0); box(LEN, 0.03, 0.08, matSlime, X(XC), -0.07, 0.12);
+    // --- caged lamps hanging over the water, each reflected on the surface; a few flicker ---
+    [-28, -23.5, -19, -14.5].forEach((x, i) => {
+      box(0.04, 0.6, 0.04, matDark, X(x), -0.38, 0); box(0.36, 0.32, 0.36, matDark, X(x), -0.8, 0);
+      glow(new THREE.SphereGeometry(0.17, 8, 6), 0xffd58a, X(x), -0.82, 0, i * 1.9, i === 1 || i === 3 ? 7 : 0.7, i === 1 ? 1 : 0, 1.2);
+      glow(new THREE.BoxGeometry(0.28, 0.01, 2.8), 0xffc27a, X(x), WL + 0.03, 0, i * 1.9, i === 1 || i === 3 ? 7 : 0.7, i === 1 ? 1 : 0, 0.55);
+    });
+    // --- drain outlets in the walls: dripping into puddles on the walkway ---
+    [[-28.5, -1], [-21, 1], [-14.2, -1]].forEach(([x, zf], i) => {
+      const zw = zf * 4.97;
+      cyl(0.27, 0.8, matPipe, X(x), -2.35, zw - zf * 0.4, Math.PI / 2, 0);
+      glow(new THREE.BoxGeometry(0.06, 1.2, 0.06), 0xbfeaff, X(x), -3.0, zw - zf * 0.7, i * 0.9, 5, 1, 0.9);
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.01, 14), water), X(x), WK + 0.01, zw - zf * 0.7);
+      glow(ripGeo(), 0xbfeaff, X(x), WK + 0.03, zw - zf * 0.7, i * 1.4, 1.3, 0, 0.6);
+    });
+    // --- ceiling drips into the canal with ripples ---
+    [[-30, 0.9], [-24.5, -1.1], [-17.2, 0.6], [-12.8, -0.8]].forEach(([x, z], i) => {
+      glow(new THREE.BoxGeometry(0.03, 0.7, 0.03), 0xbfeaff, X(x), -2.0, z, i * 1.1, 6, 1, 0.8);
+      glow(ripGeo(), 0xbfeaff, X(x), WL + 0.03, z, i * 0.7, 1.6, 0, 0.7);
+    });
+    // --- cover on the walkways: crates (crouch height) and barrel clusters ---
+    sol(-26.8, WK, -4.6, -25.0, WK + 1.1, -3.2, matCrate, { tag: 'cover' }); box(1.9, 0.08, 1.5, matConcD, X(-25.9), WK + 1.14, -3.9);
+    sol(-18.2, WK, 3.2, -16.4, WK + 1.1, 4.6, matCrate, { tag: 'cover' }); box(1.9, 0.08, 1.5, matConcD, X(-17.3), WK + 1.14, 3.9);
+    [[-30.6, 4.35, matBarrel], [-29.8, 4.45, matBarrelR], [-30.2, -4.4, matBarrelR], [-13.0, -4.35, matBarrel], [-12.9, 4.4, matBarrelR]].forEach(([x, z, m], i) => {
+      cyl(0.34, 0.95, m, X(x), WK + 0.475, z); cyl(0.36, 0.06, matDark, X(x), WK + 0.6, z); cyl(0.36, 0.06, matDark, X(x), WK + 0.3, z);
+      sol(x - 0.22, WK, z - 0.22, x + 0.22, WK + 0.95, z + 0.22, m, { tag: 'cover' });
+    });
+    // --- debris in the water: planks, a drifting drum, a cone, algae mats ---
+    box(1.3, 0.05, 0.22, matCrate, X(-22.5), WL + 0.01, 1.2, 0.5); box(1.0, 0.05, 0.2, matCrate, X(-21.7), WL + 0.01, 1.6, -0.3); box(1.1, 0.05, 0.2, matCrate, X(-15.5), WL + 0.01, -1.4, 1.0);
+    cyl(0.3, 0.6, matBarrelR, X(-20.2), WL + 0.12, -0.9, 0.5, 0.2);
+    const cone = deco(new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.5, 8), M(0xe8601c, 0.6)), X(-27.5), WL + 0.2, 1.4); cone.rotation.z = 0.3;
+    for (const [x, z, r] of [[-29, -1, 0.7], [-24, 1.3, 0.6], [-18, -1.5, 0.8], [-13.5, 1.2, 0.6]]) deco(new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.012, 10), matSlime), X(x), WL + 0.02, z);
+    // --- floor grates on the walkways ---
+    for (const [x, z] of [[-23, -3.7], [-23, 3.7], [-15.5, -3.7], [-29.5, 3.5]]) { box(1.4, 0.03, 0.8, matDark, X(x), WK + 0.015, z); for (let k = -3; k <= 3; k++) box(0.03, 0.035, 0.8, matCurb, X(x + k * 0.2), WK + 0.02, z); }
+  }
+
+  // --- the core: the river runs through, with outflow pipes pouring into pools and hazard-banded retaining walls ---
+  deco(new THREE.Mesh(new THREE.BoxGeometry(2 * IN, 0.03, 4.8), water), 0, WL, 0);
+  for (let i = 0; i < 10; i++) glow(new THREE.BoxGeometry(1.0 + rnd(), 0.01, 0.07), 0x9fe8ff, -10 + i * 2.2, WL + 0.025, (rnd() - 0.5) * 3.8, i * 1.1, 0.7 + (i % 4) * 0.25, 0, 0.7);
+  for (const zf of [-1, 1]) {
+    const zw = zf * (IN - 0.5 - 0.03), face = -zf;
+    hazard(2 * IN - 1, 0.3, 0, -1.2, zw, face > 0 ? 0 : Math.PI); box(2 * IN - 1, 0.08, 0.06, matDark, 0, -1.4, zw); box(2 * IN - 1, 0.08, 0.06, matDark, 0, -1.0, zw);
+    sign(['THE CORE', 'DEPTH -4.0 M · FLOOD CTRL'], 0x2fd1c8, 4.6, 1.72, 0, -2.4, zw, face > 0 ? 0 : Math.PI);
+    box(2 * IN - 1, 0.5, 0.05, matSlime, 0, FL + 0.25, zw);
+    for (const x of [-7.5, 7.5]) {
+      cyl(0.45, 0.9, matPipe, x, -2.55 + 0.9, zw - zf * 0.35, Math.PI / 2, 0); box(1.1, 0.14, 0.9, matConcD, x, -2.0, zw - zf * 0.25);
+      glow(new THREE.BoxGeometry(0.6, 1.6, 0.05), 0xbfeaff, x, -3.0, zw - zf * 0.7, x * 0.3, 4.5, 1, 0.65);
+      deco(new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.012, 16), water), x, FL + 0.01, zw - zf * 1.0);
+      glow(ripGeo().scale(2.2, 1, 2.2), 0xbfeaff, x, FL + 0.03, zw - zf * 1.0, x, 1.1, 0, 0.7);
+    }
+  }
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) deco(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.45, 8), matSlime), sx * 6.4, FL + 0.22, sz * 6.4);
+})();
+
 // ---------- SOUTH GARDEN = THE BOTANICAL PARK: a 3 m sunken park (60 x 17 m) with a central pond, a stone bridge (y -0.5) over it,
 // a glass greenhouse in the south-east, a hedge-walled grove in the south-west, planter beds and four stair entrances along the north wall. ----------
 (function botanicalPark() {
