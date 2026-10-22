@@ -33,6 +33,11 @@
   }
   #hud .block { display: flex; flex-direction: column; gap: 2px; }
   #hud .label { font-size: 9px; color: #3f6b78; }
+  #modeTag {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; letter-spacing: 0.12em; color: #4f8894;
+    pointer-events: none;
+  }
 
   .overlay {
     position: absolute; inset: 0;
@@ -54,7 +59,7 @@
     color: #4f8894;
     font-size: 0.85rem;
     margin-bottom: 22px;
-    max-width: 460px;
+    max-width: 480px;
     line-height: 1.6;
   }
   .overlay .sub b { color: #9fe8f5; }
@@ -65,15 +70,22 @@
     font-family: inherit;
     font-size: 0.95rem;
     letter-spacing: 0.08em;
-    padding: 12px 30px;
+    padding: 12px 26px;
     border-radius: 3px;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(47,122,140,0.35);
   }
   .btn:active { transform: translateY(1px); }
+  .btn:disabled, .btn.locked {
+    opacity: 0.38;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+  .modes { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .bestInfo { margin-top: 14px; font-size: 0.76rem; color: #4f8894; letter-spacing: 0.04em; line-height: 1.7; }
   .result-stats {
     display: flex; gap: 28px;
-    margin-bottom: 22px;
+    margin-bottom: 14px;
     font-size: 0.8rem;
     color: #7fd8e8;
   }
@@ -97,6 +109,7 @@
     position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
     font-size: 11px; color: #355965; letter-spacing: 0.04em;
     text-align: center; pointer-events: none;
+    white-space: nowrap;
   }
 </style>
 </head>
@@ -109,9 +122,10 @@
     <div class="block" style="align-items:center"><span class="label">SECTOR</span><span id="sectorVal">1</span></div>
     <div class="block" style="align-items:flex-end"><span class="label">PINGS USED</span><span id="pingVal">0</span></div>
   </div>
+  <div id="modeTag"></div>
 
   <button id="pingBtn">PING<br>(SPACE)</button>
-  <div id="howto">ARROWS / WASD to move · SPACE or tap PING to send a sonar pulse</div>
+  <div id="howto">ARROWS / WASD move · SPACE or tap PING for sonar · compass points to the exit</div>
 
   <div class="overlay" id="startOverlay">
     <h1>SILENT DEPTH</h1>
@@ -119,11 +133,19 @@
       You're running a submarine through mined, patrolled waters — completely blind.
       Press <b>PING</b> to send a sonar pulse: it briefly lights up walls, mines and
       patrol hulls nearby, but it also gives away your position. Patrols that hear
-      a ping turn and hunt the sound. Move quiet, ping only when you must, and
-      reach the green exit beacon before your oxygen runs out.
+      or spot you turn and hunt. Each sector is now a sprawling map larger than
+      the screen — follow the compass toward the exit. Clear all 6 campaign
+      sectors to surface, then Endless Dive unlocks for high-score runs with no
+      end but your last breath.
     </div>
-    <button class="btn" id="startBtn">DIVE</button>
-    <div id="bestLine" style="margin-top:16px; font-size:0.78rem; color:#4f8894; letter-spacing:0.05em;"></div>
+    <div class="modes">
+      <button class="btn" id="startCampaignBtn">CAMPAIGN DIVE</button>
+      <button class="btn" id="startEndlessBtn">ENDLESS DIVE</button>
+    </div>
+    <div class="bestInfo">
+      <div id="campaignBestLine"></div>
+      <div id="endlessHint"></div>
+    </div>
   </div>
 
   <div class="overlay hidden" id="endOverlay">
@@ -131,7 +153,7 @@
     <div class="result-stats">
       <div class="block"><span class="n" id="statTime">0.0s</span>TIME</div>
       <div class="block"><span class="n" id="statPings">0</span>PINGS</div>
-      <div class="block"><span class="n" id="statSector">1</span>SECTOR REACHED</div>
+      <div class="block"><span class="n" id="statSector">1</span><span id="statSectorLabel">SECTOR REACHED</span></div>
     </div>
     <button class="btn" id="retryBtn">DIVE AGAIN</button>
   </div>
@@ -174,10 +196,10 @@
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
   var W, H;
   function resize() {
-    // mid-run, walls/mines/exit are placed at fixed world coordinates sized
-    // to W/H at build time — resizing those out from under an active run
-    // would desync the level from the canvas (unreachable exit, walls in
-    // the wrong place). Defer until the run isn't active.
+    // mid-run, the camera viewport simply re-centers on the next frame, so a
+    // live resize no longer desyncs anything — but we still defer touching
+    // the canvas buffer itself during an active run to avoid a jarring
+    // mid-play DPR/size reset.
     if (typeof state !== 'undefined' && state === 'playing') { pendingResize = true; return; }
     var w = Math.min(window.innerWidth, 900);
     var h = Math.min(window.innerHeight, 640);
@@ -194,7 +216,6 @@
 
   // ---------- game constants ----------
   var CELL = 34;
-  var GRID_W, GRID_H;
   var MAX_OXY = 100;
   var PING_RADIUS = 260;
   var PING_FADE = 2200; // ms the ping reveal stays bright-ish
@@ -202,22 +223,27 @@
   var PATROL_SPEED = 62;
   var PATROL_HEAR_MULT = 1.65; // patrol hears pings from further than its normal vision
   var MINE_RADIUS = 13;
+  var CAMPAIGN_SECTORS = 6;
 
   var touchMobile = ('ontouchstart' in window);
   if (touchMobile) document.getElementById('pingBtn').style.display = 'flex';
 
   // ---------- state ----------
   var state = 'start'; // start | playing | win | lose
+  var mode = 'campaign'; // campaign | endless
   var sector = 1;
   var totalPings = 0;
   var elapsed = 0;
   var oxygen = MAX_OXY;
 
+  var WORLD_W = 0, WORLD_H = 0; // current sector's world size (can exceed the viewport)
+  var camera = { x: 0, y: 0 };
+
   var sub = { x: 0, y: 0, r: 9 };
   var exit = { x: 0, y: 0, r: 16 };
   var walls = [];     // {x,y,w,h}
   var mines = [];      // {x,y, triggered}
-  var patrols = [];    // {x,y,vx,vy,heading,visionR,state:'patrol'|'hunt',targetX,targetY,alertT}
+  var patrols = [];    // {x,y,heading,visionR,mode:'patrol'|'hunt',...}
   var pings = [];       // {x,y,t0, maxR}
   var keys = {};
 
@@ -243,43 +269,78 @@
 
   function rand(a, b) { return a + Math.random() * (b - a); }
   function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
+  function clampN(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  // ---------- collision helpers (declared early; hoisted anyway, kept near rand/dist for clarity) ----------
+  function circleRectHit(cx, cy, cr, rx, ry, rw, rh) {
+    var nx = Math.max(rx, Math.min(cx, rx + rw));
+    var ny = Math.max(ry, Math.min(cy, ry + rh));
+    return dist(cx, cy, nx, ny) < cr;
+  }
+  function tryMove(nx, ny, r) {
+    for (var i = 0; i < walls.length; i++) {
+      var w = walls[i];
+      if (circleRectHit(nx, ny, r, w.x, w.y, w.w, w.h)) return false;
+    }
+    return true;
+  }
+
+  // ---------- difficulty / world-size scaling ----------
+  // n is the absolute sector number. Campaign runs 1..CAMPAIGN_SECTORS; past
+  // that (endless only) an extra "endlessDepth" ramp kicks in on top.
+  function worldSizeForSector(n) {
+    var mult = Math.min(1 + (n - 1) * 0.22, 2.6);
+    return { w: Math.round(W * 2.1 * mult), h: Math.round(H * 2.1 * mult) };
+  }
+  function obstacleCount(n) { return 4 + Math.floor(n * 1.1); }
+  function mineCountFor(n) { return 6 + Math.floor(n * 2.1); }
+  function patrolCountFor(n) { return Math.min(9, 1 + Math.floor(n * 0.65)); }
+  function visionRFor(n) { return Math.min(150, 90 + n * 3); }
+  function endlessDepthOf(n) { return Math.max(0, n - CAMPAIGN_SECTORS); }
+  function patrolSpeedMultFor(n) { return 1 + Math.min(0.5, endlessDepthOf(n) * 0.035); }
+  function oxygenDrainRateFor(n) { return Math.min(3.2, 2.3 + endlessDepthOf(n) * 0.05); }
+  function nextSectorRefill(n) { return Math.round(24 + n * 2.6); }
 
   function buildSector(n) {
     walls = []; mines = []; patrols = []; pings = [];
-    GRID_W = Math.max(10, Math.floor(W / CELL));
-    GRID_H = Math.max(8, Math.floor(H / CELL));
 
-    sub.x = CELL * 1.3; sub.y = H / 2;
-    exit.x = W - CELL * 1.2; exit.y = H / 2 + rand(-H * 0.25, H * 0.25);
+    var size = worldSizeForSector(n);
+    WORLD_W = size.w; WORLD_H = size.h;
+
+    sub.x = CELL * 1.5; sub.y = WORLD_H / 2 + rand(-WORLD_H * 0.15, WORLD_H * 0.15);
+    exit.x = WORLD_W - CELL * 1.5;
+    exit.y = rand(WORLD_H * 0.15, WORLD_H * 0.85);
+    camera.x = clampN(sub.x - W / 2, 0, Math.max(0, WORLD_W - W));
+    camera.y = clampN(sub.y - H / 2, 0, Math.max(0, WORLD_H - H));
 
     // border walls
     var bt = 14;
-    walls.push({ x: 0, y: 0, w: W, h: bt });
-    walls.push({ x: 0, y: H - bt, w: W, h: bt });
-    walls.push({ x: 0, y: 0, w: bt, h: H });
-    walls.push({ x: W - bt, y: 0, w: bt, h: H });
+    walls.push({ x: 0, y: 0, w: WORLD_W, h: bt });
+    walls.push({ x: 0, y: WORLD_H - bt, w: WORLD_W, h: bt });
+    walls.push({ x: 0, y: 0, w: bt, h: WORLD_H });
+    walls.push({ x: WORLD_W - bt, y: 0, w: bt, h: WORLD_H });
 
     // interior wall clusters — a few rectangular obstacles, avoid start/exit zones
-    var obstacles = 3 + n;
+    var obstacles = obstacleCount(n);
     for (var i = 0; i < obstacles; i++) {
-      var ww = rand(60, 160);
-      var hh = rand(60, 160);
-      var wx = rand(W * 0.22, W * 0.82 - ww);
-      var wy = rand(40, H - 40 - hh);
-      // keep clear near start / exit
-      if (wx < CELL * 2.6 || wx + ww > exit.x - 60) continue;
+      var ww = rand(70, 200);
+      var hh = rand(70, 200);
+      var wx = rand(WORLD_W * 0.1, WORLD_W * 0.9 - ww);
+      var wy = rand(50, WORLD_H - 50 - hh);
+      if (circleRectHit(sub.x, sub.y, 130, wx, wy, ww, hh)) continue;
+      if (circleRectHit(exit.x, exit.y, 130, wx, wy, ww, hh)) continue;
       walls.push({ x: wx, y: wy, w: ww, h: hh });
     }
 
     // mines scattered, not on top of start/exit/walls
-    var mineCount = 5 + n * 2;
+    var mineCount = mineCountFor(n);
     var tries = 0;
-    while (mines.length < mineCount && tries < 400) {
+    while (mines.length < mineCount && tries < 600) {
       tries++;
-      var mx = rand(60, W - 60);
-      var my = rand(40, H - 40);
-      if (dist(mx, my, sub.x, sub.y) < 90) continue;
-      if (dist(mx, my, exit.x, exit.y) < 90) continue;
+      var mx = rand(60, WORLD_W - 60);
+      var my = rand(40, WORLD_H - 40);
+      if (dist(mx, my, sub.x, sub.y) < 110) continue;
+      if (dist(mx, my, exit.x, exit.y) < 110) continue;
       var bad = false;
       for (var w = 0; w < walls.length; w++) {
         var wl = walls[w];
@@ -290,14 +351,15 @@
     }
 
     // patrols
-    var patrolCount = 1 + n;
+    var patrolCount = patrolCountFor(n);
+    var visionR = visionRFor(n);
     for (var p = 0; p < patrolCount; p++) {
       var px, py, ok = false, t2 = 0;
-      while (!ok && t2 < 200) {
+      while (!ok && t2 < 300) {
         t2++;
-        px = rand(W * 0.35, W * 0.85);
-        py = rand(50, H - 50);
-        ok = dist(px, py, exit.x, exit.y) > 110 && dist(px, py, sub.x, sub.y) > 160;
+        px = rand(WORLD_W * 0.3, WORLD_W * 0.92);
+        py = rand(50, WORLD_H - 50);
+        ok = dist(px, py, exit.x, exit.y) > 130 && dist(px, py, sub.x, sub.y) > 180;
         for (var w2 = 0; w2 < walls.length; w2++) {
           var wl2 = walls[w2];
           if (px > wl2.x - 25 && px < wl2.x + wl2.w + 25 && py > wl2.y - 25 && py < wl2.y + wl2.h + 25) { ok = false; break; }
@@ -307,11 +369,10 @@
       patrols.push({
         x: px, y: py,
         heading: ang,
-        visionR: 92 + n * 4,
+        visionR: visionR,
         mode: 'patrol',
         turnT: rand(1.2, 3),
-        alertX: 0, alertY: 0, alertUntil: 0,
-        caughtFlash: 0
+        alertX: 0, alertY: 0, alertUntil: 0
       });
     }
 
@@ -321,6 +382,8 @@
 
   // ---------- best-run persistence ----------
   var BEST_KEY = 'silentDepth.best';
+  var ENDLESS_BEST_KEY = 'silentDepth.bestEndless';
+  var UNLOCK_KEY = 'silentDepth.endlessUnlocked';
   function loadBest() {
     try {
       var raw = localStorage.getItem(BEST_KEY);
@@ -338,41 +401,97 @@
     }
     return isBetter;
   }
-  function refreshBestLine() {
-    var b = loadBest();
-    var el = document.getElementById('bestLine');
-    if (!el) return;
-    el.textContent = b ? ('BEST CLEAR — ' + b.time.toFixed(1) + 's · ' + b.pings + ' pings') : 'NO SUCCESSFUL DIVE YET';
+  function loadEndlessBest() {
+    try {
+      var raw = localStorage.getItem(ENDLESS_BEST_KEY);
+      if (!raw) return null;
+      var b = JSON.parse(raw);
+      if (typeof b.depth === 'number' && typeof b.time === 'number') return b;
+    } catch (e) {}
+    return null;
+  }
+  function saveEndlessBestIfBetter(depth, time, pings) {
+    var cur = loadEndlessBest();
+    var isBetter = !cur || depth > cur.depth || (depth === cur.depth && time > cur.time);
+    if (isBetter) {
+      try { localStorage.setItem(ENDLESS_BEST_KEY, JSON.stringify({ depth: depth, time: time, pings: pings })); } catch (e) {}
+    }
+    return isBetter;
+  }
+  function isEndlessUnlocked() {
+    try { return localStorage.getItem(UNLOCK_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markEndlessUnlocked() {
+    try { localStorage.setItem(UNLOCK_KEY, '1'); } catch (e) {}
   }
 
-  function startRun() {
+  function refreshStartScreen() {
+    var cb = loadBest();
+    var eb = loadEndlessBest();
+    var unlocked = isEndlessUnlocked();
+    var campaignLine = document.getElementById('campaignBestLine');
+    if (campaignLine) campaignLine.textContent = cb ? ('CAMPAIGN BEST — ' + cb.time.toFixed(1) + 's · ' + cb.pings + ' pings') : 'CAMPAIGN: NOT CLEARED YET';
+    var endlessBtn = document.getElementById('startEndlessBtn');
+    if (endlessBtn) {
+      endlessBtn.disabled = !unlocked;
+      endlessBtn.classList.toggle('locked', !unlocked);
+    }
+    var hint = document.getElementById('endlessHint');
+    if (hint) {
+      if (!unlocked) hint.textContent = 'Clear the Campaign to unlock Endless Dive';
+      else hint.textContent = eb ? ('ENDLESS BEST — depth ' + eb.depth + ' · ' + eb.time.toFixed(1) + 's') : 'ENDLESS BEST — not attempted yet';
+    }
+  }
+
+  function startRun(modeArg) {
     if (pendingResize) { pendingResize = false; resize(); }
+    mode = modeArg || 'campaign';
+    if (mode === 'endless' && !isEndlessUnlocked()) mode = 'campaign';
     sector = 1; totalPings = 0; elapsed = 0; oxygen = MAX_OXY;
     buildSector(sector);
     state = 'playing';
     document.getElementById('startOverlay').classList.add('hidden');
     document.getElementById('endOverlay').classList.add('hidden');
+    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE' : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
     ac(); // unlock audio on user gesture
   }
 
   function nextSector() {
     sector++;
-    oxygen = Math.min(MAX_OXY, oxygen + 28);
+    oxygen = Math.min(MAX_OXY, oxygen + nextSectorRefill(sector));
     buildSector(sector);
+    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
   }
 
   function endRun(won) {
     state = won ? 'win' : 'lose';
     if (pendingResize) { pendingResize = false; resize(); }
-    var isNewBest = won && saveBestIfBetter(elapsed, totalPings);
-    document.getElementById('endTitle').textContent = won ? (isNewBest ? 'SURFACED — NEW BEST' : 'SURFACED') : 'LOST CONTACT';
-    document.getElementById('endTitle').style.color = won ? '#9fffc4' : '#ff8f8f';
+
+    var isNewBest = false;
+    if (mode === 'campaign') {
+      if (won) { isNewBest = saveBestIfBetter(elapsed, totalPings); markEndlessUnlocked(); }
+    } else {
+      isNewBest = saveEndlessBestIfBetter(sector, elapsed, totalPings);
+    }
+
+    var title;
+    var color;
+    if (mode === 'campaign') {
+      title = won ? (isNewBest ? 'SURFACED — NEW BEST' : 'SURFACED') : 'LOST CONTACT';
+      color = won ? '#9fffc4' : '#ff8f8f';
+    } else {
+      title = isNewBest ? 'DIVE ENDED — NEW DEPTH RECORD' : 'DIVE ENDED';
+      color = '#bdf3ff';
+    }
+    document.getElementById('endTitle').textContent = title;
+    document.getElementById('endTitle').style.color = color;
     document.getElementById('statTime').textContent = elapsed.toFixed(1) + 's';
     document.getElementById('statPings').textContent = totalPings;
     document.getElementById('statSector').textContent = sector;
+    document.getElementById('statSectorLabel').textContent = mode === 'endless' ? 'DEPTH REACHED' : 'SECTOR REACHED';
     document.getElementById('endOverlay').classList.remove('hidden');
-    refreshBestLine();
-    if (won) sfxWin(); else sfxLose();
+    refreshStartScreen();
+    if (mode === 'campaign' && won) sfxWin(); else sfxLose();
   }
 
   function doPing() {
@@ -400,13 +519,14 @@
     var k = e.key.toLowerCase();
     keys[k] = true;
     if (k === ' ' || k === 'spacebar') { e.preventDefault(); doPing(); }
-    if (state === 'start' && (k === 'enter' || k === ' ')) startRun();
+    if (state === 'start' && (k === 'enter' || k === ' ')) startRun('campaign');
   });
   window.addEventListener('keyup', function (e) { keys[e.key.toLowerCase()] = false; });
 
   document.getElementById('pingBtn').addEventListener('click', doPing);
-  document.getElementById('startBtn').addEventListener('click', startRun);
-  document.getElementById('retryBtn').addEventListener('click', startRun);
+  document.getElementById('startCampaignBtn').addEventListener('click', function () { startRun('campaign'); });
+  document.getElementById('startEndlessBtn').addEventListener('click', function () { if (isEndlessUnlocked()) startRun('endless'); });
+  document.getElementById('retryBtn').addEventListener('click', function () { startRun(mode); });
 
   // simple touch joystick (drag anywhere on canvas to steer)
   var touchVec = { x: 0, y: 0, active: false };
@@ -422,9 +542,9 @@
     var dx = t.clientX - touchOrigin.x;
     var dy = t.clientY - touchOrigin.y;
     var len = Math.hypot(dx, dy) || 1;
-    var clamp = Math.min(len, 40) / 40;
-    touchVec.x = (dx / len) * clamp;
-    touchVec.y = (dy / len) * clamp;
+    var clampv = Math.min(len, 40) / 40;
+    touchVec.x = (dx / len) * clampv;
+    touchVec.y = (dy / len) * clampv;
   }, { passive: true });
   function touchRelease() {
     touchOrigin = null; touchVec.active = false; touchVec.x = 0; touchVec.y = 0;
@@ -432,19 +552,10 @@
   canvas.addEventListener('touchend', touchRelease, { passive: true });
   canvas.addEventListener('touchcancel', touchRelease, { passive: true });
 
-  // ---------- collision helpers ----------
-  function circleRectHit(cx, cy, cr, rx, ry, rw, rh) {
-    var nx = Math.max(rx, Math.min(cx, rx + rw));
-    var ny = Math.max(ry, Math.min(cy, ry + rh));
-    return dist(cx, cy, nx, ny) < cr;
-  }
-
-  function tryMove(nx, ny, r) {
-    for (var i = 0; i < walls.length; i++) {
-      var w = walls[i];
-      if (circleRectHit(nx, ny, r, w.x, w.y, w.w, w.h)) return false;
-    }
-    return true;
+  // ---------- camera ----------
+  function updateCamera() {
+    camera.x = clampN(sub.x - W / 2, 0, Math.max(0, WORLD_W - W));
+    camera.y = clampN(sub.y - H / 2, 0, Math.max(0, WORLD_H - H));
   }
 
   // ---------- update ----------
@@ -453,9 +564,8 @@
     if (state !== 'playing') return;
     elapsed += dt;
 
-    // oxygen drains, faster if more pings recently used (encourage restraint)
-    oxygen -= dt * 2.6;
-    if (oxygen <= 0) { oxygen = 0; endRun(false); }
+    oxygen -= dt * oxygenDrainRateFor(sector);
+    if (oxygen <= 0) { oxygen = 0; endRun(false); return; }
 
     // movement
     var mx = 0, my = 0;
@@ -471,8 +581,10 @@
     var ny = sub.y + my * SUB_SPEED * dt;
     if (tryMove(nx, sub.y, sub.r)) sub.x = nx;
     if (tryMove(sub.x, ny, sub.r)) sub.y = ny;
-    sub.x = Math.max(sub.r + 14, Math.min(W - sub.r - 14, sub.x));
-    sub.y = Math.max(sub.r + 14, Math.min(H - sub.r - 14, sub.y));
+    sub.x = Math.max(sub.r + 14, Math.min(WORLD_W - sub.r - 14, sub.x));
+    sub.y = Math.max(sub.r + 14, Math.min(WORLD_H - sub.r - 14, sub.y));
+
+    updateCamera();
 
     // mines
     for (var i = 0; i < mines.length; i++) {
@@ -487,12 +599,13 @@
 
     // exit check
     if (dist(sub.x, sub.y, exit.x, exit.y) < exit.r + sub.r) {
-      if (sector >= 3) { endRun(true); return; }
+      if (mode === 'campaign' && sector >= CAMPAIGN_SECTORS) { endRun(true); return; }
       nextSector();
       return;
     }
 
     // patrols
+    var speedMult = patrolSpeedMultFor(sector);
     for (var p2 = 0; p2 < patrols.length; p2++) {
       var p = patrols[p2];
       var now = performance.now();
@@ -509,7 +622,7 @@
         var tx = p.alertX, ty = p.alertY;
         var ang = Math.atan2(ty - p.y, tx - p.x);
         p.heading = ang;
-        var speed = PATROL_SPEED * 1.35;
+        var speed = PATROL_SPEED * 1.35 * speedMult;
         var pnx = p.x + Math.cos(ang) * speed * dt;
         var pny = p.y + Math.sin(ang) * speed * dt;
         if (tryMove(pnx, p.y, 11)) p.x = pnx;
@@ -518,19 +631,18 @@
       } else {
         p.turnT -= dt;
         if (p.turnT <= 0) { p.heading = rand(0, Math.PI * 2); p.turnT = rand(1.5, 3.2); }
-        var pnx2 = p.x + Math.cos(p.heading) * PATROL_SPEED * dt;
-        var pny2 = p.y + Math.sin(p.heading) * PATROL_SPEED * dt;
+        var pnx2 = p.x + Math.cos(p.heading) * PATROL_SPEED * speedMult * dt;
+        var pny2 = p.y + Math.sin(p.heading) * PATROL_SPEED * speedMult * dt;
         if (tryMove(pnx2, p.y, 11)) p.x = pnx2; else p.heading = rand(0, Math.PI * 2);
         if (tryMove(p.x, pny2, 11)) p.y = pny2; else p.heading = rand(0, Math.PI * 2);
       }
-      p.x = Math.max(25, Math.min(W - 25, p.x));
-      p.y = Math.max(25, Math.min(H - 25, p.y));
+      p.x = Math.max(25, Math.min(WORLD_W - 25, p.x));
+      p.y = Math.max(25, Math.min(WORLD_H - 25, p.y));
 
       if (dist(p.x, p.y, sub.x, sub.y) < 15 + sub.r) {
         endRun(false);
         return;
       }
-      if (p.caughtFlash > 0) p.caughtFlash -= dt;
     }
 
     // prune old pings
@@ -539,6 +651,7 @@
 
     document.getElementById('oxyVal').textContent = Math.max(0, Math.round(oxygen)) + '%';
     document.getElementById('sectorVal').textContent = sector;
+    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
   }
 
   // ---------- reveal logic: what's currently lit by an active ping ----------
@@ -550,13 +663,11 @@
       var age = now - pg.t0;
       var ringR = (age / PING_FADE) * pg.maxR;
       var d = dist(x, y, pg.x, pg.y);
-      // lit if within the expanding ring's trailing band
       var band = 70;
       if (d < ringR && d > ringR - band - (age / PING_FADE) * 40) {
         var fade = 1 - age / (PING_FADE + 400);
         best = Math.max(best, Math.max(0, fade));
       }
-      // also a soft persistent glow near the origin fading out
       if (d < pg.maxR * 0.4) {
         var fade2 = Math.max(0, 1 - age / (PING_FADE + 400)) * 0.5 * (1 - d / (pg.maxR * 0.4));
         best = Math.max(best, fade2);
@@ -565,24 +676,52 @@
     return Math.min(1, best);
   }
 
+  // ---------- compass: bearing to the exit, always on screen ----------
+  function drawCompass() {
+    var cx = W / 2, cy = 100, r = 20;
+    var ang = Math.atan2(exit.y - sub.y, exit.x - sub.x);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(140,255,200,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(140,255,200,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(r - 4, 0);
+    ctx.lineTo(-r + 10, -7);
+    ctx.lineTo(-r + 10, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   // ---------- draw ----------
   function draw() {
     ctx.clearRect(0, 0, W, H);
 
-    // deep water gradient
-    var grad = ctx.createRadialGradient(sub.x, sub.y, 20, sub.x, sub.y, Math.max(W, H));
+    // deep water gradient, centered on the sub's screen position (not world position)
+    var subScreenX = sub.x - camera.x, subScreenY = sub.y - camera.y;
+    var grad = ctx.createRadialGradient(subScreenX, subScreenY, 20, subScreenX, subScreenY, Math.max(W, H));
     grad.addColorStop(0, '#07181d');
     grad.addColorStop(1, '#010405');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // very faint ambient grid for depth cue (always barely visible)
-    ctx.strokeStyle = 'rgba(40,80,90,0.05)';
-    ctx.lineWidth = 1;
-    for (var gx = 0; gx < W; gx += CELL) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke(); }
-    for (var gy = 0; gy < H; gy += CELL) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
-
     if (state === 'playing' || state === 'win' || state === 'lose') {
+      ctx.save();
+      ctx.translate(-camera.x, -camera.y);
+
+      // very faint ambient grid for depth cue, spanning the visible world window
+      ctx.strokeStyle = 'rgba(40,80,90,0.05)';
+      ctx.lineWidth = 1;
+      var gx0 = Math.floor(camera.x / CELL) * CELL;
+      var gy0 = Math.floor(camera.y / CELL) * CELL;
+      for (var gx = gx0; gx < camera.x + W + CELL; gx += CELL) { ctx.beginPath(); ctx.moveTo(gx, camera.y); ctx.lineTo(gx, camera.y + H); ctx.stroke(); }
+      for (var gy = gy0; gy < camera.y + H + CELL; gy += CELL) { ctx.beginPath(); ctx.moveTo(camera.x, gy); ctx.lineTo(camera.x + W, gy); ctx.stroke(); }
+
       // ping rings
       var now = performance.now();
       for (var i = 0; i < pings.length; i++) {
@@ -606,7 +745,6 @@
         var liveLit = litByPing(cx, cy);
         if (wallMemory[w]) rememberLit(wallMemory[w], liveLit);
         var lit = Math.max(liveLit, memoryVal(wallMemory[w]));
-        // always render a hairline so borders are faintly visible (keeps you oriented a little)
         ctx.fillStyle = 'rgba(30,55,62,0.35)';
         ctx.fillRect(wl.x, wl.y, wl.w, wl.h);
         if (lit > 0.02) {
@@ -632,7 +770,6 @@
           ctx.strokeStyle = 'rgba(255,170,170,' + lit2 + ')';
           ctx.lineWidth = 1.5;
           ctx.stroke();
-          // spikes
           for (var sAng = 0; sAng < 8; sAng++) {
             var ang = (sAng / 8) * Math.PI * 2;
             ctx.beginPath();
@@ -649,7 +786,7 @@
         }
       }
 
-      // exit beacon — always faintly visible as a pulsing glow (it wants to be found)
+      // exit beacon — pulsing glow, only actually visible once it's in camera view
       var exPulse = 0.35 + Math.sin(now / 400) * 0.15;
       ctx.beginPath();
       ctx.arc(exit.x, exit.y, exit.r + 10, 0, Math.PI * 2);
@@ -665,7 +802,7 @@
       ctx.textAlign = 'center';
       ctx.fillText('EXIT', exit.x, exit.y - exit.r - 8);
 
-      // patrols — hull only visible when lit by ping, but a faint engine hum glow always shows direction near-field
+      // patrols
       for (var p = 0; p < patrols.length; p++) {
         var pt = patrols[p];
         var litp = litByPing(pt.x, pt.y);
@@ -691,7 +828,6 @@
             ctx.fill();
           }
         }
-        // vision radius sliver when hunting and near — danger cue
         if (pt.mode === 'hunt') {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, pt.visionR, 0, Math.PI * 2);
@@ -723,7 +859,11 @@
       ctx.fill();
       ctx.restore();
 
-      // oxygen low vignette
+      ctx.restore(); // end camera translate
+
+      drawCompass();
+
+      // oxygen low vignette (screen space)
       if (oxygen < 25) {
         var va = (25 - oxygen) / 25 * 0.4;
         ctx.fillStyle = 'rgba(180,20,20,' + va + ')';
@@ -739,7 +879,7 @@
     draw();
     requestAnimationFrame(loop);
   }
-  refreshBestLine();
+  refreshStartScreen();
   requestAnimationFrame(loop);
 })();
 </script>
