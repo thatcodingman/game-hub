@@ -1798,6 +1798,11 @@ for (const [x0, z0, x1, z1] of [[-12, 37, -6, 38], [8, 37, 14, 38], [22, 37, 28,
   for (const [x, y, z, h] of [[-17, GY, -28, 3], [17, GY, -28, 3], [0, GY, -28.5, 3], [-11, -0.5, -34.4, 1.3], [11, -0.5, -34.4, 1.3], [-11, -0.5, -31.6, 1.3], [11, -0.5, -31.6, 1.3], [-20, GY, -38.9, 3], [0, GY, -39, 3], [18, GY, -38.9, 3]]) {
     deco(new THREE.Mesh(new THREE.BoxGeometry(0.1, h, 0.1), poleM), x, y + h / 2, z); deco(new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), lampM), x, y + h + 0.1, z);
   }
+  // living light: caustic ripples shimmering on the pond, greenhouse grow-lights and softly pulsing park lamps (all animated, none colliding)
+  for (let i = 0; i < 14; i++) { const x = -8.5 + (i % 7) * 2.8 + (i > 6 ? 1.2 : 0), z = -35.8 + Math.floor(i / 7) * 3.4 + (i % 3) * 0.4;
+    AG.parts.push({ geo: new THREE.BoxGeometry(1.1 + (i % 3) * 0.4, 0.02, 0.07), c: new THREE.Color(i % 2 ? 0x8fe3ff : 0x5dc0ff), x, y: GY + 0.16, z, ph: i * 1.7, sp: 0.8 + (i % 4) * 0.25, mode: 0 }); }
+  for (const x of [21.2, 23.5, 25.8, 27.2]) AG.parts.push({ geo: new THREE.BoxGeometry(0.1, 0.06, 5.2), c: new THREE.Color(0xff5fd8), x, y: GY + 3.7, z: -36.2, ph: x, sp: 0.6, mode: 0 });
+  for (const [x, z] of [[-17, -28], [17, -28], [0, -28.5], [-20, -38.9], [0, -39], [18, -38.9]]) AG.parts.push({ geo: new THREE.SphereGeometry(0.22, 8, 6), c: new THREE.Color(0xffc96b), x, y: GY + 3.1, z, ph: x * 0.7, sp: 0.5, mode: 0 });
   const mint = emis => new THREE.MeshStandardMaterial({ color: 0x5dffb0, emissive: 0x5dffb0, emissiveIntensity: 1.8, roughness: 0.4 });
   deco(new THREE.Mesh(new THREE.BoxGeometry(54, 0.1, 0.1), mint()), 0, -2.7, -23.7); deco(new THREE.Mesh(new THREE.BoxGeometry(54, 0.1, 0.1), mint()), 0, -2.7, -39.3);
 })();
@@ -4853,7 +4858,7 @@ function showTab(on) {
 // Role lookup tables (ROLES itself is declared earlier, above `const bots = []`, since each bot's
 // role is assigned at creation time — see the comment there for why).
 const ROLE_FLANK = { aggressive: 0.15, flanker: 0.55, defensive: 0.18, balanced: 0.25 };   // chance to take a flank route when (re)picking a goal
-const ROLE_INTEL = { aggressive: 0.45, flanker: 0.2, defensive: 0.15, balanced: 0.3 };     // chance to chase the team's shared last-seen-enemy callout
+const ROLE_INTEL = { aggressive: 0.3, flanker: 0.12, defensive: 0.1, balanced: 0.18 };     // chance to chase the team's shared last-seen-enemy callout
 const ROLE_SLIDE = { aggressive: 1.4, flanker: 1.2, defensive: 0.55, balanced: 1.0 };      // multiplier on slide chance
 const ROLE_REACT = { aggressive: 0.85, flanker: 0.95, defensive: 1.15, balanced: 1.0 };    // multiplier on reaction delay (lower = faster)
 const ROLE_PUSH = { aggressive: 1.25, flanker: 1.0, defensive: 0.6, balanced: 1.0 };       // multiplier on push-in-toward-target strength
@@ -5094,7 +5099,7 @@ function pickGoal(b, flank) {
 }
 function planTo(b, goal) {
   const from = nearestNode(b.pos);
-  b.goal = goal;
+  b.goal = goal; b.laneOff = Math.random() * 2 - 1;
   b.path = findPath(from, goal) || [from];
   b.pi = 0;
   // skip the first node if we're already past it toward the second one
@@ -5194,6 +5199,7 @@ function coverNode(b, threat) {
   return best;
 }
 // walk the current path; sets _w and returns the yaw to look along (or null when there's nowhere to go)
+const _fs = new THREE.Vector3();
 function followPath(b, dt, hunting) {
   if (!b.path || b.pi >= b.path.length) return null;
   // path smoothing: cut corners when the next-but-one waypoint is in a clear straight line on this level
@@ -5204,7 +5210,13 @@ function followPath(b, dt, hunting) {
     if (Math.abs(n0.y - b.pos.y) < 0.4 && Math.abs(n1.y - b.pos.y) < 0.4 && walkableLine(b.pos, n1)) b.pi++;
   }
   const n = NAV[b.path[b.pi]];
-  const dx = n.x - b.pos.x, dz = n.z - b.pos.z, hd = Math.hypot(dx, dz);
+  // each bot takes its own lane through a waypoint (a fraction of the node's width), so squads spread out instead of marching down one line
+  let tx = n.x, tz = n.z;
+  if (n.w && !n.hold && b.pi + 1 < b.path.length && b.laneOff) {
+    const nx2 = NAV[b.path[b.pi + 1]], ox = nx2.x - n.x, oz = nx2.z - n.z, ol = Math.hypot(ox, oz) || 1, off = b.laneOff * Math.min(n.w, 1.4) * 0.45;
+    if (Math.abs(nx2.y - n.y) < 0.4) { tx += -oz / ol * off; tz += ox / ol * off; }
+  }
+  const dx = tx - b.pos.x, dz = tz - b.pos.z, hd = Math.hypot(dx, dz);
   if (hd < 0.8 && Math.abs(n.y - b.pos.y) < 1.6) {
     b.pi++;
     if (b.pi >= b.path.length) {
@@ -5281,6 +5293,12 @@ function updateBot(b, dt) {
           if (!blockedAt(b.pos.x + sd.x, b.pos.z + sd.z, b.pos.y)) { b.isSliding = true; b.slideTimer = SLIDE_TIME; b.slideDir.copy(sd); }
         }
       }
+      // keep advancing along the route while trading shots at range (no more standing still in the open, strafing forever)
+      if (hd > 13 && b.path && b.pi < b.path.length && !b.isSliding) {
+        _fs.copy(_w);
+        if (followPath(b, dt, false) !== null) { _w.multiplyScalar(0.85).addScaledVector(_fs, 0.5); pathing = true; } else _w.copy(_fs);
+        if (_w.lengthSq() > 1) _w.normalize();
+      }
       // don't strafe into walls or off ledges (no falling off the Mezzanine mid-fight)
       if (_w.lengthSq() > 0) {
         const px = b.pos.x + _w.x * 0.9, pz = b.pos.z + _w.z * 0.9;
@@ -5298,7 +5316,7 @@ function updateBot(b, dt) {
         }
       }
       // a long-range standoff going nowhere: break it off and rotate through a flank
-      if (b.engageT > 6 && hd > 22 && b.wk !== 'sniper' && Math.random() < dt * 0.5) {
+      if (b.engageT > 3.5 && hd > 14 && b.wk !== 'sniper' && Math.random() < dt * 0.7) {
         b.ignoreUntil = gameTime + 5; b.targetVisible = false; b.huntPos = null; b.burstLeft = 0;
         planTo(b, pickGoal(b, true));
       }
