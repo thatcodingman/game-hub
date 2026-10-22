@@ -134,6 +134,41 @@
     letter-spacing: 0.08em;
     color: #7fd8e8;
   }
+  #paceFlash {
+    position: absolute; top: 72px; left: 16px;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 10px; letter-spacing: 0.06em;
+    padding: 5px 10px 5px 8px;
+    border-radius: 20px;
+    background: rgba(5,18,22,0.6);
+    border: 1px solid rgba(127,216,232,0.25);
+    opacity: 0; transform: translateX(-6px);
+    transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #paceFlash.show { opacity: 1; transform: translateX(0); }
+  #paceFlash .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+    animation: paceDotPulse 1.1s ease-in-out infinite;
+  }
+  #paceFlash.ahead .dot { background: #7dffb0; }
+  #paceFlash.ahead #paceText { color: #9fffc4; }
+  #paceFlash.behind .dot { background: #ffb37a; }
+  #paceFlash.behind #paceText { color: #ffd9a8; }
+  @keyframes paceDotPulse {
+    0%, 100% { opacity: 0.55; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1.15); }
+  }
+  .bestDelta {
+    font-size: 0.78rem;
+    letter-spacing: 0.05em;
+    margin: -4px 0 16px;
+    min-height: 1em;
+  }
+  .bestDelta.ahead { color: #9fffc4; }
+  .bestDelta.behind { color: #ffd9a8; }
 </style>
 </head>
 <body>
@@ -142,10 +177,11 @@
 
   <div id="hud">
     <div class="block"><span class="label">OXYGEN</span><span id="oxyVal">100%</span></div>
-    <div class="block" style="align-items:center"><span class="label">SECTOR</span><span id="sectorVal">1</span></div>
+    <div class="block" style="align-items:center"><span class="label" id="sectorLabel">SECTOR</span><span id="sectorVal">1</span></div>
     <div class="block" style="align-items:flex-end"><span class="label">PINGS USED</span><span id="pingVal">0</span></div>
   </div>
   <div id="modeTag"></div>
+  <div id="paceFlash"><span class="dot"></span><span id="paceText"></span></div>
   <div id="banner"><div class="big" id="bannerBig"></div><div class="small" id="bannerSmall"></div></div>
 
   <button id="pingBtn">PING<br>(SPACE)</button>
@@ -157,10 +193,10 @@
       You're running a submarine through mined, patrolled waters — completely blind.
       Press <b>PING</b> to send a sonar pulse: it briefly lights up walls, mines and
       patrol hulls nearby, but it also gives away your position. Patrols that hear
-      or spot you turn and hunt. Each sector is now a sprawling map larger than
-      the screen — follow the compass toward the exit. Clear all 6 campaign
-      sectors to surface, then Endless Dive unlocks for high-score runs with no
-      end but your last breath.
+      or spot you turn and hunt. Each sector is a sprawling map larger than
+      the screen — follow the compass toward the exit. Clear all 10 campaign
+      sectors to surface — Endless Dive unlocks the moment you reach sector 6,
+      for high-score runs with no end but your last breath.
     </div>
     <div class="modes">
       <button class="btn" id="startCampaignBtn">CAMPAIGN DIVE</button>
@@ -179,6 +215,7 @@
       <div class="block"><span class="n" id="statPings">0</span>PINGS</div>
       <div class="block"><span class="n" id="statSector">1</span><span id="statSectorLabel">SECTOR REACHED</span></div>
     </div>
+    <div class="bestDelta" id="endBestDelta"></div>
     <button class="btn" id="retryBtn">DIVE AGAIN</button>
   </div>
 </div>
@@ -213,6 +250,7 @@
   function sfxWin() { [660, 880, 1100, 1320].forEach(function (f, i) { beep(f, 0.3, 'triangle', 0.15, i * 0.09); }); }
   function sfxLose() { beep(220, 0.15, 'square', 0.15, 0); beep(140, 0.5, 'sawtooth', 0.15, 0.12); }
   function sfxAlert() { beep(900, 0.12, 'square', 0.12, 0); beep(900, 0.12, 'square', 0.12, 0.15); }
+  function sfxNearMiss() { beep(520, 0.12, 'triangle', 0.14, 0); beep(780, 0.1, 'triangle', 0.11, 0.07); }
 
   // ---------- canvas setup ----------
   var canvas = document.getElementById('c');
@@ -247,7 +285,13 @@
   var PATROL_SPEED = 62;
   var PATROL_HEAR_MULT = 1.65; // patrol hears pings from further than its normal vision
   var MINE_RADIUS = 13;
-  var CAMPAIGN_SECTORS = 6;
+  var MINE_NEAR_MISS = 18;   // extra margin beyond the death radius that counts as a graze
+  var PATROL_NEAR_MISS = 20; // same, for a hunting patrol
+  var CAMPAIGN_SECTORS = 10;
+  var ENDLESS_UNLOCK_SECTOR = 6; // Endless Dive unlocks on reaching this sector —
+                                 // past the midpoint but with 4 sectors (including
+                                 // the sector 9-10 finale) still ahead; it also
+                                 // lines up with when current zones first appear
 
   var touchMobile = ('ontouchstart' in window);
   if (touchMobile) document.getElementById('pingBtn').style.display = 'flex';
@@ -259,6 +303,12 @@
   var totalPings = 0;
   var elapsed = 0;
   var oxygen = MAX_OXY;
+  var splits = []; // campaign only: elapsed time at the moment each sector was cleared
+  var nearMissFlash = 0; // 1 → 0 decay after grazing a mine/hunting patrol without dying
+  function nearMiss() {
+    nearMissFlash = 1;
+    sfxNearMiss();
+  }
 
   var WORLD_W = 0, WORLD_H = 0; // current sector's world size (can exceed the viewport)
   var camera = { x: 0, y: 0 };
@@ -269,6 +319,8 @@
   var mines = [];      // {x,y, triggered}
   var patrols = [];    // {x,y,heading,visionR,mode:'patrol'|'hunt',...}
   var pings = [];       // {x,y,t0, maxR}
+  var currents = [];    // {x,y,w,h,angle,strength} — push zones, sector 6+
+  var buoys = [];        // {x,y,r} — ping-relay hazards, sector 8+
   var keys = {};
 
   // fading "memory" of terrain the player has already seen — keeps a dim
@@ -278,6 +330,7 @@
   var MEMORY_MAX = 0.4;   // afterglow intensity cap, relative to a live full reveal
   var wallMemory = []; // parallel to walls: {t, v}
   var mineMemory = []; // parallel to mines: {t, v}
+  var buoyMemory = []; // parallel to buoys: {t, v}
   function memoryVal(mem) {
     if (!mem || mem.t === 0) return 0;
     var age = performance.now() - mem.t;
@@ -311,27 +364,70 @@
 
   // ---------- difficulty / world-size scaling ----------
   // n is the absolute sector number. Campaign runs 1..CAMPAIGN_SECTORS; past
-  // that (endless only) an extra "endlessDepth" ramp kicks in on top.
+  // that (endless only) an extra "endlessDepth" ramp kicks in on top, right
+  // where the campaign ramp left off — so world size, hazard density,
+  // patrol speed and oxygen drain all climb continuously through the whole
+  // 10-sector campaign instead of flattening out partway through, then
+  // keep climbing from that same point in Endless Dive.
+  function endlessDepthOf(n) { return Math.max(0, n - CAMPAIGN_SECTORS); }
+  // Endless Dive starts at sector ENDLESS_UNLOCK_SECTOR internally (see
+  // startRun) rather than sector 1 — it's a reward for clearing that much
+  // campaign, so it should drop you into water that dangerous, not the
+  // easiest water in the game. displayDepth() is the player-facing counter:
+  // it always starts at 1 and climbs cleanly, independent of wherever the
+  // internal difficulty sector actually starts, so "depth" stays a simple
+  // score regardless of where that starting baseline is tuned.
+  function displayDepth() { return mode === 'endless' ? (sector - ENDLESS_UNLOCK_SECTOR + 1) : sector; }
+  // world size still has its own hard ceiling (mult caps at 1.9, reached by
+  // effective sector 7) — that's the point a full oxygen tank was verified
+  // to comfortably outlast a straight-line crossing, and raising it further
+  // is what made campaign mode uncrossable before. Everything else
+  // (obstacles, mines, patrols, vision) keeps climbing through sector 10,
+  // so the map stops growing but keeps getting more dangerous to cross —
+  // that's deliberate: a fixed arena that gets harder, not an ever-bigger one.
+  function effectiveDifficultySector(n) { return Math.min(n, CAMPAIGN_SECTORS) + endlessDepthOf(n); }
   function worldSizeForSector(n) {
-    // kept modest enough that a full oxygen tank comfortably outlasts a
-    // straight-line crossing of the biggest campaign sector (see
-    // oxygenDrainRateFor below — these two are tuned together)
-    var mult = Math.min(1 + (n - 1) * 0.15, 1.9);
+    var eff = effectiveDifficultySector(n);
+    var mult = Math.min(1 + (eff - 1) * 0.15, 1.9);
     return { w: Math.round(W * 2.1 * mult), h: Math.round(H * 2.1 * mult) };
   }
-  function obstacleCount(n) { return 4 + Math.floor(n * 1.1); }
-  function mineCountFor(n) { return 6 + Math.floor(n * 2.1); }
-  function patrolCountFor(n) { return Math.min(9, 1 + Math.floor(n * 0.65)); }
-  function visionRFor(n) { return Math.min(150, 90 + n * 3); }
-  function endlessDepthOf(n) { return Math.max(0, n - CAMPAIGN_SECTORS); }
-  function patrolSpeedMultFor(n) { return 1 + Math.min(0.5, endlessDepthOf(n) * 0.035); }
-  // flat 1.9/s through the whole campaign (a full 100% tank = ~52.6s, which
-  // stays comfortably ahead of even sector 6's ~34s straight-line crossing);
-  // only ramps up once you're past the campaign, into endless depth
-  function oxygenDrainRateFor(n) { return Math.min(3.2, 1.9 + endlessDepthOf(n) * 0.05); }
+  function obstacleCount(n) { return 4 + Math.floor(effectiveDifficultySector(n) * 1.1); }
+  function mineCountFor(n) { return 6 + Math.floor(effectiveDifficultySector(n) * 2.1); }
+  function patrolCountFor(n) { return Math.min(9, 1 + Math.floor(effectiveDifficultySector(n) * 0.65)); }
+  function visionRFor(n) { return Math.min(150, 90 + effectiveDifficultySector(n) * 3); }
+  // patrols get noticeably quicker to react across the campaign itself
+  // (+~20% by sector 10, on top of the usual endless-depth ramp) — hazard
+  // count alone wasn't enough to make the final sectors feel like a climax
+  function patrolSpeedMultFor(n) {
+    var campaignRamp = Math.min(0.2, (Math.min(n, CAMPAIGN_SECTORS) - 1) * 0.022);
+    return 1 + campaignRamp + Math.min(0.5, endlessDepthOf(n) * 0.035);
+  }
+  // two terrain variants staged across the campaign's back half so it
+  // builds to a real finale instead of being 10 reskins of the same fight:
+  // currents (a visible, learnable push) start at sector 6 — right when
+  // Endless Dive unlocks — and buoys (ping-relay hazards) layer on at
+  // sector 8, with both scaling up once more for the sector 9-10 finish
+  function currentCountFor(n) {
+    if (n < 6) return 0;
+    return n >= 9 ? 3 : 2;
+  }
+  function buoyCountFor(n) {
+    if (n < 8) return 0;
+    return n >= 10 ? 3 : 2;
+  }
+  // oxygen tightens through the campaign too (+0.4/s by sector 10, so 1.9 →
+  // 2.3), then continues ramping into endless depth from there. Checked
+  // against the worst-case sector-10 map (mult 1.9, ~34s straight-line
+  // crossing): a full tank lasts 100/2.3 ≈ 43.5s — ~9.5s of margin, tight
+  // enough to feel like a real finale without reopening the uncrossable-math
+  // bug the campaign had before.
+  function oxygenDrainRateFor(n) {
+    var campaignRamp = Math.min(0.4, (Math.min(n, CAMPAIGN_SECTORS) - 1) * 0.045);
+    return Math.min(3.2, 1.9 + campaignRamp + endlessDepthOf(n) * 0.05);
+  }
 
   function buildSector(n) {
-    walls = []; mines = []; patrols = []; pings = [];
+    walls = []; mines = []; patrols = []; pings = []; currents = []; buoys = [];
 
     var size = worldSizeForSector(n);
     WORLD_W = size.w; WORLD_H = size.h;
@@ -376,7 +472,7 @@
         if (mx > wl.x - 20 && mx < wl.x + wl.w + 20 && my > wl.y - 20 && my < wl.y + wl.h + 20) { bad = true; break; }
       }
       if (bad) continue;
-      mines.push({ x: mx, y: my, triggered: false });
+      mines.push({ x: mx, y: my, triggered: false, grazeActive: false });
     }
 
     // patrols
@@ -401,12 +497,57 @@
         visionR: visionR,
         mode: 'patrol',
         turnT: rand(1.2, 3),
-        alertX: 0, alertY: 0, alertUntil: 0
+        alertX: 0, alertY: 0, alertUntil: 0,
+        grazeActive: false
       });
+    }
+
+    // current push-zones (sector 6+) — always visible, not a stealth secret;
+    // the skill is reading and countering them, not discovering them
+    var currentCount = currentCountFor(n);
+    var ctries = 0;
+    while (currents.length < currentCount && ctries < 300) {
+      ctries++;
+      var cw = rand(140, 240), ch = rand(140, 240);
+      var cx0 = rand(WORLD_W * 0.15, WORLD_W * 0.85 - cw);
+      var cy0 = rand(40, WORLD_H - 40 - ch);
+      if (circleRectHit(sub.x, sub.y, 160, cx0, cy0, cw, ch)) continue;
+      if (circleRectHit(exit.x, exit.y, 160, cx0, cy0, cw, ch)) continue;
+      var cbad = false;
+      for (var cw2 = 0; cw2 < walls.length; cw2++) {
+        var wl3 = walls[cw2];
+        if (circleRectHit(cx0 + cw / 2, cy0 + ch / 2, Math.max(cw, ch) / 2, wl3.x, wl3.y, wl3.w, wl3.h)) { cbad = true; break; }
+      }
+      if (cbad) continue;
+      currents.push({ x: cx0, y: cy0, w: cw, h: ch, angle: rand(0, Math.PI * 2), strength: rand(38, 55) });
+    }
+
+    // ping-relay buoys (sector 8+) — a discoverable hazard, revealed like a
+    // mine: pinging within one alerts every patrol in the sector, not just
+    // the nearby ones, so they're a reason to go quiet near them
+    var buoyCount = buoyCountFor(n);
+    var btries = 0;
+    while (buoys.length < buoyCount && btries < 400) {
+      btries++;
+      var bx = rand(80, WORLD_W - 80);
+      var by = rand(50, WORLD_H - 50);
+      if (dist(bx, by, sub.x, sub.y) < 160) continue;
+      if (dist(bx, by, exit.x, exit.y) < 160) continue;
+      var bbad = false;
+      for (var bw = 0; bw < walls.length; bw++) {
+        var wl4 = walls[bw];
+        if (bx > wl4.x - 20 && bx < wl4.x + wl4.w + 20 && by > wl4.y - 20 && by < wl4.y + wl4.h + 20) { bbad = true; break; }
+      }
+      if (!bbad) for (var bm = 0; bm < mines.length; bm++) {
+        if (dist(bx, by, mines[bm].x, mines[bm].y) < 50) { bbad = true; break; }
+      }
+      if (bbad) continue;
+      buoys.push({ x: bx, y: by, r: 100 });
     }
 
     wallMemory = walls.map(function () { return { t: 0, v: 0 }; });
     mineMemory = mines.map(function () { return { t: 0, v: 0 }; });
+    buoyMemory = buoys.map(function () { return { t: 0, v: 0 }; });
   }
 
   // ---------- best-run persistence ----------
@@ -422,13 +563,34 @@
     } catch (e) {}
     return null;
   }
-  function saveBestIfBetter(time, pings) {
+  function saveBestIfBetter(time, pings, splitsArr) {
     var cur = loadBest();
     var isBetter = !cur || time < cur.time;
     if (isBetter) {
-      try { localStorage.setItem(BEST_KEY, JSON.stringify({ time: time, pings: pings })); } catch (e) {}
+      try { localStorage.setItem(BEST_KEY, JSON.stringify({ time: time, pings: pings, splits: splitsArr || [] })); } catch (e) {}
     }
     return isBetter;
+  }
+  // live "pace vs. best" comparison — splits[idx] is this run's elapsed time
+  // when sector (idx+1) was cleared; compares against the same point in the
+  // currently-saved best run, if that best has split data recorded
+  function paceDeltaFor(idx) {
+    var cur = loadBest();
+    if (!cur || !Array.isArray(cur.splits) || typeof cur.splits[idx] !== 'number') return null;
+    return splits[idx] - cur.splits[idx];
+  }
+  var paceTimer = null;
+  function showPace(deltaSeconds) {
+    var el = document.getElementById('paceFlash');
+    var txt = document.getElementById('paceText');
+    if (!el || !txt) return;
+    var ahead = deltaSeconds < 0;
+    txt.textContent = (ahead ? '−' : '+') + Math.abs(deltaSeconds).toFixed(1) + 's vs best pace';
+    el.classList.remove('ahead', 'behind');
+    el.classList.add(ahead ? 'ahead' : 'behind');
+    el.classList.add('show');
+    clearTimeout(paceTimer);
+    paceTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
   function loadEndlessBest() {
     try {
@@ -467,7 +629,7 @@
     }
     var hint = document.getElementById('endlessHint');
     if (hint) {
-      if (!unlocked) hint.textContent = 'Clear the Campaign to unlock Endless Dive';
+      if (!unlocked) hint.textContent = 'Reach Sector ' + ENDLESS_UNLOCK_SECTOR + ' to unlock Endless Dive';
       else hint.textContent = eb ? ('ENDLESS BEST — depth ' + eb.depth + ' · ' + eb.time.toFixed(1) + 's') : 'ENDLESS BEST — not attempted yet';
     }
   }
@@ -476,12 +638,17 @@
     if (pendingResize) { pendingResize = false; resize(); }
     mode = modeArg || 'campaign';
     if (mode === 'endless' && !isEndlessUnlocked()) mode = 'campaign';
-    sector = 1; totalPings = 0; elapsed = 0; oxygen = MAX_OXY;
+    // Endless Dive drops you in at the sector-ENDLESS_UNLOCK_SECTOR difficulty
+    // baseline, not sector 1 — see displayDepth() for why the player-facing
+    // number still starts at 1 regardless.
+    sector = mode === 'endless' ? ENDLESS_UNLOCK_SECTOR : 1;
+    totalPings = 0; elapsed = 0; oxygen = MAX_OXY; splits = [];
     buildSector(sector);
     state = 'playing';
     document.getElementById('startOverlay').classList.add('hidden');
     document.getElementById('endOverlay').classList.add('hidden');
-    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE' : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
+    document.getElementById('sectorLabel').textContent = mode === 'endless' ? 'DEPTH' : 'SECTOR';
+    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + displayDepth() : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
     ac(); // unlock audio on user gesture
   }
 
@@ -496,25 +663,38 @@
   }
 
   function nextSector() {
+    if (mode === 'campaign') {
+      var clearedIdx = sector - 1;
+      splits[clearedIdx] = elapsed;
+      var delta = paceDeltaFor(clearedIdx);
+      if (delta !== null) showPace(delta);
+    }
     sector++;
     oxygen = MAX_OXY; // full resupply at each sector — each sector is its own
                        // budget rather than a carried-over deficit that can
                        // compound into an uncrossable later sector
     buildSector(sector);
-    var tag = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
+    var tag = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + displayDepth() : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
     document.getElementById('modeTag').textContent = tag;
-    showBanner(mode === 'endless' ? 'DEPTH ' + sector : 'SECTOR ' + sector, 'OXYGEN RESUPPLIED');
+    var justUnlocked = mode === 'campaign' && !isEndlessUnlocked() && sector >= ENDLESS_UNLOCK_SECTOR;
+    if (justUnlocked) { markEndlessUnlocked(); refreshStartScreen(); }
+    var small = justUnlocked ? 'ENDLESS DIVE UNLOCKED' : 'OXYGEN RESUPPLIED';
+    showBanner(mode === 'endless' ? 'DEPTH ' + displayDepth() : 'SECTOR ' + sector, small, justUnlocked ? 2200 : 1400);
   }
 
   function endRun(won) {
     state = won ? 'win' : 'lose';
     if (pendingResize) { pendingResize = false; resize(); }
 
+    // grab the previous record before it's potentially overwritten below,
+    // so the end screen can say how this run compared to it
+    var prevBest = mode === 'campaign' ? loadBest() : loadEndlessBest();
+
     var isNewBest = false;
     if (mode === 'campaign') {
-      if (won) { isNewBest = saveBestIfBetter(elapsed, totalPings); markEndlessUnlocked(); }
+      if (won) { isNewBest = saveBestIfBetter(elapsed, totalPings, splits); markEndlessUnlocked(); }
     } else {
-      isNewBest = saveEndlessBestIfBetter(sector, elapsed, totalPings);
+      isNewBest = saveEndlessBestIfBetter(displayDepth(), elapsed, totalPings);
     }
 
     var title;
@@ -530,8 +710,42 @@
     document.getElementById('endTitle').style.color = color;
     document.getElementById('statTime').textContent = elapsed.toFixed(1) + 's';
     document.getElementById('statPings').textContent = totalPings;
-    document.getElementById('statSector').textContent = sector;
+    document.getElementById('statSector').textContent = displayDepth();
     document.getElementById('statSectorLabel').textContent = mode === 'endless' ? 'DEPTH REACHED' : 'SECTOR REACHED';
+
+    // a contextual line comparing this run to the previous best — the
+    // record is something you're actively racing against, not just a
+    // number that sits on the start screen until you check it
+    var deltaEl = document.getElementById('endBestDelta');
+    if (deltaEl) {
+      deltaEl.classList.remove('ahead', 'behind');
+      var deltaText = '';
+      if (mode === 'campaign' && won) {
+        if (!prevBest) {
+          deltaText = 'FIRST CLEAR — your record is set';
+        } else if (isNewBest) {
+          deltaText = 'NEW BEST — ' + (prevBest.time - elapsed).toFixed(1) + 's faster than before';
+          deltaEl.classList.add('ahead');
+        } else {
+          deltaText = (elapsed - prevBest.time).toFixed(1) + 's off your best (' + prevBest.time.toFixed(1) + 's)';
+          deltaEl.classList.add('behind');
+        }
+      } else if (mode === 'endless') {
+        if (!prevBest) {
+          deltaText = 'FIRST DIVE LOGGED — your record is set';
+        } else if (isNewBest) {
+          var deeperBy = displayDepth() - prevBest.depth;
+          deltaText = 'NEW DEPTH RECORD — ' + deeperBy + ' sector' + (deeperBy === 1 ? '' : 's') + ' deeper than before';
+          deltaEl.classList.add('ahead');
+        } else {
+          var shortBy = prevBest.depth - displayDepth();
+          deltaText = shortBy + ' sector' + (shortBy === 1 ? '' : 's') + ' short of your best depth (' + prevBest.depth + ')';
+          deltaEl.classList.add('behind');
+        }
+      }
+      deltaEl.textContent = deltaText;
+    }
+
     // a campaign loss resumes from the sector you died in, not sector 1 —
     // label the button accordingly so it's clear progress isn't being wiped
     document.getElementById('retryBtn').textContent = (mode === 'campaign' && !won) ? ('CONTINUE — SECTOR ' + sector) : 'DIVE AGAIN';
@@ -546,11 +760,17 @@
     totalPings++;
     document.getElementById('pingVal').textContent = totalPings;
     sfxPing();
-    // alert patrols within hearing range
+    // a buoy relays the ping to every patrol in the sector, not just the
+    // ones in normal hearing range — pinging near one is the risk
+    var relayed = false;
+    for (var bi = 0; bi < buoys.length; bi++) {
+      if (dist(buoys[bi].x, buoys[bi].y, sub.x, sub.y) < buoys[bi].r) { relayed = true; break; }
+    }
+    // alert patrols within hearing range (or every patrol, if relayed)
     var anyNewlyAlerted = false;
     for (var i = 0; i < patrols.length; i++) {
       var p = patrols[i];
-      if (dist(p.x, p.y, sub.x, sub.y) < PING_RADIUS * PATROL_HEAR_MULT) {
+      if (relayed || dist(p.x, p.y, sub.x, sub.y) < PING_RADIUS * PATROL_HEAR_MULT) {
         if (p.mode !== 'hunt') anyNewlyAlerted = true;
         p.mode = 'hunt';
         p.alertX = sub.x; p.alertY = sub.y;
@@ -628,6 +848,8 @@
     if (state !== 'playing') return;
     elapsed += dt;
 
+    if (nearMissFlash > 0) nearMissFlash = Math.max(0, nearMissFlash - dt * 2.5);
+
     oxygen -= dt * oxygenDrainRateFor(sector);
     if (oxygen <= 0) { oxygen = 0; endRun(false); return; }
 
@@ -645,6 +867,19 @@
     var ny = sub.y + my * SUB_SPEED * dt;
     if (tryMove(nx, sub.y, sub.r)) sub.x = nx;
     if (tryMove(sub.x, ny, sub.r)) sub.y = ny;
+
+    // current push-zones — a steady shove while inside, same wall collision
+    // rules as normal movement so it can't push the sub through geometry
+    for (var cu = 0; cu < currents.length; cu++) {
+      var c = currents[cu];
+      if (sub.x > c.x && sub.x < c.x + c.w && sub.y > c.y && sub.y < c.y + c.h) {
+        var cnx = sub.x + Math.cos(c.angle) * c.strength * dt;
+        var cny = sub.y + Math.sin(c.angle) * c.strength * dt;
+        if (tryMove(cnx, sub.y, sub.r)) sub.x = cnx;
+        if (tryMove(sub.x, cny, sub.r)) sub.y = cny;
+      }
+    }
+
     sub.x = Math.max(sub.r + 14, Math.min(WORLD_W - sub.r - 14, sub.x));
     sub.y = Math.max(sub.r + 14, Math.min(WORLD_H - sub.r - 14, sub.y));
 
@@ -653,11 +888,20 @@
     // mines
     for (var i = 0; i < mines.length; i++) {
       var m = mines[i];
-      if (!m.triggered && dist(m.x, m.y, sub.x, sub.y) < MINE_RADIUS + sub.r) {
+      if (m.triggered) continue;
+      var dMine = dist(m.x, m.y, sub.x, sub.y);
+      if (dMine < MINE_RADIUS + sub.r) {
         m.triggered = true;
         sfxDanger();
         endRun(false);
         return;
+      }
+      // a graze — close enough it would've killed you a few px closer, but
+      // you got clear. fires once per approach, not every frame you linger.
+      if (dMine < MINE_RADIUS + sub.r + MINE_NEAR_MISS) {
+        if (!m.grazeActive) { m.grazeActive = true; nearMiss(); }
+      } else {
+        m.grazeActive = false;
       }
     }
 
@@ -665,7 +909,11 @@
     // the solid ring) so it doesn't feel like nothing happened when you're
     // clearly on top of the beacon
     if (dist(sub.x, sub.y, exit.x, exit.y) < exit.r + sub.r + 14) {
-      if (mode === 'campaign' && sector >= CAMPAIGN_SECTORS) { endRun(true); return; }
+      if (mode === 'campaign' && sector >= CAMPAIGN_SECTORS) {
+        splits[sector - 1] = elapsed;
+        endRun(true);
+        return;
+      }
       nextSector();
       return;
     }
@@ -705,9 +953,18 @@
       p.x = Math.max(25, Math.min(WORLD_W - 25, p.x));
       p.y = Math.max(25, Math.min(WORLD_H - 25, p.y));
 
-      if (dist(p.x, p.y, sub.x, sub.y) < 15 + sub.r) {
+      var dPatrol = dist(p.x, p.y, sub.x, sub.y);
+      if (dPatrol < 15 + sub.r) {
         endRun(false);
         return;
+      }
+      // a close shave only counts while it's actively hunting you — a
+      // patrol that happens to be nearby on its idle route was never a
+      // real threat, so that shouldn't read as a near miss
+      if (p.mode === 'hunt' && dPatrol < 15 + sub.r + PATROL_NEAR_MISS) {
+        if (!p.grazeActive) { p.grazeActive = true; nearMiss(); }
+      } else {
+        p.grazeActive = false;
       }
     }
 
@@ -716,8 +973,8 @@
     pings = pings.filter(function (pg) { return nowt - pg.t0 < PING_FADE + 400; });
 
     document.getElementById('oxyVal').textContent = Math.max(0, Math.round(oxygen)) + '%';
-    document.getElementById('sectorVal').textContent = sector;
-    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
+    document.getElementById('sectorVal').textContent = displayDepth();
+    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + displayDepth() : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
   }
 
   // ---------- reveal logic: what's currently lit by an active ping ----------
@@ -788,6 +1045,34 @@
       for (var gx = gx0; gx < camera.x + W + CELL; gx += CELL) { ctx.beginPath(); ctx.moveTo(gx, camera.y); ctx.lineTo(gx, camera.y + H); ctx.stroke(); }
       for (var gy = gy0; gy < camera.y + H + CELL; gy += CELL) { ctx.beginPath(); ctx.moveTo(camera.x, gy); ctx.lineTo(camera.x + W, gy); ctx.stroke(); }
 
+      // current push-zones — always visible (environmental, not a stealth
+      // secret); scrolling chevrons point the direction they push
+      for (var cu2 = 0; cu2 < currents.length; cu2++) {
+        var cz = currents[cu2];
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cz.x, cz.y, cz.w, cz.h);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(90,170,255,0.06)';
+        ctx.fillRect(cz.x, cz.y, cz.w, cz.h);
+        var flow = (performance.now() / 1000 * 55) % 36;
+        var diag = Math.hypot(cz.w, cz.h);
+        ctx.strokeStyle = 'rgba(130,190,255,0.3)';
+        ctx.lineWidth = 2;
+        for (var fl = -diag; fl < diag; fl += 36) {
+          var bx = cz.x + cz.w / 2 + Math.cos(cz.angle) * (fl + flow);
+          var by = cz.y + cz.h / 2 + Math.sin(cz.angle) * (fl + flow);
+          ctx.beginPath();
+          ctx.moveTo(bx - Math.cos(cz.angle) * 9, by - Math.sin(cz.angle) * 9);
+          ctx.lineTo(bx + Math.cos(cz.angle) * 9, by + Math.sin(cz.angle) * 9);
+          ctx.stroke();
+        }
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(130,190,255,0.18)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cz.x, cz.y, cz.w, cz.h);
+      }
+
       // ping rings
       var now = performance.now();
       for (var i = 0; i < pings.length; i++) {
@@ -848,6 +1133,36 @@
           ctx.beginPath();
           ctx.arc(mn.x, mn.y, 2, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(255,90,90,0.3)';
+          ctx.fill();
+        }
+      }
+
+      // ping-relay buoys — revealed by ping/memory like mines, but drawn as
+      // a diamond with an outer ring showing their relay radius once lit
+      for (var bo = 0; bo < buoys.length; bo++) {
+        var bu = buoys[bo];
+        var liveLit3 = litByPing(bu.x, bu.y);
+        if (buoyMemory[bo]) rememberLit(buoyMemory[bo], liveLit3);
+        var lit3 = Math.max(liveLit3, memoryVal(buoyMemory[bo]));
+        if (lit3 > 0.03) {
+          ctx.save();
+          ctx.translate(bu.x, bu.y);
+          ctx.rotate(Math.PI / 4);
+          ctx.fillStyle = 'rgba(200,120,255,' + (0.25 + lit3 * 0.55) + ')';
+          ctx.fillRect(-8, -8, 16, 16);
+          ctx.strokeStyle = 'rgba(230,180,255,' + lit3 + ')';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(-8, -8, 16, 16);
+          ctx.restore();
+          ctx.beginPath();
+          ctx.arc(bu.x, bu.y, bu.r, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(200,120,255,' + (lit3 * 0.25) + ')';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        } else if (lit3 > 0) {
+          ctx.beginPath();
+          ctx.arc(bu.x, bu.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(200,120,255,0.3)';
           ctx.fill();
         }
       }
@@ -933,6 +1248,13 @@
       if (oxygen < 25) {
         var va = (25 - oxygen) / 25 * 0.4;
         ctx.fillStyle = 'rgba(180,20,20,' + va + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // near-miss flash — amber, not red, so it reads as "that was close"
+      // rather than being confused with the oxygen-danger warning above
+      if (nearMissFlash > 0) {
+        ctx.fillStyle = 'rgba(255,200,90,' + (nearMissFlash * 0.3) + ')';
         ctx.fillRect(0, 0, W, H);
       }
     }
