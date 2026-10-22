@@ -76,7 +76,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v24 · DAY & NIGHT</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v26 · SLIMMER HIPS</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -526,6 +526,7 @@ function limbIK(m1,m2,p0,p1,hint,L1,L2){
   const a=(L1*L1-L2*L2+d*d)/(2*d), h=Math.sqrt(Math.max(0,L1*L1-a*a)), perp=hint.clone().addScaledVector(ax,-hint.dot(ax)).normalize();
   const mid=p0.clone().addScaledVector(ax,a).addScaledVector(perp,h); seg(m1,p0,mid); seg(m2,mid,target); return mid;
 }
+const LS=0.94;   // leg length scale (realistic leg : torso ratio)
 function makeSkater(){
   const g=new THREE.Group(), mat=function(c,r){ return new THREE.MeshStandardMaterial({ color:c, roughness:r||0.75 }); };
   const board=new THREE.Group(); g.add(board);
@@ -597,8 +598,9 @@ function makeSkater(){
   const torso=new THREE.Bone(); torso.position.set(0,0.245,0); bodyG.add(torso);
   { // ribbed hem band
     const pocket=ell(new THREE.BoxGeometry(1,1,1),hoodieDM,0.028,0.1,0.22,0.113,-0.1,0,torso); pocket.geometry=new THREE.BoxGeometry(1,1,1,1,1,1);                                         // kangaroo pocket
-    const hood=new THREE.Mesh(new THREE.TorusGeometry(0.1,0.042,12,26),hoodieM); hood.rotation.x=Math.PI/2; hood.scale.set(0.95,1.25,1.1); hood.position.set(-0.012,0.295,0); hood.castShadow=true; torso.add(hood);     // hood collar around the neck
-    ell(SPH,hoodieM,0.085,0.075,0.15,-0.09,0.26,0,torso);                                                                                                                                              // hood bunched behind the neck
+    const hood=new THREE.Mesh(new THREE.TorusGeometry(0.098,0.03,12,32),hoodieM); hood.rotation.x=Math.PI/2; hood.scale.set(0.95,1.12,1.0); hood.position.set(0.0,0.378,0); hood.castShadow=true; torso.add(hood);
+    const lin=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.062,0.07,24,1,true),hoodieDM); lin.scale.set(0.95,1,1.1); lin.position.set(0,0.35,0); torso.add(lin);   // dark inner lining of the neck opening     // hood collar around the neck
+    ell(SPH,hoodieM,0.075,0.055,0.14,-0.105,0.335,0,torso);                                                                                                                                              // hood bunched behind the neck
   }
   const strF=new THREE.Group(), strB=new THREE.Group(); strF.position.set(0.121,0.205,0.05); strB.position.set(0.121,0.205,-0.05); torso.add(strF,strB);
   [strF,strB].forEach(function(sg){ const sm=new THREE.MeshStandardMaterial({ color:PAL.string, roughness:0.7 }); const c=new THREE.Mesh(new THREE.CylinderGeometry(0.0065,0.0065,0.15,6),sm); c.position.y=-0.075; sg.add(c); ell(SPH,sm,0.011,0.017,0.011,0,-0.155,0,sg); });
@@ -607,8 +609,8 @@ function makeSkater(){
 
   const hipJF=dm(), hipJB=dm();
   // head: faces +x. skull, jaw, ears, nose, eyes with eyelids, brows, mouth, short hair, beanie
-  const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.046,0.052,1,12),skinM); neck.castShadow=true; bodyG.add(neck);
-  const head=new THREE.Group(); bodyG.add(head);
+  const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.056,1,14),skinM); neck.castShadow=true; bodyG.add(neck);
+  const head=new THREE.Group(); head.scale.setScalar(1.1); bodyG.add(head);
   { const sk=ringLoft([[-0.15,0.02,0.02,0.03],[-0.135,0.05,0.045,0.035],[-0.1,0.078,0.068,0.02],[-0.05,0.095,0.082,0.008],[0,0.102,0.088,0],[0.06,0.098,0.086,-0.002],[0.11,0.075,0.066,-0.004],[0.13,0.04,0.035,-0.004],[0.14,0.01,0.01,-0.004]],28,2,skinM); sk.scale.y=0.86; head.add(sk); }   // skull + jaw as one smooth shape
   ell(SPH,skinM,0.014,0.034,0.012,-0.004,-0.01,0.089,head); ell(SPH,skinM,0.014,0.034,0.012,-0.004,-0.01,-0.089,head);   // ears
   ell(SPH,skinM,0.022,0.03,0.02,0.102,-0.016,0,head);                                // nose
@@ -629,31 +631,33 @@ function makeSkater(){
   const cap=new THREE.Object3D(), brim=new THREE.Object3D(), hair=new THREE.Object3D();   // legacy slots kept so older pose code stays valid
   // ---------- skinned body: hips, rear, legs and torso/arms are continuous meshes bound to bones, so everything bends and blends smoothly ----------
   const bone=function(x,y,z){ const b=new THREE.Bone(); b.position.set(x,y,z); bodyG.add(b); return b; };
-  const bThF=bone(0,0,0.12), bShF=bone(0,-0.47,0.12), bThB=bone(0,0,-0.12), bShB=bone(0,-0.47,-0.12), bUaF=bone(0,0.52,0.22), bFaF=bone(0,0.23,0.22), bUaB=bone(0,0.52,-0.22), bFaB=bone(0,0.23,-0.22);
+  const bThF=bone(0,0,0.12), bShF=bone(0,-0.47*LS,0.12), bThB=bone(0,0,-0.12), bShB=bone(0,-0.47*LS,-0.12), bUaF=bone(0,0.57,0.232), bFaF=bone(0,0.28,0.232), bUaB=bone(0,0.57,-0.232), bFaB=bone(0,0.28,-0.232);
   const BN=[pelvis,torso,bThF,bShF,bThB,bShB,bUaF,bFaF,bUaB,bFaB];   // 0 pelvis, 1 torso, 2-5 legs, 6-9 arms
   const SB=function(){ this.p=[]; this.uv=[]; this.si=[]; this.sw=[]; this.ix=[]; };
-  SB.prototype.loft=function(rows,wts,M,ex){ const base=this.p.length/3, ep=2/ex, n=rows.length;
+  SB.prototype.loft=function(rows,wts,M,ex,open){ const base=this.p.length/3, ep=2/ex, n=rows.length;
     const push=function(self,x,y,z,u,v,w){ self.p.push(x,y,z); self.uv.push(u,v); let tot=0; for(let q=0;q<w.length;q++) tot+=w[q][1]; for(let q=0;q<4;q++){ const e=w[q]; self.si.push(e?e[0]:0); self.sw.push(e?e[1]/tot:0); } };
     for(let i=0;i<n;i++){ const r=rows[i], aF=r[1], b=r[2], aB=r[3]==null?aF:r[3], cx=r[4]||0, cz=r[5]||0;
       for(let k=0;k<M;k++){ const an=TAU*k/M, c=Math.cos(an), sn=Math.sin(an); push(this, cx+(c>=0?aF*Math.pow(c,ep):-aB*Math.pow(-c,ep)), r[0], cz+b*Math.sign(sn)*Math.pow(Math.abs(sn),ep), k/M*2, r[0]*2, wts[i]); } }
     for(let i=0;i<n-1;i++) for(let k=0;k<M;k++){ const a=base+i*M+k, b2=base+i*M+(k+1)%M, c=base+(i+1)*M+k, d=base+(i+1)*M+(k+1)%M; this.ix.push(a,c,b2, b2,c,d); }
-    const c0=this.p.length/3; push(this,rows[0][4]||0,rows[0][0],rows[0][5]||0,0,rows[0][0]*2,wts[0]); const c1=c0+1; push(this,rows[n-1][4]||0,rows[n-1][0],rows[n-1][5]||0,0,rows[n-1][0]*2,wts[n-1]);
-    for(let k=0;k<M;k++){ this.ix.push(c0,base+k,base+(k+1)%M); this.ix.push(c1,base+(n-1)*M+(k+1)%M,base+(n-1)*M+k); } };
+    const c0=this.p.length/3; push(this,rows[0][4]||0,rows[0][0],rows[0][5]||0,0,rows[0][0]*2,wts[0]); const c1=c0+1; if(!open) push(this,rows[n-1][4]||0,rows[n-1][0],rows[n-1][5]||0,0,rows[n-1][0]*2,wts[n-1]);
+    for(let k=0;k<M;k++){ this.ix.push(c0,base+k,base+(k+1)%M); if(!open) this.ix.push(c1,base+(n-1)*M+(k+1)%M,base+(n-1)*M+k); } };
   SB.prototype.mesh=function(material){ const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(this.p,3)); g.setAttribute("uv",new THREE.Float32BufferAttribute(this.uv,2)); g.setAttribute("skinIndex",new THREE.Uint16BufferAttribute(this.si,4)); g.setAttribute("skinWeight",new THREE.Float32BufferAttribute(this.sw,4)); g.setIndex(this.ix); g.computeVertexNormals();
     const m=new THREE.SkinnedMesh(g,material); m.castShadow=true; m.frustumCulled=false; return m; };
   const P=0,T=1;
+  const legRows=function(cz){ const base=[[0.05,0.07],[0,0.08],[-0.06,0.084],[-0.14,0.082],[-0.24,0.077],[-0.34,0.071],[-0.42,0.066],[-0.47,0.064],[-0.53,0.064],[-0.62,0.066],[-0.72,0.063],[-0.82,0.058],[-0.9,0.055],[-0.94,0.053]];
+    return base.map(function(r){ const y=r[0], k=y>-0.2?1.02:(y>-0.47?1.02-0.02*((-0.2-y)/0.27):1.04-0.04*clamp((-0.47-y)/0.2,0,1)), rad=r[1]*k; return [y*LS,rad,rad,rad,0,cz]; }); };
   const pants=new SB();
   { // pelvis with a real rear: wider and deeper at the back
-    pants.loft([[0.09,0.104,0.15,0.104],[0.03,0.108,0.162,0.114],[-0.03,0.106,0.17,0.124],[-0.09,0.09,0.152,0.108],[-0.14,0.06,0.105,0.06],[-0.17,0.03,0.05,0.03]],
+    pants.loft([[0.09,0.104,0.15,0.09],[0.03,0.106,0.158,0.088],[-0.03,0.104,0.162,0.088],[-0.09,0.09,0.15,0.08],[-0.14,0.06,0.108,0.055],[-0.17,0.03,0.055,0.03]],
       [[[P,0.6],[T,0.4]],[[P,1]],[[P,1]],[[P,1]],[[P,1]],[[P,1]]],28,2.3);
     [[2,3,0.12],[4,5,0.12*-1]].forEach(function(l){ const th=l[0], sh=l[1], cz=l[2], th0=[[P,0.7],[th,0.3]], th1=[[P,0.4],[th,0.6]], th2=[[P,0.12],[th,0.88]];
-      pants.loft([[0.05,0.07,0.07,0.07,0,cz],[0,0.08,0.08,0.08,0,cz],[-0.06,0.084,0.084,0.084,0,cz],[-0.14,0.082,0.082,0.082,0,cz],[-0.24,0.077,0.077,0.077,0,cz],[-0.34,0.071,0.071,0.071,0,cz],[-0.42,0.066,0.066,0.066,0,cz],[-0.47,0.064,0.064,0.064,0,cz],[-0.53,0.064,0.064,0.064,0,cz],[-0.62,0.066,0.066,0.066,0,cz],[-0.72,0.063,0.063,0.063,0,cz],[-0.82,0.058,0.058,0.058,0,cz],[-0.9,0.055,0.055,0.055,0,cz],[-0.94,0.053,0.053,0.053,0,cz]],
+      pants.loft(legRows(cz),
         [th0,th1,th2,[[th,1]],[[th,1]],[[th,1]],[[th,0.85],[sh,0.15]],[[th,0.5],[sh,0.5]],[[th,0.15],[sh,0.85]],[[sh,1]],[[sh,1]],[[sh,1]],[[sh,1]],[[sh,1]]],16,2); }); }
   const hood=new SB();
-  { hood.loft([[-0.035,0.112,0.152,0.112],[0.025,0.113,0.153,0.113],[0.145,0.108,0.15,0.108],[0.305,0.118,0.168,0.118],[0.415,0.126,0.19,0.126],[0.495,0.112,0.205,0.112],[0.545,0.07,0.12,0.07],[0.575,0.05,0.05,0.05]],
-      [[[P,0.5],[T,0.5]],[[P,0.15],[T,0.85]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]]],30,2.4);
-    [[6,7,0.22],[8,9,-0.22]].forEach(function(l){ const ua=l[0], fa=l[1], cz=l[2];
-      hood.loft([[0.585,0.03,0.03,0.03,0,cz],[0.57,0.05,0.05,0.05,0,cz],[0.545,0.062,0.062,0.062,0,cz],[0.52,0.069,0.069,0.069,0,cz],[0.45,0.067,0.067,0.067,0,cz],[0.37,0.064,0.064,0.064,0,cz],[0.3,0.062,0.062,0.062,0,cz],[0.23,0.059,0.059,0.059,0,cz],[0.17,0.058,0.058,0.058,0,cz],[0.1,0.055,0.055,0.055,0,cz],[0.03,0.052,0.052,0.052,0,cz],[-0.06,0.05,0.05,0.05,0,cz]],
+  { hood.loft([[-0.035,0.112,0.158,0.112],[0.025,0.113,0.16,0.113],[0.145,0.108,0.158,0.108],[0.324,0.12,0.178,0.12],[0.447,0.13,0.2,0.13],[0.537,0.118,0.215,0.118],[0.585,0.1,0.15,0.1],[0.618,0.078,0.092,0.078]],
+      [[[P,0.5],[T,0.5]],[[P,0.15],[T,0.85]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]],[[T,1]]],30,2.4,true);
+    [[6,7,0.232],[8,9,-0.232]].forEach(function(l){ const ua=l[0], fa=l[1], cz=l[2];
+      hood.loft([[0.635,0.03,0.03,0.03,0,cz],[0.62,0.05,0.05,0.05,0,cz],[0.595,0.062,0.062,0.062,0,cz],[0.57,0.069,0.069,0.069,0,cz],[0.5,0.067,0.067,0.067,0,cz],[0.42,0.064,0.064,0.064,0,cz],[0.35,0.062,0.062,0.062,0,cz],[0.28,0.059,0.059,0.059,0,cz],[0.22,0.058,0.058,0.058,0,cz],[0.15,0.055,0.055,0.055,0,cz],[0.08,0.052,0.052,0.052,0,cz],[-0.01,0.05,0.05,0.05,0,cz]],
         [[[T,0.6],[ua,0.4]],[[T,0.6],[ua,0.4]],[[T,0.45],[ua,0.55]],[[T,0.25],[ua,0.75]],[[T,0.08],[ua,0.92]],[[ua,1]],[[ua,1]],[[ua,0.5],[fa,0.5]],[[ua,0.2],[fa,0.8]],[[fa,1]],[[fa,1]],[[fa,1]]],14,2); }); }
   const pantsSkin=pants.mesh(pantsM), hoodSkin=hood.mesh(hoodieM); bodyG.add(pantsSkin,hoodSkin);
   g.updateMatrixWorld(true);
@@ -672,8 +676,8 @@ function pushFoot(p){
   const u=e((p-0.82)/0.18); return [lerp(X,0,u),lerp(0.05,0.16,u),lerp(-0.12,-0.30,u)];
 }
 function poseSkater(S){
-  const U=skMesh.userData, pa=S.pushAmt, ba=S.brakeAmt, crouch=Math.min(1.25,S.crouch+pa*0.3+ba*0.4), ty=S.tumble, bail=S.mode==="bail", bt=S.bailT||0;
-  let py=1.135-crouch*0.30; const lean=S.lean, st=S.stance;                 // st: 0 = facing forward (push / stand), 1 = sideways (ride / tricks)
+  const U=skMesh.userData, pa=S.pushAmt, ba=S.brakeAmt, bail=S.mode==="bail", rideA=(1-pa)*(1-S.idleAmt)*(bail?0:1)*(S.mode==="air"?0.7:1), crouch=Math.min(1.25,Math.max(S.crouch,0.5*rideA)+pa*0.3+ba*0.4), ty=S.tumble, bt=S.bailT||0;
+  let py=1.08-crouch*0.30; const lean=S.lean, st=S.stance;                 // st: 0 = facing forward (push / stand), 1 = sideways (ride / tricks)
   const yaw=lerp(-1.5,S.bodyTwist,st), yS=yaw-S.bodyTwist;              // torso yaw, and its offset from the sideways baseline
   const rot=function(x,z,t){ return [x*Math.cos(t)+z*Math.sin(t), -x*Math.sin(t)+z*Math.cos(t)]; };
   const V=function(x,y,z){ return new THREE.Vector3(x,y,z); };
@@ -681,30 +685,31 @@ function poseSkater(S){
   const idl=S.idleAmt, footF=V(0.04*idl,0.16,0.17+0.03*idl), footB=V(0,0.16,-0.30);
   footB.lerp(V(0.28,0.05,-0.14),idl);   // idle: back foot rests on the ground beside the board, ready to kick   // idle: feet out over the trucks
   { // keep the leg standing on the board straight while rolling / pushing: raise the hips until the front leg is fully extended
-    const wS=bail?0:clamp(1-(S.crouch-0.1)*4,0,1), dz=hF[1]-footF.z, d2=hF[0]*hF[0]+dz*dz, pyS=0.21+Math.sqrt(Math.max(0.05,0.94*0.94-d2))-0.03;
-    py=lerp(py,pyS,wS); py=lerp(py,1.0,Math.max(pa,idl*0.9)*(bail?0:1)); }   // pushing: hips sink back behind the board foot so that leg stays straight AND the kicking foot reaches the ground
-  const HZ=-0.19*Math.max(pa,idl*0.9), UZ=-0.13*Math.max(pa,idl*0.9), hipF=V(hF[0],py,hF[1]+HZ), hipB=V(hB[0],py,hB[1]+HZ);
+    const wS=(bail?0:clamp(1-(S.crouch-0.1)*4,0,1))*(1-0.85*rideA), dz=hF[1]-footF.z, d2=hF[0]*hF[0]+dz*dz, pyS=0.21+Math.sqrt(Math.max(0.05,(0.94*LS)*(0.94*LS)-d2))-0.03;
+    py=lerp(py,pyS,wS); py=lerp(py,0.955,Math.max(pa,idl*0.9)*(bail?0:1)); }   // pushing: hips sink back behind the board foot so that leg stays straight AND the kicking foot reaches the ground
+  const HZ=-0.19*Math.max(pa,idl*0.9)-0.04*rideA, UZ=-0.13*Math.max(pa,idl*0.9), hipF=V(hF[0],py,hF[1]+HZ), hipB=V(hB[0],py,hB[1]+HZ);
   if(S.grab>0.5){ footF.y+=0.1*S.grab; footB.y+=0.12*S.grab; }
   if(pa>0.01){ const pf=pushFoot(S.pushPhase); footB.lerp(V(pf[0],pf[1],pf[2]),pa); }
   if(ba>0.01){ footB.lerp(V(0.26,0.04,-0.46),ba); }
   if(bail){ footF.y+=0.25+0.3*Math.sin(bt*13); footB.y+=0.25+0.3*Math.sin(bt*13+2); footF.x+=0.2*Math.sin(bt*9); footB.x-=0.2*Math.sin(bt*9); }
   const kh=rot(1,0,hy), kneeHint=V(kh[0],0,kh[1]);
   const ankF=footF.clone().add(V(0,0.05,0)), ankB=footB.clone().add(V(0,0.05,0));
-  const kmF=limbIK(U.thighF,U.shinF,hipF,ankF,kneeHint,0.47,0.47), kmB=limbIK(U.thighB,U.shinB,hipB,ankB,kneeHint,0.47,0.47);
+  const kmF=limbIK(U.thighF,U.shinF,hipF,ankF,kneeHint,0.47*LS,0.47*LS), kmB=limbIK(U.thighB,U.shinB,hipB,ankB,kneeHint,0.47*LS,0.47*LS);
   U.kneeF.position.copy(kmF); U.kneeB.position.copy(kmB);
   { const dF=ankF.clone().sub(kmF).normalize(), dB=ankB.clone().sub(kmB).normalize(); seg(U.cuffLF,ankF.clone().addScaledVector(dF,-0.075),ankF.clone().addScaledVector(dF,0.012)); seg(U.cuffLB,ankB.clone().addScaledVector(dB,-0.075),ankB.clone().addScaledVector(dB,0.012)); }
   U.shoeF.position.copy(footF); U.shoeB.position.copy(footB);
   const fd=rot(1,0,yaw), fw=[Math.cos(yaw),-Math.sin(yaw)];                 // facing direction in the board plane
-  U.pelvis.position.set((hipF.x+hipB.x)/2,py+0.02,(hipF.z+hipB.z)/2); U.pelvis.rotation.set(0,hy,-pa*0.2); U.pelvis.rotation.order="YXZ"; U.hipJF.position.copy(hipF); U.hipJB.position.copy(hipB);   // pelvis + hip joints close the gap between legs and torso
+  U.pelvis.position.set((hipF.x+hipB.x)/2,py+0.02,(hipF.z+hipB.z)/2); U.pelvis.rotation.set(0,hy,-pa*0.2-0.07*rideA); U.pelvis.rotation.order="YXZ"; U.hipJF.position.copy(hipF); U.hipJB.position.copy(hipB);   // pelvis + hip joints close the gap between legs and torso
   U.torso.position.set(0.03*fw[0]+pa*0.06*fw[0],py+0.245,0.03*fw[1]+pa*0.06*fw[1]+UZ);
-  U.torso.rotation.set(lean*0.9+0.025*Math.sin(game.t*1.7)*S.idleAmt,yaw,-pa*0.3+ba*0.18-0.1*S.idleAmt); U.torso.rotation.order="YXZ";
-  const sy=py+0.52, sF=rot(0.02+pa*0.1,0.22,yS), sB=rot(0.02+pa*0.1,-0.22,yS);
+  U.torso.rotation.set(lean*0.9+0.025*Math.sin(game.t*1.7)*S.idleAmt,yaw,-pa*0.3+ba*0.18-0.1*S.idleAmt-0.16*rideA); U.torso.rotation.order="YXZ";
+  const sy=py+0.57, sF=rot(0.02+pa*0.1,0.232,yS), sB=rot(0.02+pa*0.1,-0.232,yS);
   const shF=V(sF[0],sy-pa*0.06,sF[1]+UZ), shB=V(sB[0],sy-pa*0.06,sB[1]+UZ);
   const sw=S.armSwing, gr=S.grab;
   const hdF=rot(0.14+sw*0.22,0.46+sw*0.12,yS), hdB=rot(0.1-sw*0.18,-0.44-sw*0.1,yS);
-  let handF=V(hdF[0],sy-0.52+0.1*sw,hdF[1]), handB=V(hdB[0],sy-0.50-0.05*sw,hdB[1]);
+  let handF=V(hdF[0],sy-0.57+0.1*sw,hdF[1]), handB=V(hdB[0],sy-0.55-0.05*sw,hdB[1]);
   if(idl>0.01&&!bail){ { const oF=rot(0.05,0.12,yS), oB=rot(0.05,-0.12,yS); handF.lerp(V(shF.x+oF[0],shF.y-0.5,shF.z+oF[1]),idl); handB.lerp(V(shB.x+oB[0],shB.y-0.5,shB.z+oB[1]),idl); } }
-  { const wA=(1-gr)*(bail?0:1)*(S.mode==="grind"?0.5:1), R2=0.575-0.06*idl;   // arms: fully extended, hands placed at full reach from the shoulders
+  if(rideA>0.01&&!bail){ const oF=rot(0.2,0.2,yS), oB=rot(0.1,-0.2,yS), k=rideA*0.8; handF.lerp(V(shF.x+oF[0],shF.y-0.4,shF.z+oF[1]),k); handB.lerp(V(shB.x+oB[0],shB.y-0.42,shB.z+oB[1]),k); }
+  { const wA=(1-gr)*(bail?0:1)*(S.mode==="grind"?0.5:1), R2=0.565-0.06*idl-0.08*rideA;   // arms: fully extended, hands placed at full reach from the shoulders
     const sh=[shF,shB], hd=[handF,handB]; for(let i=0;i<2;i++){ const dv=hd[i].clone().sub(sh[i]); if(dv.length()<0.001) dv.set(0,-1,0); const tgt=sh[i].clone().add(dv.normalize().multiplyScalar(R2)); hd[i].lerp(tgt,wA); } }
   if(gr>0){ handF.lerp(V(0.0,0.18,0.12),gr); }
   if(bail){ handF.y+=0.7+0.3*Math.sin(bt*14); handB.y+=0.7+0.3*Math.sin(bt*14+1.7); handF.x+=0.3*Math.sin(bt*11); handB.x-=0.3*Math.sin(bt*11); }
@@ -718,8 +723,8 @@ function poseSkater(S){
   // head always looks ahead (down the board), even in the sideways stance
   const hdy=-1.3, hOff=rot(0.05+lean*0.1+pa*0.1,0,yS*0.4), tt=game.t;
   const nod=Math.sin(tt*2.2)*0.012*S.idleAmt;   // tiny head bob so he never looks frozen
-  U.head.position.set(hOff[0],py+0.7-pa*0.04+nod,hOff[1]+UZ+0.05*pa); U.head.rotation.set(0,hdy,-0.12*pa-0.05*S.crouch+(S.mode==="air"?0.08:0)+(bail?0.3*Math.sin(bt*12):0)); U.head.rotation.order="YXZ";
-  { const tp=new THREE.Vector3(0,0.31,0).applyEuler(U.torso.rotation).add(U.torso.position), hp=U.head.position.clone().add(V(0,-0.1,0)); seg(U.neck,tp.clone().add(V(0,-0.04,0)),hp); }   // neck joins torso and head
+  U.head.position.set(hOff[0],py+0.78-pa*0.04+nod,hOff[1]+UZ+0.05*pa); U.head.rotation.set(0,hdy,-0.12*pa-0.05*S.crouch+(S.mode==="air"?0.08:0)+(bail?0.3*Math.sin(bt*12):0)); U.head.rotation.order="YXZ";
+  { const tp=new THREE.Vector3(0.004,0.376,0).applyEuler(U.torso.rotation).add(U.torso.position), hp=U.head.position.clone().add(V(0,-0.11,0)); seg(U.neck,tp.clone().add(V(0,-0.07,0)),hp); }   // neck joins torso and head
   const bp=(tt%3.9)/3.9, bl=bp<0.04?Math.sin(bp/0.04*Math.PI):((tt%7.3)/7.3<0.03?Math.sin((tt%7.3)/7.3/0.03*Math.PI):0), wide=bail?1:0;
   U.eyes.forEach(function(e){ e.lid.scale.y=Math.max(0.001,bl*1.0); e.g.scale.set(1,1+0.25*wide,1+0.25*wide); });
   U.brows.forEach(function(b,k){ b.position.y=0.046+0.014*wide+0.005*(S.mode==="air"?1:0); b.rotation.x=(k?1:-1)*(0.12-0.3*wide); });
