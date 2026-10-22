@@ -34,9 +34,10 @@
   #hud .block { display: flex; flex-direction: column; gap: 2px; }
   #hud .label { font-size: 9px; color: #3f6b78; }
   #modeTag {
-    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
     font-size: 9px; letter-spacing: 0.12em; color: #4f8894;
     pointer-events: none;
+    white-space: nowrap;
   }
 
   .overlay {
@@ -111,6 +112,28 @@
     text-align: center; pointer-events: none;
     white-space: nowrap;
   }
+  #banner {
+    position: absolute; top: 36%; left: 50%;
+    transform: translate(-50%, -50%) scale(0.92);
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  #banner.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #banner .big {
+    font-size: 2.1rem;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+    color: #9fffc4;
+    text-shadow: 0 0 22px rgba(120,255,190,0.6);
+  }
+  #banner .small {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    color: #7fd8e8;
+  }
 </style>
 </head>
 <body>
@@ -123,6 +146,7 @@
     <div class="block" style="align-items:flex-end"><span class="label">PINGS USED</span><span id="pingVal">0</span></div>
   </div>
   <div id="modeTag"></div>
+  <div id="banner"><div class="big" id="bannerBig"></div><div class="small" id="bannerSmall"></div></div>
 
   <button id="pingBtn">PING<br>(SPACE)</button>
   <div id="howto">ARROWS / WASD move · SPACE or tap PING for sonar · compass points to the exit</div>
@@ -289,7 +313,10 @@
   // n is the absolute sector number. Campaign runs 1..CAMPAIGN_SECTORS; past
   // that (endless only) an extra "endlessDepth" ramp kicks in on top.
   function worldSizeForSector(n) {
-    var mult = Math.min(1 + (n - 1) * 0.22, 2.6);
+    // kept modest enough that a full oxygen tank comfortably outlasts a
+    // straight-line crossing of the biggest campaign sector (see
+    // oxygenDrainRateFor below — these two are tuned together)
+    var mult = Math.min(1 + (n - 1) * 0.15, 1.9);
     return { w: Math.round(W * 2.1 * mult), h: Math.round(H * 2.1 * mult) };
   }
   function obstacleCount(n) { return 4 + Math.floor(n * 1.1); }
@@ -298,8 +325,10 @@
   function visionRFor(n) { return Math.min(150, 90 + n * 3); }
   function endlessDepthOf(n) { return Math.max(0, n - CAMPAIGN_SECTORS); }
   function patrolSpeedMultFor(n) { return 1 + Math.min(0.5, endlessDepthOf(n) * 0.035); }
-  function oxygenDrainRateFor(n) { return Math.min(3.2, 2.3 + endlessDepthOf(n) * 0.05); }
-  function nextSectorRefill(n) { return Math.round(24 + n * 2.6); }
+  // flat 1.9/s through the whole campaign (a full 100% tank = ~52.6s, which
+  // stays comfortably ahead of even sector 6's ~34s straight-line crossing);
+  // only ramps up once you're past the campaign, into endless depth
+  function oxygenDrainRateFor(n) { return Math.min(3.2, 1.9 + endlessDepthOf(n) * 0.05); }
 
   function buildSector(n) {
     walls = []; mines = []; patrols = []; pings = [];
@@ -456,11 +485,25 @@
     ac(); // unlock audio on user gesture
   }
 
+  var bannerTimer = null;
+  function showBanner(big, small, ms) {
+    var el = document.getElementById('banner');
+    document.getElementById('bannerBig').textContent = big;
+    document.getElementById('bannerSmall').textContent = small || '';
+    el.classList.add('on');
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(function () { el.classList.remove('on'); }, ms || 1400);
+  }
+
   function nextSector() {
     sector++;
-    oxygen = Math.min(MAX_OXY, oxygen + nextSectorRefill(sector));
+    oxygen = MAX_OXY; // full resupply at each sector — each sector is its own
+                       // budget rather than a carried-over deficit that can
+                       // compound into an uncrossable later sector
     buildSector(sector);
-    document.getElementById('modeTag').textContent = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
+    var tag = mode === 'endless' ? 'ENDLESS DIVE · DEPTH ' + sector : 'CAMPAIGN · SECTOR ' + sector + ' / ' + CAMPAIGN_SECTORS;
+    document.getElementById('modeTag').textContent = tag;
+    showBanner(mode === 'endless' ? 'DEPTH ' + sector : 'SECTOR ' + sector, 'OXYGEN RESUPPLIED');
   }
 
   function endRun(won) {
@@ -597,8 +640,10 @@
       }
     }
 
-    // exit check
-    if (dist(sub.x, sub.y, exit.x, exit.y) < exit.r + sub.r) {
+    // exit check — generous radius (matches the outer pulsing glow, not just
+    // the solid ring) so it doesn't feel like nothing happened when you're
+    // clearly on top of the beacon
+    if (dist(sub.x, sub.y, exit.x, exit.y) < exit.r + sub.r + 14) {
       if (mode === 'campaign' && sector >= CAMPAIGN_SECTORS) { endRun(true); return; }
       nextSector();
       return;
