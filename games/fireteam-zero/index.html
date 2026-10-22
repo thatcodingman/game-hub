@@ -243,6 +243,13 @@
   #menu-class button { padding: 6px 10px; font-size: 12px; min-width: 92px; max-width: 168px; }
   #menu-class button small { font-size: 10px; line-height: 1.25; }
   #menu-class button.locked { opacity: 0.42; }
+  #menu-class button.catt { min-width: 168px; max-width: 232px; text-align: left; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+  #menu-class button.catt .aic { color: #cfd6ee; margin-bottom: 1px; } #menu-class button.catt.sel .aic { color: #ffd24d; }
+  #menu-class button.catt b { font-size: 12px; } #menu-class .chips { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+  #menu-class .chip { font-style: normal; font-size: 9px; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,0.07); }
+  #menu-class .chip.good { color: #7fe39a; } #menu-class .chip.bad { color: #ff8a7a; }
+  .gunprev { width: 240px; height: 130px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .gunprev canvas { width: 100%; height: 100%; display: block; }
   #menu-class input#cname { font: inherit; font-size: 14px; font-weight: bold; color: #ffd24d; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; padding: 6px 10px; width: 170px; text-align: center; text-transform: uppercase; }
   .cbar { display: flex; align-items: center; gap: 8px; margin: 6px 0; } .cbar span { width: 76px; font-size: 10px; letter-spacing: 0.08em; color: #9aa0b8; }
   .ctrk { position: relative; flex: 1; height: 6px; background: rgba(255,255,255,0.12); } .ctrk i { display: block; height: 100%; background: #ffd24d; } .ctrk u { position: absolute; top: -2px; width: 2px; height: 10px; background: #fff; }
@@ -3094,8 +3101,10 @@ function placeRig(rig, h, sc) {
   if (rig.bot) { _tB.copy(rig.E).addScaledVector(_tC.set(h[0], h[1], h[2]), 0.45 * sc); placeLimb(rig.upper, rig.shoulder, _tB); placeLimb(rig.fore, _tB, _tA); }
   else { _tB.copy(_tA).add(rig.foreOff); placeLimb(rig.fore, _tB, rig.E); _tC.copy(_tA).add(rig.cuffA); _tD.copy(_tA).add(rig.cuffB); placeLimb(rig.cuff, _tC, _tD); }
 }
+const matLaserRed = new THREE.MeshBasicMaterial({ color: 0xff2a2a }), matHotMag = new THREE.MeshStandardMaterial({ color: 0xc9561b, emissive: 0x7a2a05, roughness: 0.45, metalness: 0.3 });
 function makeGunModel(key, body, dark, accent = dark, over = null) {
   const s = over ? { ...GUN_SPECS[key], ...over } : GUN_SPECS[key], g = new THREE.Group();
+  if (s.mag && s.magX === 'ext') s.mag = [s.mag[0], s.mag[1] * 1.55, s.mag[2], s.mag[3]];
   const box = (w, h, d, x, y, z, mat = body, rx = 0) => { const m = new THREE.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); m.rotation.x = rx; m.castShadow = true; g.add(m); return m; };
   let magM = null, pumpM = null, chargeM = null, slideM = null, shellM = null;
   if (s.pistol) {
@@ -3112,7 +3121,15 @@ function makeGunModel(key, body, dark, accent = dark, over = null) {
   box(0.085, 0.11, s.len, 0, 0, -s.len / 2 + 0.08);                              // receiver
   box(s.bw, s.bw, s.barrel, 0, 0.02, -s.len + 0.08 - s.barrel / 2, dark);        // barrel
   box(0.07, 0.15, 0.075, 0, -0.11, 0.0, dark, 0.28);                             // pistol grip
-  if (s.foldStock) {                                                             // SMG: slim angled folding stock
+  if (s.stockX === 'light') {                                                    // skeleton stock: two wire rails and a small butt plate
+    const L = (s.foldStock ? s.stock * 0.8 : s.stock) + 0.02;
+    box(0.012, 0.012, L, 0.0, 0.025, 0.08 + L / 2, dark); box(0.012, 0.012, L, 0.0, -0.045, 0.08 + L / 2, dark);
+    box(0.02, 0.1, 0.012, 0, -0.01, 0.09 + L, accent);
+  } else if (s.stockX === 'heavy') {                                              // cheek-weld stock: thick block, raised comb, rubber pad
+    const L = (s.foldStock ? s.stock * 0.8 : s.stock) + 0.04;
+    box(0.075, 0.13, L, 0, -0.015, 0.08 + L / 2, dark); box(0.065, 0.035, L * 0.7, 0, 0.065, 0.08 + L * 0.45, accent);
+    box(0.08, 0.14, 0.02, 0, -0.015, 0.09 + L, dark);
+  } else if (s.foldStock) {                                                      // SMG: slim angled folding stock
     box(0.05, 0.07, s.stock * 0.8, 0, 0.0, 0.07 + s.stock / 2, dark, 0.35);
     box(0.025, 0.025, 0.02, 0.05, 0.015, 0.03, accent);                          // hi-vis selector switch
   } else {
@@ -3120,7 +3137,12 @@ function makeGunModel(key, body, dark, accent = dark, over = null) {
   }
   box(0.095, 0.08, 0.2, 0, -0.01, -s.hand);                                       // handguard (left hand)
   if (s.mag) magM = box(s.mag[0], s.mag[1], s.mag[2], 0, -0.06 - s.mag[1] / 2, -s.len * 0.45, dark, s.mag[3]);
-  if (s.box) magM = box(0.11, 0.12, 0.14, 0.02, -0.12, -0.16, dark);             // LMG box mag
+  if (s.box) { const ex = s.magX === 'ext'; magM = box(0.11, ex ? 0.19 : 0.12, ex ? 0.17 : 0.14, 0.02, ex ? -0.155 : -0.12, -0.16, dark); }   // LMG box mag
+  if (s.magX === 'fast') {                                                       // a second mag taped alongside, with the tape wrap
+    if (s.mag) { box(s.mag[0], s.mag[1], s.mag[2], 0, -0.06 - s.mag[1] / 2, -s.len * 0.45 - s.mag[2] - 0.006, dark, s.mag[3]); box(s.mag[0] + 0.006, 0.026, s.mag[2] * 2 + 0.014, 0, -0.085, -s.len * 0.45 - s.mag[2] / 2, accent, s.mag[3]); }
+    else if (s.box) { box(0.11, 0.12, 0.14, 0.02, -0.12, -0.31, dark); box(0.116, 0.026, 0.3, 0.02, -0.085, -0.235, accent); }
+  }
+  if (s.magX === 'hot' && magM) magM.material = matHotMag;
   if (!s.pump) chargeM = box(0.03, 0.028, 0.05, 0.052, 0.04, 0.04, accent);         // charging handle (pulled back at the end of a reload)
   if (s.pump) pumpM = box(0.07, 0.06, 0.16, 0, -0.05, -s.hand, body);                    // shotgun pump (wood-tone, matches body)
   if (s.grip === 'fore') box(0.035, 0.09, 0.04, 0, -0.1, -s.hand + 0.03, accent); // AR vertical foregrip
@@ -3145,12 +3167,33 @@ function makeGunModel(key, body, dark, accent = dark, over = null) {
   else if (s.optic === 'scope') { opticMeshes.push(box(0.055, 0.055, 0.22, 0, 0.1, -0.08, dark)); sightY = 0.1; }
   else if (s.optic === 'big') { opticMeshes.push(box(0.07, 0.07, 0.34, 0, 0.11, -0.1, dark), box(0.072, 0.02, 0.06, 0, 0.145, -0.1, accent)); sightY = 0.11; }
   else box(0.015, 0.02, 0.015, 0, 0.055, -s.len - s.barrel + 0.1, dark);        // bead sight (small, never blocks — stays visible through ADS)
-  if (s.supp) box(0.045, 0.045, 0.22, 0, 0.02, -s.len + 0.08 - s.barrel - 0.11, dark);          // suppressor
-  if (s.comp) box(0.06, 0.05, 0.07, 0, 0.02, -s.len + 0.08 - s.barrel - 0.035, accent);        // compensator
-  if (s.fgrip) box(0.035, 0.1, 0.04, 0, -0.075, -s.len * 0.8, dark);                              // vertical foregrip
-  if (s.laser) box(0.022, 0.022, 0.07, 0.035, -0.01, -s.len + 0.16, accent);                      // laser module
+  const mzb = -s.len + 0.08 - s.barrel; let mzExt = 0;
+  if (s.supp) {                                                                   // suppressor: long can with baffle rings
+    box(0.05, 0.05, 0.25, 0, 0.02, mzb - 0.125, dark); mzExt = 0.25;
+    for (let i = 0; i < 4; i++) box(0.058, 0.058, 0.012, 0, 0.02, mzb - 0.04 - i * 0.055, body);
+    box(0.036, 0.036, 0.012, 0, 0.02, mzb - 0.256, accent);
+  }
+  if (s.comp) {                                                                   // compensator: ported brake, slits cut across the top and sides
+    box(0.062, 0.056, 0.09, 0, 0.02, mzb - 0.045, accent); mzExt = 0.09;
+    for (let i = 0; i < 3; i++) { box(0.066, 0.012, 0.01, 0, 0.02, mzb - 0.02 - i * 0.026, dark); box(0.02, 0.06, 0.01, 0, 0.02, mzb - 0.02 - i * 0.026, dark); }
+  }
+  if (s.barrelL) {                                                                // match barrel: extended fluted barrel with a threaded cap
+    box(s.bw * 0.85, s.bw * 0.85, 0.2, 0, 0.02, mzb - 0.1, dark); mzExt = 0.2;
+    for (let i = 0; i < 3; i++) box(s.bw + 0.014, s.bw + 0.014, 0.01, 0, 0.02, mzb - 0.05 - i * 0.04, accent);
+    box(s.bw + 0.02, s.bw + 0.02, 0.025, 0, 0.02, mzb - 0.2, accent);
+  }
+  if (s.fgrip) {                                                                  // vertical foregrip: stalk with ridged bands
+    box(0.034, 0.1, 0.04, 0, -0.075, -s.len * 0.8, dark);
+    for (let i = 0; i < 3; i++) box(0.04, 0.008, 0.046, 0, -0.1 - i * 0.02, -s.len * 0.8, accent);
+  }
+  if (s.qgrip) {                                                                  // angled quickdraw grip: stubby, raked forward, with a finger stop
+    box(0.04, 0.07, 0.07, 0, -0.07, -s.len * 0.78, dark, -0.55); box(0.05, 0.012, 0.025, 0, -0.045, -s.len * 0.78 - 0.045, accent);
+  }
+  if (s.laser) {                                                                  // laser module with a live red aperture
+    box(0.03, 0.034, 0.09, 0.05, -0.02, -s.len + 0.12, dark); box(0.012, 0.012, 0.01, 0.05, -0.02, -s.len + 0.07, matLaserRed);
+  }
   if (s.pump) { shellM = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.07, 8), accent); shellM.rotation.x = Math.PI / 2; shellM.visible = false; g.add(shellM); }
-  return { group: g, muzzleZ: -s.len + 0.08 - s.barrel, sightY, hand: s.hand, opticMeshes, ...reloadParts(s.pump ? 'pump' : 'mag', [-0.005, -0.075, -s.hand], magM, pumpM, chargeM, null, shellM) };
+  return { group: g, muzzleZ: -s.len + 0.08 - s.barrel - mzExt * 0.9, sightY, hand: s.hand, opticMeshes, ...reloadParts(s.pump ? 'pump' : 'mag', [-0.005, -0.075, -s.hand], magM, pumpM, chargeM, null, shellM) };
 }
 // a box stretched between two points (forearms)
 function limb(p0, p1, t, mat) {
@@ -3217,11 +3260,11 @@ let gunKick = 0, flashT = 0;
 // Short-lived visual effects (tracers + impact sparks)
 const effects = [];
 const sparkGeo = new THREE.SphereGeometry(0.14, 8, 6);
-function addTracer(from, to) {
+function addTracer(from, to, color = 0xffe9a8, life = 0.07) {
   const geo = new THREE.BufferGeometry().setFromPoints([from.clone(), to.clone()]);
-  const mat = new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.95 });
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 });
   const line = new THREE.Line(geo, mat); line.frustumCulled = false; scene.add(line);
-  effects.push({ obj: line, life: 0.07, max: 0.07 });
+  effects.push({ obj: line, life, max: life });
 }
 function addSpark(p, color = 0xffd24d) {
   const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 });
@@ -3334,7 +3377,7 @@ function equip(s) {
   slotAmmo[slot] = ammo;
   slot = s; curKey = s ? loadout.secondary : loadout.primary; curW = s ? LW.secondary : LW.primary;
   ammo = slotAmmo[slot]; reloadT = 0; spray = 0; adsT = Math.min(adsT, 0.3);
-  swapT = SWAP_TIME * (hasPerk('hands') ? 0.65 : 1); fireCooldown = Math.max(fireCooldown, 0.1);
+  swapT = SWAP_TIME * (hasPerk('hands') ? 0.65 : 1) * (CL && CL.att.grip === 'quick' ? 0.7 : 1); fireCooldown = Math.max(fireCooldown, 0.1);
   swapPending = true; playTone(300, 0.05, 0.05, 'square');   // model swaps at the midpoint (see updateViewmodel)
 }
 function resetWeapons() {
@@ -3357,6 +3400,7 @@ function startReload() { if (reloadT <= 0 && swapT <= 0 && ammo < curW.mag && !p
 function playerSpread() {
   const w = curW, hv = Math.hypot(player.vel.x, player.vel.z), a = adsT;
   const base = w.adsSpread !== undefined ? w.base + (w.adsSpread - w.base) * a : w.base * (1 - 0.5 * a);
+  if (w.firstShot && spray < 0.3 && !reloadT) return 0.0015 + (player.onGround ? 0 : 0.008) + Math.min(1, hv / SPEED) * w.move * 0.35 * (1 - 0.4 * a);   // Match Barrel: the opening shot is dead accurate
   return base + Math.min(1, hv / SPEED) * w.move * (1 - 0.4 * a) + (player.onGround ? 0 : 0.008) + (player.isSliding ? 0.01 : 0) + Math.min(spray, 10) * w.sprayK * (1 - 0.3 * a);
 }
 
@@ -3383,7 +3427,7 @@ function fireShot() {
     const ah = match.mode === 'tdm' && match.started ? actorHit(player, camera.position, _dir, wallT) : null;
     if (hit && !ah) { const hc = colliders.find(c => c.mesh === hit.object); if (hc && hc.glass) { shatterGlass(hc); crosshairEl.classList.add('hit'); hitT = 0.08; } }
     const end = camera.position.clone().addScaledVector(_dir, ah ? ah.t : wallT);
-    if (!w.quiet) addTracer(_v, end);
+    if (!w.quiet) addTracer(_v, end, w.tracer || 0xffe9a8, w.tracerLife || 0.07);
     if (ah) addSpark(end, 0xff3b3b); else if (hit) addSpark(hit.point);
     if (ah) {
       const e = dmgTo.get(ah.actor) || { dmg: 0, head: false };
@@ -3395,10 +3439,10 @@ function fireShot() {
     }
   }
   stats.shots++;
-  gunKick = 1; flashT = w.quiet ? 0.015 : 0.05; playShot(w.quiet ? 0.4 : 1, 0, curKey);
+  gunKick = 1; flashT = (w.quiet ? 0.015 : 0.05) * (w.flashK || 1); vmFlash.color.setHex(w.flashCol || 0xffc77a); flashLight.color.setHex(w.flashCol || 0xffd9a0); playShot(w.quiet ? 0.4 : 1, 0, curKey);
   spray += 1; lastFireReal = realT;
   const rk = w.recoil * (adsT > 0.5 ? 0.75 : 1);
-  recoilPitch = Math.min(0.15, recoilPitch + rk * (0.8 + Math.random() * 0.4)); recoilYaw += (Math.random() - 0.5) * rk * 0.5;
+  recoilPitch = Math.min(0.15, recoilPitch + rk * (0.8 + Math.random() * 0.4)); recoilYaw += (Math.random() - 0.5) * rk * 0.5 * (w.yawK || 1);
   player.spawnProt = 0; player.lastShotT = gameTime;
   heardShot(player, !!w.quiet);
   for (const [a, e] of dmgTo) {
@@ -3418,6 +3462,7 @@ function tryFire() {
 
 const HIP = new THREE.Vector3(0.15, -0.16, -0.52), VM_YAW = 0.05;   // hip-fire spot (slightly angled in toward the crosshair)
 const scopeEl = document.getElementById('scope');
+const laserDot = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff3030, depthTest: false, transparent: true, opacity: 0.95 })); laserDot.renderOrder = 999; laserDot.visible = false; scene.add(laserDot);
 function updateViewmodel(dt) {
   realT += dt;
   const w = curW;
@@ -3429,7 +3474,7 @@ function updateViewmodel(dt) {
   gunKick = Math.max(0, gunKick - dt * 9);
   const hv = player.onGround ? Math.hypot(player.vel.x, player.vel.z) : 0;
   bobPhase += hv * dt * 1.5;
-  const bob = Math.min(1, hv / SPEED) * (1 - 0.85 * e);
+  const bob = Math.min(1, hv / SPEED) * (1 - 0.85 * e) * (w.bobK || 1);
   const hy = HIP.y + (vmInfo.pistol ? 0.035 : 0), hx = HIP.x - (vmInfo.pistol ? 0.03 : 0);
   let x = hx * (1 - e) + Math.sin(bobPhase) * 0.012 * bob;
   let y = hy + (-vmInfo.sightY - hy) * e - Math.abs(Math.cos(bobPhase)) * 0.012 * bob;
@@ -3457,10 +3502,19 @@ function updateViewmodel(dt) {
   // Hide the optic's solid housing as soon as aiming starts — otherwise it rides up right in front of
   // the camera and blocks the shot. The CSS reticle/scope overlay below is the real "see-through" sight.
   for (const m of vmInfo.opticMeshes) m.visible = adsT <= 0.02;
+  // Laser Sight: a red dot where the gun points (hip only; ADS uses the real sight)
+  const lzOn = !!(w.laser && slot === 0 && adsT < 0.4 && !player.dead && !blockerVisible() && swapT <= 0);
+  if (lzOn) {
+    camera.getWorldDirection(_dir);
+    const t = Math.min(60, rayWorld(camera.position, _dir, 60));
+    laserDot.position.copy(camera.position).addScaledVector(_dir, Math.max(0.5, t - 0.03));
+    laserDot.scale.setScalar(0.5 + t * 0.045);
+  }
+  laserDot.visible = lzOn;
   flashT = Math.max(0, flashT - dt);
   flashLight.intensity = flashT > 0 ? 3 : 0; vmFlash.intensity = flashT > 0 ? 3 : 0;
   vmFlash.position.set(x, y + 0.04, z + vmInfo.muzzleZ);
-  recoilPitch -= recoilPitch * Math.min(1, dt * 4); recoilYaw -= recoilYaw * Math.min(1, dt * 4);
+  recoilPitch -= recoilPitch * Math.min(1, dt * 4 * (w.recov || 1)); recoilYaw -= recoilYaw * Math.min(1, dt * 4 * (w.recov || 1));
   if (realT - lastFireReal > 0.15 || !mouseHeld) spray = Math.max(0, spray - dt * 12);
   if (reloadT > 0) { reloadT -= dt * (gameTime < adrenUntil ? 1.4 : 1); if (reloadT <= 0) { reloadT = 0; ammo = curW.mag; } }
   const fov = 75 + (w.adsFov - 75) * e;
@@ -3561,7 +3615,7 @@ function renderMenu() {
     const open = slotUnlocked(i);
     return `<button data-cslot="${i}" class="${activeSlot() === i ? 'sel' : ''} ${open ? '' : 'locked'}">${open ? escapeHtml(c.name) : '🔒 CLASS ' + (i + 1)}<small>${open ? WEAPONS[sanitizeClass(c).primary].name : CLASS_SLOT_UNLOCK[i] + ' kills (' + Math.min(profile.kills, CLASS_SLOT_UNLOCK[i]) + ')'}</small></button>`;
   }).join('') + `<button data-cview="1" class="sel">✎ CREATE / EDIT CLASS</button>` + (pendingClass ? '<div class="cnote">class change applies on your next spawn</div>' : '');
-  if (classView && !showSettings) document.getElementById('menu-class').innerHTML = classPanelHTML();
+  if (classView && !showSettings) { document.getElementById('menu-class').innerHTML = classPanelHTML(); gunPreviewMount(); }
   document.getElementById('camos').innerHTML = 'CAMO: ' + Object.entries(CAMOS).map(([k, c]) => {
     const has = profile.camos.includes(k), req = c.phase ? 'Phase ' + ROMAN[c.phase] : c.level ? 'Level ' + c.level : '';
     return `<button data-camo="${k}" class="${camo === k ? 'sel' : ''} ${has ? '' : 'locked'}" title="${c.name}${has ? '' : ' — unlocks at ' + req}" style="background:#${c.color.toString(16).padStart(6, '0')}"></button>`;
@@ -3576,6 +3630,62 @@ function renderMenu() {
 }
 
 // ---- Create-a-Class screen ----
+
+// ---- attachment cards: little icon, signature text and +/- stat chips; live 3D gun preview ----
+const ATT_ICONS = {
+  comp:   '<rect x="4" y="8" width="16" height="4" rx="1"/><rect x="20" y="6" width="11" height="8" rx="1" fill="currentColor"/><path d="M23 6v8M27 6v8" stroke="#10131c"/>',
+  supp:   '<rect x="2" y="8" width="8" height="4"/><rect x="10" y="5" width="24" height="10" rx="2" fill="currentColor"/><path d="M15 5v10M20 5v10M25 5v10M30 5v10" stroke="#10131c"/>',
+  barrel: '<rect x="2" y="9" width="14" height="3"/><rect x="16" y="8" width="16" height="4" fill="currentColor"/><rect x="31" y="6" width="4" height="8" fill="currentColor"/>',
+  fore:   '<rect x="2" y="4" width="32" height="5"/><rect x="14" y="9" width="7" height="12" rx="1" fill="currentColor"/><path d="M14 13h7M14 16h7" stroke="#10131c"/>',
+  laser:  '<rect x="2" y="5" width="22" height="5"/><rect x="12" y="10" width="11" height="6" rx="1" fill="currentColor"/><circle cx="31" cy="13" r="2.4" fill="#ff3030" stroke="none"/><path d="M23 13h5" stroke="#ff3030"/>',
+  quick:  '<rect x="2" y="4" width="32" height="5"/><path d="M10 9l12 0l-5 10z" fill="currentColor"/><rect x="22" y="9" width="6" height="2" fill="currentColor"/>',
+  ext:    '<rect x="4" y="3" width="30" height="5"/><rect x="14" y="8" width="9" height="19" rx="1" fill="currentColor"/>',
+  fast:   '<rect x="4" y="3" width="30" height="5"/><rect x="10" y="8" width="8" height="14" rx="1" fill="currentColor"/><rect x="19" y="8" width="8" height="14" rx="1" fill="currentColor"/><rect x="9" y="13" width="19" height="3" fill="#ffd24d" stroke="none"/>',
+  hot:    '<rect x="4" y="3" width="30" height="5"/><rect x="14" y="8" width="9" height="15" rx="1" fill="#ff7a30" stroke="#ff7a30"/><path d="M26 6l8 0" stroke="#ff7a30" stroke-width="2"/>',
+  light:  '<path d="M3 5h26M3 14h26M3 5v9M29 4v11" /><rect x="29" y="3" width="4" height="13" fill="currentColor"/>',
+  heavy:  '<rect x="3" y="3" width="26" height="15" rx="2" fill="currentColor"/><rect x="29" y="2" width="5" height="17" fill="currentColor"/><rect x="6" y="1" width="20" height="3" fill="#ffd24d" stroke="none"/>',
+};
+const CHIP_LABELS = { recoil: ['RECOIL', -1], sprayK: ['SPRAY', -1], adsTime: ['AIM TIME', -1], dmg: ['DAMAGE', 1], rng: ['RANGE', 1], mag: ['AMMO', 1], reload: ['RELOAD', -1], speed: ['SPEED', 1], base: ['HIP SPREAD', -1], move: ['MOVE SPREAD', -1] };
+function attChips(m) {
+  return Object.entries(m).map(([k, v]) => {
+    const L = CHIP_LABELS[k]; if (!L) return '';
+    const pct = Math.round((v - 1) * 100); if (!pct) return '';
+    const good = (pct > 0) === (L[1] > 0);
+    return `<i class="chip ${good ? 'good' : 'bad'}">${L[0]} ${pct > 0 ? '+' : '−'}${Math.abs(pct)}%</i>`;
+  }).join('');
+}
+const gunPrev = { canvas: null, renderer: null, scene: null, cam: null, root: null, raf: 0 };
+function gunPreviewMount() {
+  const box = document.getElementById('gunprev');
+  if (!box) { gunPrev.raf = 0; return; }
+  try {
+    if (!gunPrev.renderer) {
+      gunPrev.canvas = document.createElement('canvas');
+      gunPrev.renderer = new THREE.WebGLRenderer({ canvas: gunPrev.canvas, alpha: true, antialias: true });
+      gunPrev.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); gunPrev.renderer.setSize(240, 130, false);
+      gunPrev.scene = new THREE.Scene(); gunPrev.cam = new THREE.PerspectiveCamera(28, 240 / 130, 0.05, 20);
+      gunPrev.scene.add(new THREE.HemisphereLight(0xffffff, 0x50505e, 2.2));
+      const dl = new THREE.DirectionalLight(0xfff4e0, 1.8); dl.position.set(0.6, 1, 0.8); gunPrev.scene.add(dl);
+      gunPrev.root = new THREE.Group(); gunPrev.scene.add(gunPrev.root);
+    }
+    box.appendChild(gunPrev.canvas);
+    while (gunPrev.root.children.length) gunPrev.root.remove(gunPrev.root.children[0]);
+    const eff = sanitizeClass(profile.classes[activeSlot()]), bm = botGunMats(eff.primary);
+    const gm = makeGunModel(eff.primary, bm.body, bm.dark, bm.accent, visualFor(eff));
+    const bb = new THREE.Box3().setFromObject(gm.group), c = bb.getCenter(new THREE.Vector3()), sz = bb.getSize(new THREE.Vector3());
+    gm.group.position.sub(c); gunPrev.root.add(gm.group);
+    const span = Math.max(sz.z, sz.y * 1.9, 0.5); gunPrev.cam.position.set(0, 0.05, span * 1.5); gunPrev.cam.lookAt(0, 0, 0);
+    if (!gunPrev.raf) {
+      const tick = () => {
+        if (!document.getElementById('gunprev') || !classView) { gunPrev.raf = 0; return; }
+        gunPrev.root.rotation.y = Math.PI / 2 + Math.sin(performance.now() / 1400) * 0.75;
+        gunPrev.renderer.render(gunPrev.scene, gunPrev.cam);
+        gunPrev.raf = requestAnimationFrame(tick);
+      };
+      gunPrev.raf = requestAnimationFrame(tick);
+    }
+  } catch (err) { box.textContent = ''; }
+}
 function classPanelHTML() {
   const sel = activeSlot(), c = profile.classes[sel], eff = sanitizeClass(c);
   const B = (f, v, name, sub, need, on) => { const lk = need > 0 && !unlockedBy(need); return `<button data-cf="${f}" data-cv="${v}" class="${on ? 'sel' : ''} ${lk ? 'locked' : ''}" title="${escapeHtml(sub)}">${name}<small>${lk ? '🔒 ' + need + ' kills (' + Math.min(profile.kills, need) + ')' : escapeHtml(sub)}</small></button>`; };
@@ -3584,7 +3694,8 @@ function classPanelHTML() {
   const slots = profile.classes.map((k, i) => { const open = slotUnlocked(i); return `<button data-cslot="${i}" class="${sel === i ? 'sel' : ''} ${open ? '' : 'locked'}">${open ? escapeHtml(k.name) : '🔒 CLASS ' + (i + 1)}<small>${open ? WEAPONS[sanitizeClass(k).primary].name : CLASS_SLOT_UNLOCK[i] + ' kills (' + Math.min(profile.kills, CLASS_SLOT_UNLOCK[i]) + ')'}</small></button>`; }).join('');
   const pw = deriveWeapon(eff.primary, eff, true), bw = WEAPONS[eff.primary];
   const bars = weaponBars(pw).map(([n, v], i) => `<div class="cbar"><span>${n}</span><div class="ctrk"><i style="width:${Math.round(v * 100)}%"></i><u style="left:${Math.round(weaponBars(bw)[i][1] * 100)}%"></u></div></div>`).join('');
-  const att = ATTACH_GROUPS.map(g => sec(ATTACH[g].label, B('att.' + g, '', 'None', 'stock parts', 0, !c.att[g]) + Object.entries(ATTACH[g].list).map(([k, a]) => B('att.' + g, k, a.name, a.desc, a.unlock, c.att[g] === k)).join(''))).join('');
+  const A = (g, k, a, on) => { const lk = a.unlock > 0 && !unlockedBy(a.unlock); return `<button data-cf="att.${g}" data-cv="${k}" class="catt ${on ? 'sel' : ''} ${lk ? 'locked' : ''}" title="${escapeHtml(a.desc)}"><svg class="aic" viewBox="0 0 36 28" width="36" height="28" fill="none" stroke="currentColor" stroke-width="1.6">${ATT_ICONS[a.ic] || ''}</svg><b>${a.name}</b><small>${lk ? '🔒 ' + a.unlock + ' kills (' + Math.min(profile.kills, a.unlock) + ')' : escapeHtml(a.desc)}</small>${lk ? '' : '<span class="chips">' + attChips(a.m) + '</span>'}</button>`; };
+  const att = ATTACH_GROUPS.map(g => sec(ATTACH[g].label, B('att.' + g, '', 'None', 'stock parts', 0, !c.att[g]) + Object.entries(ATTACH[g].list).map(([k, a]) => A(g, k, a, c.att[g] === k)).join(''))).join('');
   const perks = PERKS.map((t, i) => sec('PERK ' + (i + 1) + ' · ' + t.tier, Object.entries(t.list).map(([k, pk]) => B('perk.' + i, k, pk.name, pk.desc, pk.unlock, c.perks[i] === k)).join(''))).join('');
   return `<div class="clabel" style="text-align:center">CREATE A CLASS · ${profile.kills} kills · more slots, attachments and perks unlock as you play</div>
     <div class="cslots">${slots}</div>
@@ -3597,7 +3708,7 @@ function classPanelHTML() {
       <div class="cgrid2">${att}</div><div class="cgrid2">${perks}</div>
       <div class="cgrid2">${sec('LETHAL · key G', Object.entries(LETHALS).map(([k, e]) => B('lethal', k, e.name, e.desc, e.unlock, c.lethal === k)).join(''))}
       ${sec('TACTICAL · key X', Object.entries(TACTICALS).map(([k, e]) => B('tactical', k, e.name, e.desc, e.unlock, c.tactical === k)).join(''))}</div>
-    </div><div class="cstat"><div class="clabel">${WEAPONS[eff.primary].name} · AS BUILT</div>${bars}<div style="font-size:10px;color:#8f9bbd">white tick = stock gun</div>
+    </div><div class="cstat"><div id="gunprev" class="gunprev"></div><div class="clabel">${WEAPONS[eff.primary].name} · AS BUILT</div>${bars}<div style="font-size:10px;color:#8f9bbd">white tick = stock gun</div>
       <div class="clabel" style="margin-top:12px">LOADOUT</div><div style="line-height:1.6">${pw.mag} rounds · ${(60 / pw.interval).toFixed(0)} RPM<br>${WEAPONS[eff.secondary].name} sidearm<br>${eff.perks.map((k, i) => PERKS[i].list[k].name).join(' · ')}<br>${LETHALS[eff.lethal].name} + ${TACTICALS[eff.tactical].name}</div></div></div>`;
 }
 function setClassField(f, v) {
@@ -4689,20 +4800,31 @@ const OPTICS = {
 // m: multipliers on the weapon's stats; rng scales damage range
 const ATTACH = {
   muzzle: { label: 'MUZZLE', list: {
-    comp:   { name: 'Compensator',  desc: '-25% recoil, -15% spray · slower aim', unlock: 10,  m: { recoil: 0.75, sprayK: 0.85, adsTime: 1.06 } },
-    supp:   { name: 'Suppressor',   desc: 'quiet, no tracer · -5% dmg, -12% range', unlock: 60, m: { dmg: 0.95, rng: 0.88, recoil: 0.92 }, quiet: true },
-    barrel: { name: 'Long Barrel',  desc: '+6% dmg, +15% range · more recoil, slower aim', unlock: 200, m: { dmg: 1.06, rng: 1.15, recoil: 1.1, adsTime: 1.1 } } } },
+    comp:   { name: 'Ported Compensator', desc: 'Vented brake. Kills the sideways kick, dampens flash · slower to aim', unlock: 10, ic: 'comp',
+              m: { recoil: 0.75, sprayK: 0.85, adsTime: 1.06 }, fx: { yawK: 0.45, flashK: 0.6 } },
+    supp:   { name: 'Baffled Suppressor', desc: 'Silent: no flash, no tracer, only heard from 12 m · weaker, shorter range', unlock: 60, ic: 'supp',
+              m: { dmg: 0.95, rng: 0.88, recoil: 0.92 }, quiet: true },
+    barrel: { name: 'Match Barrel', desc: 'Marksman: the first shot after a pause is dead accurate · hits harder and farther, kicks more', unlock: 200, ic: 'barrel',
+              m: { dmg: 1.06, rng: 1.15, recoil: 1.1, adsTime: 1.1 }, fx: { firstShot: true } } } },
   grip: { label: 'GRIP', list: {
-    fore:   { name: 'Foregrip',     desc: '-25% spray, -10% recoil · slower aim', unlock: 20,  m: { sprayK: 0.75, recoil: 0.9, adsTime: 1.06 } },
-    laser:  { name: 'Laser Sight',  desc: '-30% hip-fire spread', unlock: 90, m: { base: 0.75, move: 0.65 } },
-    quick:  { name: 'Quickdraw Grip', desc: '-20% aim time · +10% spray', unlock: 160, m: { adsTime: 0.8, sprayK: 1.1 } } } },
+    fore:   { name: 'Vertical Foregrip', desc: 'Planted hold: less spray, steadier gun while moving, tamer sideways kick · slower to aim', unlock: 20, ic: 'fore',
+              m: { sprayK: 0.75, recoil: 0.9, adsTime: 1.06 }, fx: { yawK: 0.8, bobK: 0.45 } },
+    laser:  { name: 'Laser Sight', desc: 'Red dot on target, tight hip-fire · bots spot you from 13% farther while not aiming', unlock: 90, ic: 'laser',
+              m: { base: 0.75, move: 0.65 }, fx: { laser: true } },
+    quick:  { name: 'Angled Quickdraw Grip', desc: 'Stubby angled grip: fast aim, fast weapon swap · looser spray', unlock: 160, ic: 'quick',
+              m: { adsTime: 0.8, sprayK: 1.1 }, fx: { swapK: 0.7 } } } },
   mag: { label: 'MAGAZINE', list: {
-    ext:    { name: 'Extended Mag', desc: '+40% ammo · +12% reload time', unlock: 30,  m: { mag: 1.4, reload: 1.12 } },
-    fast:   { name: 'Fast Mags',    desc: '-28% reload time · -10% ammo', unlock: 120, m: { reload: 0.72, mag: 0.9 } },
-    hot:    { name: 'High Velocity', desc: '+8% dmg · +10% recoil, -10% ammo', unlock: 220, m: { dmg: 1.08, recoil: 1.1, mag: 0.9 } } } },
+    ext:    { name: 'Extended Mag', desc: 'Long mag: +40% ammo · +12% reload, a touch heavier', unlock: 30, ic: 'ext',
+              m: { mag: 1.4, reload: 1.12, speed: 0.98 } },
+    fast:   { name: 'Taped Dual Mags', desc: 'Twin mags taped together: much faster reload · -10% ammo', unlock: 120, ic: 'fast',
+              m: { reload: 0.72, mag: 0.9 } },
+    hot:    { name: 'Hot-Loaded Rounds', desc: 'Orange tracers, harder hits · more recoil, -10% ammo', unlock: 220, ic: 'hot',
+              m: { dmg: 1.08, recoil: 1.1, mag: 0.9 }, fx: { tracer: 0xff7a30, tracerLife: 0.12, flashCol: 0xff8a4a } } } },
   stock: { label: 'STOCK', list: {
-    light:  { name: 'Light Stock',  desc: '+4% move speed, faster aim · looser hip-fire', unlock: 50, m: { speed: 1.04, adsTime: 0.92, base: 1.25 } },
-    heavy:  { name: 'Heavy Stock',  desc: '-20% recoil · -4% move speed, slower aim', unlock: 140, m: { recoil: 0.8, speed: 0.96, adsTime: 1.1 } } } },
+    light:  { name: 'Skeleton Stock', desc: 'Wire frame: faster, snappier aim · looser hip-fire', unlock: 50, ic: 'light',
+              m: { speed: 1.04, adsTime: 0.92, base: 1.25 } },
+    heavy:  { name: 'Cheek-Weld Stock', desc: 'Solid block: less recoil that settles 70% faster · slower and clumsier', unlock: 140, ic: 'heavy',
+              m: { recoil: 0.8, speed: 0.96, adsTime: 1.1 }, fx: { recov: 1.7 } } } },
 };
 const ATTACH_GROUPS = Object.keys(ATTACH);
 const PERKS = [
@@ -4790,7 +4912,7 @@ function deriveWeapon(key, cl, primary) {
   if (primary) {
     const o = OPTICS[cl.optic];
     if (o && o.scopeKey) { w.scopeKey = o.scopeKey; w.adsFov = o.adsFov; w.adsTime *= o.adsMul; }
-    for (const g of ATTACH_GROUPS) { const a = ATTACH[g].list[cl.att[g]]; if (a) { applyMods(w, a.m); if (a.quiet) w.quiet = true; } }
+    for (const g of ATTACH_GROUPS) { const a = ATTACH[g].list[cl.att[g]]; if (a) { applyMods(w, a.m); if (a.quiet) w.quiet = true; if (a.fx) Object.assign(w, a.fx); } }
   }
   if (cl.perks.includes('hands')) w.reload *= 0.75;
   if (cl.perks.includes('steady')) { w.base *= 0.75; w.move *= 0.75; }
@@ -4808,15 +4930,18 @@ function buildLoadout() {
   profile.primary = CL.primary;
 }
 // what the held primary should look like (optic / muzzle / grip) — fed to makeGunModel
+function visualFor(cl) {
+  const v = {}, o = OPTICS[cl.optic];
+  if (o && o.optic) v.optic = o.optic;
+  const m = cl.att.muzzle, g = cl.att.grip, mg = cl.att.mag, st = cl.att.stock;
+  if (m === 'supp') v.supp = true; if (m === 'comp') v.comp = true; if (m === 'barrel') v.barrelL = true;
+  if (g === 'fore') v.fgrip = true; if (g === 'laser') v.laser = true; if (g === 'quick') v.qgrip = true;
+  if (mg) v.magX = mg; if (st) v.stockX = st;
+  return v;
+}
 function classVisual() {
   if (!CL || foundGun) return null;
-  const v = {}, o = OPTICS[CL.optic];
-  if (o && o.optic) v.optic = o.optic;
-  if (CL.att.muzzle === 'supp') v.supp = true;
-  if (CL.att.muzzle === 'comp') v.comp = true;
-  if (CL.att.grip === 'fore') v.fgrip = true;
-  if (CL.att.grip === 'laser') v.laser = true;
-  return v;
+  return visualFor(CL);
 }
 // six bars for the class screen, 0..1
 function weaponBars(w) {
@@ -5778,7 +5903,7 @@ function perceive(b, D) {
   for (const e of activeActors()) {
     if (e.team === b.team || e.dead || e.ghost) continue;
     const dx = e.pos.x - b.pos.x, dz = e.pos.z - b.pos.z, d = Math.hypot(dx, dz, e.pos.y - b.pos.y);
-    const dEff = e === player && hasPerk('ghost') ? d * 1.35 : d;                  // Ghost: you are harder to pick out
+    const dEff = (e === player && hasPerk('ghost') ? d * 1.35 : d) * (e === player && curW.laser && slot === 0 && adsT < 0.4 ? 0.87 : 1);                  // Ghost: you are harder to pick out
     if (dEff > 50 || (gameTime < b.ignoreUntil && d > 18) || (gameTime < b.flashedUntil && d > 6)) continue;   // past ~50m nobody picks fights; a blinded bot only sees what's right in front of it
     const inView = Math.abs(angDiff(b.yaw, yawTo(dx, dz))) < (D.fov * Math.PI / 360);
     const aware = inView || d < 5 || (b.lastAttacker === e && gameTime - b.lastHurt < 2) || (gameTime - e.lastShotT < 0.3 && d < 25);
