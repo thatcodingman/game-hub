@@ -76,7 +76,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v60 · LEAN BUILD</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v62 · PUSH & LEAN</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -545,8 +545,13 @@ function updatePeople(dt,time){
     p.arms[0].rotation.x=cheer?-2.7+Math.sin(ph*9)*0.35:Math.sin(ph*1.1)*0.05; p.arms[0].rotation.z=cheer?0.25:0.04;
     if(!p.phone){ p.arms[1].rotation.x=cheer?-2.7+Math.sin(ph*9+1.5)*0.35:Math.sin(ph*1.1+1)*0.05; p.arms[1].rotation.z=cheer?-0.25:-0.04; }
     p.head.rotation.y=Math.sin(ph*0.5)*0.15; }
-  for(let i=0;i<NPCS.length;i++){ const n=NPCS[i]; n.t+=dt*n.speed; const a=n.path(n.t), b=n.path(n.t+0.05), dx=b[0]-a[0], dz=b[1]-a[1];
+  for(let i=0;i<NPCS.length;i++){ const n=NPCS[i]; const prevHead=n.head;
+    const turnRate=n._turnRate||0, spdMul=1-clamp(Math.abs(turnRate)*0.5,0,0.4);   // slow down through tighter turns, like a real skater scrubbing speed
+    n.pushPh=(n.pushPh||0)+dt*2.3*spdMul; const pushAmt=Math.max(0,Math.sin(n.pushPh));   // push-glide cadence
+    n.t+=dt*n.speed*spdMul*(1+0.12*pushAmt);
+    const a=n.path(n.t), b=n.path(n.t+0.05), dx=b[0]-a[0], dz=b[1]-a[1];
     if(dx*dx+dz*dz>1e-8){ const hh=Math.atan2(dx,dz); n.head+=angDiff(n.head,hh)*Math.min(1,dt*7); }
+    n._turnRate=angDiff(prevHead,n.head)/Math.max(dt,1e-4);
     n.nextHop-=dt; if(n.nextHop<0&&n.hop<=0){ n.hop=0.001; n.nextHop=(3+R()*5)/n.skill;
       const r=R(); n.trick=n.skill<0.8?(r<0.65?0:1):n.skill<1.15?(r<0.4?0:r<0.72?1:2):(r<0.25?0:r<0.52?1:r<0.8?2:3); }
     const dur=0.46+n.skill*0.13; let hy=0;
@@ -557,15 +562,16 @@ function updatePeople(dt,time){
         n.board.rotation.y=(n.trick===2||n.trick===3)?u*TAU:0;
         n.board.rotation.x=peak*-0.15;
         const grab=peak*Math.min(1,n.skill);   // compact mid-air tuck: arms pull IN toward the body and reach down/forward, not out to the sides
-        n.pp.arms[0].rotation.x=0.55*grab; n.pp.arms[1].rotation.x=0.55*grab;
-        n.pp.arms[0].rotation.z=0.5-grab*0.4; n.pp.arms[1].rotation.z=-0.5+grab*0.4;
+        n.pp.arms[0].rotation.x=0.4*grab; n.pp.arms[1].rotation.x=0.4*grab;
+        n.pp.arms[0].rotation.z=0.5-grab*0.2; n.pp.arms[1].rotation.z=-0.5+grab*0.2;
         n.pp.legs[0].rotation.x=-0.22*grab; n.pp.legs[1].rotation.x=-0.22*grab; n.pp.torso.rotation.x=0.14*grab; } }
     else n.board.rotation.x=0;
     const fx=Math.sin(n.head), fz=Math.cos(n.head), h0=hAt(a[0],a[1]), h1=hAt(a[0]+fx*0.35,a[1]+fz*0.35), h2=hAt(a[0]-fx*0.35,a[1]-fz*0.35);
     n.root.position.set(a[0],h0+hy,a[1]); n.root.rotation.y=n.head; n.root.rotation.x=-Math.atan2(h1-h2,0.7);
-    const crouch=0.5+0.5*Math.sin(time*2.3+i); n.body.scale.y=(0.97-0.04*crouch-(n.hop>0?0.03:0)); n.pp.torso.rotation.z=Math.sin(time*1.7+i)*0.05;
-    if(n.hop<=0){ n.pp.legs[0].rotation.x=0; n.pp.legs[1].rotation.x=0; n.pp.torso.rotation.x=0;
-      n.pp.arms[0].rotation.z=0.5+Math.sin(time*2+i)*0.12; n.pp.arms[1].rotation.z=-0.5-Math.sin(time*2.2+i)*0.12; n.pp.arms[0].rotation.x=0.3*Math.sin(time*1.4+i); n.pp.arms[1].rotation.x=-0.3*Math.sin(time*1.4+i); } }
+    n.root.rotation.z=lerp(n.root.rotation.z||0,clamp(-n._turnRate*0.16,-0.3,0.3)*(n.hop>0?0.3:1),Math.min(1,dt*6));   // bank/lean into turns
+    const crouch=0.5+0.5*Math.sin(time*2.3+i); n.body.scale.y=(0.97-0.04*crouch-(n.hop>0?0.03:0)-0.025*pushAmt); n.pp.torso.rotation.z=Math.sin(time*1.7+i)*0.05;
+    if(n.hop<=0){ n.pp.legs[1].rotation.x=-0.55*pushAmt; n.pp.legs[0].rotation.x=0.14*pushAmt; n.pp.torso.rotation.x=0.1*pushAmt;   // back leg kicks, front leg stays planted — a real push stroke instead of a static glide
+      n.pp.arms[0].rotation.z=0.5+Math.sin(time*2+i)*0.12; n.pp.arms[1].rotation.z=-0.5-Math.sin(time*2.2+i)*0.12; n.pp.arms[0].rotation.x=0.3*Math.sin(time*1.4+i)-0.3*pushAmt; n.pp.arms[1].rotation.x=-0.3*Math.sin(time*1.4+i)+0.3*pushAmt; } }
 }
 
 /* ---------- pulling the park together: one material family, zones, logo, planter edges, gate, lights, bunting, sponsors ---------- */
