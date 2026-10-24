@@ -76,7 +76,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v66 · FENCE + THRESHOLD FIX</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v67 · CAM + REVERSE + POSE</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -986,7 +986,8 @@ function stepSkater(dt,inp){
   if((canPush&&S.glideT<=0)||S.pushPhase>0){ S.pushPhase+=dt/(0.819-0.19*clamp(S.spd/14,0,1)); if(S.pushPhase>=1){ S.pushPhase=0; S.glideT=canPush?0.9*clamp((S.spd-7)/9,0,1):0; } }
     if(S.pushPhase>0&&(inp.brake||inp.jump)) S.pushPhase=0;
     if(S.pushPhase>=0.12&&S.pushPhase<0.88) S.spd+=GAIN.push*1.9*(1+0.9*clamp(1-S.spd/6,0,1))*Math.sin(Math.PI*(S.pushPhase-0.12)/0.76)*1.57*clamp(1-S.spd/GAIN.maxPush,0,1)*dt;   // smooth push: force builds and fades through the kick instead of a sudden jolt   // launch buff: the first kicks from a standstill hit up to 2x as hard
-    S.braking=!!inp.brake&&S.spd>1.5; if(inp.brake) S.spd-=Math.sign(S.spd||1)*11*dt*(Math.abs(S.spd)>0.3?1:0);
+    S.braking=!!inp.brake&&S.spd>1.5;
+    if(inp.brake){ if(S.spd>0.3) S.spd=Math.max(0,S.spd-11*dt); else if(!inp.push) S.spd=Math.max(S.spd-5.5*dt,-6); }   // once you're stopped (or already slow), holding brake rolls you backward instead of just sitting at zero
     S.spd-=S.spd*0.035*dt+Math.sign(S.spd)*0.14*dt;
     const sl=slopeBack(x,z,Math.sin(S.heading)*Math.sign(S.spd||1),Math.cos(S.heading)*Math.sign(S.spd||1)), slc=clamp(sl,-6,6); S.lastSl=slc; const dsl=(slc-S.slPrev)/dt; S.slPrev=slc; S.pump=damp(S.pump,clamp(dsl*0.1,-1,1),10,dt); if(S.pump<-0.05&&slc>0.3) S.spd+=3.2*(-S.pump)*dt; S.slPeak=Math.max(slc,(S.slPeak||0)*Math.exp(-dt/0.12));
     S.spd-=G*slc/Math.sqrt(1+slc*slc)*0.9*dt; if(slc>1.2) S.spd-=S.spd*0.45*dt*clamp((slc-1.2)/3,0,1);
@@ -994,9 +995,9 @@ function stepSkater(dt,inp){
     const hsp=S.spd/Math.sqrt(1+slc*slc), nx=x+Math.sin(S.heading)*hsp*dt, nz=z+Math.cos(S.heading)*hsp*dt, hg=hAt(nx,nz);
     if(hg-S.y>0.45){ // vertical obstacle
       if(Math.abs(S.spd)>7){ S.vel.set(Math.sin(S.heading)*S.spd,0,Math.cos(S.heading)*S.spd); bail("CRASH"); S.vel.multiplyScalar(-0.15); return; }
-      S.spd=-S.spd*0.25;
+      S.spd=-S.spd*0.25; S.pushPhase=0; S.glideT=0;
     } else {
-      S.pos.x=nx; S.pos.z=nz; if(clampBounds()){ if(S.boundsHard){ S.vel.set(Math.sin(S.heading)*S.spd,0,Math.cos(S.heading)*S.spd); bail("SLAMMED"); return; } S.spd*=0.5; }
+      S.pos.x=nx; S.pos.z=nz; if(clampBounds()){ if(S.boundsHard){ S.vel.set(Math.sin(S.heading)*S.spd,0,Math.cos(S.heading)*S.spd); bail("SLAMMED"); return; } S.spd*=0.5; S.pushPhase=0; S.glideT=0; }
       const hg2=hAt(S.pos.x,S.pos.z), vyNew=hsp*slc, yb=S.y+S.vyG*dt-0.5*G*dt*dt;
       if(yb>hg2+0.03 && (S.vyG>0.4||hg2<S.y-0.05)){ S.y=yb; startAir(S.vyG-G*dt,false); S.pos.y=S.y; return; }
       S.y=hg2; S.vyG=damp(S.vyG,clamp(vyNew,-22,22),30,dt);
@@ -1076,12 +1077,23 @@ function animateRig(dt){
 
 /* ---------- camera ---------- */
 const cam={ pos:new THREE.Vector3(0,4,40), look:new THREE.Vector3(), yaw:Math.PI, fov:66, init:false };
+function camOccludeDist(ox,oz,dirx,dirz,maxDist){   // shortest distance along the ray to a building face, so the camera can be pulled in front of it instead of clipping through
+  let best=maxDist;
+  for(let i=0;i<BLDG.length;i++){ const b=BLDG[i], hx=b.hx+0.5, hz=b.hz+0.5;
+    const invX=dirx!==0?1/dirx:1e9, invZ=dirz!==0?1/dirz:1e9;
+    let t1=(b.x-hx-ox)*invX, t2=(b.x+hx-ox)*invX; if(t1>t2){ const tt=t1; t1=t2; t2=tt; }
+    let t3=(b.z-hz-oz)*invZ, t4=(b.z+hz-oz)*invZ; if(t3>t4){ const tt=t3; t3=t4; t4=tt; }
+    const tmin=Math.max(t1,t3), tmax=Math.min(t2,t4);
+    if(tmax>=0&&tmin<=tmax&&tmin<best&&tmin>0.3) best=tmin; }
+  return best; }
 function updateCamera(dt){
   const hs=Math.hypot(S.vel.x,S.vel.z), travel=hs>2.5?Math.atan2(S.vel.x,S.vel.z):S.heading;
   const tgt=S.mode==="air"||S.mode==="grind"?travel:(S.mode==="bail"?cam.yaw:S.heading*0.4+travel*0.6);
   cam.yaw+=wrapPi(tgt-cam.yaw)*(1-Math.exp(-(S.mode==="air"?2.4:3.6)*dt));
   const modes=[{ back:7.2, up:2.7, look:3.2 },{ back:10.5, up:4.4, look:2.4 },{ back:3.4, up:1.9, look:5 }], m=modes[game.camMode];
-  const back=m.back+hs*0.07-2.1*S.pushAmt, baseY=Math.max(S.y,hAt(S.pos.x,S.pos.z)), ty=baseY-0.6*S.pushAmt+m.up+(S.mode==="air"?Math.max(0,(S.y-S.air.startY))*0.35:0);
+  let back=m.back+hs*0.07-2.1*S.pushAmt;
+  { const dirx=-Math.sin(cam.yaw), dirz=-Math.cos(cam.yaw), occ=camOccludeDist(S.pos.x,S.pos.z,dirx,dirz,back+1.5); back=Math.min(back,Math.max(1.6,occ-0.6)); }   // pull the camera in front of a wall instead of letting it clip into/past it
+  const baseY=Math.max(S.y,hAt(S.pos.x,S.pos.z)), ty=baseY-0.6*S.pushAmt+m.up+(S.mode==="air"?Math.max(0,(S.y-S.air.startY))*0.35:0);
   const sideK=3.0*S.pushAmt, tx=S.pos.x-Math.sin(cam.yaw)*back+Math.cos(cam.yaw)*sideK, tz=S.pos.z-Math.cos(cam.yaw)*back-Math.sin(cam.yaw)*sideK;   // slide toward the kicking-leg side so the push reads
   if(!cam.init){ cam.pos.set(tx,ty,tz); cam.init=true; }
   cam.pos.x=damp(cam.pos.x,tx,8,dt); cam.pos.z=damp(cam.pos.z,tz,8,dt); cam.pos.y=damp(cam.pos.y,Math.max(ty,hAt(cam.pos.x,cam.pos.z)+1.1),5,dt);
