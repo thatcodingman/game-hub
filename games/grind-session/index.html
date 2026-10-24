@@ -76,7 +76,7 @@
   <div class="go" id="goBtn">PRESS ENTER OR TAP TO DROP IN</div>
   <div class="keys"><kbd>W</kbd> push &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>A</kbd><kbd>D</kbd> steer (spin in the air)<br><kbd>SPACE</kbd> ollie — hold to charge, release to pop &nbsp; <kbd>J</kbd> kickflip &nbsp; <kbd>K</kbd> heelflip &nbsp; <kbd>L</kbd> shove-it &nbsp; <kbd>SHIFT</kbd> grab<br>Land on a rail to grind — balance with <kbd>A</kbd><kbd>D</kbd>. <kbd>R</kbd> respawn &nbsp; <kbd>C</kbd> camera</div>
   <div class="best" id="menuBest"></div>
-  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v65 · IMPACT TUNING</div>
+  <div style="margin-top:14px;font-size:11px;letter-spacing:3px;opacity:.45">BUILD v66 · FENCE + THRESHOLD FIX</div>
 </div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
@@ -921,16 +921,17 @@ function slopeBack(x,z,dx,dz){ const e=0.22; return (hAt(x,z)-hAt(x-dx*e,z-dz*e)
 const BOUND_X=128, BOUND_Z=118, BOUND_ZN=-62;
 function clampBounds(){ let hit=false; const p=S.pos; S.boundsHard=false;
   if(p.x>BOUND_X){ p.x=BOUND_X; hit=true; } if(p.x<-BOUND_X){ p.x=-BOUND_X; hit=true; } if(p.z>BOUND_Z){ p.z=BOUND_Z; hit=true; } if(p.z<BOUND_ZN){ p.z=BOUND_ZN; hit=true; }
-  const ax=Math.abs(p.x);
-  if(ax<47.2&&ax>3.4&&Math.abs(p.z-32)<0.9){ p.z=p.z<32?31.15:32.85; hit=true; }
-  if(ax<47.2&&Math.abs(p.z+32)<0.9){ p.z=p.z<-32?-32.85:-31.15; hit=true; }
-  if(Math.abs(p.z)<33&&Math.abs(ax-46)<0.9){ p.x=(p.x<0?-1:1)*(ax<46?45.15:46.85); hit=true; }
+  const ax=Math.abs(p.x), pz0=S.prevZ==null?p.z:S.prevZ, px0=S.prevX==null?p.x:S.prevX;
+  // fence lines are true one-sided walls now (clamped off last frame's side), so a fast step can't skip past the thin check band and tunnel through
+  if(ax<47.2&&ax>3.4){ if(pz0<32&&p.z>=31.15){ p.z=31.15; hit=true; } else if(pz0>=32&&p.z<32.85){ p.z=32.85; hit=true; } }
+  if(ax<47.2){ if(pz0>-32&&p.z<=-31.15){ p.z=-31.15; hit=true; } else if(pz0<=-32&&p.z>-32.85){ p.z=-32.85; hit=true; } }
+  { const apx0=Math.abs(px0); if(Math.abs(p.z)<33){ if(apx0<46&&ax>=45.15){ p.x=(p.x<0?-1:1)*45.15; hit=true; } else if(apx0>=46&&ax<46.85){ p.x=(p.x<0?-1:1)*46.85; hit=true; } } }
   for(let i=0;i<BLDG.length;i++){ const b=BLDG[i], dx=p.x-b.x, dz=p.z-b.z, px=b.hx+0.5-Math.abs(dx), pz=b.hz+0.5-Math.abs(dz);
     if(px>0&&pz>0){ const axis=px<pz?0:1, into=axis===0?-Math.sign(dx)*S.vel.x:-Math.sign(dz)*S.vel.z;   // speed actually driving you INTO the wall, not just your overall speed
-      if(axis===0) p.x+=(dx<0?-px:px); else p.z+=(dz<0?-pz:pz); hit=true; if(into>9) S.boundsHard=true; } }
+      if(axis===0) p.x+=(dx<0?-px:px); else p.z+=(dz<0?-pz:pz); hit=true; if(into>15) S.boundsHard=true; } }
   for(let i=0;i<OBST.length;i++){ const o=OBST[i], dx=p.x-o.x, dz=p.z-o.z, d=Math.hypot(dx,dz), pen=o.r+0.38-d;
     if(pen>0){ const nx=dx/(d||1e-4), nz=dz/(d||1e-4), into=-(S.vel.x*nx+S.vel.z*nz);   // speed component toward the object's center — a graze along it won't register
-      p.x+=nx*pen; p.z+=nz*pen; hit=true; if(into>7) S.boundsHard=true; } }
+      p.x+=nx*pen; p.z+=nz*pen; hit=true; if(into>12) S.boundsHard=true; } }
   return hit; }
 function startAir(vy,popped){
   S.mode="air"; S.pushPhase=0; const a=S.air; const pk=S.slPeak||0;
@@ -970,7 +971,7 @@ function land(){
 }
 const GAIN={ push:4.8, maxPush:26 };
 function stepSkater(dt,inp){
-  const x=S.pos.x, z=S.pos.z;
+  const x=S.pos.x, z=S.pos.z; S.prevX=x; S.prevZ=z;   // position before this frame's movement, used to stop the fence from being tunnelled through at high speed
   S.grindCd=Math.max(0,S.grindCd-dt); S.popCd=Math.max(0,S.popCd-dt); S.landT=Math.max(0,S.landT-dt);
   const steer=inp.steer;
   if(S.mode==="ground"){
