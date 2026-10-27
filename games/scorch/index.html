@@ -115,6 +115,13 @@
     box-shadow: 0 0 12px rgba(251,191,36,0.6);
     transition: bottom 0.05s linear;
   }
+  #plungerSkillZone {
+    position: absolute; left: 0; right: 0;
+    bottom: 33%; height: 12%;
+    background: rgba(74,222,128,0.35);
+    border-top: 1px solid rgba(74,222,128,0.8);
+    border-bottom: 1px solid rgba(74,222,128,0.8);
+  }
   @media (hover: none) {
     #controls-hint { display: none; }
   }
@@ -141,7 +148,7 @@
       <div class="tz right" id="tzRight"></div>
     </div>
     <div id="plungerZone">
-      <div id="plungerTrack"><div id="plungerKnob"></div></div>
+      <div id="plungerTrack"><div id="plungerSkillZone"></div><div id="plungerKnob"></div></div>
     </div>
     <div id="overlay">
       <h1>SCORCH</h1>
@@ -218,7 +225,9 @@
     heat: 0,
     tierIdx: 0,
     running: false,
-    ballInPlay: false
+    ballInPlay: false,
+    combo: 0,
+    nextExtraBallAt: 15000
   };
 
   const scoreVal = document.getElementById('scoreVal');
@@ -233,12 +242,25 @@
   bestVal.textContent = state.best;
   overlayBest.textContent = state.best;
 
-  function addScore(pts) {
+  function addScore(pts, comboMult) {
     const tier = tierFor(state.heat);
-    const final = Math.round(pts * tier.mult);
+    const final = Math.round(pts * tier.mult * (comboMult || 1));
     state.score += final;
     scoreVal.textContent = state.score;
+    checkExtraBallMilestone();
     return final;
+  }
+
+  // Extra ball every 15k points, scaling up each time so it never trivializes
+  // the run (next threshold = current + 15k, 20k, 25k, ...)
+  let extraBallStep = 15000;
+  function checkExtraBallMilestone() {
+    if (state.score < state.nextExtraBallAt) return;
+    state.balls += 1;
+    updateBallsHud();
+    extraBallStep += 5000;
+    state.nextExtraBallAt += extraBallStep;
+    if (window.__scorchScene) window.__scorchScene.popText(W / 2, H / 2 - 120, 'EXTRA BALL!', '#4ade80');
   }
 
   function setHeat(newHeat, scene) {
@@ -268,6 +290,8 @@
     preload() {}
 
     create() {
+      window.__scorchScene = this;
+
       // top disabled here on purpose — we hand-place a top wall below that
       // leaves a gap over the launch lane so a plunged ball can actually
       // curve into the main table instead of bouncing off a sealed ceiling
@@ -296,8 +320,10 @@
       this.input.keyboard.on('keydown-D', () => this.flipRight(true));
       this.input.keyboard.on('keyup-D', () => this.flipRight(false));
       this.input.keyboard.addCapture('SPACE');
-      this.input.keyboard.on('keydown-SPACE', (e) => { e.preventDefault(); this.plungerDown(); });
-      this.input.keyboard.on('keyup-SPACE', (e) => { e.preventDefault(); this.plungerRelease(); });
+      this.spaceHeld = false;
+      this.pointerHeld = false;
+      this.input.keyboard.on('keydown-SPACE', (e) => { e.preventDefault(); this.spaceHeld = true; this.plungerDown(); });
+      this.input.keyboard.on('keyup-SPACE', (e) => { e.preventDefault(); this.spaceHeld = false; this.plungerRelease(); });
       // safety net: if the window loses focus mid-charge (alt-tab, clicking
       // elsewhere) the browser never sends a keyup, so force a release here too
       window.addEventListener('blur', () => this.plungerRelease());
@@ -400,7 +426,11 @@
       // hit that just sends it straight back down the same lane), explicitly
       // detect the ball clearing the top of the lane and hand it a fixed,
       // guaranteed arc into the table every single time.
-      this.laneExitSensor = this.matter.add.rectangle(W - 60, 70, 90, 70, {
+      // tall enough that even a maximum-power plunge (which can move 15-18px
+      // per physics step) can't skip past it between two position samples —
+      // a short hold maxed out power fast enough that the old, shorter zone
+      // could occasionally be jumped clean over
+      this.laneExitSensor = this.matter.add.rectangle(W - 65, 100, 100, 190, {
         isStatic: true, isSensor: true, label: 'laneExit'
       });
 
@@ -606,11 +636,16 @@
       const power = this.plungerPower;
       if (this.ballResting && this.ball) {
         // stronger floor + stronger scaling so even a quick tap is a real launch
-        const force = -0.09 - power * 0.0022;
+        // capped lower than before — a full-power hold was fast enough to
+        // risk skipping past detection zones between physics steps
+        const force = -0.08 - power * 0.0013;
         Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, { x: (Math.random() - 0.5) * 0.5, y: force * 60 });
         SFX.plunge();
         this.ballResting = false;
         this.cameras.main.shake(80, 0.0015);
+        // skill shot: releasing with power in the marked green band (55-75%)
+        // pays out a bonus once the ball actually clears into the main table
+        this.skillShotPending = (power >= 55 && power <= 75);
       }
       this.plungerPower = 0;
     }
@@ -622,6 +657,7 @@
     }
 
     spawnBall() {
+      this.skillShotPending = false;
       if (this.ball) {
         this.matter.world.remove(this.ball);
         if (this.ballGfx) this.ballGfx.destroy();
@@ -633,6 +669,7 @@
       this.ballResting = true;
       this.ballGfx = this.add.circle(x, y, 9, 0xf8fafc).setDepth(5);
       this.ballTierShown = null;
+      this.stallTimer = 0;
       state.ballInPlay = true;
     }
 
@@ -648,8 +685,8 @@
       tzRight.addEventListener('touchend', (e) => { e.preventDefault(); this.flipRight(false); }, { passive: false });
 
       const plungerZone = document.getElementById('plungerZone');
-      const startPlunge = (e) => { e.preventDefault(); this.plungerDown(); };
-      const endPlunge = (e) => { e.preventDefault(); this.plungerRelease(); };
+      const startPlunge = (e) => { e.preventDefault(); this.pointerHeld = true; this.plungerDown(); };
+      const endPlunge = (e) => { e.preventDefault(); this.pointerHeld = false; this.plungerRelease(); };
       plungerZone.addEventListener('touchstart', startPlunge, { passive: false });
       plungerZone.addEventListener('touchend', endPlunge, { passive: false });
       plungerZone.addEventListener('mousedown', startPlunge);
@@ -664,13 +701,16 @@
         if (other('bumper') && other('ball')) {
           const bumperBody = pair.bodyA.label === 'bumper' ? pair.bodyA : pair.bodyB;
           this.pulseBumper(bumperBody);
-          const pts = addScore(100);
+          const comboMult = this.bumpCombo();
+          const pts = addScore(100, comboMult);
           this.popText(bumperBody.position.x, bumperBody.position.y, '+' + pts, '#38bdf8');
+          if (state.combo >= 2) this.popText(bumperBody.position.x, bumperBody.position.y - 22, 'x' + state.combo + ' combo', '#fbbf24');
           setHeat(state.heat + 4, this);
           SFX.bumper();
         }
         if (other('slingshot') && other('ball')) {
-          const pts = addScore(60);
+          const comboMult = this.bumpCombo();
+          const pts = addScore(60, comboMult);
           setHeat(state.heat + 3, this);
           SFX.slingshot();
         }
@@ -700,6 +740,23 @@
         x: -3.4 - Math.random() * 1.2,
         y: -2.2
       });
+
+      if (this.skillShotPending) {
+        this.skillShotPending = false;
+        const pts = addScore(250);
+        this.popText(W / 2, 140, 'SKILL SHOT +' + pts, '#4ade80');
+        SFX.tierUp(1);
+      }
+    }
+
+    // chains bumper/slingshot hits landed within ~1.1s of each other into a
+    // stacking score bonus (+12% per hit after the first, capped at +60%);
+    // any gap longer than that resets the chain back to zero
+    bumpCombo() {
+      state.combo += 1;
+      if (this.comboResetTimer) this.comboResetTimer.remove(false);
+      this.comboResetTimer = this.time.delayedCall(1100, () => { state.combo = 0; });
+      return 1 + Math.min(state.combo - 1, 5) * 0.12;
     }
 
     pulseBumper(body) {
@@ -713,7 +770,9 @@
           targets: gfx.glowRef, scale: 1.6, alpha: 0.45, duration: 90, yoyo: true, ease: 'Quad.easeOut'
         });
       }
-      this.cameras.main.shake(60, 0.002);
+      // shake scales with heat tier so Molten hits feel noticeably bigger than Cold ones
+      const tIdx = tierIndex(state.heat);
+      this.cameras.main.shake(60 + tIdx * 15, 0.002 + tIdx * 0.0007);
     }
 
     triggerCoolLane() {
@@ -749,6 +808,8 @@
       state.balls -= 1;
       updateBallsHud();
       setHeat(0, this);
+      state.combo = 0;
+      if (this.comboResetTimer) { this.comboResetTimer.remove(false); this.comboResetTimer = null; }
       if (state.balls <= 0) {
         this.endGame();
       } else {
@@ -785,6 +846,12 @@
       this.rightGfx.setRotation(this.rightFlipper.angle);
 
       // plunger charge
+      // holding Space through a drain fires only one keydown event, so if the
+      // key is still physically down once the new ball is ready, resume
+      // charging ourselves instead of requiring a fresh press
+      if ((this.spaceHeld || this.pointerHeld) && !this.plungerCharging && state.ballInPlay && this.ballResting) {
+        this.plungerDown();
+      }
       if (this.plungerCharging) {
         this.plungerPower = Math.min(100, this.plungerPower + delta * 0.22);
         const pct = this.plungerPower / 100;
@@ -853,6 +920,28 @@
       if (!this.ballResting && this.ball.position.y > H + 20) {
         this.drain();
       }
+
+      // unstick watchdog — if the ball is in active play (not resting on the
+      // plunger) and its speed drops near zero for too long, it's wedged in
+      // a corner or sitting dead on a flipper with nothing moving it. Give
+      // it a small nudge instead of leaving it stuck until the player
+      // happens to flip something that touches it.
+      if (!this.ballResting) {
+        const bv = this.ball.velocity;
+        const bsp = Math.sqrt(bv.x * bv.x + bv.y * bv.y);
+        if (bsp < 0.35) {
+          this.stallTimer = (this.stallTimer || 0) + delta;
+          if (this.stallTimer > 900) {
+            this.stallTimer = 0;
+            Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, {
+              x: (Math.random() - 0.5) * 3,
+              y: -1.5 - Math.random() * 1.5
+            });
+          }
+        } else {
+          this.stallTimer = 0;
+        }
+      }
     }
 
     updateFlipperAngle(body, target, maxStep) {
@@ -903,6 +992,9 @@
     }
     state.score = 0;
     state.balls = 3;
+    state.combo = 0;
+    extraBallStep = 15000;
+    state.nextExtraBallAt = 15000;
     scoreVal.textContent = '0';
     updateBallsHud();
     state.running = true;
