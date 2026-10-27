@@ -2,411 +2,754 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Arcade</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Scorch</title>
 <style>
-  * { box-sizing: border-box; }
-  body {
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
     margin: 0; padding: 0;
-    background: #0a0a0f;
-    background-image: radial-gradient(circle at 20% 20%, #1a1a2e 0%, #0a0a0f 60%);
-    color: #f8fafc;
-    font-family: system-ui, -apple-system, sans-serif;
-    min-height: 100vh;
-  }
-  header {
-    text-align: center;
-    padding: 48px 20px 24px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 2.2rem;
-    letter-spacing: 0.08em;
-    background: linear-gradient(90deg, #4ade80, #38bdf8, #fbbf24);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-  header p {
-    color: #94a3b8;
-    margin-top: 8px;
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 20px;
-    max-width: 1000px;
-    margin: 0 auto;
-    padding: 0 20px 60px;
-  }
-  .card {
-    position: relative;
-    border-radius: 16px;
+    background: #060608;
     overflow: hidden;
-    text-decoration: none;
-    color: inherit;
-    display: block;
-    height: 220px;
-    transition: transform 0.15s ease;
+    overscroll-behavior: none;
+    height: 100%;
+    font-family: system-ui, -apple-system, sans-serif;
+    color: #f8fafc;
   }
-  .card:hover { transform: translateY(-4px); }
-  .card .art {
-    position: absolute; inset: 0;
+  #wrap {
+    position: fixed; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 3.5rem;
   }
-  .card .info {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    padding: 14px 16px;
-    background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+  #game-container { position: relative; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 10px 14px;
+    pointer-events: none;
+    z-index: 5;
+    font-family: 'Courier New', monospace;
   }
-  .card .info h2 { margin: 0; font-size: 1.1rem; }
-  .card .info p { margin: 4px 0 0; font-size: 0.85rem; color: #cbd5e1; }
-  footer {
+  #hud .box { text-align: left; }
+  #hud .box.right { text-align: right; }
+  #hud .label { font-size: 10px; letter-spacing: 0.12em; color: #8b93a8; text-transform: uppercase; }
+  #hud .value { font-size: 22px; font-weight: 700; color: #f8fafc; line-height: 1.15; }
+  #hud .balls { font-size: 16px; letter-spacing: 3px; }
+  #heatTier {
+    font-size: 13px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 2px;
+    transition: color 0.3s;
+  }
+  #heatBarOuter {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 140px; height: 6px; margin-top: 6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px; overflow: hidden;
+    z-index: 5;
+  }
+  #heatBarInner {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #38bdf8, #fbbf24, #f97316, #ef4444);
+    transition: width 0.15s linear;
+  }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(6,6,8,0.92);
     text-align: center;
-    color: #475569;
-    font-size: 0.8rem;
+    z-index: 10;
     padding: 20px;
+  }
+  #overlay h1 {
+    font-size: 2.4rem; letter-spacing: 0.08em; margin: 0 0 6px;
+    background: linear-gradient(90deg, #38bdf8, #fbbf24, #f97316, #ef4444);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #overlay p { color: #94a3b8; margin: 4px 0 18px; max-width: 320px; font-size: 0.92rem; line-height: 1.5; }
+  #overlay .stat { font-size: 1.1rem; margin: 2px 0; color: #e2e8f0; }
+  #overlay .stat b { color: #fbbf24; }
+  #overlay button {
+    margin-top: 18px;
+    padding: 14px 36px;
+    font-size: 1rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: none; border-radius: 10px;
+    background: linear-gradient(135deg, #f97316, #ef4444);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(249,115,22,0.4);
+  }
+  #overlay button:active { transform: scale(0.96); }
+  #controls-hint {
+    position: absolute; bottom: 8px; left: 0; right: 0;
+    text-align: center; font-size: 11px; color: #4b5563;
+    z-index: 5; pointer-events: none;
+    letter-spacing: 0.04em;
+  }
+  #touchzones {
+    position: absolute; inset: 0; z-index: 4;
+    display: none;
+  }
+  #touchzones.active { display: block; }
+  .tz {
+    position: absolute; top: 0; bottom: 0; width: 50%;
+  }
+  .tz.left { left: 0; }
+  .tz.right { right: 0; }
+  #plungerZone {
+    position: absolute; right: 6px; top: 0; bottom: 0; width: 46px;
+    z-index: 6;
+    display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 14px;
+  }
+  #plungerTrack {
+    width: 14px; height: 70%;
+    background: rgba(255,255,255,0.06);
+    border-radius: 7px;
+    position: relative;
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  #plungerKnob {
+    position: absolute; left: -7px; bottom: 0;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: linear-gradient(135deg, #fbbf24, #f97316);
+    box-shadow: 0 0 12px rgba(251,191,36,0.6);
+    transition: bottom 0.05s linear;
+  }
+  @media (hover: none) {
+    #controls-hint { display: none; }
   }
 </style>
 </head>
 <body>
-<style>
-  .quote-rail {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    width: 220px;
-    overflow: hidden;
-    pointer-events: none;
-    z-index: 0;
-    mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
-  }
-  .quote-rail--left { left: 0; }
-  .quote-rail--right { right: 0; }
-  .quote-track {
-    display: flex;
-    flex-direction: column;
-    gap: 36px;
-    padding: 40px 24px;
-    animation: quote-scroll 220s linear infinite;
-  }
-  .quote-rail--right .quote-track {
-    animation-duration: 260s;
-    animation-direction: reverse;
-  }
-  .quote-item {
-    font-family: monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    color: rgba(226, 232, 240, 0.28);
-  }
-  .quote-item .quote-author {
-    display: block;
-    margin-top: 4px;
-    color: rgba(148, 163, 184, 0.24);
-    font-size: 11px;
-  }
-  @keyframes quote-scroll {
-    from { transform: translateY(0); }
-    to { transform: translateY(-50%); }
-  }
-  @media (max-width: 1100px) {
-    .quote-rail { display: none; }
-  }
-</style>
-
-<div class="quote-rail quote-rail--left">
-  <div class="quote-track" id="quoteTrackLeft"></div>
-</div>
-<div class="quote-rail quote-rail--right">
-  <div class="quote-track" id="quoteTrackRight"></div>
+<div id="wrap">
+  <div id="game-container">
+    <div id="hud">
+      <div class="box">
+        <div class="label">Score</div>
+        <div class="value" id="scoreVal">0</div>
+        <div id="heatTier">Cold</div>
+      </div>
+      <div class="box right">
+        <div class="label">Best</div>
+        <div class="value" id="bestVal">0</div>
+        <div class="balls" id="ballsVal">●●●</div>
+      </div>
+    </div>
+    <div id="heatBarOuter"><div id="heatBarInner"></div></div>
+    <div id="touchzones">
+      <div class="tz left" id="tzLeft"></div>
+      <div class="tz right" id="tzRight"></div>
+    </div>
+    <div id="plungerZone">
+      <div id="plungerTrack"><div id="plungerKnob"></div></div>
+    </div>
+    <div id="overlay">
+      <h1>SCORCH</h1>
+      <p>Keep the ball hot for a bigger multiplier. The hotter it gets, the faster and harder it is to control — bank your multiplier at the Cool Lane before you lose it.</p>
+      <div class="stat">Best Score: <b id="overlayBest">0</b></div>
+      <button id="startBtn">Launch</button>
+    </div>
+    <div id="controls-hint">← → or A / D to flip · SPACE hold to plunge · click/drag table edges on mobile</div>
+  </div>
 </div>
 
-<script src="assets/quotes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 <script>
 (function () {
-  function shuffle(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
+  "use strict";
 
-  function renderTrack(elementId, quoteSubset) {
-    const el = document.getElementById(elementId);
-    if (!el || typeof QUOTES === 'undefined') return;
-    // render the subset twice back-to-back so the -50% translateY loop is seamless
-    const doubled = quoteSubset.concat(quoteSubset);
-    el.innerHTML = doubled.map(q =>
-      '<div class="quote-item">"' + q.text.replace(/</g, '&lt;') + '"' +
-      '<span class="quote-author">— ' + q.author.replace(/</g, '&lt;') + '</span></div>'
-    ).join('');
-  }
+  // ---------- Config ----------
+  const W = 420, H = 760;
+  const BEST_KEY = 'scorch_best_score';
 
-  if (typeof QUOTES !== 'undefined' && QUOTES.length > 0) {
-    const shuffled = shuffle(QUOTES);
-    const half = Math.floor(shuffled.length / 2);
-    renderTrack('quoteTrackLeft', shuffled.slice(0, half).slice(0, 60));
-    renderTrack('quoteTrackRight', shuffled.slice(half).slice(0, 60));
-  }
-})();
-</script>
-
-<header>
-  <h1>THE ARCADE</h1>
-  <p>Free browser games. No installs, no accounts, just play.</p>
-</header>
-<div class="grid" id="game-grid"></div>
-<footer>New games added regularly.</footer>
-
-<script>
-  // Add one entry here per game — the hub renders itself, so shipping a new
-  // game never requires touching this page's HTML/CSS.
-  const GAMES = [
-    {
-      title: 'The Shrink',
-      tagline: 'Dodge, shoot, and survive as you shrink to nothing.',
-      path: 'games/the-shrink/',
-      emoji: '🔻',
-      gradient: 'linear-gradient(135deg, #14532d, #052e16)'
-    },
-    {
-      title: 'Gap Flyer',
-      tagline: 'Fly a horse through the gaps, catch hay, beat your best.',
-      path: 'games/gap-flyer/',
-      emoji: '🐎',
-      gradient: 'linear-gradient(135deg, #7dd3fc, #fed7aa)'
-    },
-    {
-      title: 'DirtySet',
-      tagline: 'Whack the cleaning supplies, dodge the dirt, beat the clock.',
-      path: 'games/dirtyset/',
-      emoji: '🧽',
-      gradient: 'linear-gradient(135deg, #e0f2fe, #bae6fd)'
-    },
-    {
-      title: 'Stack Shift',
-      tagline: 'Stack ice over lava — every few blocks, the tower turns a corner.',
-      path: 'games/stack-shift/',
-      emoji: '🧊',
-      gradient: 'linear-gradient(135deg, #431407, #ea580c)'
-    },
-    {
-      title: 'Home Run Derby',
-      tagline: 'Time your swing perfectly — three strikes and you\'re out.',
-      path: 'games/home-run-derby/',
-      emoji: '⚾',
-      gradient: 'linear-gradient(135deg, #4d7c0f, #7dd3fc)'
-    },
-    {
-      title: 'Crossword',
-      tagline: 'A mini word puzzle — no timer pressure, just clues and letters.',
-      path: 'games/crossword/',
-      emoji: '📝',
-      gradient: 'linear-gradient(135deg, #fffbeb, #fde047)'
-    },
-    {
-      title: 'Color Drop',
-      tagline: 'Choose your color, become it, and shrink with every success.',
-      path: 'games/color-drop/',
-      emoji: '🎮',
-      gradient: 'linear-gradient(135deg, #ef4444, #22c55e, #3b82f6)'
-    },
-    {
-      title: 'Highway Heat',
-      tagline: 'Weave through traffic and stay ahead of the cops on your tail.',
-      path: 'games/highway-heat/',
-      emoji: '🚔',
-      gradient: 'linear-gradient(135deg, #18181b, #ef4444)'
-    },
-    {
-      title: 'Trick or Die',
-      tagline: 'Stack tricks for a bigger score, then stick a landing the game demands.',
-      path: 'games/trick-or-die/',
-      emoji: '🔥',
-      gradient: 'linear-gradient(135deg, #0c0a09, #f97316, #fde047)'
-    },
-    {
-      title: 'One More Second',
-      tagline: 'Freeze the world for one second — you keep moving.',
-      path: 'games/one-more-second/',
-      emoji: '⏱',
-      gradient: 'linear-gradient(135deg, #0b0e14, #2f7bff)'
-    },
-    {
-      title: 'Wok Star',
-      tagline: 'Read the ticket, build the order, beat the patience meter.',
-      path: 'games/wok-star/',
-      emoji: '🥡',
-      gradient: 'linear-gradient(135deg, #7f1d1d, #f59e0b)'
-    },
-    {
-      title: 'Tank Duel',
-      tagline: 'Every shell reshapes the arena — one hit ends the round.',
-      path: 'games/tank-duel/',
-      emoji: '💥',
-      gradient: 'linear-gradient(135deg, #1c1814, #5be37b)'
-    },
-    {
-      title: 'Rhythm Shift',
-      tagline: 'You don’t follow the beat — your tap IS the beat.',
-      path: 'games/rhythm-shift/',
-      emoji: '🎵',
-      gradient: 'linear-gradient(135deg, #0a0a0d, #4fd1ff, #ffd23f)'
-    },
-    {
-      title: 'Last Fist',
-      tagline: 'Panda vs Bear — full fight system, best-of-3 rounds.',
-      path: 'games/last-fist/',
-      emoji: '🐼',
-      gradient: 'linear-gradient(135deg, #0a0a0d, #f4f4f4, #8b5a2b)'
-    },
-    {
-      title: 'Grapple Swing',
-      tagline: 'You don’t control where you go. You control when you let go.',
-      path: 'games/grapple-swing/',
-      emoji: '🦍',
-      gradient: 'linear-gradient(135deg, #0c0a1a, #38bdf8, #a78bfa)'
-    },
-    {
-      title: 'Blade Duel',
-      tagline: 'Every attack is a commitment. One good read wins the exchange.',
-      path: 'games/blade-duel/',
-      emoji: '⚔️',
-      gradient: 'linear-gradient(135deg, #1a0a0a, #f87171, #fde047)'
-    },
-    {
-      title: 'Dodgeball Arena',
-      tagline: 'Charge your throw, read theirs — a caught ball is an instant counter.',
-      path: 'games/dodgeball-arena/',
-      emoji: '🏐',
-      gradient: 'linear-gradient(135deg, #0a0f1a, #ff5a5a, #ffd23f)'
-    },
-    {
-      title: 'Paddle Duel',
-      tagline: 'The ball remembers every hit — control the rally, break their timing.',
-      path: 'games/paddle-duel/',
-      emoji: '🏓',
-      gradient: 'linear-gradient(135deg, #0a0f1a, #8fd3ff, #ff9f6b)'
-    },
-    {
-      title: 'Sumo Push',
-      tagline: 'One ring. One shove. One mistake.',
-      path: 'games/sumo-push/',
-      emoji: '🤼',
-      gradient: 'linear-gradient(135deg, #1b140d, #c9a15a, #ff5a5a)'
-    },
-    {
-      title: 'Overpressure',
-      tagline: 'Every balloon gets more valuable the longer it survives — how greedy can you be?',
-      path: 'games/overpressure/',
-      emoji: '🎈',
-      gradient: 'linear-gradient(135deg, #12161c, #3ad1c8, #ffcc33)'
-    },
-    {
-      title: 'Quick Draw',
-      tagline: "One signal is real. Everything else is a bluff — don't flinch.",
-      path: 'games/quick-draw/',
-      emoji: '🤠',
-      gradient: 'linear-gradient(135deg, #241a12, #ff7b39, #ffcc33)'
-    },
-    {
-      title: 'Riptide',
-      tagline: 'Sometimes the safest move is to stop swimming.',
-      path: 'games/riptide/',
-      emoji: '🌊',
-      gradient: 'linear-gradient(135deg, #08141f, #1f3d52, #7fd8e8)'
-    },
-    {
-      title: 'Getaway Driver',
-      tagline: 'You saw the route. Now drive it blind.',
-      path: 'games/getaway-driver/',
-      emoji: '🏎️',
-      gradient: 'linear-gradient(135deg, #0a0a10, #15151d, #ffc94d)'
-    },
-    {
-      title: 'Skyline Slingshot',
-      tagline: "You don't fly. You commit to a line, and find out if you were right.",
-      path: 'games/skyline-slingshot/',
-      emoji: '🪢',
-      gradient: 'linear-gradient(135deg, #1a1030, #3a1f3d, #ff9f4d)'
-    },
-    {
-      title: 'Basketball Arcade',
-      tagline: 'Every collision builds Momentum. Every Momentum bar is a play waiting to happen.',
-      path: 'games/basketball-arcade/',
-      emoji: '🏀',
-      gradient: 'linear-gradient(135deg, #14532d, #f97316, #fbbf24)'
-    },
-    {
-      title: 'Football Arcade',
-      tagline: 'Read the defense, break the tackle — you control both sides of the ball.',
-      path: 'games/football-arcade/',
-      emoji: '🏈',
-      gradient: 'linear-gradient(135deg, #1a3a1f, #7c3f14, #f2f4f7)'
-    },
-    {
-      title: 'Paintball Arcade',
-      tagline: 'Every shot gives you away — one hit ends it.',
-      path: 'games/paintball-arcade/',
-      emoji: '🎯',
-      gradient: 'linear-gradient(135deg, #2e5230, #8b3a3a, #1d4ed8)'
-    },
-    {
-      title: 'Basketball Arcade 3v3',
-      tagline: 'Solo vs a full AI squad — switch control between your three players and drive downcourt.',
-      path: 'games/basketball-arcade-3v3/',
-      emoji: '🏀',
-      gradient: 'linear-gradient(135deg, #0a0f1a, #38bdf8, #f97316)'
-    },
-    {
-      title: 'Fireteam Zero',
-      tagline: 'Small maps, tight gunfights, movement that actually matters.',
-      path: 'games/fireteam-zero/',
-      emoji: '🔫',
-      gradient: 'linear-gradient(135deg, #0a0a0d, #3d3d47, #ffd24d)'
-    },
-    {
-      title: 'Tee Time',
-      tagline: 'Real 3-click golf — driver to putter, water and sand in play.',
-      path: 'games/tee-time/',
-      emoji: '⛳',
-      gradient: 'linear-gradient(135deg, #0c1410, #3c7a3f, #e4c87a)'
-    },
-    {
-      title: 'Drift Circuit',
-      tagline: 'Slide through the sunset — chain drifts, chase the ghost, beat your lap.',
-      path: 'games/drift-circuit/',
-      emoji: '🏁',
-      gradient: 'linear-gradient(135deg, #1a1030, #ff7a45, #ffd9a0)'
-    },
-    {
-      title: 'Grind Session',
-      tagline: 'Pop tricks, grind rails, chain combos — 120 seconds at the skatepark.',
-      path: 'games/grind-session/',
-      emoji: '🛹',
-      gradient: 'linear-gradient(135deg, #2a1236, #ff8a3c, #ffd83d)'
-    }
+  // Heat tiers: name, threshold (0-100 heat), multiplier, color, ballSpeedMult, flipperForgiveness
+  const HEAT_TIERS = [
+    { name: 'Cold',    min: 0,  mult: 1,   color: '#38bdf8', speed: 1.00, margin: 1.00 },
+    { name: 'Warm',    min: 20, mult: 1.5, color: '#4ade80', speed: 1.05, margin: 0.95 },
+    { name: 'Hot',     min: 45, mult: 2.5, color: '#fbbf24', speed: 1.12, margin: 0.88 },
+    { name: 'Blazing', min: 70, mult: 4,   color: '#f97316', speed: 1.20, margin: 0.80 },
+    { name: 'Molten',  min: 92, mult: 6,   color: '#ef4444', speed: 1.30, margin: 0.70 }
   ];
+  function tierFor(heat) {
+    let t = HEAT_TIERS[0];
+    for (const tier of HEAT_TIERS) if (heat >= tier.min) t = tier;
+    return t;
+  }
+  function tierIndex(heat) {
+    for (let i = HEAT_TIERS.length - 1; i >= 0; i--) if (heat >= HEAT_TIERS[i].min) return i;
+    return 0;
+  }
 
-  const grid = document.getElementById('game-grid');
-  GAMES.forEach(function (game) {
-    const card = document.createElement('a');
-    card.className = 'card';
-    card.href = game.path;
-    card.style.background = game.gradient;
-    card.innerHTML =
-      '<div class="art">' + game.emoji + '</div>' +
-      '<div class="info">' +
-        '<h2>' + game.title + '</h2>' +
-        '<p>' + game.tagline + '</p>' +
-      '</div>';
-    grid.appendChild(card);
+  // ---------- Lightweight synth SFX (standalone; swap for shared sfx.js if desired) ----------
+  const SFX = (function () {
+    let ctx = null;
+    function ac() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
+    function tone(freq, dur, type, vol, slideTo) {
+      try {
+        const c = ac();
+        const o = c.createOscillator();
+        const g = c.createGain();
+        o.type = type || 'sine';
+        o.frequency.setValueAtTime(freq, c.currentTime);
+        if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, c.currentTime + dur);
+        g.gain.setValueAtTime(vol || 0.15, c.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+        o.connect(g); g.connect(c.destination);
+        o.start(); o.stop(c.currentTime + dur);
+      } catch (e) {}
+    }
+    return {
+      bumper: () => tone(320 + Math.random() * 80, 0.12, 'square', 0.12, 220),
+      slingshot: () => tone(180, 0.1, 'sawtooth', 0.12, 90),
+      flipper: () => tone(140, 0.05, 'square', 0.08),
+      plunge: () => tone(90, 0.25, 'sine', 0.15, 260),
+      drain: () => tone(200, 0.4, 'sawtooth', 0.15, 50),
+      tierUp: (i) => tone(300 + i * 80, 0.25, 'triangle', 0.18, 600 + i * 120),
+      cool: () => tone(700, 0.3, 'sine', 0.2, 1200),
+      launch: () => tone(400, 0.15, 'square', 0.12, 700)
+    };
+  })();
+
+  // ---------- Game state ----------
+  const state = {
+    score: 0,
+    best: parseInt(localStorage.getItem(BEST_KEY) || '0', 10),
+    balls: 3,
+    heat: 0,
+    tierIdx: 0,
+    running: false,
+    ballInPlay: false
+  };
+
+  const scoreVal = document.getElementById('scoreVal');
+  const bestVal = document.getElementById('bestVal');
+  const ballsVal = document.getElementById('ballsVal');
+  const heatTierEl = document.getElementById('heatTier');
+  const heatBarInner = document.getElementById('heatBarInner');
+  const overlay = document.getElementById('overlay');
+  const overlayBest = document.getElementById('overlayBest');
+  const startBtn = document.getElementById('startBtn');
+
+  bestVal.textContent = state.best;
+  overlayBest.textContent = state.best;
+
+  function addScore(pts) {
+    const tier = tierFor(state.heat);
+    const final = Math.round(pts * tier.mult);
+    state.score += final;
+    scoreVal.textContent = state.score;
+    return final;
+  }
+
+  function setHeat(newHeat, scene) {
+    const oldIdx = tierIndex(state.heat);
+    state.heat = Math.max(0, Math.min(100, newHeat));
+    const newIdx = tierIndex(state.heat);
+    heatBarInner.style.width = state.heat + '%';
+    const tier = HEAT_TIERS[newIdx];
+    heatTierEl.textContent = tier.name;
+    heatTierEl.style.color = tier.color;
+    if (newIdx !== oldIdx) {
+      state.tierIdx = newIdx;
+      if (newIdx > oldIdx) SFX.tierUp(newIdx);
+      if (scene) scene.applyTierVisuals(tier);
+    }
+  }
+
+  function updateBallsHud() {
+    ballsVal.textContent = '●'.repeat(state.balls) + '○'.repeat(Math.max(0, 3 - state.balls));
+  }
+  updateBallsHud();
+
+  // ---------- Phaser scene ----------
+  class TableScene extends Phaser.Scene {
+    constructor() { super('table'); }
+
+    preload() {}
+
+    create() {
+      this.matter.world.setBounds(0, 0, W, H, 32, true, true, true, false);
+      this.matter.world.engine.gravity.y = 1.0;
+
+      this.cameras.main.setBackgroundColor('#0a0a10');
+      this.bgTint = this.add.rectangle(W / 2, H / 2, W, H, 0x0a0a10).setDepth(-10);
+
+      this.drainedThisBall = false;
+      this.lastDrainTime = 0;
+
+      this.buildTable();
+      this.buildFlippers();
+      this.buildPlunger();
+      this.buildBall();
+      this.buildCoolLane();
+
+      this.input.keyboard.on('keydown-LEFT', () => this.flipLeft(true));
+      this.input.keyboard.on('keyup-LEFT', () => this.flipLeft(false));
+      this.input.keyboard.on('keydown-A', () => this.flipLeft(true));
+      this.input.keyboard.on('keyup-A', () => this.flipLeft(false));
+      this.input.keyboard.on('keydown-RIGHT', () => this.flipRight(true));
+      this.input.keyboard.on('keyup-RIGHT', () => this.flipRight(false));
+      this.input.keyboard.on('keydown-D', () => this.flipRight(true));
+      this.input.keyboard.on('keyup-D', () => this.flipRight(false));
+      this.input.keyboard.on('keydown-SPACE', (e) => { e.preventDefault(); this.plungerDown(); });
+      this.input.keyboard.on('keyup-SPACE', (e) => { e.preventDefault(); this.plungerRelease(); });
+
+      this.setupTouch();
+
+      this.matter.world.on('collisionstart', (event) => this.handleCollisions(event));
+
+      // heat decay ticker
+      this.heatDecayAccum = 0;
+    }
+
+    applyTierVisuals(tier) {
+      const col = Phaser.Display.Color.HexStringToColor(tier.color);
+      this.tweens.add({
+        targets: this.bgTint,
+        duration: 400,
+        onUpdate: () => {},
+      });
+      // tint bumpers
+      this.bumperSprites.forEach(b => {
+        this.tweens.add({ targets: b, duration: 300, alpha: 1 });
+        b.setFillStyle(Phaser.Display.Color.GetColor(
+          Math.min(255, col.red + 40), Math.min(255, col.green + 20), Math.min(255, col.blue + 20)
+        ));
+      });
+      // subtle background pulse toward tier color (dark-mixed)
+      const mix = Phaser.Display.Color.Interpolate.ColorWithColor(
+        Phaser.Display.Color.HexStringToColor('#0a0a10'),
+        col, 100, 14
+      );
+      this.cameras.main.setBackgroundColor(Phaser.Display.Color.RGBToString(mix.r, mix.g, mix.b, 255, '#'));
+    }
+
+    buildTable() {
+      const g = this.add.graphics();
+      g.lineStyle(4, 0x1e293b, 1);
+
+      // Outer playfield walls (funnel shape toward flippers at bottom)
+      const wallPts = [
+        [20, 20], [W - 20, 20],                 // top
+        [W - 20, H - 170],                       // right side down
+        [W - 90, H - 60],                        // right inlane taper
+        [W / 2 + 34, H - 20],                    // right flipper gap
+      ];
+      // we won't physically wall the flipper gap — ball drains there
+      this.matter.add.rectangle(W / 2, 14, W - 20, 12, { isStatic: true, label: 'wall' });
+      this.matter.add.rectangle(12, H / 2, 12, H, { isStatic: true, label: 'wall' });
+      this.matter.add.rectangle(W - 12, H / 2, 12, H, { isStatic: true, label: 'wall' });
+
+      // launch lane divider (right side channel for plunger)
+      this.matter.add.rectangle(W - 46, H * 0.32, 8, H * 0.64, { isStatic: true, label: 'wall' });
+
+      // upper slanted guides funneling ball toward bumpers
+      this.addSlant(40, 60, 140, 160, 10);
+      this.addSlant(W - 40, 60, W - 140, 160, 10);
+
+      // inlane guides near flippers
+      this.addSlant(60, H - 180, 30, H - 70, 8);
+      this.addSlant(W - 94, H - 180, W - 64, H - 70, 8);
+
+      g.destroy();
+
+      this.drawVisualWalls();
+    }
+
+    drawVisualWalls() {
+      const g = this.add.graphics().setDepth(2);
+      g.fillStyle(0x151520, 1);
+      g.fillRect(0, 0, W, 8);
+      g.fillRect(0, 0, 8, H);
+      g.fillRect(W - 8, 0, 8, H);
+      g.fillRect(W - 52, 0, 8, H * 0.66);
+    }
+
+    addSlant(x1, y1, x2, y2, thickness) {
+      const dx = x2 - x1, dy = y2 - y1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      const angle = Math.atan2(dy, dx);
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      this.matter.add.rectangle(cx, cy, len, thickness, { isStatic: true, angle, label: 'wall' });
+      this.add.rectangle(cx, cy, len, thickness, 0x1e293b).setRotation(angle).setDepth(2);
+    }
+
+    buildBumpers() {}
+
+    buildCoolLane() {
+      // Cool lane sits top-center: a narrow gated lane, only "lit"/scoring when tier >= Blazing
+      const cx = W / 2, cy = 60;
+      this.coolLaneSensor = this.matter.add.rectangle(cx, cy, 70, 26, {
+        isStatic: true, isSensor: true, label: 'coolLane'
+      });
+      this.coolLaneGfx = this.add.rectangle(cx, cy, 70, 26, 0x1e293b, 0.5).setStrokeStyle(2, 0x334155).setDepth(3);
+      this.coolLaneText = this.add.text(cx, cy, 'COOL', {
+        fontFamily: 'Courier New', fontSize: '13px', fontStyle: 'bold', color: '#475569'
+      }).setOrigin(0.5).setDepth(4);
+
+      // three bumpers below the cool lane, standard scoring ring
+      const bumperDefs = [
+        { x: W / 2, y: 230, r: 26 },
+        { x: W / 2 - 90, y: 310, r: 22 },
+        { x: W / 2 + 90, y: 310, r: 22 },
+        { x: W / 2 - 50, y: 420, r: 20 },
+        { x: W / 2 + 50, y: 420, r: 20 }
+      ];
+      this.bumperSprites = [];
+      bumperDefs.forEach(def => {
+        const body = this.matter.add.circle(def.x, def.y, def.r, {
+          isStatic: true, restitution: 1.6, friction: 0, label: 'bumper'
+        });
+        const circ = this.add.circle(def.x, def.y, def.r, 0x1e293b).setStrokeStyle(2, 0x38bdf8).setDepth(3);
+        circ.body = body;
+        body.gameObj = circ;
+        this.bumperSprites.push(circ);
+      });
+
+      // slingshots near flippers (triangular, high restitution)
+      this.buildSlingshot(70, H - 150, 1);
+      this.buildSlingshot(W - 70, H - 150, -1);
+    }
+
+    buildSlingshot(x, y, dir) {
+      const body = this.matter.add.rectangle(x, y, 14, 70, {
+        isStatic: true, restitution: 1.8, label: 'slingshot', angle: dir * 0.35
+      });
+      const rect = this.add.rectangle(x, y, 14, 70, 0x1e293b).setStrokeStyle(2, 0xf97316)
+        .setRotation(dir * 0.35).setDepth(3);
+      body.gameObj = rect;
+    }
+
+    buildFlippers() {
+      const flipperY = H - 60;
+      const flipperLen = 72, flipperThick = 16;
+
+      // Left flipper
+      this.leftPivot = { x: W / 2 - 60, y: flipperY };
+      this.leftFlipper = this.matter.add.rectangle(
+        this.leftPivot.x + flipperLen / 2, this.leftPivot.y, flipperLen, flipperThick,
+        { label: 'flipperL', chamfer: { radius: 8 }, density: 0.01, friction: 0 }
+      );
+      this.leftPin = this.matter.add.circle(this.leftPivot.x, this.leftPivot.y, 2, { isStatic: true, isSensor: true });
+      this.leftConstraint = this.matter.add.joint(this.leftPin, this.leftFlipper, 0, 1, {
+        pointA: { x: 0, y: 0 }, pointB: { x: -flipperLen / 2, y: 0 }
+      });
+      this.leftRestAngle = 0.5;
+      this.leftUpAngle = -0.5;
+      Phaser.Physics.Matter.Matter.Body.setAngle(this.leftFlipper, this.leftRestAngle);
+      this.leftTarget = this.leftRestAngle;
+      this.leftGfx = this.add.rectangle(0, 0, flipperLen, flipperThick, 0xfbbf24).setDepth(4);
+
+      // Right flipper (mirrored)
+      this.rightPivot = { x: W / 2 + 60, y: flipperY };
+      this.rightFlipper = this.matter.add.rectangle(
+        this.rightPivot.x - flipperLen / 2, this.rightPivot.y, flipperLen, flipperThick,
+        { label: 'flipperR', chamfer: { radius: 8 }, density: 0.01, friction: 0 }
+      );
+      this.rightPin = this.matter.add.circle(this.rightPivot.x, this.rightPivot.y, 2, { isStatic: true, isSensor: true });
+      this.rightConstraint = this.matter.add.joint(this.rightPin, this.rightFlipper, 0, 1, {
+        pointA: { x: 0, y: 0 }, pointB: { x: flipperLen / 2, y: 0 }
+      });
+      this.rightRestAngle = -0.5;
+      this.rightUpAngle = 0.5;
+      Phaser.Physics.Matter.Matter.Body.setAngle(this.rightFlipper, this.rightRestAngle);
+      this.rightTarget = this.rightRestAngle;
+      this.rightGfx = this.add.rectangle(0, 0, flipperLen, flipperThick, 0xfbbf24).setDepth(4);
+
+      this.leftActive = false;
+      this.rightActive = false;
+    }
+
+    flipLeft(down) {
+      this.leftActive = down;
+      this.leftTarget = down ? this.leftUpAngle : this.leftRestAngle;
+      if (down) SFX.flipper();
+    }
+    flipRight(down) {
+      this.rightActive = down;
+      this.rightTarget = down ? this.rightUpAngle : this.rightRestAngle;
+      if (down) SFX.flipper();
+    }
+
+    buildPlunger() {
+      const x = W - 46, yTop = H - 80, yBottom = H - 20;
+      this.plungerBody = this.matter.add.rectangle(x, yBottom, 32, 16, {
+        isStatic: true, label: 'plunger'
+      });
+      this.plungerMinY = yTop;
+      this.plungerMaxY = yBottom;
+      this.plungerCharging = false;
+      this.plungerPower = 0;
+      this.plungerGfx = this.add.rectangle(x, yBottom, 32, 10, 0xfbbf24).setDepth(4);
+    }
+
+    plungerDown() {
+      if (this.plungerCharging || !state.ballInPlay) return;
+      this.plungerCharging = true;
+      this.plungerPower = 0;
+    }
+
+    plungerRelease() {
+      if (!this.plungerCharging) return;
+      this.plungerCharging = false;
+      const power = this.plungerPower;
+      if (this.ballResting) {
+        const force = -0.028 - power * 0.001;
+        Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, { x: (Math.random() - 0.5) * 0.5, y: force * 60 });
+        SFX.plunge();
+        this.ballResting = false;
+      }
+      this.plungerPower = 0;
+    }
+
+    buildBall() {
+      this.ball = null;
+      this.ballResting = false;
+      this.spawnBall();
+    }
+
+    spawnBall() {
+      if (this.ball) {
+        this.matter.world.remove(this.ball);
+        if (this.ballGfx) this.ballGfx.destroy();
+      }
+      const x = W - 46, y = H - 40;
+      this.ball = this.matter.add.circle(x, y, 9, {
+        restitution: 0.42, friction: 0.002, frictionAir: 0.0008, density: 0.02, label: 'ball'
+      });
+      this.ballResting = true;
+      this.ballGfx = this.add.circle(x, y, 9, 0xf8fafc).setDepth(5);
+      this.ballTrail = [];
+      state.ballInPlay = true;
+    }
+
+    setupTouch() {
+      const tzLeft = document.getElementById('tzLeft');
+      const tzRight = document.getElementById('tzRight');
+      const touchzones = document.getElementById('touchzones');
+      touchzones.classList.add('active');
+
+      tzLeft.addEventListener('touchstart', (e) => { e.preventDefault(); this.flipLeft(true); }, { passive: false });
+      tzLeft.addEventListener('touchend', (e) => { e.preventDefault(); this.flipLeft(false); }, { passive: false });
+      tzRight.addEventListener('touchstart', (e) => { e.preventDefault(); this.flipRight(true); }, { passive: false });
+      tzRight.addEventListener('touchend', (e) => { e.preventDefault(); this.flipRight(false); }, { passive: false });
+
+      const plungerZone = document.getElementById('plungerZone');
+      const startPlunge = (e) => { e.preventDefault(); this.plungerDown(); };
+      const endPlunge = (e) => { e.preventDefault(); this.plungerRelease(); };
+      plungerZone.addEventListener('touchstart', startPlunge, { passive: false });
+      plungerZone.addEventListener('touchend', endPlunge, { passive: false });
+      plungerZone.addEventListener('mousedown', startPlunge);
+      window.addEventListener('mouseup', endPlunge);
+    }
+
+    handleCollisions(event) {
+      event.pairs.forEach(pair => {
+        const labels = [pair.bodyA.label, pair.bodyB.label];
+        const other = (lbl) => labels.includes(lbl);
+
+        if (other('bumper') && other('ball')) {
+          const bumperBody = pair.bodyA.label === 'bumper' ? pair.bodyA : pair.bodyB;
+          this.pulseBumper(bumperBody);
+          const pts = addScore(100);
+          this.popText(bumperBody.position.x, bumperBody.position.y, '+' + pts, '#38bdf8');
+          setHeat(state.heat + 4, this);
+          SFX.bumper();
+        }
+        if (other('slingshot') && other('ball')) {
+          const pts = addScore(60);
+          setHeat(state.heat + 3, this);
+          SFX.slingshot();
+        }
+        if (other('coolLane') && other('ball')) {
+          this.triggerCoolLane();
+        }
+      });
+    }
+
+    pulseBumper(body) {
+      const gfx = body.gameObj;
+      if (!gfx) return;
+      this.tweens.add({
+        targets: gfx, scale: 1.3, duration: 70, yoyo: true, ease: 'Quad.easeOut'
+      });
+      this.cameras.main.shake(60, 0.002);
+    }
+
+    triggerCoolLane() {
+      const idx = tierIndex(state.heat);
+      if (idx >= 3) { // Blazing or Molten
+        const banked = addScore(300);
+        this.popText(W / 2, 60, 'BANKED +' + banked, '#4ade80');
+        setHeat(0, this);
+        SFX.cool();
+        this.coolLaneText.setColor('#4ade80');
+        this.tweens.add({
+          targets: this.coolLaneText, duration: 400, yoyo: true,
+          onComplete: () => this.coolLaneText.setColor('#475569')
+        });
+      } else {
+        this.popText(W / 2, 60, 'not hot enough', '#64748b');
+      }
+    }
+
+    popText(x, y, msg, color) {
+      const t = this.add.text(x, y, msg, {
+        fontFamily: 'Courier New', fontSize: '14px', fontStyle: 'bold', color
+      }).setOrigin(0.5).setDepth(10);
+      this.tweens.add({
+        targets: t, y: y - 36, alpha: 0, duration: 650, onComplete: () => t.destroy()
+      });
+    }
+
+    drain() {
+      state.ballInPlay = false;
+      SFX.drain();
+      this.cameras.main.shake(200, 0.006);
+      state.balls -= 1;
+      updateBallsHud();
+      setHeat(0, this);
+      if (state.balls <= 0) {
+        this.endGame();
+      } else {
+        this.time.delayedCall(500, () => this.spawnBall());
+      }
+    }
+
+    endGame() {
+      state.running = false;
+      if (state.score > state.best) {
+        state.best = state.score;
+        localStorage.setItem(BEST_KEY, String(state.best));
+      }
+      bestVal.textContent = state.best;
+      overlayBest.textContent = state.best;
+      document.querySelector('#overlay h1').textContent = 'DRAINED';
+      document.querySelector('#overlay p').innerHTML =
+        'Final score: <b style="color:#fbbf24">' + state.score + '</b>' +
+        (state.score >= state.best && state.score > 0 ? '<br><span style="color:#4ade80">New best!</span>' : '');
+      startBtn.textContent = 'Play Again';
+      overlay.style.display = 'flex';
+    }
+
+    update(time, delta) {
+      // flipper spring toward target angle
+      const speed = 0.045 * (delta / 16.67) * 10;
+      this.updateFlipperAngle(this.leftFlipper, this.leftTarget, speed);
+      this.updateFlipperAngle(this.rightFlipper, this.rightTarget, speed);
+
+      // sync flipper graphics
+      this.leftGfx.setPosition(this.leftFlipper.position.x, this.leftFlipper.position.y);
+      this.leftGfx.setRotation(this.leftFlipper.angle);
+      this.rightGfx.setPosition(this.rightFlipper.position.x, this.rightFlipper.position.y);
+      this.rightGfx.setRotation(this.rightFlipper.angle);
+
+      // plunger charge
+      if (this.plungerCharging) {
+        this.plungerPower = Math.min(100, this.plungerPower + delta * 0.15);
+        const pct = this.plungerPower / 100;
+        document.getElementById('plungerKnob').style.bottom = (pct * 60) + '%';
+      } else {
+        document.getElementById('plungerKnob').style.bottom = '0%';
+      }
+
+      if (!state.running || !this.ball) return;
+
+      // sync ball graphic
+      this.ballGfx.setPosition(this.ball.position.x, this.ball.position.y);
+
+      // heat-based ball speed scaling: apply a small extra impulse toward current velocity when hot
+      const tier = tierFor(state.heat);
+      if (!this.ballResting) {
+        const vel = this.ball.velocity;
+        const sp = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+        if (sp > 0.1 && sp < 14) {
+          const boost = (tier.speed - 1) * 0.06;
+          Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, {
+            x: vel.x * (1 + boost), y: vel.y * (1 + boost)
+          });
+        }
+      }
+
+      // passive heat decay while ball in play (slow)
+      if (!this.ballResting) {
+        this.heatDecayAccum += delta;
+        if (this.heatDecayAccum > 1000) {
+          this.heatDecayAccum = 0;
+          setHeat(state.heat - 1.5, this);
+        }
+      }
+
+      // drain check — ball falls below flipper gap at bottom center
+      if (!this.ballResting && this.ball.position.y > H + 20) {
+        this.drain();
+      }
+    }
+
+    updateFlipperAngle(body, target, maxStep) {
+      let diff = target - body.angle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const step = Phaser.Math.Clamp(diff, -maxStep, maxStep);
+      Phaser.Physics.Matter.Matter.Body.setAngularVelocity(body, step);
+    }
+  }
+
+  // ---------- Boot ----------
+  const config = {
+    type: Phaser.AUTO,
+    width: W,
+    height: H,
+    parent: 'game-container',
+    backgroundColor: '#0a0a10',
+    physics: { default: 'matter', matter: { gravity: { y: 1.0 }, debug: false } },
+    scene: [TableScene],
+    scale: { mode: Phaser.Scale.NONE }
+  };
+
+  // Resize to fit viewport while keeping aspect
+  function sizeCanvas() {
+    const container = document.getElementById('game-container');
+    const maxW = window.innerWidth;
+    const maxH = window.innerHeight;
+    const scale = Math.min(maxW / W, maxH / H, 1.15);
+    container.style.width = (W * scale) + 'px';
+    container.style.height = (H * scale) + 'px';
+    const canvas = container.querySelector('canvas');
+    if (canvas) {
+      canvas.style.width = (W * scale) + 'px';
+      canvas.style.height = (H * scale) + 'px';
+    }
+  }
+
+  let game = null;
+  window.addEventListener('resize', sizeCanvas);
+
+  startBtn.addEventListener('click', () => {
+    overlay.style.display = 'none';
+    if (!game) {
+      game = new Phaser.Game(config);
+      game.events.once('ready', sizeCanvas);
+      setTimeout(sizeCanvas, 50);
+    }
+    state.score = 0;
+    state.balls = 3;
+    scoreVal.textContent = '0';
+    updateBallsHud();
+    state.running = true;
+    const scene = game.scene.getScene('table');
+    if (scene && scene.scene.isActive()) {
+      // restart fresh
+      setHeat(0, scene);
+      scene.spawnBall();
+    } else {
+      setHeat(0, null);
+    }
   });
+
+  // patch: ensure heat resets visually even before scene exists
+  setHeat(0, null);
+})();
 </script>
 </body>
 </html>
