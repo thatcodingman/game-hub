@@ -14,7 +14,11 @@
 <div id="game"></div>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 <script>
-const W = 960, H = 540, GROUND = 470, WORLD_W = 7600, FINISH_X = 7000, HW = 42;
+const W = 960, H = 540, GROUND = 470, HW = 42;
+const ND = 5, D_START = 700, D_W = 2200;
+const ARENA_X = D_START + ND * D_W;
+const GATES = [0, 1, 2, 3, 4].map(i => D_START + (i + 1) * D_W - 30).concat([ARENA_X + 1270]);
+const FINISH_X = ARENA_X + 1600, WORLD_W = FINISH_X + 600;
 const R = Math.random;
 
 function mulberry32(a) {
@@ -35,6 +39,19 @@ function lighten(c, f) {
   return ((r << 16) | (g << 8) | b) >>> 0;
 }
 const ACC = [0x00e5ff, 0xff3df2, 0x7dff6a, 0xffb02e];
+const MUTS = [
+  { id: 'lightning', short: 'LIGHTNING', name: 'CHAIN LIGHTNING', col: 0x9fe8ff, desc: 'Fire breath arcs to 2 extra buildings and a vehicle.' },
+  { id: 'napalm', short: 'NAPALM', name: 'NAPALM BREATH', col: 0xff9a2a, desc: 'Burning buildings ignite their neighbors and burn twice as hard.' },
+  { id: 'lungs', short: 'LUNGS', name: 'BIG LUNGS', col: 0xffd27a, desc: 'Fire uses 40% less fuel and recharges 65% faster.' },
+  { id: 'shock', short: 'SHOCK', name: 'SHOCKWAVE STOMP', col: 0x9be07a, desc: 'Stomp radius +50%. Stomps rattle everything nearby.' },
+  { id: 'seismic', short: 'SEISMIC', name: 'SEISMIC SLAM', col: 0x7ae0ff, desc: 'Air slam is 35% wider and hits 40% harder.' },
+  { id: 'spin', short: 'SPIN TAIL', name: 'SPINNING TAIL', col: 0xff8ab8, desc: 'Tail swipe hits both sides with +25% damage.' },
+  { id: 'hide', short: 'HIDE', name: 'THICK HIDE', col: 0xc4e58a, desc: '+30 max HP and take 30% less damage.' },
+  { id: 'regen', short: 'REGEN', name: 'REGENERATION', col: 0x6be07a, desc: 'Heal 3 HP every time you destroy a building.' },
+  { id: 'rageEngine', short: 'RAGE', name: 'RAGE ENGINE', col: 0xff6a6a, desc: 'Rage builds 50% faster and Rampage lasts 2 seconds longer.' },
+  { id: 'counter', short: 'COUNTER', name: 'COUNTER-EVOLUTION', col: 0xb28bff, desc: 'Foam wears off in a blink, mines deal half damage, armor stops resisting you.' },
+  { id: 'roarM', short: 'ROAR+', name: 'ROAR MASTERY', col: 0xff9a6a, desc: 'Roar recharges in 8s, reaches farther and hurts more.' }
+];
 function anyJust(keys) {
   let r = false;
   for (const k of keys) { if (Phaser.Input.Keyboard.JustDown(k)) r = true; }
@@ -65,6 +82,9 @@ const Snd = {
       if (!this.ctx) {
         const A = window.AudioContext || window.webkitAudioContext;
         this.ctx = new A();
+        this.master = this.ctx.createGain(); this.master.connect(this.ctx.destination);
+        try { this.muted = localStorage.getItem('kaiju-muted') === '1'; } catch (e) { this.muted = false; }
+        this.master.gain.value = this.muted ? 0 : 1;
         const n = this.ctx.sampleRate * 2;
         this.buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
         const d = this.buf.getChannelData(0);
@@ -84,7 +104,7 @@ const Snd = {
       const g = c.createGain();
       g.gain.setValueAtTime(vol, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-      s.connect(f); f.connect(g); g.connect(c.destination);
+      s.connect(f); f.connect(g); g.connect(this.master);
       s.start(t); s.stop(t + dur + 0.05);
     } catch (e) {}
   },
@@ -98,9 +118,14 @@ const Snd = {
       const g = c.createGain();
       g.gain.setValueAtTime(vol, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-      o.connect(g); g.connect(c.destination);
+      o.connect(g); g.connect(this.master);
       o.start(t); o.stop(t + dur + 0.05);
     } catch (e) {}
+  },
+  setMuted(m) {
+    this.muted = m;
+    try { localStorage.setItem('kaiju-muted', m ? '1' : '0'); } catch (e) {}
+    if (this.master) this.master.gain.value = m ? 0 : 1;
   },
   thump(v) { this._tone(110, 32, 0.3, 0.7 * v, 'sine'); this._noise(0.25, 500, 80, 0.3 * v); },
   crash(v) { this._noise(0.7, 2200, 200, 0.45 * v); this._tone(80, 30, 0.5, 0.5 * v, 'sine'); },
@@ -117,7 +142,7 @@ const Snd = {
         const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.7;
         const g = c.createGain(); g.gain.value = 0.0001;
         g.gain.linearRampToValueAtTime(0.16, c.currentTime + 0.08);
-        s.connect(f); f.connect(g); g.connect(c.destination); s.start();
+        s.connect(f); f.connect(g); g.connect(this.master); s.start();
         this.fireSrc = s; this.fireGain = g;
       } else if (!on && this.fireSrc) {
         const c = this.ctx, s = this.fireSrc, g = this.fireGain;
@@ -134,7 +159,7 @@ class Main extends Phaser.Scene {
   constructor() { super('Main'); }
 
   create() {
-    this.rng = mulberry32(20261026);
+    this.rng = mulberry32((Math.random() * 1e9) | 0);
     this.state = this.registry.get('skip') ? 'play' : 'title';
     this.t = 0; this.score = 0; this.rage = 0; this.rageIdle = 0;
     this.hitstop = 0; this.newsT = 0; this.blockedT = 0; this.acted = false;
@@ -147,6 +172,12 @@ class Main extends Phaser.Scene {
     this.foamT = 0; this.rampage = 0; this.reviewT = 12; this.wave = 0;
     this.combo = 0; this.comboT = 0; this.lastStyle = null; this.roarCd = 0; this.bestCombo = 0;
     this.flyers = []; this.flyT = 0; this.skyLast = null;
+    this.blurFn = () => { if (this.state === 'play') this.togglePause(); };
+    this.game.events.on('blur', this.blurFn);
+    this.events.once('shutdown', () => this.game.events.off('blur', this.blurFn));
+    this.inputLock = 0; this.dist = 0; this.tier = 0; this.S = 0.75; this.Sv = 0.75; this.hw = HW * 0.75; this.dmgMul = 1;
+    this.mut = {}; this.mutList = []; this.rampMax = 6; this.boss = null; this.pickUi = []; this.offer = []; this.arcs = [];
+    this.dStat = []; for (let i = 0; i < ND; i++) this.dStat.push({ total: 0, wrecked: 0 });
     for (let i = 0; i < 3; i++) { this.spawnFlyer(); const f0 = this.flyers[this.flyers.length - 1]; f0.x = 120 + R() * (W - 240); }
 
     this.drawWorld();
@@ -227,6 +258,12 @@ class Main extends Phaser.Scene {
     this.add.text(FINISH_X + 47, GROUND - 280, 'COMMUTE COMPLETE', { fontFamily: 'monospace', fontSize: '16px', fontStyle: 'bold', color: '#7dff6a' }).setOrigin(0.5).setDepth(6);
     const fg = this.add.graphics().setDepth(13);
     fg.fillGradientStyle(0x7a5aa0, 0x7a5aa0, 0x7a5aa0, 0x7a5aa0, 0, 0, 0.35, 0.35); fg.fillRect(0, GROUND - 80, WORLD_W, 80);
+    const ag = this.add.graphics().setDepth(6);
+    for (let ax = ARENA_X; ax < GATES[5]; ax += 80) { ag.fillStyle(0xff3040, 0.55); ag.fillRect(ax, GROUND + 14, 40, 4); }
+    this.add.text(ARENA_X + 600, GROUND - 130, 'MECH-ZILLA ARENA', { fontFamily: 'monospace', fontSize: '28px', fontStyle: 'bold', color: '#ff6a6a' }).setOrigin(0.5).setDepth(6).setAlpha(0.6);
+    this.barG = this.add.graphics().setDepth(21);
+    this.bossG = this.add.graphics().setDepth(19);
+    this.barTxt = this.add.text(0, GROUND - 300, '', { fontFamily: 'monospace', fontSize: '14px', fontStyle: 'bold', color: '#ff8080', align: 'center' }).setOrigin(0.5).setDepth(21);
     this.skyG = this.add.graphics().setScrollFactor(0).setDepth(-80);
     this.fx = this.add.graphics().setDepth(30);
     this.carG = this.add.graphics().setDepth(11);
@@ -234,30 +271,36 @@ class Main extends Phaser.Scene {
   }
 
   makeCity() {
-    let x = 720; const r = this.rng;
-    while (x < FINISH_X - 260) {
-      const p = r();
-      const type = p < 0.38 ? 'apartment' : p < 0.62 ? 'glass' : p < 0.74 ? 'fuel' : 'shop';
-      const T = TYPES[type];
-      const w = Math.round(T.w[0] + r() * (T.w[1] - T.w[0]));
-      const fl = T.fl[0] + Math.floor(r() * (T.fl[1] - T.fl[0] + 1));
-      const col = T.cols[Math.floor(r() * T.cols.length)];
-      const cols = Math.max(2, Math.floor((w - 16) / 28));
-      const lit = [];
-      for (let i = 0; i < fl; i++) { const row = []; for (let c = 0; c < cols; c++) row.push(r() < 0.45); lit.push(row); }
-      const cracks = [];
-      for (let i = 0; i < 9; i++) cracks.push({ x1: r(), y1: r() * 0.9, x2: r(), y2: r() * 0.9 });
-      const rub = [];
-      for (let i = 0; i < 10; i++) rub.push({ x: (r() - 0.5) * w, w: 14 + r() * 28, h: 6 + r() * 20 });
-      const b = {
-        type, x: x + w / 2, w, fh: T.fh, maxFl: fl, floors: fl, hpf: T.hpf,
-        maxHp: fl * T.hpf, hp: fl * T.hpf, alive: true, flash: 0, burn: 0, burnTick: 0,
-        col, dark: darken(col, 0.72), accent: ACC[(Math.floor(x) + w) % 4], cols, lit, cracks, rub
-      };
-      b.g = this.add.graphics().setPosition(b.x, GROUND).setDepth(10);
-      this.buildings.push(b);
-      this.redraw(b);
-      x += w + 30 + r() * 110;
+    const r = this.rng;
+    for (let d = 0; d < ND; d++) {
+      const hpMul = 1.0 + 0.35 * d;
+      let x = D_START + d * D_W + 70; const endX = D_START + (d + 1) * D_W - 150;
+      while (x < endX) {
+        const p = r();
+        const type = p < 0.34 ? 'apartment' : p < 0.6 ? 'glass' : p < 0.72 ? 'fuel' : 'shop';
+        const T = TYPES[type];
+        const w = Math.round(T.w[0] + r() * (T.w[1] - T.w[0]));
+        if (x + w > endX + 40) break;
+        const fl = type === 'fuel' ? 2 : Math.max(2, T.fl[0] - 2 + Math.floor(r() * (T.fl[1] - T.fl[0] + 1)) + Math.floor(d * 1.2));
+        const col = T.cols[Math.floor(r() * T.cols.length)];
+        const cols = Math.max(2, Math.floor((w - 16) / 28));
+        const lit = [];
+        for (let i = 0; i < fl; i++) { const row = []; for (let c = 0; c < cols; c++) row.push(r() < 0.45); lit.push(row); }
+        const cracks = [];
+        for (let i = 0; i < 9; i++) cracks.push({ x1: r(), y1: r() * 0.9, x2: r(), y2: r() * 0.9 });
+        const rub = [];
+        for (let i = 0; i < 10; i++) rub.push({ x: (r() - 0.5) * w, w: 14 + r() * 28, h: 6 + r() * 20 });
+        const b = {
+          type, x: x + w / 2, w, fh: T.fh, maxFl: fl, floors: fl, hpf: T.hpf * hpMul,
+          maxHp: fl * T.hpf * hpMul, hp: fl * T.hpf * hpMul, alive: true, flash: 0, burn: 0, burnTick: 0,
+          col, dark: darken(col, 0.72), accent: ACC[(Math.floor(x) + w) % 4], cols, lit, cracks, rub, d: d
+        };
+        b.g = this.add.graphics().setPosition(b.x, GROUND).setDepth(10);
+        this.buildings.push(b);
+        this.redraw(b);
+        this.dStat[d].total++;
+        x += w + 12 + r() * 40;
+      }
     }
     this.stats.total = this.buildings.length;
   }
@@ -337,7 +380,7 @@ class Main extends Phaser.Scene {
   makeCars() {
     const r = mulberry32(77);
     const cols = [0x00e5ff, 0xff3df2, 0x7dff6a, 0xffb02e, 0xb28bff];
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 44; i++) {
       this.cars.push({ x: 300 + r() * (FINISH_X - 300), dir: r() < 0.5 ? -1 : 1, sp: 50 + r() * 70, col: cols[i % 5], alive: true });
     }
   }
@@ -376,7 +419,11 @@ class Main extends Phaser.Scene {
       ramp: this.add.text(W / 2, 62, '', st(22, '#ff6a6a')).setOrigin(0.5),
       combo: this.add.text(W / 2, 86, '', st(18, '#ffe27a')).setOrigin(0.5),
       rr: this.add.text(16, 114, 'ROAR', st(9, '#cccccc')),
-      legend: this.add.text(W / 2, H - 7, 'MOVE: ARROWS/A-D   JUMP: UP/W/SPACE   STOMP: S/DOWN (IN AIR = SLAM)   TAIL: X   FIRE: HOLD C   ROAR: V   RESTART: R', st(11, '#ffffff')).setOrigin(0.5, 1)
+      dist: this.add.text(W - 16, 50, '', st(12, '#ffe27a')).setOrigin(1, 0),
+      muts: this.add.text(W - 16, 68, '', st(10, '#bfe8ff')).setOrigin(1, 0).setAlign('right'),
+      boss: this.add.text(W / 2, 134, 'MECH-ZILLA', st(11, '#ff9a9a')).setOrigin(0.5),
+      arrow: this.add.text(0, 0, '', st(11, '#ffe27a')).setOrigin(0.5),
+      legend: this.add.text(W / 2, H - 7, 'MOVE: ARROWS/A-D   JUMP: UP/W/SPACE   STOMP: S (AIR = SLAM)   TAIL: X   FIRE: HOLD C   ROAR: V   PAUSE: P   MUTE: M   RESTART: R', st(11, '#ffffff')).setOrigin(0.5, 1)
     };
     Object.values(this.txt).forEach(t => t.setScrollFactor(0).setDepth(1001));
     this.touchDev = this.sys.game.device.input.touch;
@@ -410,9 +457,38 @@ class Main extends Phaser.Scene {
       g.fillStyle(0x000000, 0.5); g.fillRect(52, y, 120, 8);
       g.fillStyle(col, 1); g.fillRect(52, y, sum > 0 ? 120 * h[key] / sum : 0, 8);
     });
+    // district / mutations / boss bar
+    if (this.dist < ND) {
+      const ds = this.dStat[this.dist], need = Math.ceil(ds.total * 0.75);
+      this.txt.dist.setText('DISTRICT ' + (this.dist + 1) + '/' + ND + '   SMASH ' + Math.min(ds.wrecked, need) + '/' + need);
+    } else this.txt.dist.setText(this.dist === ND ? 'BOSS ARENA' : 'HEAD HOME!');
+    this.txt.muts.setText(this.mutList.map(m => m.short).join('\n'));
+    const bsv = !!(this.boss && this.boss.alive);
+    this.txt.boss.setVisible(bsv);
+    if (bsv) {
+      g.fillStyle(0x000000, 0.6); g.fillRect(W / 2 - 220, 114, 440, 12);
+      g.fillStyle(0xff4d4d, 1); g.fillRect(W / 2 - 220, 114, 440 * Math.max(0, this.boss.hp / this.boss.maxHp), 12);
+    }
+    // off-screen target arrow
+    let tgx = null;
+    if (this.state === 'play') {
+      if (this.dist < ND) {
+        let best = 1e9;
+        for (const bd of this.buildings) { if (bd.alive && bd.d === this.dist) { const dd = Math.abs(bd.x - k.x); if (dd < best) { best = dd; tgx = bd.x; } } }
+      } else if (this.dist === ND) tgx = (this.boss && this.boss.alive) ? this.boss.x : ARENA_X + 500;
+      else tgx = FINISH_X;
+    }
+    const camC = this.cameras.main.scrollX + W / 2;
+    if (tgx !== null && Math.abs(tgx - camC) > W / 2 + 30) {
+      const right = tgx > camC, ax = right ? W - 28 : 28, pulse = 4 * Math.sin(this.t * 6);
+      g.fillStyle(0xffe27a, 0.9);
+      if (right) g.fillTriangle(ax + 10 + pulse, 170, ax - 8 + pulse, 158, ax - 8 + pulse, 182);
+      else g.fillTriangle(ax - 10 - pulse, 170, ax + 8 - pulse, 158, ax + 8 - pulse, 182);
+      this.txt.arrow.setText(Math.round(Math.abs(tgx - k.x) / 10) + 'm').setPosition(ax, 194).setVisible(true);
+    } else this.txt.arrow.setVisible(false);
     // roar cooldown
     g.fillStyle(0x000000, 0.5); g.fillRect(52, 114, 120, 8);
-    const rr = 1 - Math.max(0, this.roarCd) / 14;
+    const rr = 1 - Math.max(0, this.roarCd) / (this.mut.roarM ? 8 : 14);
     g.fillStyle(rr >= 1 ? 0xffffff : 0xff9a6a, 1); g.fillRect(52, 114, 120 * rr, 8);
     // combo
     if (this.combo >= 2 && this.state === 'play') {
@@ -444,7 +520,7 @@ class Main extends Phaser.Scene {
   makeInput() {
     const kb = this.input.keyboard;
     this.cur = kb.createCursorKeys();
-    this.K = kb.addKeys({ A: 'A', D: 'D', W: 'W', S: 'S', Z: 'Z', X: 'X', C: 'C', J: 'J', K: 'K', L: 'L', SPACE: 'SPACE', R: 'R', V: 'V' });
+    this.K = kb.addKeys({ A: 'A', D: 'D', W: 'W', S: 'S', Z: 'Z', X: 'X', C: 'C', J: 'J', K: 'K', L: 'L', SPACE: 'SPACE', R: 'R', V: 'V', ONE: 'ONE', TWO: 'TWO', THREE: 'THREE', P: 'P', M: 'M', ESC: 'ESC' });
     kb.addCapture('UP,DOWN,LEFT,RIGHT,SPACE');
     this.touch = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false, roar: false };
     this.inp = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false };
@@ -493,13 +569,16 @@ class Main extends Phaser.Scene {
     add(this.add.text(W / 2, 140, 'KAIJU COMMUTE', { fontFamily: 'monospace', fontSize: '64px', fontStyle: 'bold', color: '#8be28b' }).setOrigin(0.5));
     add(this.add.text(W / 2, 205, 'The monster is late for work. The military is learning.', { fontFamily: 'monospace', fontSize: '18px', color: '#ffe27a' }).setOrigin(0.5));
     add(this.add.text(W / 2, 300,
-      'ARROWS / A D  MOVE      UP / W / SPACE  JUMP\nS / DOWN  STOMP  (press in the air to SLAM)\nX  TAIL SWIPE      HOLD C  FIRE BREATH\nV  ROAR (wipes what the military learned)\n\nSmash your way to the beach. Different buildings fall to different attacks.\nThe military learns what you spam. Dodge shells, vary your moves.',
+      'ARROWS / A D  MOVE      UP / W / SPACE  JUMP\nS / DOWN  STOMP  (press in the air to SLAM)\nX  TAIL SWIPE      HOLD C  FIRE BREATH\nV  ROAR (wipes what the military learned)\n\nWreck each district to grow and pick a mutation.\nThe military counters what you spam. Beat the mech, get home.',
       { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    let bestStage = 0;
+    try { bestStage = parseInt(localStorage.getItem('kaiju-commute-beststage') || '0', 10) || 0; } catch (e) {}
+    if (bestStage) add(this.add.text(W / 2, 408, 'BEST RUN: ' + (bestStage >= 7 ? 'VICTORY' : bestStage === 6 ? 'BOSS ARENA' : 'DISTRICT ' + bestStage), { fontFamily: 'monospace', fontSize: '16px', color: '#9be07a' }).setOrigin(0.5));
     const prompt = add(this.add.text(W / 2, 450, this.touchDev ? 'TAP TO START' : 'PRESS ANY KEY TO START', { fontFamily: 'monospace', fontSize: '22px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5));
     const tw = this.tweens.add({ targets: prompt, alpha: 0.25, duration: 600, yoyo: true, repeat: -1 });
     const go = () => {
       if (this.state !== 'title') return;
-      Snd.init(); tw.stop();
+      Snd.init(); tw.stop(); this.inputLock = 0.35;
       this.ov.forEach(o => o.destroy());
       this.state = 'play';
       this.news('MONSTER LATE FOR WORK. AGAIN.');
@@ -511,7 +590,7 @@ class Main extends Phaser.Scene {
 
   checkFinish() {
     if (this.state !== 'play' || this.k.x < FINISH_X) return;
-    this.state = 'done';
+    this.state = 'done'; this.saveBest();
     Snd.fire(false); this.wasFiring = false;
     let best = 0;
     try { best = parseInt(localStorage.getItem('kaiju-commute-best') || '0', 10) || 0; } catch (e) {}
@@ -520,7 +599,7 @@ class Main extends Phaser.Scene {
     this.news('MONSTER ARRIVES HOME: "TRAFFIC WAS TERRIBLE"');
     const h = this.habit, sum = Math.max(1, h.stomp + h.tail + h.fire);
     const pc = v => Math.round(100 * v / sum) + '%';
-    const g = this.add.rectangle(W / 2, H / 2, 560, 360, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0x8be28b);
+    const g = this.add.rectangle(W / 2, H / 2, 560, 400, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0x8be28b);
     const t = this.add.text(W / 2, H / 2,
       'YOU MADE IT HOME\n\nTIME  ' + this.fmtTime(this.t) +
       '\nBUILDINGS WRECKED  ' + this.stats.wrecked + ' / ' + this.stats.total +
@@ -528,10 +607,15 @@ class Main extends Phaser.Scene {
       '\nBEST COMBO  x' + this.bestCombo +
       '\nSCORE  ' + sc.toLocaleString() + '   BEST  ' + best.toLocaleString() +
       '\nSTYLE  STOMP ' + pc(h.stomp) + '  TAIL ' + pc(h.tail) + '  FIRE ' + pc(h.fire) +
-      '\n\nThe military is taking notes.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO COMMUTE AGAIN',
+      '\nBUILD  ' + (this.mutList.map(m => m.short).join(' + ') || 'NONE') + '\n\nThe military is taking notes.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO COMMUTE AGAIN',
       { fontFamily: 'monospace', fontSize: '18px', color: '#ffffff', align: 'center', lineSpacing: 6 })
       .setOrigin(0.5).setScrollFactor(0).setDepth(2001);
     this.time.delayedCall(900, () => this.input.once('pointerdown', () => this.restart()));
+  }
+
+  saveBest() {
+    const stage = this.state === 'done' ? 7 : Math.min(this.dist + 1, 6);
+    try { const prev = parseInt(localStorage.getItem('kaiju-commute-beststage') || '0', 10) || 0; if (stage > prev) localStorage.setItem('kaiju-commute-beststage', String(stage)); } catch (e) {}
   }
 
   restart() { Snd.fire(false); this.registry.set('skip', true); this.scene.restart(); }
@@ -541,28 +625,43 @@ class Main extends Phaser.Scene {
     const dt = Math.min(delta, 40) / 1000;
     if (this.state === 'title') { this.k.walk = 0; this.drawAll(time); this.updateHud(dt); return; }
     if (Phaser.Input.Keyboard.JustDown(this.K.R)) { this.restart(); return; }
+    if (Phaser.Input.Keyboard.JustDown(this.K.M)) { Snd.init(); Snd.setMuted(!Snd.muted); this.news(Snd.muted ? 'SOUND OFF' : 'SOUND ON'); }
+    if ((this.state === 'play' || this.state === 'paused') && (Phaser.Input.Keyboard.JustDown(this.K.P) || Phaser.Input.Keyboard.JustDown(this.K.ESC))) this.togglePause();
+    if (this.state === 'paused') { this.drawAll(time); this.updateHud(dt); return; }
+    if (this.state === 'pick') {
+      const KK = this.K;
+      if (Phaser.Input.Keyboard.JustDown(KK.ONE)) this.pickMut(0);
+      else if (Phaser.Input.Keyboard.JustDown(KK.TWO)) this.pickMut(1);
+      else if (Phaser.Input.Keyboard.JustDown(KK.THREE)) this.pickMut(2);
+      this.updateFx(dt); this.drawAll(time); this.updateHud(dt); return;
+    }
     if (this.state === 'done' || this.state === 'dead') {
       this.updateFx(dt); this.drawAll(time); this.updateHud(dt); return;
     }
     if (this.hitstop > 0) { this.hitstop -= delta; this.drawAll(time); this.updateHud(dt); return; }
     this.t += dt;
+    if (this.inputLock > 0) this.inputLock -= dt;
     this.readInput();
+    if (this.inputLock > 0) this.inp = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false, roar: false };
     this.updateKaiju(dt);
     this.updateBuildings(dt);
     this.updateCars(dt);
     this.updateMilitary(dt);
+    this.updateDistrict(dt);
+    this.updateBoss(dt);
     if (this.comboT > 0) { this.comboT -= dt; if (this.comboT <= 0) this.combo = 0; }
     this.updateFx(dt);
     this.rageIdle += dt;
     if (this.rageIdle > 3) this.rage = Math.max(0, this.rage - 6 * dt);
     this.checkFinish();
     this.camLead = lerp(this.camLead, this.k.face * 140, Math.min(1, 3 * dt));
+    this.Sv = lerp(this.Sv, this.S, Math.min(1, 4 * dt));
     this.camT.x = this.k.x + this.camLead;
     this.drawAll(time);
     this.updateHud(dt);
   }
 
-  addRage(a) { this.rage = Math.min(100, this.rage + a); this.rageIdle = 0; }
+  addRage(a) { this.rage = Math.min(100, this.rage + a * (this.mut.rageEngine ? 1.5 : 1)); this.rageIdle = 0; }
   addScore(p) { const a = p * (1 + this.rage / 100) * (1 + Math.min(this.combo, 30) * 0.1); this.score += a; return a; }
   shake(p) { this.cameras.main.shake(140 + p * 8, p * 0.0007, true); }
 
@@ -598,23 +697,24 @@ class Main extends Phaser.Scene {
     const firing = i.fire && canFire;
     if (firing) {
       this.acted = true;
-      this.fireFuel -= (this.rampage > 0 ? 0 : 38 * (this.foamT > 0 ? 2 : 1)) * dt; this.fireIdle = 0;
+      this.fireFuel -= (this.rampage > 0 ? 0 : (this.mut.lungs ? 23 : 38) * (this.foamT > 0 ? 2 : 1)) * dt; this.fireIdle = 0;
       if (this.fireFuel <= 0) { this.fireFuel = 0; this.overheat = true; }
       this.fireT += dt;
       while (this.fireT > 0.07) {
         this.fireT -= 0.07;
-        const x1 = k.face > 0 ? k.x + 20 : k.x - 340, x2 = k.face > 0 ? k.x + 340 : k.x - 20;
+        const x1 = k.face > 0 ? k.x + 20 * this.S : k.x - 340 * this.S, x2 = k.face > 0 ? k.x + 340 * this.S : k.x - 20 * this.S;
         this.damageArea(x1, x2, 4.5, 'fire');
         this.burnCars(x1, x2);
         this.hitUnits(x1, x2, 4.5, 'fire');
+        if (this.mut.lightning) this.zap(k.x + k.face * 62 * this.S, k.y - 166 * this.S);
       }
       for (let n = 0; n < 3; n++) {
-        this.addPart({ kind: 'fire', x: k.x + k.face * 62, y: k.y - 166, vx: k.face * (380 + R() * 160), vy: (R() - 0.5) * 70 - 10,
+        this.addPart({ kind: 'fire', x: k.x + k.face * 62 * this.S, y: k.y - 166 * this.S, vx: k.face * (380 + R() * 160), vy: (R() - 0.5) * 70 - 10,
           life: 0.35 + R() * 0.2, size: 7 + R() * 6 });
       }
     } else {
       this.fireIdle += dt;
-      if (this.fireIdle > 0.5 && this.foamT <= 0) this.fireFuel = Math.min(100, this.fireFuel + 24 * dt);
+      if (this.fireIdle > 0.5 && this.foamT <= 0) this.fireFuel = Math.min(100, this.fireFuel + (this.mut.lungs ? 40 : 24) * dt);
       if (this.overheat && this.fireFuel >= 35) this.overheat = false;
     }
     if (firing && !this.wasFiring) this.noteStyle('fire');
@@ -634,13 +734,13 @@ class Main extends Phaser.Scene {
     for (const b of this.buildings) {
       if (!b.alive) continue;
       const left = b.x - b.w / 2, right = b.x + b.w / 2, roof = GROUND - b.floors * b.fh;
-      if (k.y > roof + 6 && nx + HW > left && nx - HW < right) {
-        nx = k.x <= b.x ? left - HW : right + HW;
+      if (k.y > roof + 6 && nx + this.hw > left && nx - this.hw < right) {
+        nx = k.x <= b.x ? left - this.hw : right + this.hw;
         if (dir && Math.sign(dir) === Math.sign(b.x - k.x)) blocked = true;
         k.vx = 0;
       }
     }
-    k.x = Phaser.Math.Clamp(nx, HW, WORLD_W - HW);
+    k.x = Phaser.Math.Clamp(nx, this.hw, (this.dist < GATES.length ? GATES[this.dist] : WORLD_W) - this.hw);
     this.blockedT = blocked ? this.blockedT + dt : 0;
 
     // vertical + landing / roof support
@@ -650,7 +750,7 @@ class Main extends Phaser.Scene {
     let floorY = GROUND, on = null;
     for (const b of this.buildings) {
       if (!b.alive) continue;
-      if (Math.abs(b.x - k.x) < b.w / 2 + HW * 0.6) {
+      if (Math.abs(b.x - k.x) < b.w / 2 + this.hw * 0.6) {
         const roof = GROUND - b.floors * b.fh;
         if (k.y <= roof + 8 && roof < floorY) { floorY = roof; on = b; }
       }
@@ -674,13 +774,15 @@ class Main extends Phaser.Scene {
         if (Math.abs(k.vx) > 60) { Snd.thump(0.22); this.shake(1.5); this.dust(k.x + k.face * 14, k.y, 2, 60, 10); }
       }
       if (!k.on) {
-        for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < HW + 20) this.crushCar(c, 'foot');
+        for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < this.hw + 20) this.crushCar(c, 'foot');
       }
     }
   }
 
   stompImpact(Rr, dmg, slam) {
     const k = this.k;
+    Rr = Rr * this.S * (this.mut.shock ? 1.5 : 1);
+    if (slam && this.mut.seismic) { Rr *= 1.35; dmg *= 1.4; }
     this.ring(k.x, k.y, Rr);
     this.shake(slam ? 14 : 7);
     if (slam) this.hitstop = Math.max(this.hitstop, 70);
@@ -695,10 +797,11 @@ class Main extends Phaser.Scene {
 
   tailHit() {
     const k = this.k;
-    const x1 = k.face > 0 ? k.x - 230 : k.x - 140, x2 = k.face > 0 ? k.x + 140 : k.x + 230;
+    const S = this.S, spin = !!this.mut.spin, tdm = spin ? 1.25 : 1;
+    const x1 = spin ? k.x - 240 * S : (k.face > 0 ? k.x - 230 * S : k.x - 140 * S), x2 = spin ? k.x + 240 * S : (k.face > 0 ? k.x + 140 * S : k.x + 230 * S);
     this.shake(8);
-    this.damageArea(x1, x2, 36, 'tail', k.x);
-    this.hitUnits(x1, x2, 36, 'tail');
+    this.damageArea(x1, x2, 36 * tdm, 'tail', k.x);
+    this.hitUnits(x1, x2, 36 * tdm, 'tail');
     for (const c of this.cars) if (c.alive && c.x > x1 && c.x < x2) this.crushCar(c, 'tail');
     for (let n = 0; n < 10; n++) {
       this.addPart({ kind: 'spark', x: k.x - k.face * (60 + R() * 150), y: k.y - 60 - R() * 90, vx: (R() - 0.5) * 300, vy: -R() * 250, life: 0.4, size: 3 });
@@ -725,7 +828,7 @@ class Main extends Phaser.Scene {
   damageBuilding(b, amount, kind, fromX) {
     if (!b.alive || this.state === 'done' || this.state === 'dead') return 0;
     const T = TYPES[b.type], mk = kind === 'burn' ? 'fire' : kind;
-    const dmg = amount * (T.mult[mk] || 1) * (this.rampage > 0 ? 1.8 : 1);
+    const dmg = amount * (T.mult[mk] || 1) * (this.rampage > 0 ? 1.8 : 1) * (kind === 'blast' ? 1 : this.dmgMul);
     b.hp -= dmg; b.flash = 0.08;
     if (this.habit[kind] !== undefined) this.habit[kind] += dmg;
     if (kind === 'fire') b.burn = 3.5;
@@ -740,6 +843,8 @@ class Main extends Phaser.Scene {
   destroyBuilding(b, fromX) {
     b.alive = false; b.floors = 0; b.hp = 0; b.burn = 0;
     this.stats.wrecked++;
+    if (this.dStat[b.d]) this.dStat[b.d].wrecked++;
+    if (this.mut.regen) this.hp = Math.min(this.maxHp, this.hp + 3);
     this.bumpCombo(1); const pts = Math.round(this.addScore(100 * b.maxFl)); this.addRage(6);
     this.popup(b.x, GROUND - 40 - b.maxFl * b.fh * 0.5, '+' + pts, '#ffe27a');
     this.dust(b.x, GROUND - 10, 18, b.w * 1.3, 26);
@@ -803,10 +908,231 @@ class Main extends Phaser.Scene {
       if (b.burn > 0) {
         b.burn -= dt; b.burnTick += dt;
         if (R() < 0.6) this.addPart({ kind: 'fire', x: b.x + (R() - 0.5) * b.w, y: GROUND - b.floors * b.fh, vx: (R() - 0.5) * 40, vy: -60 - R() * 80, life: 0.5, size: 6 + R() * 6 });
-        if (b.burnTick >= 0.33) { b.burnTick = 0; this.damageBuilding(b, 2.2, 'burn', b.x); }
+        if (b.burnTick >= 0.33) {
+          b.burnTick = 0; this.damageBuilding(b, this.mut.napalm ? 4 : 2.2, 'burn', b.x);
+          if (this.mut.napalm && b.alive) for (const nb of this.buildings) { if (nb.alive && nb !== b && Math.abs(nb.x - b.x) - (nb.w + b.w) / 2 < 90 && R() < 0.3) nb.burn = Math.max(nb.burn, 2.5); }
+        }
         if (b.burn <= 0) this.redraw(b);
       }
     }
+  }
+
+  togglePause() {
+    if (this.state === 'play') {
+      this.state = 'paused'; Snd.fire(false); this.wasFiring = false; this.k.firing = false;
+      this.pauseUi = [
+        this.add.rectangle(W / 2, H / 2, W, H, 0x05030a, 0.7).setScrollFactor(0).setDepth(3500),
+        this.add.text(W / 2, H / 2 - 20, 'PAUSED\n\nP / ESC  RESUME      R  RESTART      M  MUTE', { fontFamily: 'monospace', fontSize: '24px', fontStyle: 'bold', color: '#ffffff', align: 'center', lineSpacing: 8 }).setOrigin(0.5).setScrollFactor(0).setDepth(3501)
+      ];
+      if (Snd.ctx && Snd.ctx.suspend) { try { Snd.ctx.suspend(); } catch (e) {} }
+    } else if (this.state === 'paused') {
+      (this.pauseUi || []).forEach(o => o.destroy()); this.pauseUi = [];
+      this.state = 'play'; Snd.init();
+    }
+  }
+
+  // ---------------- Districts, growth, mutations, boss ----------------
+  updateDistrict(dt) {
+    const k = this.k;
+    if (this.dist < ND) {
+      const ds = this.dStat[this.dist];
+      if (ds.total > 0 && ds.wrecked >= Math.ceil(ds.total * 0.75)) this.districtCleared();
+    } else if (this.dist === ND && !this.boss && k.x > ARENA_X + 250) this.spawnBoss();
+  }
+
+  applySize() {
+    this.S = 0.75 + 0.17 * this.tier; this.hw = HW * this.S; this.dmgMul = 1 + 0.25 * this.tier;
+  }
+
+  districtCleared() {
+    if (this.state !== 'play') return;
+    this.state = 'pick'; Snd.fire(false); this.wasFiring = false; this.k.firing = false; this.k.vx = 0;
+    const pool = MUTS.filter(m => !this.mut[m.id]);
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); const t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
+    this.offer = pool.slice(0, 3);
+    this.pickUi = [];
+    const add = o => { this.pickUi.push(o); return o; };
+    const css = n => '#' + n.toString(16).padStart(6, '0');
+    add(this.add.rectangle(W / 2, H / 2, W, H, 0x05030a, 0.8).setScrollFactor(0).setDepth(3000));
+    add(this.add.text(W / 2, 58, 'DISTRICT ' + (this.dist + 1) + ' WRECKED', { fontFamily: 'monospace', fontSize: '34px', fontStyle: 'bold', color: '#8be28b' }).setOrigin(0.5).setScrollFactor(0).setDepth(3001));
+    add(this.add.text(W / 2, 98, 'YOU GROW BIGGER. CHOOSE A MUTATION.', { fontFamily: 'monospace', fontSize: '16px', color: '#ffe27a' }).setOrigin(0.5).setScrollFactor(0).setDepth(3001));
+    this.offer.forEach((m, i) => {
+      const cx = W / 2 + (i - 1) * 300, cy = H / 2 + 30;
+      const card = add(this.add.rectangle(cx, cy, 270, 280, 0x14101f, 1).setStrokeStyle(3, m.col).setScrollFactor(0).setDepth(3001).setInteractive({ useHandCursor: true }));
+      card.on('pointerdown', () => this.pickMut(i));
+      card.on('pointerover', () => card.setFillStyle(0x221a38, 1));
+      card.on('pointerout', () => card.setFillStyle(0x14101f, 1));
+      add(this.add.text(cx, cy - 110, '[' + (i + 1) + ']', { fontFamily: 'monospace', fontSize: '16px', color: '#9a90b8' }).setOrigin(0.5).setScrollFactor(0).setDepth(3002));
+      add(this.add.text(cx, cy - 70, m.name, { fontFamily: 'monospace', fontSize: '20px', fontStyle: 'bold', color: css(m.col), align: 'center', wordWrap: { width: 240 } }).setOrigin(0.5).setScrollFactor(0).setDepth(3002));
+      add(this.add.text(cx, cy + 20, m.desc, { fontFamily: 'monospace', fontSize: '15px', color: '#ffffff', align: 'center', wordWrap: { width: 230 }, lineSpacing: 4 }).setOrigin(0.5).setScrollFactor(0).setDepth(3002));
+    });
+    Snd.roar();
+  }
+
+  pickMut(i) {
+    if (this.state !== 'pick' || !this.offer[i]) return;
+    const m = this.offer[i]; this.mut[m.id] = true; this.mutList.push(m);
+    if (m.id === 'hide') { this.maxHp += 30; this.hp += 30; }
+    if (m.id === 'rageEngine') this.rampMax = 8;
+    this.pickUi.forEach(o => o.destroy()); this.pickUi = [];
+    const gx = GATES[this.dist];
+    this.tier++; this.applySize(); this.maxHp += 10; this.dist++;
+    this.hp = Math.min(this.maxHp, this.hp + this.maxHp * 0.15);
+    this.state = 'play'; this.hitstop = 0; this.rage = Math.max(this.rage, 40);
+    this.ring(this.k.x, GROUND, 420); this.shake(18); Snd.roar();
+    this.popup(this.k.x, this.k.y - 280 * this.S, 'GROWTH!', '#9be07a');
+    this.gateBreak(gx);
+    this.news(m.name + ' ACQUIRED. THE CORDON FALLS.');
+    this.reviewT = 4; this.combo = 0;
+    for (let n = 0; n < Math.min(6, 2 + this.dist); n++) this.spawnUnit(n % 2 ? 'heavy' : 'tank');
+  }
+
+  gateBreak(x) {
+    this.ring(x, GROUND, 300);
+    for (let n = 0; n < 40; n++) this.addPart({ kind: 'spark', x: x + (R() - 0.5) * 20, y: GROUND - R() * 440, vx: (R() - 0.5) * 500, vy: -R() * 300, life: 0.8, size: 3 });
+    for (let n = 0; n < 16; n++) this.addPart({ kind: 'fire', x: x + (R() - 0.5) * 20, y: GROUND - R() * 440, vx: (R() - 0.5) * 200, vy: -R() * 100, life: 0.6, size: 10 });
+    Snd.boom();
+  }
+
+  mkArc(x1, y1, x2, y2) {
+    const pts = [{ x: x1, y: y1 }];
+    for (let q = 1; q < 6; q++) pts.push({ x: lerp(x1, x2, q / 6) + (R() - 0.5) * 26, y: lerp(y1, y2, q / 6) + (R() - 0.5) * 26 });
+    pts.push({ x: x2, y: y2 });
+    return { pts: pts, life: 0.12 };
+  }
+
+  zap(sx, sy) {
+    if (this.arcs.length > 10) return;
+    const k = this.k;
+    const cand = this.buildings.filter(b => b.alive && Math.abs(b.x - k.x) < 650);
+    for (let i = 0; i < 2 && cand.length; i++) {
+      const b = cand.splice(Math.floor(R() * cand.length), 1)[0];
+      this.arcs.push(this.mkArc(sx, sy, b.x, GROUND - b.floors * b.fh * (0.3 + R() * 0.6)));
+      this.damageBuilding(b, 3, 'fire', k.x);
+    }
+    const tg = this.units.filter(u => u.alive && Math.abs(u.x - k.x) < 650);
+    if (tg.length) {
+      const u = tg[Math.floor(R() * tg.length)];
+      this.arcs.push(this.mkArc(sx, sy, u.x, GROUND - 20));
+      this.hitUnits(u.x - 5, u.x + 5, 5, 'fire');
+    }
+  }
+
+  spawnBoss() {
+    const k = this.k;
+    this.boss = { x: Math.min(GATES[5] - 200, k.x + 700), hp: 2400, maxHp: 2400, alive: true, face: -1, st: 0, mode: 'walk', cd: 1.6,
+      hurt: 0, bob: 0, fired: 0, hit: false, beamDir: -1, hab: { stomp: 1, tail: 1, fire: 1 }, waves: [] };
+    this.news('MECH-ZILLA ENTERS THE ARENA. THE MILITARY BET EVERYTHING ON IT.');
+    Snd.boom(); this.shake(14);
+  }
+
+  updateBoss(dt) {
+    const b = this.boss; if (!b || !b.alive) return;
+    const k = this.k, dx = k.x - b.x, ad = Math.abs(dx);
+    b.bob += dt; b.hurt = Math.max(0, b.hurt - dt); b.st += dt;
+    const ph2 = b.hp < b.maxHp * 0.5;
+    if (ph2 && !b.p2) { b.p2 = true; this.news('MECH-ZILLA OVERCLOCKS! IT ATTACKS FASTER.'); Snd.roar(); this.shake(12); }
+    if (b.mode === 'walk') {
+      b.face = Math.sign(dx) || -1;
+      if (ad > 380) b.x += b.face * (ph2 ? 85 : 55) * dt; else if (ad < 220) b.x -= b.face * 40 * dt;
+      b.x = Phaser.Math.Clamp(b.x, ARENA_X + 80, GATES[5] - 120);
+      b.cd -= dt;
+      if (b.cd <= 0) {
+        const r = R();
+        b.mode = r < 0.4 ? 'missiles' : r < 0.7 ? 'laser' : 'stomp';
+        if (b.mode === 'stomp' && ad > 500) b.mode = 'missiles';
+        b.st = 0; b.fired = 0; b.hit = false; b.beamDir = b.face;
+      }
+    } else if (b.mode === 'missiles') {
+      if (b.fired < 6 && b.st > 0.5 + b.fired * 0.3) { b.fired++; this.fireBossShell(); }
+      if (b.st > 2.9) { b.mode = 'walk'; b.cd = (ph2 ? 0.5 : 1.0); }
+    } else if (b.mode === 'laser') {
+      if (b.st >= 0.9 && b.st < 1.4) {
+        const x1 = Math.min(b.x, b.x + b.beamDir * 760), x2 = Math.max(b.x, b.x + b.beamDir * 760);
+        if (k.x > x1 && k.x < x2 && k.y > GROUND - 40) this.hurtKaiju(16, b.x);
+      }
+      if (b.st >= 1.5) { b.mode = 'walk'; b.cd = (ph2 ? 0.6 : 1.2); }
+    } else if (b.mode === 'stomp') {
+      if (!b.hit && b.st >= 0.7) {
+        b.hit = true; this.shake(16); Snd.thump(1); this.ring(b.x, GROUND, 260);
+        b.waves.push({ x: b.x, dir: -1 }, { x: b.x, dir: 1 });
+      }
+      if (b.st >= 1.1) { b.mode = 'walk'; b.cd = (ph2 ? 0.6 : 1.2); }
+    }
+    for (let i = b.waves.length - 1; i >= 0; i--) {
+      const w = b.waves[i]; w.x += w.dir * 380 * dt;
+      if (Math.abs(w.x - b.x) > 800) { b.waves.splice(i, 1); continue; }
+      if (Math.abs(w.x - k.x) < this.hw + 14 && k.y > GROUND - 34) { this.hurtKaiju(14, w.x); b.waves.splice(i, 1); }
+    }
+  }
+
+  fireBossShell() {
+    const b = this.boss, k = this.k, T = 1.1, g = 700;
+    const sx = b.x + b.face * 60, sy = GROUND - 230, tx = k.x + (R() - 0.5) * 80, ty = k.y - 90 * this.S;
+    this.shots.push({ x: sx, y: sy, vx: (tx - sx) / T, vy: (ty - sy - 0.5 * g * T * T) / T, type: 'shell', dmg: 12, life: 3 });
+    Snd.crunch();
+  }
+
+  hitBoss(dmg, kind) {
+    const b = this.boss; if (!b || !b.alive) return;
+    b.hab[kind] += dmg;
+    const sum = b.hab.stomp + b.hab.tail + b.hab.fire, share = b.hab[kind] / sum;
+    const resist = this.mut.counter ? 1 : 1 - 0.6 * Math.max(0, (share - 0.34) / 0.66);
+    if (share > 0.6 && !b['warn' + kind]) { b['warn' + kind] = true; this.news('MECH ARMOR ADAPTS TO YOUR ' + kind.toUpperCase() + '. SWITCH IT UP.'); }
+    const d = dmg * this.dmgMul * (this.rampage > 0 ? 1.8 : 1) * resist * ({ stomp: 1, tail: 1.1, fire: 0.6 }[kind] || 1);
+    b.hp -= d; b.hurt = 0.1; this.addScore(d * 2); this.addRage(d * 0.05);
+    if (R() < 0.3) this.addPart({ kind: 'spark', x: b.x + (R() - 0.5) * 100, y: GROUND - 60 - R() * 180, vx: (R() - 0.5) * 300, vy: -R() * 250, life: 0.4, size: 3 });
+    if (b.hp <= 0) this.killBoss();
+  }
+
+  killBoss() {
+    const b = this.boss; b.alive = false; this.stats.units++;
+    this.bumpCombo(10); this.addScore(3000); this.addRage(30);
+    for (let n = 0; n < 60; n++) this.addPart({ kind: 'fire', x: b.x + (R() - 0.5) * 140, y: GROUND - R() * 300, vx: (R() - 0.5) * 500, vy: -R() * 500, life: 0.6 + R() * 0.7, size: 12 + R() * 16 });
+    this.vapor(b.x, GROUND - 150, 90, 160, 0xff6a3a);
+    for (let n = 0; n < 14; n++) this.chunk(b.x + (R() - 0.5) * 120, GROUND - 40 - R() * 240, (R() - 0.5) * 500, -600 - R() * 700, R() < 0.5 ? 0x3b4560 : 0xff3040, 14, true);
+    this.ring(b.x, GROUND, 600); Snd.boom(); this.shake(26); this.hitstop = 140;
+    this.units.forEach(u => { u.alive = false; }); this.shots.length = 0;
+    this.hp = Math.min(this.maxHp, this.hp + 30);
+    this.dist = ND + 1;
+    this.news('MECH-ZILLA DOWN. THE ROAD HOME IS OPEN.');
+  }
+
+  drawBoss(time) {
+    const g = this.bossG; g.clear();
+    const b = this.boss; if (!b || !b.alive) return;
+    const f = b.face, x = b.x, step = Math.sin(b.bob * 3) * 8, hurt = b.hurt > 0;
+    const col = hurt ? 0xffffff : 0x3b4560, dark = 0x232a40, acc = 0xff3040;
+    const lift = b.mode === 'stomp' && b.st < 0.7 ? 60 * Math.min(1, b.st / 0.5) : 0;
+    g.fillStyle(dark, 1); g.fillRect(x - 56 + step * 0.3, GROUND - 120, 36, 120); g.fillRect(x + 20 - step * 0.3, GROUND - 120 - lift, 36, 120);
+    g.fillRect(x - 66 + step * 0.3, GROUND - 14, 56, 14); g.fillRect(x + 12 - step * 0.3, GROUND - 14 - lift, 56, 14);
+    g.fillStyle(col, 1); g.fillRoundedRect(x - 75, GROUND - 270, 150, 160, 12);
+    g.fillStyle(acc, 0.9); g.fillRect(x - 60, GROUND - 200, 120, 6); g.fillRect(x - 60, GROUND - 185, 120, 3);
+    g.fillStyle(dark, 1); g.fillRoundedRect(x - 98, GROUND - 285, 36, 70, 6); g.fillRoundedRect(x + 62, GROUND - 285, 36, 70, 6);
+    g.fillStyle(acc, 1); for (let q = 0; q < 3; q++) { g.fillCircle(x - 80, GROUND - 270 + q * 18, 5); g.fillCircle(x + 80, GROUND - 270 + q * 18, 5); }
+    g.fillStyle(col, 1); g.fillRoundedRect(x - 32, GROUND - 318, 64, 50, 10);
+    const charge = (b.mode === 'laser' && b.st < 0.9) || (b.mode === 'missiles' && b.st < 0.5);
+    g.fillStyle(acc, charge ? 0.5 + 0.5 * Math.sin(time * 30) : 0.9); g.fillRect(x + (f > 0 ? -4 : -28), GROUND - 300, 32, 10);
+    g.fillStyle(dark, 1); g.fillRect(x + (f > 0 ? 60 : -110), GROUND - 230, 50, 22);
+    if (b.mode === 'laser') {
+      const bx1 = Math.min(x, x + b.beamDir * 760);
+      if (b.st < 0.9) { g.fillStyle(acc, 0.25 + 0.2 * Math.sin(time * 25)); g.fillRect(bx1, GROUND - 18, 760, 4); }
+      else if (b.st < 1.4) { g.fillStyle(acc, 0.35); g.fillRect(bx1, GROUND - 44, 760, 40); g.fillStyle(0xffffff, 0.95); g.fillRect(bx1, GROUND - 30, 760, 12); }
+    }
+    b.waves.forEach(w => { g.fillStyle(0xffe27a, 0.6); g.fillRect(w.x - 14, GROUND - 26, 28, 26); g.fillStyle(0xff6a3a, 0.4); g.fillRect(w.x - 30, GROUND - 14, 60, 14); });
+  }
+
+  drawBarrier(t) {
+    const g = this.barG; g.clear();
+    if (this.dist >= GATES.length) { this.barTxt.setVisible(false); return; }
+    const gx = GATES[this.dist], near = Math.abs(this.k.x - gx) < 600;
+    g.fillStyle(0xff3040, 0.1 + 0.04 * Math.sin(t * 6)); g.fillRect(gx - 8, GROUND - 480, 16, 480);
+    g.fillStyle(0xff3040, near ? 0.55 : 0.25); g.fillRect(gx - 2, GROUND - 480, 4, 480);
+    for (let y = 0; y < 480; y += 40) { g.fillStyle(0xff6a6a, 0.25 + 0.2 * Math.sin(t * 4 + y)); g.fillRect(gx - 14, GROUND - y - 4, 28, 3); }
+    let label = '';
+    if (this.dist < ND) { const ds = this.dStat[this.dist]; label = 'MILITARY CORDON\nSMASH ' + Math.min(ds.wrecked, Math.ceil(ds.total * 0.75)) + '/' + Math.ceil(ds.total * 0.75); }
+    else label = 'MECH-ZILLA ZONE\nDEFEAT THE BOSS';
+    this.barTxt.setVisible(true).setPosition(gx, GROUND - 330).setText(label).setAlpha(near ? 1 : 0.5);
   }
 
   // ---------------- Combo / style / roar ----------------
@@ -831,14 +1157,14 @@ class Main extends Phaser.Scene {
 
   doRoar() {
     if (this.roarCd > 0 || this.state !== 'play') return;
-    const k = this.k; this.roarCd = 14; this.acted = true;
+    const k = this.k; this.roarCd = this.mut.roarM ? 8 : 14; this.acted = true;
     this.habit.stomp = 0; this.habit.tail = 0; this.habit.fire = 0; this.reviewT = Math.max(this.reviewT, 6);
-    this.ring(k.x, GROUND, 520); this.shake(16); this.hitstop = Math.max(this.hitstop, 60); Snd.roar();
+    this.ring(k.x, GROUND, this.mut.roarM ? 800 : 520); this.shake(16); this.hitstop = Math.max(this.hitstop, 60); Snd.roar();
     this.shots.length = 0;
     for (const u of this.units) {
-      if (!u.alive || Math.abs(u.x - k.x) > 520) continue;
+      if (!u.alive || Math.abs(u.x - k.x) > (this.mut.roarM ? 800 : 520)) continue;
       if (u.type === 'mine') { u.alive = false; this.blast(u.x, GROUND - 6, 6); continue; }
-      u.cd += 3.5; u.hp -= 12; u.flash = 0.2;
+      u.cd += 3.5; u.hp -= this.mut.roarM ? 25 : 12; u.flash = 0.2;
       if (u.hp <= 0) this.killUnit(u);
     }
     for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < 400) c.dir = Math.sign(c.x - k.x) || 1;
@@ -854,14 +1180,14 @@ class Main extends Phaser.Scene {
     if (this.invuln > 0) this.invuln -= dt;
     if (this.foamT > 0) this.foamT -= dt;
     if (this.rampage > 0) {
-      this.rampage -= dt; this.rage = Math.max(0, 100 * this.rampage / 6); this.rageIdle = 0;
+      this.rampage -= dt; this.rage = Math.max(0, 100 * this.rampage / this.rampMax); this.rageIdle = 0;
       if (this.rampage <= 0) { this.rampage = 0; this.rage = 0; }
     } else if (this.rage >= 100) {
-      this.rampage = 6; this.hp = Math.min(this.maxHp, this.hp + 25);
+      this.rampage = this.rampMax; this.hp = Math.min(this.maxHp, this.hp + 15);
       this.news('MONSTER IS FURIOUS. RAMPAGE!'); Snd.roar(); this.shake(14);
     }
     this.reviewT -= dt;
-    if (this.reviewT <= 0) { this.reviewT = 9; this.review(); }
+    if (this.reviewT <= 0) { this.reviewT = Math.max(4, 7 - this.dist * 0.6); this.review(); }
     if (this.units.length > 40) this.units = this.units.filter(u => u.alive);
 
     for (const u of this.units) {
@@ -871,6 +1197,13 @@ class Main extends Phaser.Scene {
       u.face = s;
       if (u.type === 'mine') {
         if (k.grounded && !k.on && ad < 46) this.mineBoom(u, false);
+        continue;
+      }
+      if (u.type === 'chopper') {
+        const tgt = k.x + Math.sin(this.t * 0.8 + u.x) * 220;
+        u.x += Phaser.Math.Clamp(tgt - u.x, -u.sp * dt, u.sp * dt);
+        u.y = GROUND - 250 + Math.sin(this.t * 2 + u.x) * 10;
+        if (u.cd <= 0 && ad < 700) { this.fireShot(u); u.cd = u.rate + R() * 0.5; }
         continue;
       }
       let move = 0;
@@ -884,9 +1217,9 @@ class Main extends Phaser.Scene {
     for (let i = this.shots.length - 1; i >= 0; i--) {
       const s = this.shots[i];
       s.vy += 700 * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
-      if (Math.abs(s.x - k.x) < HW + 10 && s.y > k.y - 170 && s.y < k.y + 4) {
+      if (Math.abs(s.x - k.x) < this.hw + 10 && s.y > k.y - 170 * this.S && s.y < k.y + 4) {
         if (s.type === 'foam') {
-          if (this.rampage <= 0) this.foamT = 3.5;
+          if (this.rampage <= 0) this.foamT = this.mut.counter ? 1.2 : 3.5;
           this.hurtKaiju(2, s.x);
           for (let n = 0; n < 8; n++) this.addPart({ kind: 'dust', x: s.x, y: s.y, vx: (R() - 0.5) * 160, vy: -R() * 120, life: 0.6, size: 8 });
           if (!this.foamNews) { this.foamNews = true; this.news('FOAM ON THE MONSTER. FIRE BREATH OFFLINE.'); }
@@ -907,7 +1240,7 @@ class Main extends Phaser.Scene {
     if (sum < 40) { this.spawnUnit('tank'); return; }
     let best = 'stomp';
     ['tail', 'fire'].forEach(key => { if (h[key] > h[best]) best = key; });
-    const share = h[best] / sum, n = Math.min(3, 1 + Math.floor(this.wave / 3));
+    const share = h[best] / sum, n = Math.min(4, 1 + Math.floor(this.wave / 3) + Math.floor(this.dist / 2));
     if (share >= 0.5) {
       if (best === 'stomp') {
         this.news('MILITARY NOTES MONSTER STOMPS A LOT. MINES DEPLOYED.');
@@ -924,28 +1257,32 @@ class Main extends Phaser.Scene {
       this.news("MILITARY CAN'T FIND A PATTERN. SENDS TANKS ANYWAY.");
       this.spawnUnit('tank');
     }
+    if (this.dist >= 1 && this.wave % 3 === 0) { this.spawnUnit('chopper'); this.news('GUNSHIPS INBOUND. ONLY FIRE BREATH REACHES THEM.'); }
     // old habits fade, so switching styles actually gets you out of the counter
     h.stomp *= 0.6; h.tail *= 0.6; h.fire *= 0.6;
   }
 
   spawnUnit(type, xOverride) {
-    if (this.units.filter(u => u.alive).length >= 9) return;
+    if (this.units.filter(u => u.alive).length >= 7 + Math.min(this.dist, 4)) return;
     const k = this.k, side = R() < 0.7 ? k.face : -k.face;
     let x = xOverride !== undefined ? xOverride : k.x + side * (560 + R() * 200);
-    x = Phaser.Math.Clamp(x, 300, FINISH_X - 120);
+    x = Phaser.Math.Clamp(x, 300, Math.min(FINISH_X - 120, (this.dist < GATES.length ? GATES[this.dist] : FINISH_X) - 100));
     const D = { tank: { hp: 30, w: 70, sp: 60, rate: 2.6 }, heavy: { hp: 60, w: 90, sp: 70, rate: 2.2 },
-                foam: { hp: 20, w: 80, sp: 90, rate: 3.0 }, mine: { hp: 1, w: 26, sp: 0, rate: 99 } }[type];
-    this.units.push({ type, x, hp: D.hp, maxHp: D.hp, w: D.w, sp: D.sp, rate: D.rate, cd: 1 + R() * 1.5, alive: true, flash: 0, face: 1 });
+                foam: { hp: 20, w: 80, sp: 90, rate: 3.0 }, mine: { hp: 1, w: 26, sp: 0, rate: 99 }, chopper: { hp: 22, w: 60, sp: 140, rate: 3.2 } }[type];
+    this.units.push({ type, x, y: type === 'chopper' ? GROUND - 250 : 0, hp: D.hp * (1 + 0.25 * Math.min(this.dist, 5)), maxHp: D.hp * (1 + 0.25 * Math.min(this.dist, 5)), w: D.w, sp: D.sp, rate: D.rate * (1 - 0.07 * Math.min(this.dist, 5)), cd: 1 + R() * 1.5, alive: true, flash: 0, face: 1 });
   }
 
   hitUnits(x1, x2, dmg, kind) {
+    const bs = this.boss;
+    if (bs && bs.alive && bs.x + 75 > x1 && bs.x - 75 < x2) this.hitBoss(dmg, kind);
     const M = { tank: { stomp: 1, tail: 1, fire: 1 }, heavy: { stomp: 0.6, tail: 0.4, fire: 1.5 },
-                foam: { stomp: 1.2, tail: 1.2, fire: 0.3 }, mine: { stomp: 1, tail: 1, fire: 1 } };
+                foam: { stomp: 1.2, tail: 1.2, fire: 0.3 }, mine: { stomp: 1, tail: 1, fire: 1 }, chopper: { stomp: 1, tail: 1, fire: 1.3 } };
     for (const u of this.units) {
       if (!u.alive) continue;
       if (u.x + u.w / 2 < x1 || u.x - u.w / 2 > x2) continue;
+      if (u.type === 'chopper' && kind !== 'fire') continue;
       if (u.type === 'mine' && kind === 'stomp') { this.mineBoom(u, true); continue; }
-      u.hp -= dmg * M[u.type][kind] * (this.rampage > 0 ? 1.8 : 1); u.flash = 0.1;
+      u.hp -= dmg * (this.mut.counter ? Math.max(1, M[u.type][kind]) : M[u.type][kind]) * this.dmgMul * (this.rampage > 0 ? 1.8 : 1); u.flash = 0.1;
       if (u.hp <= 0) this.killUnit(u);
     }
   }
@@ -955,8 +1292,8 @@ class Main extends Phaser.Scene {
     u.alive = false; this.stats.units++;
     this.bumpCombo(2); const upts = Math.round(this.addScore(150)); this.addRage(4);
     this.popup(u.x, GROUND - 60, '+' + upts, '#ffe27a');
-    this.hp = Math.min(this.maxHp, this.hp + 3);
-    this.blast(u.x, GROUND - 10, 10);
+    this.hp = Math.min(this.maxHp, this.hp + 1.5);
+    this.blast(u.x, u.y || GROUND - 10, 10);
     for (let n = 0; n < 5; n++) this.chunk(u.x + (R() - 0.5) * u.w, GROUND - 10, (R() - 0.5) * 300, -150 - R() * 250, 0x4f6b3a, 10);
     Snd.crunch();
     if (this.stats.units === 1) this.news('MILITARY LOSES A VEHICLE. FILES PAPERWORK.');
@@ -968,14 +1305,14 @@ class Main extends Phaser.Scene {
     const k = this.k;
     this.blast(u.x, GROUND - 6, 12); this.ring(u.x, GROUND, 120);
     Snd.thump(0.6); Snd.crunch();
-    if (!remote || Math.abs(k.x - u.x) < 130) this.hurtKaiju(remote ? 10 : 12, u.x);
+    if (!remote || Math.abs(k.x - u.x) < 130) this.hurtKaiju((remote ? 10 : 12) * (this.mut.counter ? 0.5 : 1), u.x);
   }
 
   fireShot(u) {
-    const k = this.k, tx = k.x, ty = k.y - 90, sx = u.x + u.face * 24, sy = GROUND - 30;
+    const k = this.k, tx = k.x + k.vx * 0.9 * Math.min(0.9, 0.15 + 0.15 * this.dist), ty = k.y - 90 * this.S, sx = u.x + u.face * 24, sy = u.y || GROUND - 30;
     const T = u.type === 'foam' ? 1.0 : 0.9, g = 700;
     this.shots.push({ x: sx, y: sy, vx: (tx - sx) / T, vy: (ty - sy - 0.5 * g * T * T) / T,
-      type: u.type === 'foam' ? 'foam' : 'shell', dmg: u.type === 'heavy' ? 10 : 8, life: 3 });
+      type: u.type === 'foam' ? 'foam' : 'shell', dmg: (u.type === 'heavy' ? 12 : u.type === 'chopper' ? 7 : 10) + Math.min(this.dist, 5) * 2, life: 3 });
     Snd.crunch();
   }
 
@@ -987,7 +1324,7 @@ class Main extends Phaser.Scene {
   hurtKaiju(n, fromX) {
     if (this.state !== 'play' || this.invuln > 0 || this.rampage > 0) return;
     const k = this.k;
-    this.hp -= n; this.invuln = 0.7; this.shake(10);
+    this.hp -= n * (this.mut.hide ? 0.7 : 1); this.invuln = 0.7; this.shake(10);
     this.hitstop = Math.max(this.hitstop, 40);
     k.vx += (Math.sign(k.x - fromX) || 1) * 260; k.squash = 0.6;
     Snd.thump(0.8);
@@ -995,12 +1332,12 @@ class Main extends Phaser.Scene {
   }
 
   die() {
-    this.state = 'dead'; Snd.fire(false); this.wasFiring = false; this.k.firing = false;
+    this.state = 'dead'; this.saveBest(); Snd.fire(false); this.wasFiring = false; this.k.firing = false;
     this.shake(20); Snd.boom();
     this.news('MONSTER DOWN. MILITARY CALLS IT "A LEARNING EXPERIENCE"');
     this.add.rectangle(W / 2, H / 2, 560, 270, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0xff4d4d);
     this.add.text(W / 2, H / 2,
-      'THE MILITARY WINS THIS ONE\n\nREACHED  ' + Math.round(100 * Math.min(1, this.k.x / FINISH_X)) + '% OF THE COMMUTE' +
+      'THE MILITARY WINS THIS ONE\n\nREACHED  ' + (this.dist >= ND ? 'THE BOSS' : 'DISTRICT ' + (this.dist + 1) + ' OF ' + ND) +
       '\nBUILDINGS WRECKED  ' + this.stats.wrecked + ' / ' + this.stats.total +
       '\nSCORE  ' + Math.round(this.score).toLocaleString() +
       '\n\nThey adapt to what you spam. Vary your attacks.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO TRY AGAIN',
@@ -1019,6 +1356,19 @@ class Main extends Phaser.Scene {
         g.fillStyle(Math.floor(this.t * 4) % 2 ? 0xff3030 : 0x601010, 1); g.fillCircle(x, y - 8, 3);
         continue;
       }
+      if (u.type === 'chopper') {
+        const cy = u.y, cx = u.x, cf = u.face || 1;
+        g.fillStyle(0x2c3550, 1); g.fillEllipse(cx, cy, 46, 18);
+        g.fillStyle(0x00e5ff, 0.9); g.fillRect(cx + cf * 8 - 6, cy - 4, 12, 6);
+        g.lineStyle(4, 0x2c3550, 1); g.lineBetween(cx - cf * 18, cy, cx - cf * 46, cy - 6);
+        g.lineStyle(3, 0x8892a8, 0.9); const rw = 36 * Math.cos(this.t * 40); g.lineBetween(cx - rw, cy - 12, cx + rw, cy - 12);
+        g.fillStyle(0xff3030, Math.floor(this.t * 4) % 2 ? 1 : 0.3); g.fillCircle(cx - cf * 46, cy - 6, 2);
+        if (u.flash > 0) { g.fillStyle(0xffffff, 0.5); g.fillEllipse(cx, cy, 46, 18); }
+        if (u.cd < 0.45) { g.fillStyle(0xff3030, 1); g.fillCircle(cx, cy + 14, 4); g.fillStyle(0xff3030, 0.25); g.fillCircle(cx, cy + 14, 9); }
+        g.fillStyle(0x000000, 0.5); g.fillRect(cx - 20, cy - 28, 40, 4);
+        g.fillStyle(0xff6a6a, 1); g.fillRect(cx - 20, cy - 28, 40 * Math.max(0, u.hp / u.maxHp), 4);
+        continue;
+      }
       const heavy = u.type === 'heavy', foam = u.type === 'foam';
       g.fillStyle(0x1a1a1a, 1); g.fillRect(x - w / 2, y - 8, w, 8);
       g.fillStyle(foam ? 0xe8e8e8 : heavy ? 0x2c3550 : 0x3a4660, 1);
@@ -1030,6 +1380,7 @@ class Main extends Phaser.Scene {
       if (heavy) { g.fillStyle(0x6a6a72, 1); g.fillRect(x - w / 2 - 2, y - 26, 6, 16); g.fillRect(x + w / 2 - 4, y - 26, 6, 16); }
       if (foam) { g.fillStyle(0xd62f2f, 1); g.fillRect(x - w / 2 + 4, y - 12, w - 8, 4); }
       if (u.flash > 0) { g.fillStyle(0xffffff, 0.5); g.fillRect(x - w / 2, y - 38, w, 38); }
+      if (u.cd < 0.45 && Math.abs(u.x - this.k.x) < 560) { g.fillStyle(0xff3030, 1); g.fillCircle(x, y - 58, 4); g.fillStyle(0xff3030, 0.25); g.fillCircle(x, y - 58, 9); }
       g.fillStyle(0x000000, 0.5); g.fillRect(x - 20, y - 48, 40, 4);
       g.fillStyle(0xff6a6a, 1); g.fillRect(x - 20, y - 48, 40 * Math.max(0, u.hp / u.maxHp), 4);
     }
@@ -1089,6 +1440,7 @@ class Main extends Phaser.Scene {
   ring(x, y, Rr) { this.rings.push({ x, y, r: 20, R: Rr, max: 0.5, life: 0.5 }); }
 
   updateFx(dt) {
+    for (let i = this.arcs.length - 1; i >= 0; i--) { this.arcs[i].life -= dt; if (this.arcs[i].life <= 0) this.arcs.splice(i, 1); }
     for (let i = this.debris.length - 1; i >= 0; i--) {
       const d = this.debris[i];
       d.vy += 1500 * (d.g || 1) * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
@@ -1120,10 +1472,12 @@ class Main extends Phaser.Scene {
   drawAll(time) {
     this.drawKaiju(time / 1000);
     this.drawSky(time / 1000);
+    this.drawBoss(time / 1000);
+    this.drawBarrier(time / 1000);
     const k = this.k;
     const hgt = Math.max(0, GROUND - k.y);
     const s = 1 - Math.min(0.6, hgt / 400);
-    this.shadow.setPosition(k.x, k.grounded ? k.y + 6 : GROUND + 6).setScale(s, 1).setAlpha(k.grounded || hgt < 300 ? 0.35 * s : 0);
+    this.shadow.setPosition(k.x, k.grounded ? k.y + 6 : GROUND + 6).setScale(s * this.Sv, 1).setAlpha(k.grounded || hgt < 300 ? 0.35 * s : 0);
     this.drawCars();
     this.drawUnits();
     this.drawFx();
@@ -1224,6 +1578,12 @@ class Main extends Phaser.Scene {
 
   drawFx() {
     const g = this.fx; g.clear();
+    for (const a of this.arcs) {
+      for (let pass = 0; pass < 2; pass++) {
+        g.lineStyle(pass ? 1 : 4, pass ? 0xffffff : 0x7fd8ff, pass ? 1 : 0.5);
+        for (let q = 1; q < a.pts.length; q++) g.lineBetween(a.pts[q - 1].x, a.pts[q - 1].y, a.pts[q].x, a.pts[q].y);
+      }
+    }
     for (const r of this.rings) {
       const a = Math.max(0, r.life / r.max);
       g.lineStyle(5 * a + 1, 0xffe9b0, a * 0.8);
@@ -1256,7 +1616,7 @@ class Main extends Phaser.Scene {
   drawKaiju(time) {
     const k = this.k, g = this.kg; g.clear();
     const sq = k.squash, sx = 1 + sq * 0.12, sy = 1 - sq * 0.14;
-    g.setPosition(k.x, k.y); g.setScale(k.face * sx, sy);
+    g.setPosition(k.x, k.y); g.setScale(k.face * sx * this.Sv, sy * this.Sv);
     g.setAlpha(this.invuln > 0 && Math.floor(time * 20) % 2 ? 0.4 : 1);
     if (this.rampage > 0) { g.fillStyle(0xff3030, 0.2); g.fillEllipse(0, -100, 170, 230); }
     const gt = 0x2f8f4e, gd = 0x216b3a, gb = 0xc4e58a, gs = 0xff8a3c;
@@ -1366,7 +1726,7 @@ class Main extends Phaser.Scene {
   }
 }
 
-new Phaser.Game({
+window.__kg = new Phaser.Game({
   type: Phaser.AUTO,
   width: W, height: H,
   parent: 'game',
