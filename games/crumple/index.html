@@ -16,7 +16,7 @@
     color: #f8fafc;
   }
   #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-  #game-container { position: relative; }
+  #game-container { position: relative; width: min(96vw, 900px); aspect-ratio: 3 / 2; max-height: 90vh; }
 
   #hud {
     position: absolute; top: 0; left: 0; right: 0;
@@ -275,16 +275,62 @@
       this.refreshHud();
     }
 
+    buildCarSprite(color) {
+      // local space: +x = front of car, y = lateral (matches body's physics axes at angle 0)
+      const c = this.add.container(0, 0);
+
+      const shadow = this.add.ellipse(0, 2, 36, 22, 0x000000, 0.25);
+      c.add(shadow);
+
+      // rear and front wheels, poking slightly past the body for a real car silhouette
+      const wheelColor = 0x18181b;
+      const wheels = [
+        this.add.rectangle(10, -11, 9, 4, wheelColor),
+        this.add.rectangle(10, 11, 9, 4, wheelColor),
+        this.add.rectangle(-10, -11, 9, 4, wheelColor),
+        this.add.rectangle(-10, 11, 9, 4, wheelColor)
+      ];
+      wheels.forEach(w => c.add(w));
+
+      // body shell
+      const bodyG = this.add.graphics();
+      bodyG.fillStyle(color, 1);
+      bodyG.fillRoundedRect(-17, -10, 34, 20, 6);
+      bodyG.lineStyle(2, 0x0a0a0d, 0.6);
+      bodyG.strokeRoundedRect(-17, -10, 34, 20, 6);
+      c.add(bodyG);
+
+      // windshield (toward front, +x)
+      const windshield = this.add.graphics();
+      windshield.fillStyle(0x0f172a, 0.75);
+      windshield.fillRoundedRect(1, -6.5, 10, 13, 3);
+      c.add(windshield);
+
+      // roof tint line
+      const roof = this.add.rectangle(-5, 0, 10, 13, 0xffffff, 0.08);
+      c.add(roof);
+
+      // headlights (front) and taillights (back)
+      const headL = this.add.rectangle(16.5, -6, 3, 3.5, 0xfef9c3);
+      const headR = this.add.rectangle(16.5, 6, 3, 3.5, 0xfef9c3);
+      const tailL = this.add.rectangle(-16.5, -6, 3, 3.5, 0xef4444);
+      const tailR = this.add.rectangle(-16.5, 6, 3, 3.5, 0xef4444);
+      c.add([headL, headR, tailL, tailR]);
+
+      return c;
+    }
+
     makeCar(x, y, angle, def, isAI) {
       const w = 34, h = 20;
       const body = this.matter.add.rectangle(x, y, w, h, {
         density: def.density, restitution: 0.25, frictionAir: 0.06, friction: 0.01, label: isAI ? 'enemyCar' : 'playerCar'
       });
       Phaser.Physics.Matter.Matter.Body.setAngle(body, angle);
-      const gfx = this.add.rectangle(x, y, w, h, def.color).setDepth(6);
-      const nose = this.add.triangle(x, y, 0, -7, 10, 0, 0, 7, 0xf8fafc).setDepth(6.1);
+      const gfx = this.buildCarSprite(def.color).setDepth(6);
+      gfx.setPosition(x, y);
+      gfx.setRotation(angle);
       const car = {
-        body, gfx, nose, def, isAI,
+        body, gfx, def, isAI,
         zones: { front: def.zoneHP, right: def.zoneHP, back: def.zoneHP, left: def.zoneHP },
         maxZoneHP: def.zoneHP,
         angle,
@@ -517,21 +563,22 @@
       return Math.atan2(dy, dx);
     }
 
-    driveCar(car, inputDir, delta) {
+    driveCar(car, inputDir, delta, speedMult) {
       if (car.wrecked) return;
       const now = this.time.now;
       const inKnockback = now < car.knockbackUntil;
+      const mult = speedMult === undefined ? 1 : speedMult;
 
       if (inputDir !== null) {
         let diff = inputDir - car.body.angle;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        const maxStep = car.def.turnSpeed * (delta / 16.67);
+        const maxStep = car.def.turnSpeed * mult * (delta / 16.67);
         const step = Phaser.Math.Clamp(diff, -maxStep, maxStep);
         Phaser.Physics.Matter.Matter.Body.setAngle(car.body, car.body.angle + step);
 
         if (!inKnockback) {
-          const forceMag = car.def.accel * (delta / 16.67);
+          const forceMag = car.def.accel * mult * (delta / 16.67);
           Phaser.Physics.Matter.Matter.Body.applyForce(car.body, car.body.position, {
             x: Math.cos(car.body.angle) * forceMag,
             y: Math.sin(car.body.angle) * forceMag
@@ -540,10 +587,11 @@
       }
 
       // clamp top speed
+      const cap = car.def.maxSpeed * (mult < 1 ? Math.max(mult, 0.55) : 1);
       const v = car.body.velocity;
       const sp = Math.sqrt(v.x * v.x + v.y * v.y);
-      if (sp > car.def.maxSpeed) {
-        const sc = car.def.maxSpeed / sp;
+      if (sp > cap) {
+        const sc = cap / sp;
         Phaser.Physics.Matter.Matter.Body.setVelocity(car.body, { x: v.x * sc, y: v.y * sc });
       }
     }
@@ -552,46 +600,70 @@
       const ai = this.enemy;
       if (ai.wrecked) return;
       const p = this.player;
+
+      // lead the player's position based on their current velocity, so the AI
+      // aims where the player is headed, not just where they are right now
+      const leadTime = 0.35;
+      const predX = p.body.position.x + p.body.velocity.x * leadTime * 60;
+      const predY = p.body.position.y + p.body.velocity.y * leadTime * 60;
+
       const dx = p.body.position.x - ai.body.position.x;
       const dy = p.body.position.y - ai.body.position.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const dirToPlayer = Math.atan2(dy, dx);
-      let targetDir = dirToPlayer;
+      const dirToPredicted = Math.atan2(predY - ai.body.position.y, predX - ai.body.position.x);
+
+      let targetDir = dirToPredicted;
       let wantCharge = false;
 
+      const facingPlayer = () => {
+        let diff = dirToPlayer - ai.body.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        return Math.abs(diff) < 0.35;
+      };
+      const tryRam = (minDist, maxDist) => {
+        if (dist < minDist) return false;
+        if (dist > maxDist) return false;
+        return true;
+      };
+      const releaseIfAligned = (maxDist) => {
+        if (ai.charging && dist < maxDist && facingPlayer()) this.releaseCharge(ai);
+      };
+
       if (this.aiType === 'aggressor') {
-        targetDir = dirToPlayer;
-        wantCharge = dist > 180 && dist < 420;
-        if (dist < 90 && ai.charging) this.releaseCharge(ai);
+        targetDir = dirToPredicted;
+        wantCharge = tryRam(160, 440);
+        releaseIfAligned(110);
       } else if (this.aiType === 'dodger') {
         ai.aiState.timer -= delta;
         if (ai.aiState.timer <= 0) {
           ai.aiState.mode = (ai.aiState.mode === 'flee') ? 'rush' : 'flee';
-          ai.aiState.timer = ai.aiState.mode === 'rush' ? 700 : 1400;
+          ai.aiState.timer = ai.aiState.mode === 'rush' ? 650 : 1100;
         }
-        if (ai.aiState.mode === 'flee' && dist < 220) {
-          targetDir = dirToPlayer + Math.PI;
+        if (ai.aiState.mode === 'flee' && dist < 230) {
+          // strafe away at an angle rather than fleeing straight backward
+          targetDir = dirToPlayer + Math.PI + (Math.sin(this.time.now * 0.002) * 0.5);
         } else {
-          targetDir = dirToPlayer;
-          wantCharge = dist > 150;
-          if (dist < 100 && ai.charging) this.releaseCharge(ai);
+          targetDir = dirToPredicted;
+          wantCharge = dist > 140 && dist < 380;
+          releaseIfAligned(120);
         }
       } else { // baiter
         const fp = this.firePits.reduce((best, f) => {
           const dd = Math.hypot(p.body.position.x - f.x, p.body.position.y - f.y);
           return (!best || dd < best.dd) ? { f, dd } : best;
         }, null).f;
-        // flank: aim for the point opposite the firepit relative to player
         const awayAngle = Math.atan2(p.body.position.y - fp.y, p.body.position.x - fp.x);
         const flankX = p.body.position.x + Math.cos(awayAngle) * 130;
         const flankY = p.body.position.y + Math.sin(awayAngle) * 130;
         const distFlank = Math.hypot(flankX - ai.body.position.x, flankY - ai.body.position.y);
-        if (distFlank > 60) {
+        if (distFlank > 55 && dist > 140) {
           targetDir = Math.atan2(flankY - ai.body.position.y, flankX - ai.body.position.x);
         } else {
-          targetDir = dirToPlayer;
-          wantCharge = dist < 260;
-          if (dist < 110 && ai.charging) this.releaseCharge(ai);
+          targetDir = dirToPredicted;
+          wantCharge = dist < 300;
+          releaseIfAligned(130);
         }
       }
 
@@ -601,7 +673,7 @@
         this.releaseCharge(ai);
       }
 
-      this.driveCar(ai, ai.charging ? null : targetDir, delta);
+      this.driveCar(ai, targetDir, delta, ai.charging ? 0.55 : 1);
     }
 
     update(time, delta) {
@@ -609,28 +681,24 @@
 
       // charging
       [this.player, this.enemy].forEach(car => {
-        if (car.charging && car.momentum < 100) {
-          car.momentum = Math.min(100, car.momentum + delta * 0.09);
+        if (car.charging && car.momentum < 100 && !car.wrecked) {
+          car.momentum = Math.min(100, car.momentum + delta * 0.14);
         }
       });
       if (this.player.charging && Math.floor(time / 180) !== Math.floor((time - delta) / 180)) SFX.chargeUp();
 
-      const inputDir = this.player.charging ? null : this.getInputDir();
+      const inputDir = this.getInputDir();
       if (this.keys.charge.isDown && !this.player.charging) this.beginCharge(this.player);
       if (!this.keys.charge.isDown && this.player.charging) this.releaseCharge(this.player);
 
-      this.driveCar(this.player, this.player.charging ? null : inputDir, delta);
+      this.driveCar(this.player, inputDir, delta, this.player.charging ? 0.55 : 1);
       this.updateAI(delta);
 
       // sync graphics
       [this.player, this.enemy].forEach(car => {
-        if (car.wrecked) { car.gfx.setVisible(false); car.nose.setVisible(false); return; }
+        if (car.wrecked) { car.gfx.setVisible(false); return; }
         car.gfx.setPosition(car.body.position.x, car.body.position.y);
         car.gfx.setRotation(car.body.angle);
-        const noseX = car.body.position.x + Math.cos(car.body.angle) * 17;
-        const noseY = car.body.position.y + Math.sin(car.body.angle) * 17;
-        car.nose.setPosition(noseX, noseY);
-        car.nose.setRotation(car.body.angle + Math.PI / 2);
       });
       this.wreckage.forEach(d => { if (d.gfxRef) { d.gfxRef.setPosition(d.position.x, d.position.y); d.gfxRef.setRotation(d.angle); } });
 
