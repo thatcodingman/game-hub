@@ -268,7 +268,10 @@
     preload() {}
 
     create() {
-      this.matter.world.setBounds(0, 0, W, H, 32, true, true, true, false);
+      // top disabled here on purpose — we hand-place a top wall below that
+      // leaves a gap over the launch lane so a plunged ball can actually
+      // curve into the main table instead of bouncing off a sealed ceiling
+      this.matter.world.setBounds(0, 0, W, H, 32, true, true, false, false);
       this.matter.world.engine.gravity.y = 1.0;
 
       this.cameras.main.setBackgroundColor('#0a0a10');
@@ -358,12 +361,25 @@
 
     buildTable() {
       // we won't physically wall the flipper gap — ball drains there
-      this.matter.add.rectangle(W / 2, 14, W - 20, 12, { isStatic: true, label: 'wall' });
+      //
+      // top wall stops short of the launch lane on purpose, leaving a real
+      // opening so a plunged ball can curve left into the main table instead
+      // of hitting a sealed ceiling and bouncing straight back down. These
+      // values are stored on `this` so drawVisualWalls can line up exactly
+      // with the physics instead of guessing matching numbers separately.
+      this.topWallRight = W - 58;
+      this.laneDividerTopY = 38;
+      this.laneDividerBottomY = 478.8;
+      const topWallWidth = this.topWallRight - 10;
+      this.matter.add.rectangle(10 + topWallWidth / 2, 14, topWallWidth, 12, { isStatic: true, label: 'wall' });
+
       this.matter.add.rectangle(12, H / 2, 12, H, { isStatic: true, label: 'wall' });
       this.matter.add.rectangle(W - 12, H / 2, 12, H, { isStatic: true, label: 'wall' });
 
-      // launch lane divider (right side channel for plunger)
-      this.matter.add.rectangle(W - 46, H * 0.32, 8, H * 0.64, { isStatic: true, label: 'wall' });
+      // launch lane divider (right side channel for plunger) — stops short of
+      // the very top too, matching the gap in the top wall above
+      const laneDividerH = this.laneDividerBottomY - this.laneDividerTopY;
+      this.matter.add.rectangle(W - 46, this.laneDividerTopY + laneDividerH / 2, 8, laneDividerH, { isStatic: true, label: 'wall' });
 
       // upper slanted guides funneling ball toward bumpers
       this.addSlant(40, 60, 140, 160, 10);
@@ -378,23 +394,43 @@
 
     drawVisualWalls() {
       const g = this.add.graphics().setDepth(2);
-      // outer rail: metallic amber-edged frame
-      g.lineStyle(8, 0x3a2f1a, 1);
-      g.strokeRoundedRect(4, 4, W - 8, H - 8, 16);
-      g.lineStyle(3, 0xfbbf24, 0.55);
-      g.strokeRoundedRect(4, 4, W - 8, H - 8, 16);
-      g.lineStyle(1, 0xffffff, 0.2);
-      g.strokeRoundedRect(8, 8, W - 16, H - 16, 13);
+      const topWallRight = this.topWallRight;
 
-      // launch lane rail
+      // outer rail, drawn as separate segments so the lane opening at the
+      // top-right is genuinely open in the art too, not just in the physics
+      g.fillStyle(0x3a2f1a, 1);
+      g.fillRect(0, 0, 8, H);                 // left
+      g.fillRect(W - 8, 0, 8, H);              // right
+      g.fillRect(0, H - 8, W, 8);               // bottom
+      g.fillRect(0, 0, topWallRight + 4, 12);   // top (stops at the lane gap)
+
+      g.lineStyle(2, 0xfbbf24, 0.5);
+      g.strokeRect(0, 0, 8, H);
+      g.strokeRect(W - 8, 0, 8, H);
+      g.strokeRect(0, H - 8, W, 8);
+      g.strokeRect(0, 0, topWallRight + 4, 12);
+
+      // launch lane rail — starts only BELOW the opening, so the entrance
+      // reads visually as a clear gap, not a sealed channel
       g.fillStyle(0x1e1812, 1);
-      g.fillRoundedRect(W - 56, 4, 12, H * 0.66, 4);
+      g.fillRoundedRect(W - 56, this.laneDividerTopY, 12, this.laneDividerBottomY - this.laneDividerTopY, 4);
       g.lineStyle(2, 0xfbbf24, 0.4);
-      g.strokeRoundedRect(W - 56, 4, 12, H * 0.66, 4);
+      g.strokeRoundedRect(W - 56, this.laneDividerTopY, 12, this.laneDividerBottomY - this.laneDividerTopY, 4);
 
-      // table title arch near the top
-      const title = this.add.text(W / 2, 28, 'S C O R C H', {
-        fontFamily: 'Courier New', fontSize: '15px', fontStyle: 'bold', color: '#fbbf24'
+      // small glowing arrow at the opening, pointing into the table, so the
+      // entrance is unmistakable rather than just an absence of wall
+      const arrowX = W - 42, arrowY = this.laneDividerTopY - 6;
+      g.lineStyle(2.5, 0x4ade80, 0.6);
+      g.beginPath();
+      g.moveTo(arrowX + 10, arrowY);
+      g.lineTo(arrowX - 14, arrowY - 10);
+      g.moveTo(arrowX + 10, arrowY);
+      g.lineTo(arrowX - 2, arrowY + 10);
+      g.strokePath();
+
+      // table title near the top, over the sealed portion of the table
+      const title = this.add.text(topWallRight / 2 + 2, 20, 'S C O R C H', {
+        fontFamily: 'Courier New', fontSize: '13px', fontStyle: 'bold', color: '#fbbf24'
       }).setOrigin(0.5).setDepth(2).setAlpha(0.55);
       title.setShadow(0, 0, '#f97316', 8, true, true);
     }
