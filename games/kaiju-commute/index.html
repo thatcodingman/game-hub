@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Kaiju Commute</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0710; overflow: hidden; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; touch-action: none; }
+  #game { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script>
+const W = 960, H = 540, GROUND = 470, WORLD_W = 7600, FINISH_X = 7000, HW = 42;
+const R = Math.random;
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+function darken(c, f) {
+  const r = ((c >> 16) & 255) * f, g = ((c >> 8) & 255) * f, b = (c & 255) * f;
+  return ((r << 16) | (g << 8) | b) >>> 0;
+}
+function anyJust(keys) {
+  let r = false;
+  for (const k of keys) { if (Phaser.Input.Keyboard.JustDown(k)) r = true; }
+  return r;
+}
+
+// ---------- Building types: each has a weakness (seed of the adaptation counter system) ----------
+const TYPES = {
+  apartment: { w: [140, 200], fl: [5, 8],  fh: 44, hpf: 30, mult: { stomp: 1.4, tail: 1.0, fire: 0.5, blast: 1 },
+               cols: [0x7a4b3a, 0x8a5a45, 0x6b5a7a, 0x5a6b7a],
+               news: ['APARTMENT BLOCK FALLS, RESIDENTS "HAD A LEASE"', 'APARTMENTS FLATTENED, LANDLORD UNMOVED'] },
+  glass:     { w: [110, 150], fl: [7, 11], fh: 40, hpf: 20, mult: { stomp: 0.8, tail: 1.5, fire: 0.4, blast: 1.2 },
+               cols: [0x3f6a8c, 0x3a5f7f, 0x4a7596],
+               news: ['GLASS TOWER SHATTERS, WINDOW CLEANERS RELIEVED', 'CORPORATE HQ DOWN, MEETING MOVED TO ZOOM'] },
+  fuel:      { w: [150, 190], fl: [2, 2],  fh: 50, hpf: 26, mult: { stomp: 0.7, tail: 0.8, fire: 3.0, blast: 1 },
+               cols: [0xd9d6cc],
+               news: ['GAS STATION ERUPTS, PRICES UNAFFECTED', 'FUEL DEPOT LOST, DRIVERS "NOT SURPRISED"'] },
+  shop:      { w: [120, 170], fl: [3, 4],  fh: 48, hpf: 24, mult: { stomp: 1.0, tail: 1.0, fire: 1.0, blast: 1 },
+               cols: [0xc9a23a, 0xb86f8a, 0x6fae8a, 0xd08a4a],
+               news: ['LOCAL SHOP CLOSED FOR GOOD', 'CORNER STORE GONE, TOWN "DEVASTATED"'] }
+};
+
+// ---------- Tiny synthesized audio (self-contained; swap for sfx.js later if desired) ----------
+const Snd = {
+  ctx: null, buf: null, fireSrc: null, fireGain: null,
+  init() {
+    try {
+      if (!this.ctx) {
+        const A = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new A();
+        const n = this.ctx.sampleRate * 2;
+        this.buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+        const d = this.buf.getChannelData(0);
+        for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      }
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    } catch (e) {}
+  },
+  _noise(dur, f0, f1, vol, type) {
+    if (!this.ctx) return;
+    try {
+      const c = this.ctx, t = c.currentTime;
+      const s = c.createBufferSource(); s.buffer = this.buf;
+      const f = c.createBiquadFilter(); f.type = type || 'lowpass';
+      f.frequency.setValueAtTime(f0, t);
+      f.frequency.exponentialRampToValueAtTime(Math.max(30, f1), t + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      s.connect(f); f.connect(g); g.connect(c.destination);
+      s.start(t); s.stop(t + dur + 0.05);
+    } catch (e) {}
+  },
+  _tone(f0, f1, dur, vol, type) {
+    if (!this.ctx) return;
+    try {
+      const c = this.ctx, t = c.currentTime;
+      const o = c.createOscillator(); o.type = type || 'sine';
+      o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g); g.connect(c.destination);
+      o.start(t); o.stop(t + dur + 0.05);
+    } catch (e) {}
+  },
+  thump(v) { this._tone(110, 32, 0.3, 0.7 * v, 'sine'); this._noise(0.25, 500, 80, 0.3 * v); },
+  crash(v) { this._noise(0.7, 2200, 200, 0.45 * v); this._tone(80, 30, 0.5, 0.5 * v, 'sine'); },
+  whoosh() { this._noise(0.28, 500, 2500, 0.25, 'bandpass'); },
+  crunch() { this._noise(0.15, 1800, 300, 0.22); },
+  boom() { this._noise(1.0, 1500, 60, 0.7); this._tone(70, 25, 0.8, 0.8, 'sine'); },
+  roar() { this._tone(140, 60, 0.7, 0.25, 'sawtooth'); this._noise(0.7, 900, 200, 0.2, 'bandpass'); },
+  fire(on) {
+    if (!this.ctx) return;
+    try {
+      if (on && !this.fireSrc) {
+        const c = this.ctx;
+        const s = c.createBufferSource(); s.buffer = this.buf; s.loop = true;
+        const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.7;
+        const g = c.createGain(); g.gain.value = 0.0001;
+        g.gain.linearRampToValueAtTime(0.16, c.currentTime + 0.08);
+        s.connect(f); f.connect(g); g.connect(c.destination); s.start();
+        this.fireSrc = s; this.fireGain = g;
+      } else if (!on && this.fireSrc) {
+        const c = this.ctx, s = this.fireSrc, g = this.fireGain;
+        g.gain.cancelScheduledValues(c.currentTime);
+        g.gain.linearRampToValueAtTime(0.0001, c.currentTime + 0.1);
+        s.stop(c.currentTime + 0.12);
+        this.fireSrc = null; this.fireGain = null;
+      }
+    } catch (e) {}
+  }
+};
+
+class Main extends Phaser.Scene {
+  constructor() { super('Main'); }
+
+  create() {
+    this.rng = mulberry32(20261026);
+    this.state = this.registry.get('skip') ? 'play' : 'title';
+    this.t = 0; this.score = 0; this.rage = 0; this.rageIdle = 0;
+    this.hitstop = 0; this.newsT = 0; this.blockedT = 0; this.acted = false;
+    this.stats = { wrecked: 0, cars: 0, units: 0, total: 0 };
+    this.habit = { stomp: 0, tail: 0, fire: 0 };
+    this.debris = []; this.parts = []; this.rings = []; this.cars = []; this.buildings = [];
+    this.fireFuel = 100; this.overheat = false; this.fireIdle = 0; this.fireT = 0; this.wasFiring = false;
+    this.lastCrash = 0; this.camLead = 0;
+    this.units = []; this.shots = []; this.hp = 100; this.maxHp = 100; this.invuln = 0;
+    this.foamT = 0; this.rampage = 0; this.reviewT = 12; this.wave = 0;
+
+    this.drawWorld();
+    this.makeCity();
+    this.makeCars();
+    this.makeKaiju();
+    this.makeHud();
+    this.makeInput();
+    this.setupCamera();
+
+    if (this.state === 'title') this.showTitle();
+    else this.news('MONSTER LATE FOR WORK. AGAIN.');
+  }
+
+  // ---------------- World ----------------
+  drawWorld() {
+    const sky = this.add.graphics().setScrollFactor(0).setDepth(-100);
+    sky.fillGradientStyle(0x1b1240, 0x1b1240, 0xff8a5c, 0xff8a5c, 1);
+    sky.fillRect(0, 0, W, H);
+    sky.fillStyle(0xffd9a0, 0.18); sky.fillCircle(700, 330, 140);
+    sky.fillStyle(0xffd9a0, 0.9); sky.fillCircle(700, 330, 70);
+
+    const fr = mulberry32(5);
+    [[0.15, 0x2a1d4a, 0.9, 60, 200], [0.35, 0x1f1538, 0.95, 50, 170]].forEach(([f, col, al, mn, mx], idx) => {
+      const g = this.add.graphics().setScrollFactor(f).setDepth(-90 + idx);
+      g.fillStyle(col, al);
+      const span = WORLD_W * f + W;
+      let x = 0;
+      while (x < span) {
+        const w = 40 + fr() * 70, h = mn + fr() * (mx - mn);
+        g.fillRect(x, GROUND - h, w, h + 60);
+        x += w + fr() * 12;
+      }
+    });
+
+    const gr = this.add.graphics().setDepth(5);
+    gr.fillStyle(0x2a2330, 1); gr.fillRect(0, GROUND, WORLD_W, H - GROUND);
+    gr.fillStyle(0x4a4050, 1); gr.fillRect(0, GROUND, WORLD_W, 10);
+    gr.fillStyle(0xd9b84a, 0.7);
+    for (let x = 0; x < FINISH_X + 100; x += 90) gr.fillRect(x, GROUND + 46, 44, 4);
+    // beach + sea (the destination)
+    gr.fillStyle(0xe7c98a, 1); gr.fillRect(FINISH_X - 20, GROUND, 180, H - GROUND);
+    gr.fillStyle(0x2a7fb0, 1); gr.fillRect(FINISH_X + 160, GROUND - 10, WORLD_W - FINISH_X - 160, H - GROUND + 10);
+    gr.fillStyle(0xffffff, 0.25); for (let x = FINISH_X + 180; x < WORLD_W; x += 60) gr.fillRect(x, GROUND + 10, 30, 3);
+    gr.fillStyle(0x6b4a2a, 1); gr.fillRect(FINISH_X + 36, GROUND - 150, 8, 150);
+    gr.fillStyle(0xf5e6c4, 1); gr.fillRect(FINISH_X - 20, GROUND - 170, 130, 44);
+    this.add.text(FINISH_X + 45, GROUND - 148, 'HOME', { fontFamily: 'monospace', fontSize: '30px', fontStyle: 'bold', color: '#6b3a1a' })
+      .setOrigin(0.5).setDepth(6);
+
+    this.fx = this.add.graphics().setDepth(30);
+    this.carG = this.add.graphics().setDepth(11);
+    this.unitG = this.add.graphics().setDepth(12);
+  }
+
+  makeCity() {
+    let x = 720; const r = this.rng;
+    while (x < FINISH_X - 260) {
+      const p = r();
+      const type = p < 0.38 ? 'apartment' : p < 0.62 ? 'glass' : p < 0.74 ? 'fuel' : 'shop';
+      const T = TYPES[type];
+      const w = Math.round(T.w[0] + r() * (T.w[1] - T.w[0]));
+      const fl = T.fl[0] + Math.floor(r() * (T.fl[1] - T.fl[0] + 1));
+      const col = T.cols[Math.floor(r() * T.cols.length)];
+      const cols = Math.max(2, Math.floor((w - 16) / 28));
+      const lit = [];
+      for (let i = 0; i < fl; i++) { const row = []; for (let c = 0; c < cols; c++) row.push(r() < 0.45); lit.push(row); }
+      const cracks = [];
+      for (let i = 0; i < 9; i++) cracks.push({ x1: r(), y1: r() * 0.9, x2: r(), y2: r() * 0.9 });
+      const rub = [];
+      for (let i = 0; i < 10; i++) rub.push({ x: (r() - 0.5) * w, w: 14 + r() * 28, h: 6 + r() * 20 });
+      const b = {
+        type, x: x + w / 2, w, fh: T.fh, maxFl: fl, floors: fl, hpf: T.hpf,
+        maxHp: fl * T.hpf, hp: fl * T.hpf, alive: true, flash: 0, burn: 0, burnTick: 0,
+        col, dark: darken(col, 0.72), cols, lit, cracks, rub
+      };
+      b.g = this.add.graphics().setPosition(b.x, GROUND).setDepth(10);
+      this.buildings.push(b);
+      this.redraw(b);
+      x += w + 30 + r() * 110;
+    }
+    this.stats.total = this.buildings.length;
+  }
+
+  redraw(b) {
+    const g = b.g; g.clear();
+    const w = b.w, fh = b.fh;
+    if (!b.alive) {
+      g.setDepth(9);
+      b.rub.forEach((p, i) => { g.fillStyle(i % 2 ? 0x4a4252 : 0x3b3440, 1); g.fillRect(p.x - p.w / 2, -p.h, p.w, p.h); });
+      return;
+    }
+    const H0 = b.floors * fh;
+    for (let i = 0; i < b.floors; i++) {
+      const y = -(i + 1) * fh;
+      g.fillStyle(b.col, 1); g.fillRect(-w / 2, y, w, fh);
+      g.fillStyle(b.dark, 1); g.fillRect(-w / 2, y + fh - 3, w, 3);
+      const row = b.lit[i] || [];
+      const sp = (w - 16) / b.cols;
+      for (let c = 0; c < b.cols; c++) {
+        const lit = row[c];
+        if (b.type === 'glass') g.fillStyle(lit ? 0xbfe6ff : 0x6ea3c6, 1);
+        else g.fillStyle(lit ? 0xffe9a3 : 0x20202c, 1);
+        g.fillRect(-w / 2 + 8 + c * sp + (sp - 14) / 2, y + 10, 14, 18);
+      }
+    }
+    if (b.type === 'apartment') { g.fillStyle(b.dark, 1); g.fillRect(-w / 2 + 14, -H0 - 12, 26, 12); }
+    if (b.type === 'glass') { g.fillStyle(0x222233, 1); g.fillRect(-2, -H0 - 30, 4, 30); }
+    if (b.type === 'fuel') { g.fillStyle(0xd62f2f, 1); g.fillRect(-w / 2 - 8, -H0 - 8, w + 16, 10); g.fillRect(-w / 2, -fh + 6, w, 8); }
+    if (b.type === 'shop') {
+      const n = 6, sw = w / n;
+      for (let i = 0; i < n; i++) { g.fillStyle(i % 2 ? 0xffffff : 0xd62f2f, 1); g.fillRect(-w / 2 + i * sw, -fh + 4, sw, 12); }
+    }
+    const dmg = 1 - b.hp / b.maxHp, n = Math.floor(dmg * b.cracks.length);
+    g.lineStyle(2, 0x000000, 0.45);
+    for (let k = 0; k < n; k++) {
+      const c = b.cracks[k];
+      g.lineBetween(c.x1 * w - w / 2, -c.y1 * H0, c.x2 * w - w / 2, -c.y2 * H0);
+    }
+    if (b.burn > 0) { g.fillStyle(0xff6a1a, 0.14); g.fillRect(-w / 2, -H0, w, H0); }
+    if (b.flash > 0) { g.fillStyle(0xffffff, 0.35); g.fillRect(-w / 2, -H0, w, H0); }
+  }
+
+  makeCars() {
+    const r = mulberry32(77);
+    const cols = [0xe74c3c, 0xf1c40f, 0x3498db, 0xecf0f1, 0x2ecc71];
+    for (let i = 0; i < 26; i++) {
+      this.cars.push({ x: 300 + r() * (FINISH_X - 300), dir: r() < 0.5 ? -1 : 1, sp: 50 + r() * 70, col: cols[i % 5], alive: true });
+    }
+  }
+
+  makeKaiju() {
+    this.k = { x: 250, y: GROUND, vx: 0, vy: 0, face: 1, grounded: true, on: null, state: 'idle', st: 0, hit: false, walk: 0, squash: 0, step: 0 };
+    this.kg = this.add.graphics().setDepth(25);
+    this.shadow = this.add.ellipse(250, GROUND + 6, 110, 16, 0x000000, 0.35).setDepth(8);
+  }
+
+  setupCamera() {
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, WORLD_W, H);
+    this.camT = this.add.rectangle(this.k.x, H / 2, 2, 2, 0x000000, 0);
+    cam.startFollow(this.camT, true, 0.09, 1);
+  }
+
+  // ---------------- HUD ----------------
+  makeHud() {
+    this.hud = this.add.graphics().setScrollFactor(0).setDepth(1000);
+    const st = (size, color) => ({ fontFamily: 'monospace', fontSize: size + 'px', fontStyle: 'bold', color });
+    this.txt = {
+      score: this.add.text(16, 10, '', st(18, '#ffffff')),
+      time: this.add.text(W - 16, 10, '', st(18, '#ffffff')).setOrigin(1, 0),
+      news: this.add.text(W / 2, 38, '', st(14, '#ffe27a')).setOrigin(0.5),
+      rage: this.add.text(16, 40, 'RAGE', st(10, '#ff8a8a')),
+      fire: this.add.text(16, 58, 'FIRE', st(10, '#ffbb66')),
+      hint: this.add.text(W / 2, H - 22, '', st(13, '#ffffff')).setOrigin(0.5),
+      hs: this.add.text(16, 78, 'STOMP', st(9, '#cccccc')),
+      ht: this.add.text(16, 90, 'TAIL', st(9, '#cccccc')),
+      hf: this.add.text(16, 102, 'FIRE', st(9, '#cccccc')),
+      hp: this.add.text(W - 222, 31, 'HP', st(10, '#9be07a')).setOrigin(1, 0),
+      ramp: this.add.text(W / 2, 62, '', st(22, '#ff6a6a')).setOrigin(0.5)
+    };
+    Object.values(this.txt).forEach(t => t.setScrollFactor(0).setDepth(1001));
+    this.touchDev = this.sys.game.device.input.touch;
+    this.hintMsg = this.touchDev ? 'USE THE BUTTONS: MOVE, JUMP, STOMP, TAIL, FIRE'
+      : 'ARROWS/AD MOVE   UP JUMP   S STOMP (S IN AIR = SLAM)   X TAIL   HOLD C FIRE';
+  }
+
+  news(t) { this.txt.news.setText(t); this.newsT = 4.5; }
+
+  updateHud(dt) {
+    const g = this.hud, k = this.k; g.clear();
+    this.txt.score.setText('SCORE ' + Math.round(this.score).toLocaleString() + '   WRECKED ' + this.stats.wrecked + '/' + this.stats.total);
+    this.txt.time.setText(this.fmtTime(this.t));
+    // commute progress
+    g.fillStyle(0x000000, 0.4); g.fillRect(W / 2 - 200, 6, 400, 6);
+    g.fillStyle(0x8be28b, 1); g.fillRect(W / 2 - 200, 6, 400 * Math.min(1, k.x / FINISH_X), 6);
+    // news bar
+    if (this.newsT > 0) {
+      this.newsT -= dt;
+      const a = Math.min(1, this.newsT);
+      g.fillStyle(0x000000, 0.55 * a); g.fillRect(W / 2 - 340, 24, 680, 28);
+      this.txt.news.setAlpha(a);
+    } else this.txt.news.setAlpha(0);
+    // rage + fire bars
+    g.fillStyle(0x000000, 0.5); g.fillRect(52, 40, 200, 10); g.fillRect(52, 58, 200, 8);
+    g.fillStyle(this.rage >= 100 ? 0xffffff : 0xff4d4d, 1); g.fillRect(52, 40, 2 * this.rage, 10);
+    g.fillStyle(this.overheat ? 0x888888 : this.foamT > 0 ? 0xffffff : 0xff9a2a, 1); g.fillRect(52, 58, 2 * this.fireFuel, 8);
+    // habit bars (the military is watching these)
+    const h = this.habit, sum = h.stomp + h.tail + h.fire;
+    [['stomp', 0x9be07a, 78], ['tail', 0x7ab8e0, 90], ['fire', 0xff9a2a, 102]].forEach(([key, col, y]) => {
+      g.fillStyle(0x000000, 0.5); g.fillRect(52, y, 120, 8);
+      g.fillStyle(col, 1); g.fillRect(52, y, sum > 0 ? 120 * h[key] / sum : 0, 8);
+    });
+    // health + rampage
+    g.fillStyle(0x000000, 0.5); g.fillRect(W - 216, 34, 200, 10);
+    const hpf = Math.max(0, this.hp / this.maxHp);
+    g.fillStyle(hpf > 0.5 ? 0x6be07a : hpf > 0.25 ? 0xf1c40f : 0xff4d4d, 1); g.fillRect(W - 216, 34, 200 * hpf, 10);
+    this.txt.ramp.setText(this.rampage > 0 ? '!! RAMPAGE !!' : '').setAlpha(0.6 + 0.4 * Math.sin(this.t * 14));
+    // hint
+    let msg = '';
+    if (this.state === 'play') {
+      if (this.blockedT > 1.5) msg = 'SOMETHING IS IN THE WAY. SMASH IT.';
+      else if (!this.acted && this.t < 14) msg = this.hintMsg;
+    }
+    this.txt.hint.setText(msg);
+  }
+
+  fmtTime(s) { const m = Math.floor(s / 60); return m + ':' + (s % 60).toFixed(1).padStart(4, '0'); }
+
+  // ---------------- Input ----------------
+  makeInput() {
+    const kb = this.input.keyboard;
+    this.cur = kb.createCursorKeys();
+    this.K = kb.addKeys({ A: 'A', D: 'D', W: 'W', S: 'S', Z: 'Z', X: 'X', C: 'C', J: 'J', K: 'K', L: 'L', SPACE: 'SPACE', R: 'R' });
+    kb.addCapture('UP,DOWN,LEFT,RIGHT,SPACE');
+    this.touch = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false };
+    this.inp = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false };
+    this.input.addPointer(3);
+    if (this.sys.game.device.input.touch) this.makeTouchUi();
+  }
+
+  makeTouchUi() {
+    const mk = (x, y, r, label, down, up) => {
+      const c = this.add.circle(x, y, r, 0xffffff, 0.14).setStrokeStyle(2, 0xffffff, 0.45).setScrollFactor(0).setDepth(1500).setInteractive();
+      this.add.text(x, y, label, { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffffff' })
+        .setOrigin(0.5).setScrollFactor(0).setDepth(1501);
+      const rel = () => { c.setFillStyle(0xffffff, 0.14); if (up) up(); };
+      c.on('pointerdown', () => { c.setFillStyle(0xffffff, 0.35); down(); });
+      c.on('pointerup', rel); c.on('pointerout', rel);
+    };
+    const t = this.touch;
+    mk(70, H - 70, 46, '<', () => t.left = true, () => t.left = false);
+    mk(175, H - 70, 46, '>', () => t.right = true, () => t.right = false);
+    mk(W - 70, H - 70, 44, 'JUMP', () => t.jump = true);
+    mk(W - 170, H - 70, 44, 'STOMP', () => t.stomp = true);
+    mk(W - 70, H - 170, 44, 'TAIL', () => t.tail = true);
+    mk(W - 170, H - 170, 44, 'FIRE', () => t.fire = true, () => t.fire = false);
+  }
+
+  readInput() {
+    const c = this.cur, K = this.K, t = this.touch;
+    this.inp = {
+      left: c.left.isDown || K.A.isDown || t.left,
+      right: c.right.isDown || K.D.isDown || t.right,
+      fire: K.C.isDown || K.L.isDown || t.fire,
+      jump: anyJust([c.up, K.W, K.SPACE]) || t.jump,
+      stomp: anyJust([c.down, K.S, K.Z, K.J]) || t.stomp,
+      tail: anyJust([K.X, K.K]) || t.tail
+    };
+    t.jump = false; t.stomp = false; t.tail = false;
+  }
+
+  // ---------------- Title / done ----------------
+  showTitle() {
+    this.ov = [];
+    const add = o => { this.ov.push(o.setScrollFactor(0).setDepth(2001)); return o; };
+    this.ov.push(this.add.rectangle(W / 2, H / 2, W, H, 0x0b0710, 0.62).setScrollFactor(0).setDepth(2000));
+    add(this.add.text(W / 2, 140, 'KAIJU COMMUTE', { fontFamily: 'monospace', fontSize: '64px', fontStyle: 'bold', color: '#8be28b' }).setOrigin(0.5));
+    add(this.add.text(W / 2, 205, 'The monster is late for work. The military is learning.', { fontFamily: 'monospace', fontSize: '18px', color: '#ffe27a' }).setOrigin(0.5));
+    add(this.add.text(W / 2, 300,
+      'ARROWS / A D  MOVE      UP / W / SPACE  JUMP\nS / DOWN  STOMP  (press in the air to SLAM)\nX  TAIL SWIPE      HOLD C  FIRE BREATH\n\nSmash your way to the beach. Different buildings fall to different attacks.\nThe military learns what you spam. Dodge shells, vary your moves.',
+      { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const prompt = add(this.add.text(W / 2, 450, this.touchDev ? 'TAP TO START' : 'PRESS ANY KEY TO START', { fontFamily: 'monospace', fontSize: '22px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5));
+    const tw = this.tweens.add({ targets: prompt, alpha: 0.25, duration: 600, yoyo: true, repeat: -1 });
+    const go = () => {
+      if (this.state !== 'title') return;
+      Snd.init(); tw.stop();
+      this.ov.forEach(o => o.destroy());
+      this.state = 'play';
+      this.news('MONSTER LATE FOR WORK. AGAIN.');
+      Snd.roar();
+    };
+    this.input.keyboard.once('keydown', go);
+    this.input.once('pointerdown', go);
+  }
+
+  checkFinish() {
+    if (this.state !== 'play' || this.k.x < FINISH_X) return;
+    this.state = 'done';
+    Snd.fire(false); this.wasFiring = false;
+    let best = 0;
+    try { best = parseInt(localStorage.getItem('kaiju-commute-best') || '0', 10) || 0; } catch (e) {}
+    const sc = Math.round(this.score);
+    if (sc > best) { best = sc; try { localStorage.setItem('kaiju-commute-best', String(sc)); } catch (e) {} }
+    this.news('MONSTER ARRIVES HOME: "TRAFFIC WAS TERRIBLE"');
+    const h = this.habit, sum = Math.max(1, h.stomp + h.tail + h.fire);
+    const pc = v => Math.round(100 * v / sum) + '%';
+    const g = this.add.rectangle(W / 2, H / 2, 560, 330, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0x8be28b);
+    const t = this.add.text(W / 2, H / 2,
+      'YOU MADE IT HOME\n\nTIME  ' + this.fmtTime(this.t) +
+      '\nBUILDINGS WRECKED  ' + this.stats.wrecked + ' / ' + this.stats.total +
+      '\nCARS CRUSHED  ' + this.stats.cars + '   MILITARY DESTROYED  ' + this.stats.units +
+      '\nSCORE  ' + sc.toLocaleString() + '   BEST  ' + best.toLocaleString() +
+      '\nSTYLE  STOMP ' + pc(h.stomp) + '  TAIL ' + pc(h.tail) + '  FIRE ' + pc(h.fire) +
+      '\n\nThe military is taking notes.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO COMMUTE AGAIN',
+      { fontFamily: 'monospace', fontSize: '18px', color: '#ffffff', align: 'center', lineSpacing: 6 })
+      .setOrigin(0.5).setScrollFactor(0).setDepth(2001);
+    this.time.delayedCall(900, () => this.input.once('pointerdown', () => this.restart()));
+  }
+
+  restart() { Snd.fire(false); this.registry.set('skip', true); this.scene.restart(); }
+
+  // ---------------- Main loop ----------------
+  update(time, delta) {
+    const dt = Math.min(delta, 40) / 1000;
+    if (this.state === 'title') { this.k.walk = 0; this.drawAll(time); this.updateHud(dt); return; }
+    if (Phaser.Input.Keyboard.JustDown(this.K.R)) { this.restart(); return; }
+    if (this.state === 'done' || this.state === 'dead') {
+      this.updateFx(dt); this.drawAll(time); this.updateHud(dt); return;
+    }
+    if (this.hitstop > 0) { this.hitstop -= delta; this.drawAll(time); this.updateHud(dt); return; }
+    this.t += dt;
+    this.readInput();
+    this.updateKaiju(dt);
+    this.updateBuildings(dt);
+    this.updateCars(dt);
+    this.updateMilitary(dt);
+    this.updateFx(dt);
+    this.rageIdle += dt;
+    if (this.rageIdle > 3) this.rage = Math.max(0, this.rage - 6 * dt);
+    this.checkFinish();
+    this.camLead = lerp(this.camLead, this.k.face * 140, Math.min(1, 3 * dt));
+    this.camT.x = this.k.x + this.camLead;
+    this.drawAll(time);
+    this.updateHud(dt);
+  }
+
+  addRage(a) { this.rage = Math.min(100, this.rage + a); this.rageIdle = 0; }
+  addScore(p) { this.score += p * (1 + this.rage / 100); }
+  shake(p) { this.cameras.main.shake(140 + p * 8, p * 0.0007, true); }
+
+  // ---------------- Kaiju ----------------
+  updateKaiju(dt) {
+    const k = this.k, i = this.inp;
+    k.st += dt;
+    k.squash *= Math.pow(0.001, dt);
+
+    if (k.state === 'idle') {
+      if (i.tail) { k.state = 'tail'; k.st = 0; k.hit = false; Snd.whoosh(); this.acted = true; }
+      else if (i.stomp) {
+        this.acted = true;
+        if (k.grounded) { k.state = 'stomp'; k.st = 0; k.hit = false; }
+        else { k.state = 'slam'; k.vy = 1250; k.vx *= 0.2; }
+      }
+    }
+    if (k.state === 'stomp') {
+      if (!k.hit && k.st >= 0.16) { k.hit = true; this.stompImpact(230, 28, false); }
+      if (k.st >= 0.42) k.state = 'idle';
+    }
+    if (k.state === 'tail') {
+      if (!k.hit && k.st >= 0.2) { k.hit = true; this.tailHit(); }
+      if (k.st >= 0.46) k.state = 'idle';
+    }
+    if (i.jump && k.grounded && k.state === 'idle') {
+      k.vy = -720; k.grounded = false; k.on = null; k.squash = -0.6;
+      Snd.thump(0.35); this.dust(k.x, k.y, 5, 120, 14);
+    }
+
+    // fire breath
+    const canFire = k.state === 'idle' && !this.overheat && this.fireFuel > 0;
+    const firing = i.fire && canFire;
+    if (firing) {
+      this.acted = true;
+      this.fireFuel -= (this.rampage > 0 ? 0 : 38 * (this.foamT > 0 ? 2 : 1)) * dt; this.fireIdle = 0;
+      if (this.fireFuel <= 0) { this.fireFuel = 0; this.overheat = true; }
+      this.fireT += dt;
+      while (this.fireT > 0.07) {
+        this.fireT -= 0.07;
+        const x1 = k.face > 0 ? k.x + 20 : k.x - 340, x2 = k.face > 0 ? k.x + 340 : k.x - 20;
+        this.damageArea(x1, x2, 4.5, 'fire');
+        this.burnCars(x1, x2);
+        this.hitUnits(x1, x2, 4.5, 'fire');
+      }
+      for (let n = 0; n < 3; n++) {
+        this.addPart({ kind: 'fire', x: k.x + k.face * 62, y: k.y - 166, vx: k.face * (380 + R() * 160), vy: (R() - 0.5) * 70 - 10,
+          life: 0.35 + R() * 0.2, size: 7 + R() * 6 });
+      }
+    } else {
+      this.fireIdle += dt;
+      if (this.fireIdle > 0.5 && this.foamT <= 0) this.fireFuel = Math.min(100, this.fireFuel + 24 * dt);
+      if (this.overheat && this.fireFuel >= 35) this.overheat = false;
+    }
+    if (firing !== this.wasFiring) { Snd.fire(firing); this.wasFiring = firing; }
+    k.firing = firing;
+
+    // horizontal movement
+    const dir = (i.right ? 1 : 0) - (i.left ? 1 : 0);
+    if (dir && k.state !== 'slam') k.face = dir;
+    let sf = 1;
+    if (firing) sf = 0.4;
+    if (k.state === 'stomp' || k.state === 'tail') sf = 0.3;
+    if (k.state === 'slam') sf = 0;
+    const acc = k.grounded ? 12 : 4;
+    k.vx += (dir * 230 * sf * (this.rampage > 0 ? 1.25 : 1) - k.vx) * Math.min(1, acc * dt);
+    let nx = k.x + k.vx * dt, blocked = false;
+    for (const b of this.buildings) {
+      if (!b.alive) continue;
+      const left = b.x - b.w / 2, right = b.x + b.w / 2, roof = GROUND - b.floors * b.fh;
+      if (k.y > roof + 6 && nx + HW > left && nx - HW < right) {
+        nx = k.x <= b.x ? left - HW : right + HW;
+        if (dir && Math.sign(dir) === Math.sign(b.x - k.x)) blocked = true;
+        k.vx = 0;
+      }
+    }
+    k.x = Phaser.Math.Clamp(nx, HW, WORLD_W - HW);
+    this.blockedT = blocked ? this.blockedT + dt : 0;
+
+    // vertical + landing / roof support
+    k.vy += 1800 * dt;
+    if (k.state === 'slam') k.vy = Math.max(k.vy, 1250);
+    const ny = k.y + k.vy * dt;
+    let floorY = GROUND, on = null;
+    for (const b of this.buildings) {
+      if (!b.alive) continue;
+      if (Math.abs(b.x - k.x) < b.w / 2 + HW * 0.6) {
+        const roof = GROUND - b.floors * b.fh;
+        if (k.y <= roof + 8 && roof < floorY) { floorY = roof; on = b; }
+      }
+    }
+    if (ny >= floorY) {
+      const impactV = k.vy;
+      k.y = floorY; k.vy = 0; k.grounded = true; k.on = on;
+      if (impactV > 250) {
+        k.squash = Math.min(1, impactV / 1200);
+        if (k.state === 'slam') { k.state = 'idle'; this.stompImpact(320, 55, true); }
+        else { this.dust(k.x, k.y, 6, 160, 16); Snd.thump(0.4); this.shake(2); }
+      } else if (k.state === 'slam') k.state = 'idle';
+    } else { k.y = ny; k.grounded = false; k.on = null; }
+
+    // walk cycle + footsteps + crushing cars underfoot
+    if (k.grounded) {
+      k.walk += Math.abs(k.vx) * dt * 0.045;
+      const stepN = Math.floor(k.walk / Math.PI);
+      if (stepN !== k.step) {
+        k.step = stepN;
+        if (Math.abs(k.vx) > 60) { Snd.thump(0.22); this.shake(1.5); this.dust(k.x + k.face * 14, k.y, 2, 60, 10); }
+      }
+      if (!k.on) {
+        for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < HW + 20) this.crushCar(c, 'foot');
+      }
+    }
+  }
+
+  stompImpact(Rr, dmg, slam) {
+    const k = this.k;
+    this.ring(k.x, k.y, Rr);
+    this.shake(slam ? 14 : 7);
+    if (slam) this.hitstop = Math.max(this.hitstop, 70);
+    Snd.thump(slam ? 1 : 0.7);
+    this.dust(k.x, k.y, slam ? 18 : 10, Rr * 1.1, 22);
+    const on = k.on;
+    this.damageArea(k.x - Rr, k.x + Rr, dmg, 'stomp', k.x);
+    this.hitUnits(k.x - Rr, k.x + Rr, dmg * 0.8, 'stomp');
+    if (slam && on && on.alive) this.damageBuilding(on, dmg * 0.8, 'stomp', k.x);
+    for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < Rr * 0.8 && k.y >= GROUND - 4) this.crushCar(c, 'stomp');
+  }
+
+  tailHit() {
+    const k = this.k;
+    const x1 = k.face > 0 ? k.x - 230 : k.x - 140, x2 = k.face > 0 ? k.x + 140 : k.x + 230;
+    this.shake(8);
+    this.damageArea(x1, x2, 36, 'tail', k.x);
+    this.hitUnits(x1, x2, 36, 'tail');
+    for (const c of this.cars) if (c.alive && c.x > x1 && c.x < x2) this.crushCar(c, 'tail');
+    for (let n = 0; n < 10; n++) {
+      this.addPart({ kind: 'spark', x: k.x - k.face * (60 + R() * 150), y: k.y - 60 - R() * 90, vx: (R() - 0.5) * 300, vy: -R() * 250, life: 0.4, size: 3 });
+    }
+  }
+
+  // ---------------- Buildings ----------------
+  damageArea(x1, x2, dmg, kind, center) {
+    let hit = 0;
+    for (const b of this.buildings.slice()) {
+      if (!b.alive) continue;
+      const l = b.x - b.w / 2, r = b.x + b.w / 2;
+      if (r < x1 || l > x2) continue;
+      let f = 1;
+      if (center !== undefined) {
+        const d = center < l ? l - center : center > r ? center - r : 0;
+        f = Math.max(0.35, 1 - d / ((x2 - x1) / 2) * 0.65);
+      }
+      hit += this.damageBuilding(b, dmg * f, kind, this.k.x);
+    }
+    return hit;
+  }
+
+  damageBuilding(b, amount, kind, fromX) {
+    if (!b.alive || this.state === 'done' || this.state === 'dead') return 0;
+    const T = TYPES[b.type], mk = kind === 'burn' ? 'fire' : kind;
+    const dmg = amount * (T.mult[mk] || 1) * (this.rampage > 0 ? 1.8 : 1);
+    b.hp -= dmg; b.flash = 0.08;
+    if (this.habit[kind] !== undefined) this.habit[kind] += dmg;
+    if (kind === 'fire') b.burn = 3.5;
+    this.addRage(dmg * 0.1); this.addScore(dmg * 1.5);
+    const nf = Math.max(0, Math.ceil(b.hp / b.hpf));
+    while (b.floors > nf) { b.floors--; this.floorDebris(b, b.floors, fromX); }
+    if (b.hp <= 0) this.destroyBuilding(b, fromX);
+    else this.redraw(b);
+    return dmg;
+  }
+
+  destroyBuilding(b, fromX) {
+    b.alive = false; b.floors = 0; b.hp = 0; b.burn = 0;
+    this.stats.wrecked++;
+    this.addScore(100 * b.maxFl); this.addRage(6);
+    this.dust(b.x, GROUND - 10, 18, b.w * 1.3, 26);
+    for (let n = 0; n < 8; n++) this.chunk(b.x + (R() - 0.5) * b.w, GROUND - 20 - R() * 30, (R() - 0.5) * 260, -150 - R() * 250, R() < 0.5 ? b.col : b.dark, 14);
+    this.shake(b.type === 'fuel' ? 16 : 11);
+    this.hitstop = Math.max(this.hitstop, 50);
+    this.playCrash(1);
+    const T = TYPES[b.type];
+    this.news(T.news[Math.floor(R() * T.news.length)]);
+    this.redraw(b);
+    if (b.type === 'fuel') this.explode(b.x, GROUND - 40);
+  }
+
+  explode(x, y) {
+    this.ring(x, GROUND, 340);
+    for (let n = 0; n < 40; n++) this.addPart({ kind: 'fire', x: x + (R() - 0.5) * 120, y: y + (R() - 0.5) * 60, vx: (R() - 0.5) * 420, vy: -R() * 420, life: 0.5 + R() * 0.5, size: 12 + R() * 14 });
+    for (let n = 0; n < 25; n++) this.addPart({ kind: 'spark', x, y, vx: (R() - 0.5) * 700, vy: -R() * 600, life: 0.6, size: 3 });
+    Snd.boom(); this.shake(20); this.hitstop = Math.max(this.hitstop, 80);
+    for (const nb of this.buildings.slice()) {
+      if (!nb.alive) continue;
+      const d = Math.max(0, Math.abs(nb.x - x) - nb.w / 2);
+      if (d < 320) this.damageBuilding(nb, 70 * (1 - d / 320), 'blast', x);
+    }
+    for (const c of this.cars) if (c.alive && Math.abs(c.x - x) < 320) this.crushCar(c, 'tail');
+    const k = this.k;
+    if (Math.abs(k.x - x) < 250) k.vx += Math.sign(k.x - x || 1) * 300;
+  }
+
+  floorDebris(b, fi, fromX) {
+    const y1 = GROUND - (fi + 1) * b.fh;
+    const dirX = Math.sign(b.x - (fromX === undefined ? b.x : fromX)) || 0;
+    for (let n = 0; n < 8; n++) {
+      this.chunk(b.x + (R() - 0.5) * b.w, y1 + R() * b.fh, (R() - 0.5) * 220 + dirX * 90, -60 - R() * 220,
+        R() < 0.55 ? b.col : (R() < 0.5 ? b.dark : 0x888890), 10);
+    }
+    this.dust(b.x, y1 + b.fh * 0.5, 5, b.w, 18);
+    if (b.type === 'glass') {
+      for (let n = 0; n < 14; n++) this.addPart({ kind: 'shard', x: b.x + (R() - 0.5) * b.w, y: y1 + R() * b.fh, vx: (R() - 0.5) * 240, vy: -R() * 200, life: 0.9, size: 3 });
+    }
+    this.playCrash(0.35);
+  }
+
+  playCrash(v) {
+    const n = performance.now();
+    if (n - this.lastCrash > 90) { this.lastCrash = n; Snd.crash(v); }
+  }
+
+  updateBuildings(dt) {
+    for (const b of this.buildings) {
+      if (!b.alive) continue;
+      if (b.flash > 0) { b.flash -= dt; if (b.flash <= 0) this.redraw(b); else this.redraw(b); }
+      if (b.burn > 0) {
+        b.burn -= dt; b.burnTick += dt;
+        if (R() < 0.6) this.addPart({ kind: 'fire', x: b.x + (R() - 0.5) * b.w, y: GROUND - b.floors * b.fh, vx: (R() - 0.5) * 40, vy: -60 - R() * 80, life: 0.5, size: 6 + R() * 6 });
+        if (b.burnTick >= 0.33) { b.burnTick = 0; this.damageBuilding(b, 2.2, 'burn', b.x); }
+        if (b.burn <= 0) this.redraw(b);
+      }
+    }
+  }
+
+  // ---------------- Military (adapts to your habits) ----------------
+  updateMilitary(dt) {
+    const k = this.k;
+    if (this.invuln > 0) this.invuln -= dt;
+    if (this.foamT > 0) this.foamT -= dt;
+    if (this.rampage > 0) {
+      this.rampage -= dt; this.rage = Math.max(0, 100 * this.rampage / 6); this.rageIdle = 0;
+      if (this.rampage <= 0) { this.rampage = 0; this.rage = 0; }
+    } else if (this.rage >= 100) {
+      this.rampage = 6; this.hp = Math.min(this.maxHp, this.hp + 25);
+      this.news('MONSTER IS FURIOUS. RAMPAGE!'); Snd.roar(); this.shake(14);
+    }
+    this.reviewT -= dt;
+    if (this.reviewT <= 0) { this.reviewT = 9; this.review(); }
+    if (this.units.length > 40) this.units = this.units.filter(u => u.alive);
+
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      u.flash = Math.max(0, u.flash - dt); u.cd -= dt;
+      const dx = k.x - u.x, ad = Math.abs(dx), s = Math.sign(dx) || 1;
+      u.face = s;
+      if (u.type === 'mine') {
+        if (k.grounded && !k.on && ad < 46) this.mineBoom(u, false);
+        continue;
+      }
+      let move = 0;
+      if (u.type === 'heavy') { if (ad < 260) move = -s; else if (ad > 420) move = s; }
+      else if (u.type === 'foam') { if (ad > 300) move = s; else if (ad < 180) move = -s * 0.5; }
+      else if (ad > 350) move = s;
+      u.x = Phaser.Math.Clamp(u.x + move * u.sp * dt, 120, FINISH_X + 60);
+      if (u.cd <= 0 && ad < 520) { this.fireShot(u); u.cd = u.rate + R() * 0.6; }
+    }
+
+    for (let i = this.shots.length - 1; i >= 0; i--) {
+      const s = this.shots[i];
+      s.vy += 700 * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
+      if (Math.abs(s.x - k.x) < HW + 10 && s.y > k.y - 170 && s.y < k.y + 4) {
+        if (s.type === 'foam') {
+          if (this.rampage <= 0) this.foamT = 3.5;
+          this.hurtKaiju(2, s.x);
+          for (let n = 0; n < 8; n++) this.addPart({ kind: 'dust', x: s.x, y: s.y, vx: (R() - 0.5) * 160, vy: -R() * 120, life: 0.6, size: 8 });
+          if (!this.foamNews) { this.foamNews = true; this.news('FOAM ON THE MONSTER. FIRE BREATH OFFLINE.'); }
+        } else { this.blast(s.x, s.y, 10); this.hurtKaiju(s.dmg, s.x); }
+        this.shots.splice(i, 1); continue;
+      }
+      if (s.y >= GROUND || s.life <= 0) {
+        if (s.type !== 'foam') this.blast(s.x, GROUND, 6);
+        this.dust(s.x, GROUND, 3, 80, 12);
+        this.shots.splice(i, 1);
+      }
+    }
+  }
+
+  review() {
+    const h = this.habit, k = this.k, sum = h.stomp + h.tail + h.fire;
+    this.wave++;
+    if (sum < 40) { this.spawnUnit('tank'); return; }
+    let best = 'stomp';
+    ['tail', 'fire'].forEach(key => { if (h[key] > h[best]) best = key; });
+    const share = h[best] / sum, n = Math.min(3, 1 + Math.floor(this.wave / 3));
+    if (share >= 0.5) {
+      if (best === 'stomp') {
+        this.news('MILITARY NOTES MONSTER STOMPS A LOT. MINES DEPLOYED.');
+        for (let i = 0; i < n + 2; i++) this.spawnUnit('mine', k.x + k.face * (260 + i * 90 + R() * 40));
+        if (this.wave > 2) this.spawnUnit('tank');
+      } else if (best === 'tail') {
+        this.news('MILITARY NOTES TAIL SWIPES. HEAVY ARMOR KEEPS ITS DISTANCE.');
+        for (let i = 0; i < Math.min(2, n); i++) this.spawnUnit('heavy');
+      } else {
+        this.news('MILITARY NOTES FIRE BREATH. FOAM TRUCKS EN ROUTE.');
+        for (let i = 0; i < n; i++) this.spawnUnit('foam');
+      }
+    } else {
+      this.news("MILITARY CAN'T FIND A PATTERN. SENDS TANKS ANYWAY.");
+      this.spawnUnit('tank');
+    }
+    // old habits fade, so switching styles actually gets you out of the counter
+    h.stomp *= 0.6; h.tail *= 0.6; h.fire *= 0.6;
+  }
+
+  spawnUnit(type, xOverride) {
+    if (this.units.filter(u => u.alive).length >= 9) return;
+    const k = this.k, side = R() < 0.7 ? k.face : -k.face;
+    let x = xOverride !== undefined ? xOverride : k.x + side * (560 + R() * 200);
+    x = Phaser.Math.Clamp(x, 300, FINISH_X - 120);
+    const D = { tank: { hp: 30, w: 70, sp: 60, rate: 2.6 }, heavy: { hp: 60, w: 90, sp: 70, rate: 2.2 },
+                foam: { hp: 20, w: 80, sp: 90, rate: 3.0 }, mine: { hp: 1, w: 26, sp: 0, rate: 99 } }[type];
+    this.units.push({ type, x, hp: D.hp, maxHp: D.hp, w: D.w, sp: D.sp, rate: D.rate, cd: 1 + R() * 1.5, alive: true, flash: 0, face: 1 });
+  }
+
+  hitUnits(x1, x2, dmg, kind) {
+    const M = { tank: { stomp: 1, tail: 1, fire: 1 }, heavy: { stomp: 0.6, tail: 0.4, fire: 1.5 },
+                foam: { stomp: 1.2, tail: 1.2, fire: 0.3 }, mine: { stomp: 1, tail: 1, fire: 1 } };
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      if (u.x + u.w / 2 < x1 || u.x - u.w / 2 > x2) continue;
+      if (u.type === 'mine' && kind === 'stomp') { this.mineBoom(u, true); continue; }
+      u.hp -= dmg * M[u.type][kind] * (this.rampage > 0 ? 1.8 : 1); u.flash = 0.1;
+      if (u.hp <= 0) this.killUnit(u);
+    }
+  }
+
+  killUnit(u) {
+    if (!u.alive) return;
+    u.alive = false; this.stats.units++;
+    this.addScore(150); this.addRage(4);
+    this.hp = Math.min(this.maxHp, this.hp + 3);
+    this.blast(u.x, GROUND - 10, 10);
+    for (let n = 0; n < 5; n++) this.chunk(u.x + (R() - 0.5) * u.w, GROUND - 10, (R() - 0.5) * 300, -150 - R() * 250, 0x4f6b3a, 10);
+    Snd.crunch();
+    if (this.stats.units === 1) this.news('MILITARY LOSES A VEHICLE. FILES PAPERWORK.');
+  }
+
+  mineBoom(u, remote) {
+    if (!u.alive) return;
+    u.alive = false;
+    const k = this.k;
+    this.blast(u.x, GROUND - 6, 12); this.ring(u.x, GROUND, 120);
+    Snd.thump(0.6); Snd.crunch();
+    if (!remote || Math.abs(k.x - u.x) < 130) this.hurtKaiju(remote ? 10 : 12, u.x);
+  }
+
+  fireShot(u) {
+    const k = this.k, tx = k.x, ty = k.y - 90, sx = u.x + u.face * 24, sy = GROUND - 30;
+    const T = u.type === 'foam' ? 1.0 : 0.9, g = 700;
+    this.shots.push({ x: sx, y: sy, vx: (tx - sx) / T, vy: (ty - sy - 0.5 * g * T * T) / T,
+      type: u.type === 'foam' ? 'foam' : 'shell', dmg: u.type === 'heavy' ? 10 : 8, life: 3 });
+    Snd.crunch();
+  }
+
+  blast(x, y, n) {
+    for (let i = 0; i < n; i++) this.addPart({ kind: 'fire', x: x + (R() - 0.5) * 30, y: y + (R() - 0.5) * 20, vx: (R() - 0.5) * 240, vy: -R() * 260, life: 0.4 + R() * 0.3, size: 8 + R() * 8 });
+    for (let i = 0; i < Math.ceil(n / 2); i++) this.addPart({ kind: 'spark', x, y, vx: (R() - 0.5) * 400, vy: -R() * 350, life: 0.5, size: 3 });
+  }
+
+  hurtKaiju(n, fromX) {
+    if (this.state !== 'play' || this.invuln > 0 || this.rampage > 0) return;
+    const k = this.k;
+    this.hp -= n; this.invuln = 0.7; this.shake(10);
+    this.hitstop = Math.max(this.hitstop, 40);
+    k.vx += (Math.sign(k.x - fromX) || 1) * 260; k.squash = 0.6;
+    Snd.thump(0.8);
+    if (this.hp <= 0) { this.hp = 0; this.die(); }
+  }
+
+  die() {
+    this.state = 'dead'; Snd.fire(false); this.wasFiring = false; this.k.firing = false;
+    this.shake(20); Snd.boom();
+    this.news('MONSTER DOWN. MILITARY CALLS IT "A LEARNING EXPERIENCE"');
+    this.add.rectangle(W / 2, H / 2, 560, 270, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0xff4d4d);
+    this.add.text(W / 2, H / 2,
+      'THE MILITARY WINS THIS ONE\n\nREACHED  ' + Math.round(100 * Math.min(1, this.k.x / FINISH_X)) + '% OF THE COMMUTE' +
+      '\nBUILDINGS WRECKED  ' + this.stats.wrecked + ' / ' + this.stats.total +
+      '\nSCORE  ' + Math.round(this.score).toLocaleString() +
+      '\n\nThey adapt to what you spam. Vary your attacks.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO TRY AGAIN',
+      { fontFamily: 'monospace', fontSize: '18px', color: '#ffffff', align: 'center', lineSpacing: 6 })
+      .setOrigin(0.5).setScrollFactor(0).setDepth(2001);
+    this.time.delayedCall(900, () => this.input.once('pointerdown', () => this.restart()));
+  }
+
+  drawUnits() {
+    const g = this.unitG; g.clear();
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      const y = GROUND + 12, x = u.x, f = u.face || 1, w = u.w;
+      if (u.type === 'mine') {
+        g.fillStyle(0x2a2a30, 1); g.fillEllipse(x, y - 4, 26, 10);
+        g.fillStyle(Math.floor(this.t * 4) % 2 ? 0xff3030 : 0x601010, 1); g.fillCircle(x, y - 8, 3);
+        continue;
+      }
+      const heavy = u.type === 'heavy', foam = u.type === 'foam';
+      g.fillStyle(0x1a1a1a, 1); g.fillRect(x - w / 2, y - 8, w, 8);
+      g.fillStyle(foam ? 0xe8e8e8 : heavy ? 0x3a4a3a : 0x4f6b3a, 1);
+      g.fillRect(x - w / 2 + 4, y - 22, w - 8, 14);
+      g.fillRect(x - 14, y - 32, 28, 10);
+      g.lineStyle(heavy ? 7 : 5, foam ? 0xd62f2f : 0x2a2a2a, 1);
+      g.lineBetween(x, y - 27, x + f * (heavy ? 44 : 34), y - 33);
+      if (heavy) { g.fillStyle(0x6a6a72, 1); g.fillRect(x - w / 2 - 2, y - 26, 6, 16); g.fillRect(x + w / 2 - 4, y - 26, 6, 16); }
+      if (foam) { g.fillStyle(0xd62f2f, 1); g.fillRect(x - w / 2 + 4, y - 12, w - 8, 4); }
+      if (u.flash > 0) { g.fillStyle(0xffffff, 0.5); g.fillRect(x - w / 2, y - 38, w, 38); }
+      g.fillStyle(0x000000, 0.5); g.fillRect(x - 20, y - 48, 40, 4);
+      g.fillStyle(0xff6a6a, 1); g.fillRect(x - 20, y - 48, 40 * Math.max(0, u.hp / u.maxHp), 4);
+    }
+  }
+
+  // ---------------- Cars ----------------
+  updateCars(dt) {
+    const k = this.k;
+    for (const c of this.cars) {
+      if (!c.alive) continue;
+      let sp = c.sp;
+      if (Math.abs(c.x - k.x) < 350) { c.dir = Math.sign(c.x - k.x) || 1; sp = 160; }
+      c.x += c.dir * sp * dt;
+      if (c.x < 150) { c.x = 150; c.dir = 1; }
+      if (c.x > FINISH_X + 80) { c.x = FINISH_X + 80; c.dir = -1; }
+    }
+  }
+
+  crushCar(c, mode) {
+    if (!c.alive) return;
+    c.alive = false; this.stats.cars++;
+    this.addScore(25); this.addRage(2);
+    Snd.crunch();
+    const y = GROUND + 8;
+    for (let n = 0; n < 6; n++) this.addPart({ kind: 'spark', x: c.x, y, vx: (R() - 0.5) * 300, vy: -R() * 250, life: 0.4, size: 3 });
+    const fling = mode === 'tail';
+    for (let n = 0; n < 4; n++) this.chunk(c.x + (R() - 0.5) * 30, y - 8, (R() - 0.5) * 240 + (fling ? this.k.face * -300 : 0), fling ? -500 - R() * 300 : -150 - R() * 150, c.col, 10);
+    if (this.stats.cars === 5) this.news('TRAFFIC REPORT: MONSTER IN THE ROAD');
+    if (this.stats.cars === 15) this.news('INSURANCE INDUSTRY ISSUES STATEMENT: "OH NO"');
+  }
+
+  burnCars(x1, x2) {
+    for (const c of this.cars) if (c.alive && c.x > x1 && c.x < x2 && R() < 0.15) this.crushCar(c, 'burn');
+  }
+
+  // ---------------- FX ----------------
+  chunk(x, y, vx, vy, col, size) {
+    if (this.debris.length > 260) this.debris.shift();
+    this.debris.push({ x, y, vx, vy, w: size * (0.6 + R() * 0.8), h: size * (0.5 + R() * 0.7), rot: R() * 6, vr: (R() - 0.5) * 10, col, life: 3 + R() * 2 });
+  }
+  addPart(p) {
+    if (this.parts.length > 700) this.parts.shift();
+    p.max = p.life; this.parts.push(p);
+  }
+  dust(x, y, n, spread, size) {
+    for (let i = 0; i < n; i++) {
+      this.addPart({ kind: 'dust', x: x + (R() - 0.5) * spread * 0.6, y: y - R() * 10, vx: (R() - 0.5) * spread, vy: -(20 + R() * 70),
+        life: 0.8 + R() * 0.7, size: size * (0.5 + R() * 0.7) });
+    }
+  }
+  ring(x, y, Rr) { this.rings.push({ x, y, r: 20, R: Rr, max: 0.5, life: 0.5 }); }
+
+  updateFx(dt) {
+    for (let i = this.debris.length - 1; i >= 0; i--) {
+      const d = this.debris[i];
+      d.vy += 1500 * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
+      if (d.y > GROUND + 6) {
+        d.y = GROUND + 6;
+        if (Math.abs(d.vy) > 120) { d.vy *= -0.3; d.vx *= 0.6; d.vr *= 0.6; } else { d.vy = 0; d.vx *= 0.85; d.vr *= 0.5; }
+      }
+      d.life -= dt;
+      if (d.life <= 0) this.debris.splice(i, 1);
+    }
+    for (let i = this.parts.length - 1; i >= 0; i--) {
+      const p = this.parts[i];
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.kind === 'spark' || p.kind === 'shard') p.vy += 900 * dt;
+      else if (p.kind === 'fire') { p.vy -= 150 * dt; p.size += 18 * dt; }
+      else { p.size += 20 * dt; p.vx *= 0.98; }
+      p.life -= dt;
+      if (p.life <= 0) this.parts.splice(i, 1);
+    }
+    for (let i = this.rings.length - 1; i >= 0; i--) {
+      const r = this.rings[i];
+      r.life -= dt; r.r = lerp(20, r.R, 1 - Math.max(0, r.life) / r.max);
+      if (r.life <= 0) this.rings.splice(i, 1);
+    }
+  }
+
+  // ---------------- Drawing ----------------
+  drawAll(time) {
+    this.drawKaiju(time / 1000);
+    const k = this.k;
+    const hgt = Math.max(0, GROUND - k.y);
+    const s = 1 - Math.min(0.6, hgt / 400);
+    this.shadow.setPosition(k.x, k.grounded ? k.y + 6 : GROUND + 6).setScale(s, 1).setAlpha(k.grounded || hgt < 300 ? 0.35 * s : 0);
+    this.drawCars();
+    this.drawUnits();
+    this.drawFx();
+  }
+
+  drawCars() {
+    const g = this.carG; g.clear();
+    for (const c of this.cars) {
+      const y = GROUND + 12;
+      if (!c.alive) { g.fillStyle(0x1a1620, 1); g.fillRect(c.x - 23, y - 4, 46, 4); continue; }
+      g.fillStyle(c.col, 1); g.fillRect(c.x - 23, y - 12, 46, 12);
+      g.fillStyle(darken(c.col, 0.85), 1); g.fillRect(c.x - 12, y - 20, 24, 9);
+      g.fillStyle(0x9fd0ee, 1); g.fillRect(c.x - 9, y - 18, 8, 6); g.fillRect(c.x + 1, y - 18, 8, 6);
+      g.fillStyle(0x111111, 1); g.fillCircle(c.x - 13, y, 4); g.fillCircle(c.x + 13, y, 4);
+    }
+  }
+
+  drawFx() {
+    const g = this.fx; g.clear();
+    for (const r of this.rings) {
+      const a = Math.max(0, r.life / r.max);
+      g.lineStyle(5 * a + 1, 0xffe9b0, a * 0.8);
+      g.strokeEllipse(r.x, r.y + 4, r.r * 2, r.r * 0.5);
+    }
+    for (const d of this.debris) {
+      const a = Math.min(1, d.life / 0.8);
+      g.save(); g.translateCanvas(d.x, d.y); g.rotateCanvas(d.rot);
+      g.fillStyle(d.col, a); g.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+      g.restore();
+    }
+    for (const s of this.shots) {
+      if (s.type === 'foam') { g.fillStyle(0xffffff, 0.95); g.fillCircle(s.x, s.y, 8); }
+      else { g.fillStyle(0x222222, 1); g.fillCircle(s.x, s.y, 6); g.fillStyle(0xff9a2a, 1); g.fillCircle(s.x, s.y, 3); }
+    }
+    for (const p of this.parts) {
+      const a = Math.max(0, p.life / p.max);
+      if (p.kind === 'dust') { g.fillStyle(0x8a7e86, 0.5 * a); g.fillCircle(p.x, p.y, p.size); }
+      else if (p.kind === 'fire') {
+        const col = a > 0.6 ? 0xffd24d : a > 0.3 ? 0xff7a1a : 0x5a2a1a;
+        g.fillStyle(col, Math.min(1, a * 1.4)); g.fillCircle(p.x, p.y, p.size);
+      }
+      else if (p.kind === 'spark') { g.fillStyle(0xffe27a, a); g.fillRect(p.x, p.y, p.size, p.size); }
+      else { g.fillStyle(0xbfe6ff, a); g.fillRect(p.x, p.y, p.size, p.size); }
+    }
+  }
+
+  drawKaiju(time) {
+    const k = this.k, g = this.kg; g.clear();
+    const sq = k.squash, sx = 1 + sq * 0.12, sy = 1 - sq * 0.14;
+    g.setPosition(k.x, k.y); g.setScale(k.face * sx, sy);
+    g.setAlpha(this.invuln > 0 && Math.floor(time * 20) % 2 ? 0.4 : 1);
+    if (this.rampage > 0) { g.fillStyle(0xff3030, 0.2); g.fillEllipse(0, -100, 170, 230); }
+    const gt = 0x2f8f4e, gd = 0x216b3a, gb = 0xc4e58a, gs = 0xff8a3c;
+    const walk = k.walk, st = k.state, air = !k.grounded;
+
+    // tail
+    let ta;
+    const PI = Math.PI;
+    if (st === 'tail') {
+      const p = k.st / 0.46;
+      if (p < 0.35) ta = lerp(PI + 0.3, PI + 1.2, p / 0.35);
+      else if (p < 0.65) ta = lerp(PI + 1.2, 2 * PI + 0.2, (p - 0.35) / 0.3);
+      else ta = lerp(2 * PI + 0.2, 2 * PI + 0.2 + (PI + 0.3 - PI) * 0, 0) - ((p - 0.65) / 0.35) * (PI - 0.1);
+    } else ta = PI + 0.25 + Math.sin(time * 2 + walk) * 0.12;
+    let tx = -34, ty = -72;
+    for (let i = 0; i < 7; i++) {
+      const a = ta + i * 0.07;
+      const nx = tx + Math.cos(a) * 24, ny = ty + Math.sin(a) * 24;
+      g.lineStyle(20 - i * 2.4, gt, 1); g.lineBetween(tx, ty, nx, ny);
+      tx = nx; ty = ny;
+    }
+
+    // legs
+    const leg = (hx, ph, front) => {
+      let fx = 0, lift = 0;
+      if (air) { fx = front ? 10 : -8; lift = 14; }
+      else if (st === 'stomp' && front) { lift = k.st < 0.16 ? 40 * (k.st / 0.16) : 0; fx = 10; }
+      else { fx = Math.sin(walk + ph) * 16; lift = Math.max(0, Math.cos(walk + ph)) * 10 * Math.min(1, Math.abs(k.vx) / 80); }
+      g.lineStyle(26, gd, 1); g.lineBetween(hx, -62, hx + fx, -lift - 10);
+      g.fillStyle(gd, 1); g.fillEllipse(hx + fx + 8, -lift - 4, 38, 16);
+    };
+    leg(-12, 0, false); leg(16, PI, true);
+
+    // spikes, body, belly
+    g.fillStyle(gs, 1);
+    for (let i = 0; i < 6; i++) g.fillTriangle(-36, -155 + i * 20, -36, -135 + i * 20, -58, -140 + i * 20);
+    g.fillStyle(gt, 1); g.fillEllipse(0, -108, 92, 124);
+    g.fillStyle(gb, 1); g.fillEllipse(14, -100, 50, 96);
+
+    // arm
+    g.lineStyle(10, gd, 1);
+    g.lineBetween(20, -130, 46, -112 + Math.sin(walk) * 4);
+    g.fillStyle(gd, 1); g.fillCircle(48, -112 + Math.sin(walk) * 4, 6);
+
+    // head
+    const open = k.firing;
+    g.fillStyle(gt, 1); g.fillEllipse(34, -176, 64, 50);
+    g.fillEllipse(58, -170, 40, 30);
+    g.fillStyle(gd, 1); g.fillEllipse(54, -156 + (open ? 10 : 0), 36, 14);
+    if (open) { g.fillStyle(0x3a0d0d, 1); g.fillEllipse(64, -165, 20, 14); }
+    g.fillStyle(0xffffff, 1); g.fillCircle(40, -188, 7);
+    g.fillStyle(0xcc1111, 1); g.fillCircle(42, -188, 3.5);
+    if (this.foamT > 0) {
+      g.fillStyle(0xffffff, 0.9);
+      [[0, -120, 22], [-14, -90, 16], [30, -176, 14], [12, -60, 14], [-6, -150, 12]].forEach(f => g.fillCircle(f[0], f[1], f[2]));
+    }
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W, height: H,
+  parent: 'game',
+  backgroundColor: '#0b0710',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [Main]
+});
+</script>
+</body>
+</html>
