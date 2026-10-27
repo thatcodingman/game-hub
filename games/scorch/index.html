@@ -395,6 +395,15 @@
       // deflector between physics steps. Should never normally be touched.
       this.matter.add.rectangle(W / 2, -40, W * 2, 20, { isStatic: true, label: 'wall' });
 
+      // lane-exit sensor: rather than trusting bounce physics off the angled
+      // deflector to redirect the ball reliably (too easy to get a glancing
+      // hit that just sends it straight back down the same lane), explicitly
+      // detect the ball clearing the top of the lane and hand it a fixed,
+      // guaranteed arc into the table every single time.
+      this.laneExitSensor = this.matter.add.rectangle(W - 60, 70, 90, 70, {
+        isStatic: true, isSensor: true, label: 'laneExit'
+      });
+
       // inlane guides near flippers
       this.addSlant(60, H - 180, 30, H - 70, 8);
       this.addSlant(W - 94, H - 180, W - 64, H - 70, 8);
@@ -668,6 +677,28 @@
         if (other('coolLane') && other('ball')) {
           this.triggerCoolLane();
         }
+        if (other('laneExit') && other('ball')) {
+          this.handleLaneExit();
+        }
+      });
+    }
+
+    handleLaneExit() {
+      if (!this.ball) return;
+      const vy = this.ball.velocity.y;
+      // only redirect while the ball is actually moving UP through the exit
+      // (vy < 0) — ignore it falling back down through the same zone later,
+      // and don't re-trigger repeatedly while it lingers inside the sensor
+      if (vy >= -0.5 || this.laneExitCooldown) return;
+      this.laneExitCooldown = true;
+      this.time.delayedCall(400, () => { this.laneExitCooldown = false; });
+
+      // fixed, reliable arc into the bumper field — deterministic regardless
+      // of how hard the plunge was, so this can never again just bounce the
+      // ball straight back down the lane it came from
+      Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, {
+        x: -3.4 - Math.random() * 1.2,
+        y: -2.2
       });
     }
 
