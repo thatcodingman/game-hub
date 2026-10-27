@@ -273,6 +273,7 @@
 
       this.cameras.main.setBackgroundColor('#0a0a10');
       this.bgTint = this.add.rectangle(W / 2, H / 2, W, H, 0x0a0a10).setDepth(-10);
+      this.drawPlayfieldBackground();
 
       this.drainedThisBall = false;
       this.lastDrainTime = 0;
@@ -291,8 +292,12 @@
       this.input.keyboard.on('keyup-RIGHT', () => this.flipRight(false));
       this.input.keyboard.on('keydown-D', () => this.flipRight(true));
       this.input.keyboard.on('keyup-D', () => this.flipRight(false));
+      this.input.keyboard.addCapture('SPACE');
       this.input.keyboard.on('keydown-SPACE', (e) => { e.preventDefault(); this.plungerDown(); });
       this.input.keyboard.on('keyup-SPACE', (e) => { e.preventDefault(); this.plungerRelease(); });
+      // safety net: if the window loses focus mid-charge (alt-tab, clicking
+      // elsewhere) the browser never sends a keyup, so force a release here too
+      window.addEventListener('blur', () => this.plungerRelease());
 
       this.setupTouch();
 
@@ -304,17 +309,20 @@
 
     applyTierVisuals(tier) {
       const col = Phaser.Display.Color.HexStringToColor(tier.color);
-      this.tweens.add({
-        targets: this.bgTint,
-        duration: 400,
-        onUpdate: () => {},
-      });
+
+      // tier-up screen flash so a jump is unmistakable, not just a HUD label change
+      const flash = this.add.rectangle(W / 2, H / 2, W, H,
+        Phaser.Display.Color.GetColor(col.red, col.green, col.blue), 0.28).setDepth(50);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 350, onComplete: () => flash.destroy() });
+
       // tint bumpers
       this.bumperSprites.forEach(b => {
         this.tweens.add({ targets: b, duration: 300, alpha: 1 });
         b.setFillStyle(Phaser.Display.Color.GetColor(
-          Math.min(255, col.red + 40), Math.min(255, col.green + 20), Math.min(255, col.blue + 20)
+          Math.min(255, col.red * 0.5 + 20), Math.min(255, col.green * 0.4 + 10), Math.min(255, col.blue * 0.5 + 30)
         ));
+        b.setStrokeStyle(3, Phaser.Display.Color.GetColor(col.red, col.green, col.blue), 1);
+        if (b.glowRef) b.glowRef.setFillStyle(Phaser.Display.Color.GetColor(col.red, col.green, col.blue), 0.18);
       });
       // subtle background pulse toward tier color (dark-mixed)
       const mix = Phaser.Display.Color.Interpolate.ColorWithColor(
@@ -324,17 +332,31 @@
       this.cameras.main.setBackgroundColor(Phaser.Display.Color.RGBToString(mix.r, mix.g, mix.b, 255, '#'));
     }
 
-    buildTable() {
-      const g = this.add.graphics();
-      g.lineStyle(4, 0x1e293b, 1);
+    drawPlayfieldBackground() {
+      const g = this.add.graphics().setDepth(-9);
+      // vertical gradient: deep navy top -> near-black bottom, warm at very bottom near flippers
+      g.fillGradientStyle(0x151225, 0x151225, 0x0a0810, 0x1a0f10, 1);
+      g.fillRect(0, 0, W, H);
 
-      // Outer playfield walls (funnel shape toward flippers at bottom)
-      const wallPts = [
-        [20, 20], [W - 20, 20],                 // top
-        [W - 20, H - 170],                       // right side down
-        [W - 90, H - 60],                        // right inlane taper
-        [W / 2 + 34, H - 20],                    // right flipper gap
-      ];
+      // faint diagonal weave texture for a "real table" feel
+      g.lineStyle(1, 0xffffff, 0.025);
+      for (let i = -H; i < W; i += 26) {
+        g.beginPath();
+        g.moveTo(i, 0);
+        g.lineTo(i + H, H);
+        g.strokePath();
+      }
+
+      // soft vignette corners
+      const vg = this.add.graphics().setDepth(-8);
+      vg.fillStyle(0x000000, 0.35);
+      vg.fillCircle(0, 0, 220);
+      vg.fillCircle(W, 0, 220);
+      vg.fillCircle(0, H, 220);
+      vg.fillCircle(W, H, 260);
+    }
+
+    buildTable() {
       // we won't physically wall the flipper gap — ball drains there
       this.matter.add.rectangle(W / 2, 14, W - 20, 12, { isStatic: true, label: 'wall' });
       this.matter.add.rectangle(12, H / 2, 12, H, { isStatic: true, label: 'wall' });
@@ -351,18 +373,30 @@
       this.addSlant(60, H - 180, 30, H - 70, 8);
       this.addSlant(W - 94, H - 180, W - 64, H - 70, 8);
 
-      g.destroy();
-
       this.drawVisualWalls();
     }
 
     drawVisualWalls() {
       const g = this.add.graphics().setDepth(2);
-      g.fillStyle(0x151520, 1);
-      g.fillRect(0, 0, W, 8);
-      g.fillRect(0, 0, 8, H);
-      g.fillRect(W - 8, 0, 8, H);
-      g.fillRect(W - 52, 0, 8, H * 0.66);
+      // outer rail: metallic amber-edged frame
+      g.lineStyle(8, 0x3a2f1a, 1);
+      g.strokeRoundedRect(4, 4, W - 8, H - 8, 16);
+      g.lineStyle(3, 0xfbbf24, 0.55);
+      g.strokeRoundedRect(4, 4, W - 8, H - 8, 16);
+      g.lineStyle(1, 0xffffff, 0.2);
+      g.strokeRoundedRect(8, 8, W - 16, H - 16, 13);
+
+      // launch lane rail
+      g.fillStyle(0x1e1812, 1);
+      g.fillRoundedRect(W - 56, 4, 12, H * 0.66, 4);
+      g.lineStyle(2, 0xfbbf24, 0.4);
+      g.strokeRoundedRect(W - 56, 4, 12, H * 0.66, 4);
+
+      // table title arch near the top
+      const title = this.add.text(W / 2, 28, 'S C O R C H', {
+        fontFamily: 'Courier New', fontSize: '15px', fontStyle: 'bold', color: '#fbbf24'
+      }).setOrigin(0.5).setDepth(2).setAlpha(0.55);
+      title.setShadow(0, 0, '#f97316', 8, true, true);
     }
 
     addSlant(x1, y1, x2, y2, thickness) {
@@ -371,7 +405,15 @@
       const angle = Math.atan2(dy, dx);
       const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
       this.matter.add.rectangle(cx, cy, len, thickness, { isStatic: true, angle, label: 'wall' });
-      this.add.rectangle(cx, cy, len, thickness, 0x1e293b).setRotation(angle).setDepth(2);
+      const g = this.add.graphics().setDepth(2);
+      g.save();
+      g.translateCanvas(cx, cy);
+      g.rotateCanvas(angle);
+      g.fillStyle(0x2d2416, 1);
+      g.fillRoundedRect(-len / 2, -thickness / 2, len, thickness, thickness / 2);
+      g.lineStyle(1.5, 0xfbbf24, 0.45);
+      g.strokeRoundedRect(-len / 2, -thickness / 2, len, thickness, thickness / 2);
+      g.restore();
     }
 
     buildBumpers() {}
@@ -382,10 +424,12 @@
       this.coolLaneSensor = this.matter.add.rectangle(cx, cy, 70, 26, {
         isStatic: true, isSensor: true, label: 'coolLane'
       });
-      this.coolLaneGfx = this.add.rectangle(cx, cy, 70, 26, 0x1e293b, 0.5).setStrokeStyle(2, 0x334155).setDepth(3);
+      this.coolLaneGlow = this.add.circle(cx, cy, 44, 0x38bdf8, 0.12).setDepth(2);
+      this.coolLaneGfx = this.add.rectangle(cx, cy, 72, 28, 0x0f2a3a, 0.9).setStrokeStyle(2, 0x38bdf8, 0.8).setDepth(3);
       this.coolLaneText = this.add.text(cx, cy, 'COOL', {
-        fontFamily: 'Courier New', fontSize: '13px', fontStyle: 'bold', color: '#475569'
+        fontFamily: 'Courier New', fontSize: '13px', fontStyle: 'bold', color: '#7dd3fc'
       }).setOrigin(0.5).setDepth(4);
+      this.coolLaneText.setShadow(0, 0, '#38bdf8', 6, true, true);
 
       // three bumpers below the cool lane, standard scoring ring
       const bumperDefs = [
@@ -400,8 +444,11 @@
         const body = this.matter.add.circle(def.x, def.y, def.r, {
           isStatic: true, restitution: 1.6, friction: 0, label: 'bumper'
         });
-        const circ = this.add.circle(def.x, def.y, def.r, 0x1e293b).setStrokeStyle(2, 0x38bdf8).setDepth(3);
+        const glow = this.add.circle(def.x, def.y, def.r + 10, 0x38bdf8, 0.18).setDepth(2.5);
+        const circ = this.add.circle(def.x, def.y, def.r, 0x1a2f6e).setStrokeStyle(3, 0x60a5fa, 1).setDepth(3);
+        const shine = this.add.ellipse(def.x - def.r * 0.3, def.y - def.r * 0.35, def.r * 0.7, def.r * 0.4, 0xffffff, 0.22).setDepth(3.1);
         circ.body = body;
+        circ.glowRef = glow;
         body.gameObj = circ;
         this.bumperSprites.push(circ);
       });
@@ -415,9 +462,18 @@
       const body = this.matter.add.rectangle(x, y, 14, 70, {
         isStatic: true, restitution: 1.8, label: 'slingshot', angle: dir * 0.35
       });
-      const rect = this.add.rectangle(x, y, 14, 70, 0x1e293b).setStrokeStyle(2, 0xf97316)
-        .setRotation(dir * 0.35).setDepth(3);
-      body.gameObj = rect;
+      const g = this.add.graphics().setDepth(3);
+      g.save();
+      g.translateCanvas(x, y);
+      g.rotateCanvas(dir * 0.35);
+      g.fillStyle(0x4a1d0a, 1);
+      g.fillRoundedRect(-7, -35, 14, 70, 6);
+      g.lineStyle(2.5, 0xf97316, 0.9);
+      g.strokeRoundedRect(-7, -35, 14, 70, 6);
+      g.fillStyle(0xffffff, 0.15);
+      g.fillRoundedRect(-7, -35, 5, 70, 4);
+      g.restore();
+      body.gameObj = g;
     }
 
     buildFlippers() {
@@ -484,7 +540,7 @@
     }
 
     plungerDown() {
-      if (this.plungerCharging || !state.ballInPlay) return;
+      if (this.plungerCharging || !state.ballInPlay || !this.ballResting) return;
       this.plungerCharging = true;
       this.plungerPower = 0;
     }
@@ -493,11 +549,13 @@
       if (!this.plungerCharging) return;
       this.plungerCharging = false;
       const power = this.plungerPower;
-      if (this.ballResting) {
-        const force = -0.028 - power * 0.001;
+      if (this.ballResting && this.ball) {
+        // stronger floor + stronger scaling so even a quick tap is a real launch
+        const force = -0.09 - power * 0.0022;
         Phaser.Physics.Matter.Matter.Body.setVelocity(this.ball, { x: (Math.random() - 0.5) * 0.5, y: force * 60 });
         SFX.plunge();
         this.ballResting = false;
+        this.cameras.main.shake(80, 0.0015);
       }
       this.plungerPower = 0;
     }
@@ -519,7 +577,7 @@
       });
       this.ballResting = true;
       this.ballGfx = this.add.circle(x, y, 9, 0xf8fafc).setDepth(5);
-      this.ballTrail = [];
+      this.ballTierShown = null;
       state.ballInPlay = true;
     }
 
@@ -573,6 +631,11 @@
       this.tweens.add({
         targets: gfx, scale: 1.3, duration: 70, yoyo: true, ease: 'Quad.easeOut'
       });
+      if (gfx.glowRef) {
+        this.tweens.add({
+          targets: gfx.glowRef, scale: 1.6, alpha: 0.45, duration: 90, yoyo: true, ease: 'Quad.easeOut'
+        });
+      }
       this.cameras.main.shake(60, 0.002);
     }
 
@@ -646,9 +709,12 @@
 
       // plunger charge
       if (this.plungerCharging) {
-        this.plungerPower = Math.min(100, this.plungerPower + delta * 0.15);
+        this.plungerPower = Math.min(100, this.plungerPower + delta * 0.22);
         const pct = this.plungerPower / 100;
         document.getElementById('plungerKnob').style.bottom = (pct * 60) + '%';
+        // auto-fire at full charge so a missed keyup (alt-tab, lost focus, etc.)
+        // can never leave the plunger stuck mid-charge forever
+        if (this.plungerPower >= 100) this.plungerRelease();
       } else {
         document.getElementById('plungerKnob').style.bottom = '0%';
       }
@@ -660,6 +726,32 @@
 
       // heat-based ball speed scaling: apply a small extra impulse toward current velocity when hot
       const tier = tierFor(state.heat);
+
+      // the ball itself reflects how hot it is — the whole game is about this
+      if (tier.name !== this.ballTierShown) {
+        this.ballTierShown = tier.name;
+        const tc = Phaser.Display.Color.HexStringToColor(tier.color);
+        const mixed = Phaser.Display.Color.Interpolate.ColorWithColor(
+          Phaser.Display.Color.HexStringToColor('#f8fafc'), tc, 100, 55
+        );
+        this.ballGfx.setFillStyle(Phaser.Display.Color.GetColor(mixed.r, mixed.g, mixed.b));
+      }
+
+      // fading trail once the ball is genuinely hot (Hot tier and above)
+      const tIdx = tierIndex(state.heat);
+      if (tIdx >= 2 && !this.ballResting) {
+        if (!this._trailAccum) this._trailAccum = 0;
+        this._trailAccum += delta;
+        if (this._trailAccum > 28) {
+          this._trailAccum = 0;
+          const ghost = this.add.circle(this.ball.position.x, this.ball.position.y, 7,
+            Phaser.Display.Color.HexStringToColor(tier.color).color, 0.35).setDepth(4.5);
+          this.tweens.add({
+            targets: ghost, alpha: 0, scale: 0.4, duration: 260, onComplete: () => ghost.destroy()
+          });
+        }
+      }
+
       if (!this.ballResting) {
         const vel = this.ball.velocity;
         const sp = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
