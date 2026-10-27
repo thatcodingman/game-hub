@@ -30,6 +30,11 @@ function darken(c, f) {
   const r = ((c >> 16) & 255) * f, g = ((c >> 8) & 255) * f, b = (c & 255) * f;
   return ((r << 16) | (g << 8) | b) >>> 0;
 }
+function lighten(c, f) {
+  const r = Math.min(255, ((c >> 16) & 255) * f), g = Math.min(255, ((c >> 8) & 255) * f), b = Math.min(255, (c & 255) * f);
+  return ((r << 16) | (g << 8) | b) >>> 0;
+}
+const ACC = [0x00e5ff, 0xff3df2, 0x7dff6a, 0xffb02e];
 function anyJust(keys) {
   let r = false;
   for (const k of keys) { if (Phaser.Input.Keyboard.JustDown(k)) r = true; }
@@ -39,16 +44,16 @@ function anyJust(keys) {
 // ---------- Building types: each has a weakness (seed of the adaptation counter system) ----------
 const TYPES = {
   apartment: { w: [140, 200], fl: [5, 8],  fh: 44, hpf: 30, mult: { stomp: 1.4, tail: 1.0, fire: 0.5, blast: 1 },
-               cols: [0x7a4b3a, 0x8a5a45, 0x6b5a7a, 0x5a6b7a],
+               cols: [0x2b3550, 0x35405e, 0x2a3a4a, 0x3b3350],
                news: ['APARTMENT BLOCK FALLS, RESIDENTS "HAD A LEASE"', 'APARTMENTS FLATTENED, LANDLORD UNMOVED'] },
   glass:     { w: [110, 150], fl: [7, 11], fh: 40, hpf: 20, mult: { stomp: 0.8, tail: 1.5, fire: 0.4, blast: 1.2 },
-               cols: [0x3f6a8c, 0x3a5f7f, 0x4a7596],
+               cols: [0x1e3b5a, 0x23486b, 0x1a3350],
                news: ['GLASS TOWER SHATTERS, WINDOW CLEANERS RELIEVED', 'CORPORATE HQ DOWN, MEETING MOVED TO ZOOM'] },
   fuel:      { w: [150, 190], fl: [2, 2],  fh: 50, hpf: 26, mult: { stomp: 0.7, tail: 0.8, fire: 3.0, blast: 1 },
-               cols: [0xd9d6cc],
+               cols: [0x2a2f3a],
                news: ['GAS STATION ERUPTS, PRICES UNAFFECTED', 'FUEL DEPOT LOST, DRIVERS "NOT SURPRISED"'] },
   shop:      { w: [120, 170], fl: [3, 4],  fh: 48, hpf: 24, mult: { stomp: 1.0, tail: 1.0, fire: 1.0, blast: 1 },
-               cols: [0xc9a23a, 0xb86f8a, 0x6fae8a, 0xd08a4a],
+               cols: [0x302a44, 0x2a3b44, 0x3a2a40],
                news: ['LOCAL SHOP CLOSED FOR GOOD', 'CORNER STORE GONE, TOWN "DEVASTATED"'] }
 };
 
@@ -140,6 +145,9 @@ class Main extends Phaser.Scene {
     this.lastCrash = 0; this.camLead = 0;
     this.units = []; this.shots = []; this.hp = 100; this.maxHp = 100; this.invuln = 0;
     this.foamT = 0; this.rampage = 0; this.reviewT = 12; this.wave = 0;
+    this.combo = 0; this.comboT = 0; this.lastStyle = null; this.roarCd = 0; this.bestCombo = 0;
+    this.flyers = []; this.flyT = 0; this.skyLast = null;
+    for (let i = 0; i < 3; i++) { this.spawnFlyer(); const f0 = this.flyers[this.flyers.length - 1]; f0.x = 120 + R() * (W - 240); }
 
     this.drawWorld();
     this.makeCity();
@@ -156,28 +164,45 @@ class Main extends Phaser.Scene {
   // ---------------- World ----------------
   drawWorld() {
     const sky = this.add.graphics().setScrollFactor(0).setDepth(-100);
-    sky.fillGradientStyle(0x1b1240, 0x1b1240, 0xff8a5c, 0xff8a5c, 1);
+    sky.fillGradientStyle(0x0d0830, 0x0d0830, 0xff6a8a, 0xff6a8a, 1);
     sky.fillRect(0, 0, W, H);
     sky.fillStyle(0xffd9a0, 0.18); sky.fillCircle(700, 330, 140);
     sky.fillStyle(0xffd9a0, 0.9); sky.fillCircle(700, 330, 70);
+    [[352, 3], [366, 5], [382, 7], [400, 9]].forEach(bar => {
+      const dy = bar[0] + bar[1] / 2 - 330, hw = Math.sqrt(Math.max(0, 4900 - dy * dy));
+      if (hw > 0) { sky.fillStyle(0xd0507a, 0.6); sky.fillRect(700 - hw, bar[0], hw * 2, bar[1]); }
+    });
+    const sr = mulberry32(11);
+    for (let i = 0; i < 110; i++) {
+      sky.fillStyle(0xffffff, 0.15 + sr() * 0.6);
+      const sz = sr() < 0.15 ? 2 : 1;
+      sky.fillRect(sr() * W, sr() * 260, sz, sz);
+    }
 
     const fr = mulberry32(5);
-    [[0.15, 0x2a1d4a, 0.9, 60, 200], [0.35, 0x1f1538, 0.95, 50, 170]].forEach(([f, col, al, mn, mx], idx) => {
+    [[0.06, 0x3d2f6b, 0.7, 120, 300], [0.15, 0x2a1d4a, 0.9, 60, 200], [0.35, 0x1f1538, 0.95, 50, 170]].forEach(([f, col, al, mn, mx], idx) => {
       const g = this.add.graphics().setScrollFactor(f).setDepth(-90 + idx);
       g.fillStyle(col, al);
       const span = WORLD_W * f + W;
       let x = 0;
       while (x < span) {
         const w = 40 + fr() * 70, h = mn + fr() * (mx - mn);
-        g.fillRect(x, GROUND - h, w, h + 60);
+        g.fillStyle(col, al); g.fillRect(x, GROUND - h, w, h + 60);
+        if (fr() < 0.25) g.fillRect(x + w / 2 - 1, GROUND - h - 30, 2, 30);
+        if (fr() < 0.4) { g.fillStyle(0xff3df2, 0.25); g.fillRect(x, GROUND - h + 30, w, 2); }
+        if (fr() < 0.6) { g.fillStyle(0x00e5ff, 0.45); g.fillRect(x + 4, GROUND - h + 6, 3, 3); g.fillRect(x + w - 8, GROUND - h + 18, 3, 3); }
         x += w + fr() * 12;
       }
     });
 
     const gr = this.add.graphics().setDepth(5);
-    gr.fillStyle(0x2a2330, 1); gr.fillRect(0, GROUND, WORLD_W, H - GROUND);
+    gr.fillGradientStyle(0x2f2840, 0x2f2840, 0x120d1a, 0x120d1a, 1); gr.fillRect(0, GROUND, WORLD_W, H - GROUND);
     gr.fillStyle(0x4a4050, 1); gr.fillRect(0, GROUND, WORLD_W, 10);
-    gr.fillStyle(0xd9b84a, 0.7);
+    gr.fillStyle(0x7a6a8a, 1); gr.fillRect(0, GROUND, WORLD_W, 3);
+    gr.fillStyle(0xff3df2, 0.7); gr.fillRect(0, GROUND + 10, WORLD_W, 2);
+    gr.fillStyle(0xffffff, 0.05);
+    for (let px = 40; px < WORLD_W; px += 170) gr.fillEllipse(px, GROUND + 58, 90, 6);
+    gr.fillStyle(0x00e5ff, 0.6);
     for (let x = 0; x < FINISH_X + 100; x += 90) gr.fillRect(x, GROUND + 46, 44, 4);
     // beach + sea (the destination)
     gr.fillStyle(0xe7c98a, 1); gr.fillRect(FINISH_X - 20, GROUND, 180, H - GROUND);
@@ -188,6 +213,21 @@ class Main extends Phaser.Scene {
     this.add.text(FINISH_X + 45, GROUND - 148, 'HOME', { fontFamily: 'monospace', fontSize: '30px', fontStyle: 'bold', color: '#6b3a1a' })
       .setOrigin(0.5).setDepth(6);
 
+    const lg = this.add.graphics().setDepth(14);
+    for (let lx = 380; lx < FINISH_X - 150; lx += 330) {
+      lg.fillStyle(0x3a3a4a, 1); lg.fillRect(lx - 2, GROUND - 90, 4, 90); lg.fillRect(lx - 2, GROUND - 90, 22, 3);
+      lg.fillStyle(0x7fe8ff, 0.07); lg.fillTriangle(lx + 18, GROUND - 84, lx - 14, GROUND, lx + 50, GROUND);
+      lg.fillStyle(0x7fe8ff, 0.18); lg.fillCircle(lx + 18, GROUND - 84, 22);
+      lg.fillStyle(0xbffcff, 1); lg.fillCircle(lx + 18, GROUND - 86, 4);
+    }
+    const ar = this.add.graphics().setDepth(6);
+    ar.fillStyle(0x1b2030, 1); ar.fillRect(FINISH_X - 60, GROUND - 250, 14, 250); ar.fillRect(FINISH_X + 140, GROUND - 250, 14, 250); ar.fillRect(FINISH_X - 60, GROUND - 262, 214, 14);
+    ar.fillStyle(0x7dff6a, 0.9); ar.fillRect(FINISH_X - 56, GROUND - 250, 3, 250); ar.fillRect(FINISH_X + 148, GROUND - 250, 3, 250); ar.fillRect(FINISH_X - 60, GROUND - 264, 214, 3);
+    ar.fillStyle(0x7dff6a, 0.12); ar.fillRect(FINISH_X - 46, GROUND - 248, 186, 248);
+    this.add.text(FINISH_X + 47, GROUND - 280, 'COMMUTE COMPLETE', { fontFamily: 'monospace', fontSize: '16px', fontStyle: 'bold', color: '#7dff6a' }).setOrigin(0.5).setDepth(6);
+    const fg = this.add.graphics().setDepth(13);
+    fg.fillGradientStyle(0x7a5aa0, 0x7a5aa0, 0x7a5aa0, 0x7a5aa0, 0, 0, 0.35, 0.35); fg.fillRect(0, GROUND - 80, WORLD_W, 80);
+    this.skyG = this.add.graphics().setScrollFactor(0).setDepth(-80);
     this.fx = this.add.graphics().setDepth(30);
     this.carG = this.add.graphics().setDepth(11);
     this.unitG = this.add.graphics().setDepth(12);
@@ -212,7 +252,7 @@ class Main extends Phaser.Scene {
       const b = {
         type, x: x + w / 2, w, fh: T.fh, maxFl: fl, floors: fl, hpf: T.hpf,
         maxHp: fl * T.hpf, hp: fl * T.hpf, alive: true, flash: 0, burn: 0, burnTick: 0,
-        col, dark: darken(col, 0.72), cols, lit, cracks, rub
+        col, dark: darken(col, 0.72), accent: ACC[(Math.floor(x) + w) % 4], cols, lit, cracks, rub
       };
       b.g = this.add.graphics().setPosition(b.x, GROUND).setDepth(10);
       this.buildings.push(b);
@@ -230,29 +270,62 @@ class Main extends Phaser.Scene {
       b.rub.forEach((p, i) => { g.fillStyle(i % 2 ? 0x4a4252 : 0x3b3440, 1); g.fillRect(p.x - p.w / 2, -p.h, p.w, p.h); });
       return;
     }
-    const H0 = b.floors * fh;
+    const H0 = b.floors * fh, acc = b.accent, lt = lighten(b.col, 1.35);
     for (let i = 0; i < b.floors; i++) {
       const y = -(i + 1) * fh;
       g.fillStyle(b.col, 1); g.fillRect(-w / 2, y, w, fh);
+      g.fillStyle(lt, 0.55); g.fillRect(-w / 2, y, w, 2);
       g.fillStyle(b.dark, 1); g.fillRect(-w / 2, y + fh - 3, w, 3);
       const row = b.lit[i] || [];
       const sp = (w - 16) / b.cols;
       for (let c = 0; c < b.cols; c++) {
-        const lit = row[c];
-        if (b.type === 'glass') g.fillStyle(lit ? 0xbfe6ff : 0x6ea3c6, 1);
-        else g.fillStyle(lit ? 0xffe9a3 : 0x20202c, 1);
-        g.fillRect(-w / 2 + 8 + c * sp + (sp - 14) / 2, y + 10, 14, 18);
+        const lit = row[c], wx = -w / 2 + 8 + c * sp + (sp - 14) / 2;
+        if (b.type === 'glass') {
+          g.fillStyle(lit ? 0x9fe8ff : 0x2f6f95, 1); g.fillRect(wx - 3, y + 8, 20, 22);
+          g.fillStyle(0xffffff, lit ? 0.35 : 0.12); g.fillRect(wx - 3, y + 8, 20, 6);
+        } else if (b.type === 'apartment') {
+          g.fillStyle(lit ? (c % 3 === 0 ? acc : 0xffe9a3) : 0x10131c, 1); g.fillRect(wx, y + 10, 14, 16);
+          g.fillStyle(b.dark, 1); g.fillRect(wx - 2, y + 27, 18, 3);
+        } else {
+          g.fillStyle(lit ? 0xbffcff : 0x141824, 1); g.fillRect(wx, y + 10, 14, 18);
+        }
       }
     }
-    if (b.type === 'apartment') { g.fillStyle(b.dark, 1); g.fillRect(-w / 2 + 14, -H0 - 12, 26, 12); }
-    if (b.type === 'glass') { g.fillStyle(0x222233, 1); g.fillRect(-2, -H0 - 30, 4, 30); }
-    if (b.type === 'fuel') { g.fillStyle(0xd62f2f, 1); g.fillRect(-w / 2 - 8, -H0 - 8, w + 16, 10); g.fillRect(-w / 2, -fh + 6, w, 8); }
-    if (b.type === 'shop') {
-      const n = 6, sw = w / n;
-      for (let i = 0; i < n; i++) { g.fillStyle(i % 2 ? 0xffffff : 0xd62f2f, 1); g.fillRect(-w / 2 + i * sw, -fh + 4, sw, 12); }
+    // neon edges + base glow
+    g.fillStyle(acc, 0.85); g.fillRect(-w / 2, -H0, 2, H0); g.fillRect(w / 2 - 2, -H0, 2, H0);
+    g.fillStyle(acc, 0.9); g.fillRect(-w / 2, -H0 - 2, w, 3);
+    g.fillStyle(acc, 0.35); g.fillRect(-w / 2, -6, w, 6);
+    // rooftops
+    if (b.type === 'apartment') {
+      g.fillStyle(b.dark, 1); g.fillRect(-w * 0.35, -H0 - 14, w * 0.7, 12);
+      g.fillStyle(0x1a2233, 1); g.fillRect(-w * 0.3, -H0 - 22, w * 0.6, 8);
+      g.fillStyle(0x3fa0ff, 1); g.fillTriangle(-w * 0.28, -H0 - 24, -w * 0.02, -H0 - 24, -w * 0.28, -H0 - 34);
+      g.fillStyle(0x8892a8, 1); g.fillRect(w * 0.2 - 1, -H0 - 44, 2, 22);
+      g.fillStyle(0xff4040, 1); g.fillCircle(w * 0.2, -H0 - 45, 3);
+    } else if (b.type === 'glass') {
+      g.fillStyle(b.dark, 1); g.fillTriangle(-w * 0.32, -H0, w * 0.32, -H0, 0, -H0 - 60);
+      g.fillStyle(lt, 0.5); g.fillTriangle(-w * 0.32, -H0, 0, -H0, 0, -H0 - 60);
+      g.fillStyle(acc, 0.25); g.fillCircle(0, -H0 - 62, 11);
+      g.fillStyle(acc, 1); g.fillCircle(0, -H0 - 62, 4);
+    } else if (b.type === 'fuel') {
+      g.fillStyle(0x151a24, 1); g.fillRect(-w / 2 - 10, -H0 - 10, w + 20, 10);
+      g.fillStyle(acc, 1); g.fillRect(-w / 2 - 10, -H0 - 2, w + 20, 3);
+      [-0.3, 0.3].forEach(f => {
+        g.fillStyle(0x233042, 1); g.fillRoundedRect(w * f - 14, -H0 - 52, 28, 42, 8);
+        g.fillStyle(acc, 0.25); g.fillCircle(w * f, -H0 - 31, 22);
+        g.fillStyle(acc, 0.9); g.fillRoundedRect(w * f - 9, -H0 - 46, 18, 30, 6);
+      });
+      g.fillStyle(acc, 0.8); g.fillRect(-w / 2, -fh + 6, w, 5);
+    } else {
+      g.fillStyle(acc, 0.18); g.fillRect(-w * 0.4, -H0 - 46, w * 0.8, 30);
+      g.lineStyle(2, acc, 0.9); g.strokeRect(-w * 0.4, -H0 - 46, w * 0.8, 30);
+      g.fillStyle(acc, 0.9);
+      for (let q = 0; q < 3; q++) g.fillRect(-w * 0.3 + q * w * 0.22, -H0 - 38, w * 0.12, 4);
+      g.fillStyle(0x8892a8, 1); g.fillRect(-w * 0.36, -H0 - 16, 3, 16); g.fillRect(w * 0.36 - 3, -H0 - 16, 3, 16);
+      g.fillStyle(acc, 0.7); g.fillRect(-w / 2, -fh + 4, w, 6);
     }
     const dmg = 1 - b.hp / b.maxHp, n = Math.floor(dmg * b.cracks.length);
-    g.lineStyle(2, 0x000000, 0.45);
+    g.lineStyle(2, 0xff6a3a, 0.8);
     for (let k = 0; k < n; k++) {
       const c = b.cracks[k];
       g.lineBetween(c.x1 * w - w / 2, -c.y1 * H0, c.x2 * w - w / 2, -c.y2 * H0);
@@ -263,7 +336,7 @@ class Main extends Phaser.Scene {
 
   makeCars() {
     const r = mulberry32(77);
-    const cols = [0xe74c3c, 0xf1c40f, 0x3498db, 0xecf0f1, 0x2ecc71];
+    const cols = [0x00e5ff, 0xff3df2, 0x7dff6a, 0xffb02e, 0xb28bff];
     for (let i = 0; i < 26; i++) {
       this.cars.push({ x: 300 + r() * (FINISH_X - 300), dir: r() < 0.5 ? -1 : 1, sp: 50 + r() * 70, col: cols[i % 5], alive: true });
     }
@@ -284,6 +357,9 @@ class Main extends Phaser.Scene {
 
   // ---------------- HUD ----------------
   makeHud() {
+    const vg = this.add.graphics().setScrollFactor(0).setDepth(999);
+    vg.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0.5, 0, 0.5, 0); vg.fillRect(0, 0, 150, H);
+    vg.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0, 0.5, 0, 0.5); vg.fillRect(W - 150, 0, 150, H);
     this.hud = this.add.graphics().setScrollFactor(0).setDepth(1000);
     const st = (size, color) => ({ fontFamily: 'monospace', fontSize: size + 'px', fontStyle: 'bold', color });
     this.txt = {
@@ -292,17 +368,20 @@ class Main extends Phaser.Scene {
       news: this.add.text(W / 2, 38, '', st(14, '#ffe27a')).setOrigin(0.5),
       rage: this.add.text(16, 40, 'RAGE', st(10, '#ff8a8a')),
       fire: this.add.text(16, 58, 'FIRE', st(10, '#ffbb66')),
-      hint: this.add.text(W / 2, H - 22, '', st(13, '#ffffff')).setOrigin(0.5),
+      hint: this.add.text(W / 2, H - 48, '', st(13, '#ffffff')).setOrigin(0.5),
       hs: this.add.text(16, 78, 'STOMP', st(9, '#cccccc')),
       ht: this.add.text(16, 90, 'TAIL', st(9, '#cccccc')),
       hf: this.add.text(16, 102, 'FIRE', st(9, '#cccccc')),
       hp: this.add.text(W - 222, 31, 'HP', st(10, '#9be07a')).setOrigin(1, 0),
-      ramp: this.add.text(W / 2, 62, '', st(22, '#ff6a6a')).setOrigin(0.5)
+      ramp: this.add.text(W / 2, 62, '', st(22, '#ff6a6a')).setOrigin(0.5),
+      combo: this.add.text(W / 2, 86, '', st(18, '#ffe27a')).setOrigin(0.5),
+      rr: this.add.text(16, 114, 'ROAR', st(9, '#cccccc')),
+      legend: this.add.text(W / 2, H - 7, 'MOVE: ARROWS/A-D   JUMP: UP/W/SPACE   STOMP: S/DOWN (IN AIR = SLAM)   TAIL: X   FIRE: HOLD C   ROAR: V   RESTART: R', st(11, '#ffffff')).setOrigin(0.5, 1)
     };
     Object.values(this.txt).forEach(t => t.setScrollFactor(0).setDepth(1001));
     this.touchDev = this.sys.game.device.input.touch;
-    this.hintMsg = this.touchDev ? 'USE THE BUTTONS: MOVE, JUMP, STOMP, TAIL, FIRE'
-      : 'ARROWS/AD MOVE   UP JUMP   S STOMP (S IN AIR = SLAM)   X TAIL   HOLD C FIRE';
+    this.hintMsg = this.touchDev ? 'USE THE BUTTONS. ROAR RESETS WHAT THE MILITARY LEARNED.'
+      : 'TIP: SWITCH ATTACKS. THE MILITARY COUNTERS WHATEVER YOU SPAM. V = ROAR RESETS IT.';
   }
 
   news(t) { this.txt.news.setText(t); this.newsT = 4.5; }
@@ -331,6 +410,20 @@ class Main extends Phaser.Scene {
       g.fillStyle(0x000000, 0.5); g.fillRect(52, y, 120, 8);
       g.fillStyle(col, 1); g.fillRect(52, y, sum > 0 ? 120 * h[key] / sum : 0, 8);
     });
+    // roar cooldown
+    g.fillStyle(0x000000, 0.5); g.fillRect(52, 114, 120, 8);
+    const rr = 1 - Math.max(0, this.roarCd) / 14;
+    g.fillStyle(rr >= 1 ? 0xffffff : 0xff9a6a, 1); g.fillRect(52, 114, 120 * rr, 8);
+    // combo
+    if (this.combo >= 2 && this.state === 'play') {
+      this.txt.combo.setText('COMBO x' + this.combo + '  +' + Math.round(Math.min(this.combo, 30) * 10) + '% SCORE');
+      g.fillStyle(0x000000, 0.5); g.fillRect(W / 2 - 100, 100, 200, 5);
+      g.fillStyle(0xffe27a, 1); g.fillRect(W / 2 - 100, 100, 200 * Math.max(0, this.comboT / 3.5), 5);
+    } else this.txt.combo.setText('');
+    // persistent controls bar (desktop)
+    const showLegend = !this.touchDev && this.state !== 'title';
+    this.txt.legend.setVisible(showLegend);
+    if (showLegend) { g.fillStyle(0x000000, 0.5); g.fillRect(0, H - 24, W, 24); }
     // health + rampage
     g.fillStyle(0x000000, 0.5); g.fillRect(W - 216, 34, 200, 10);
     const hpf = Math.max(0, this.hp / this.maxHp);
@@ -351,9 +444,9 @@ class Main extends Phaser.Scene {
   makeInput() {
     const kb = this.input.keyboard;
     this.cur = kb.createCursorKeys();
-    this.K = kb.addKeys({ A: 'A', D: 'D', W: 'W', S: 'S', Z: 'Z', X: 'X', C: 'C', J: 'J', K: 'K', L: 'L', SPACE: 'SPACE', R: 'R' });
+    this.K = kb.addKeys({ A: 'A', D: 'D', W: 'W', S: 'S', Z: 'Z', X: 'X', C: 'C', J: 'J', K: 'K', L: 'L', SPACE: 'SPACE', R: 'R', V: 'V' });
     kb.addCapture('UP,DOWN,LEFT,RIGHT,SPACE');
-    this.touch = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false };
+    this.touch = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false, roar: false };
     this.inp = { left: false, right: false, fire: false, jump: false, stomp: false, tail: false };
     this.input.addPointer(3);
     if (this.sys.game.device.input.touch) this.makeTouchUi();
@@ -375,6 +468,7 @@ class Main extends Phaser.Scene {
     mk(W - 170, H - 70, 44, 'STOMP', () => t.stomp = true);
     mk(W - 70, H - 170, 44, 'TAIL', () => t.tail = true);
     mk(W - 170, H - 170, 44, 'FIRE', () => t.fire = true, () => t.fire = false);
+    mk(W - 270, H - 70, 40, 'ROAR', () => t.roar = true);
   }
 
   readInput() {
@@ -385,9 +479,10 @@ class Main extends Phaser.Scene {
       fire: K.C.isDown || K.L.isDown || t.fire,
       jump: anyJust([c.up, K.W, K.SPACE]) || t.jump,
       stomp: anyJust([c.down, K.S, K.Z, K.J]) || t.stomp,
-      tail: anyJust([K.X, K.K]) || t.tail
+      tail: anyJust([K.X, K.K]) || t.tail,
+      roar: anyJust([K.V]) || t.roar
     };
-    t.jump = false; t.stomp = false; t.tail = false;
+    t.jump = false; t.stomp = false; t.tail = false; t.roar = false;
   }
 
   // ---------------- Title / done ----------------
@@ -398,7 +493,7 @@ class Main extends Phaser.Scene {
     add(this.add.text(W / 2, 140, 'KAIJU COMMUTE', { fontFamily: 'monospace', fontSize: '64px', fontStyle: 'bold', color: '#8be28b' }).setOrigin(0.5));
     add(this.add.text(W / 2, 205, 'The monster is late for work. The military is learning.', { fontFamily: 'monospace', fontSize: '18px', color: '#ffe27a' }).setOrigin(0.5));
     add(this.add.text(W / 2, 300,
-      'ARROWS / A D  MOVE      UP / W / SPACE  JUMP\nS / DOWN  STOMP  (press in the air to SLAM)\nX  TAIL SWIPE      HOLD C  FIRE BREATH\n\nSmash your way to the beach. Different buildings fall to different attacks.\nThe military learns what you spam. Dodge shells, vary your moves.',
+      'ARROWS / A D  MOVE      UP / W / SPACE  JUMP\nS / DOWN  STOMP  (press in the air to SLAM)\nX  TAIL SWIPE      HOLD C  FIRE BREATH\nV  ROAR (wipes what the military learned)\n\nSmash your way to the beach. Different buildings fall to different attacks.\nThe military learns what you spam. Dodge shells, vary your moves.',
       { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
     const prompt = add(this.add.text(W / 2, 450, this.touchDev ? 'TAP TO START' : 'PRESS ANY KEY TO START', { fontFamily: 'monospace', fontSize: '22px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5));
     const tw = this.tweens.add({ targets: prompt, alpha: 0.25, duration: 600, yoyo: true, repeat: -1 });
@@ -425,11 +520,12 @@ class Main extends Phaser.Scene {
     this.news('MONSTER ARRIVES HOME: "TRAFFIC WAS TERRIBLE"');
     const h = this.habit, sum = Math.max(1, h.stomp + h.tail + h.fire);
     const pc = v => Math.round(100 * v / sum) + '%';
-    const g = this.add.rectangle(W / 2, H / 2, 560, 330, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0x8be28b);
+    const g = this.add.rectangle(W / 2, H / 2, 560, 360, 0x0b0710, 0.85).setScrollFactor(0).setDepth(2000).setStrokeStyle(2, 0x8be28b);
     const t = this.add.text(W / 2, H / 2,
       'YOU MADE IT HOME\n\nTIME  ' + this.fmtTime(this.t) +
       '\nBUILDINGS WRECKED  ' + this.stats.wrecked + ' / ' + this.stats.total +
       '\nCARS CRUSHED  ' + this.stats.cars + '   MILITARY DESTROYED  ' + this.stats.units +
+      '\nBEST COMBO  x' + this.bestCombo +
       '\nSCORE  ' + sc.toLocaleString() + '   BEST  ' + best.toLocaleString() +
       '\nSTYLE  STOMP ' + pc(h.stomp) + '  TAIL ' + pc(h.tail) + '  FIRE ' + pc(h.fire) +
       '\n\nThe military is taking notes.\n' + (this.touchDev ? 'TAP' : 'PRESS R') + ' TO COMMUTE AGAIN',
@@ -455,6 +551,7 @@ class Main extends Phaser.Scene {
     this.updateBuildings(dt);
     this.updateCars(dt);
     this.updateMilitary(dt);
+    if (this.comboT > 0) { this.comboT -= dt; if (this.comboT <= 0) this.combo = 0; }
     this.updateFx(dt);
     this.rageIdle += dt;
     if (this.rageIdle > 3) this.rage = Math.max(0, this.rage - 6 * dt);
@@ -466,7 +563,7 @@ class Main extends Phaser.Scene {
   }
 
   addRage(a) { this.rage = Math.min(100, this.rage + a); this.rageIdle = 0; }
-  addScore(p) { this.score += p * (1 + this.rage / 100); }
+  addScore(p) { const a = p * (1 + this.rage / 100) * (1 + Math.min(this.combo, 30) * 0.1); this.score += a; return a; }
   shake(p) { this.cameras.main.shake(140 + p * 8, p * 0.0007, true); }
 
   // ---------------- Kaiju ----------------
@@ -476,11 +573,11 @@ class Main extends Phaser.Scene {
     k.squash *= Math.pow(0.001, dt);
 
     if (k.state === 'idle') {
-      if (i.tail) { k.state = 'tail'; k.st = 0; k.hit = false; Snd.whoosh(); this.acted = true; }
+      if (i.tail) { k.state = 'tail'; k.st = 0; k.hit = false; Snd.whoosh(); this.acted = true; this.noteStyle('tail'); }
       else if (i.stomp) {
         this.acted = true;
-        if (k.grounded) { k.state = 'stomp'; k.st = 0; k.hit = false; }
-        else { k.state = 'slam'; k.vy = 1250; k.vx *= 0.2; }
+        if (k.grounded) { k.state = 'stomp'; k.st = 0; k.hit = false; this.noteStyle('stomp'); }
+        else { k.state = 'slam'; k.vy = 1250; k.vx *= 0.2; this.noteStyle('stomp'); }
       }
     }
     if (k.state === 'stomp') {
@@ -520,6 +617,7 @@ class Main extends Phaser.Scene {
       if (this.fireIdle > 0.5 && this.foamT <= 0) this.fireFuel = Math.min(100, this.fireFuel + 24 * dt);
       if (this.overheat && this.fireFuel >= 35) this.overheat = false;
     }
+    if (firing && !this.wasFiring) this.noteStyle('fire');
     if (firing !== this.wasFiring) { Snd.fire(firing); this.wasFiring = firing; }
     k.firing = firing;
 
@@ -642,8 +740,11 @@ class Main extends Phaser.Scene {
   destroyBuilding(b, fromX) {
     b.alive = false; b.floors = 0; b.hp = 0; b.burn = 0;
     this.stats.wrecked++;
-    this.addScore(100 * b.maxFl); this.addRage(6);
+    this.bumpCombo(1); const pts = Math.round(this.addScore(100 * b.maxFl)); this.addRage(6);
+    this.popup(b.x, GROUND - 40 - b.maxFl * b.fh * 0.5, '+' + pts, '#ffe27a');
     this.dust(b.x, GROUND - 10, 18, b.w * 1.3, 26);
+    this.vapor(b.x, GROUND - 40, 40, b.w, b.accent);
+    for (let n = 0; n < 9; n++) this.chunk(b.x + (R() - 0.5) * b.w, GROUND - 30 - R() * 60, (R() - 0.5) * 340, -600 - R() * 600, R() < 0.5 ? b.col : b.accent, 12, true);
     for (let n = 0; n < 8; n++) this.chunk(b.x + (R() - 0.5) * b.w, GROUND - 20 - R() * 30, (R() - 0.5) * 260, -150 - R() * 250, R() < 0.5 ? b.col : b.dark, 14);
     this.shake(b.type === 'fuel' ? 16 : 11);
     this.hitstop = Math.max(this.hitstop, 50);
@@ -652,6 +753,11 @@ class Main extends Phaser.Scene {
     this.news(T.news[Math.floor(R() * T.news.length)]);
     this.redraw(b);
     if (b.type === 'fuel') this.explode(b.x, GROUND - 40);
+    for (const nb of this.buildings.slice()) {
+      if (!nb.alive) continue;
+      const gap = Math.abs(nb.x - b.x) - (nb.w + b.w) / 2;
+      if (gap < 70) this.damageBuilding(nb, 16, 'blast', b.x);
+    }
   }
 
   explode(x, y) {
@@ -677,6 +783,8 @@ class Main extends Phaser.Scene {
         R() < 0.55 ? b.col : (R() < 0.5 ? b.dark : 0x888890), 10);
     }
     this.dust(b.x, y1 + b.fh * 0.5, 5, b.w, 18);
+    this.vapor(b.x, y1 + b.fh * 0.5, 10, b.w, b.accent);
+    for (let n = 0; n < 3; n++) this.chunk(b.x + (R() - 0.5) * b.w, y1 + R() * b.fh, (R() - 0.5) * 260 + dirX * 80, -500 - R() * 500, b.col, 10, true);
     if (b.type === 'glass') {
       for (let n = 0; n < 14; n++) this.addPart({ kind: 'shard', x: b.x + (R() - 0.5) * b.w, y: y1 + R() * b.fh, vx: (R() - 0.5) * 240, vy: -R() * 200, life: 0.9, size: 3 });
     }
@@ -701,9 +809,48 @@ class Main extends Phaser.Scene {
     }
   }
 
+  // ---------------- Combo / style / roar ----------------
+  bumpCombo(n) {
+    this.combo += n; this.comboT = 3.5;
+    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+    [10, 20, 30].forEach(m => {
+      if (this.combo >= m && this.combo - n < m) { this.addRage(15); this.popup(this.k.x, this.k.y - 260, 'COMBO x' + m + '!', '#ffffff'); }
+    });
+  }
+
+  noteStyle(kind) {
+    if (this.lastStyle && this.lastStyle !== kind) { this.bumpCombo(1); this.popup(this.k.x, this.k.y - 230, 'SWITCH!', '#7ae0ff'); }
+    this.lastStyle = kind;
+  }
+
+  popup(x, y, str, color) {
+    const t = this.add.text(x, y, str, { fontFamily: 'monospace', fontSize: '20px', fontStyle: 'bold', color: color, stroke: '#000000', strokeThickness: 4 })
+      .setOrigin(0.5).setDepth(900);
+    this.tweens.add({ targets: t, y: y - 70, alpha: 0, duration: 1000, onComplete: () => t.destroy() });
+  }
+
+  doRoar() {
+    if (this.roarCd > 0 || this.state !== 'play') return;
+    const k = this.k; this.roarCd = 14; this.acted = true;
+    this.habit.stomp = 0; this.habit.tail = 0; this.habit.fire = 0; this.reviewT = Math.max(this.reviewT, 6);
+    this.ring(k.x, GROUND, 520); this.shake(16); this.hitstop = Math.max(this.hitstop, 60); Snd.roar();
+    this.shots.length = 0;
+    for (const u of this.units) {
+      if (!u.alive || Math.abs(u.x - k.x) > 520) continue;
+      if (u.type === 'mine') { u.alive = false; this.blast(u.x, GROUND - 6, 6); continue; }
+      u.cd += 3.5; u.hp -= 12; u.flash = 0.2;
+      if (u.hp <= 0) this.killUnit(u);
+    }
+    for (const c of this.cars) if (c.alive && Math.abs(c.x - k.x) < 400) c.dir = Math.sign(c.x - k.x) || 1;
+    this.popup(k.x, k.y - 230, 'ROAR!', '#ff9a6a');
+    this.news('MONSTER ROARS. MILITARY FORGETS EVERYTHING IT LEARNED.');
+  }
+
   // ---------------- Military (adapts to your habits) ----------------
   updateMilitary(dt) {
     const k = this.k;
+    if (this.roarCd > 0) this.roarCd -= dt;
+    if (this.inp.roar) this.doRoar();
     if (this.invuln > 0) this.invuln -= dt;
     if (this.foamT > 0) this.foamT -= dt;
     if (this.rampage > 0) {
@@ -806,7 +953,8 @@ class Main extends Phaser.Scene {
   killUnit(u) {
     if (!u.alive) return;
     u.alive = false; this.stats.units++;
-    this.addScore(150); this.addRage(4);
+    this.bumpCombo(2); const upts = Math.round(this.addScore(150)); this.addRage(4);
+    this.popup(u.x, GROUND - 60, '+' + upts, '#ffe27a');
     this.hp = Math.min(this.maxHp, this.hp + 3);
     this.blast(u.x, GROUND - 10, 10);
     for (let n = 0; n < 5; n++) this.chunk(u.x + (R() - 0.5) * u.w, GROUND - 10, (R() - 0.5) * 300, -150 - R() * 250, 0x4f6b3a, 10);
@@ -873,10 +1021,11 @@ class Main extends Phaser.Scene {
       }
       const heavy = u.type === 'heavy', foam = u.type === 'foam';
       g.fillStyle(0x1a1a1a, 1); g.fillRect(x - w / 2, y - 8, w, 8);
-      g.fillStyle(foam ? 0xe8e8e8 : heavy ? 0x3a4a3a : 0x4f6b3a, 1);
+      g.fillStyle(foam ? 0xe8e8e8 : heavy ? 0x2c3550 : 0x3a4660, 1);
       g.fillRect(x - w / 2 + 4, y - 22, w - 8, 14);
       g.fillRect(x - 14, y - 32, 28, 10);
-      g.lineStyle(heavy ? 7 : 5, foam ? 0xd62f2f : 0x2a2a2a, 1);
+      g.fillStyle(foam ? 0xd62f2f : 0x00e5ff, 0.9); g.fillRect(x - w / 2 + 6, y - 15, w - 12, 2);
+      g.lineStyle(heavy ? 7 : 5, foam ? 0xd62f2f : 0x5a6a88, 1);
       g.lineBetween(x, y - 27, x + f * (heavy ? 44 : 34), y - 33);
       if (heavy) { g.fillStyle(0x6a6a72, 1); g.fillRect(x - w / 2 - 2, y - 26, 6, 16); g.fillRect(x + w / 2 - 4, y - 26, 6, 16); }
       if (foam) { g.fillStyle(0xd62f2f, 1); g.fillRect(x - w / 2 + 4, y - 12, w - 8, 4); }
@@ -917,13 +1066,19 @@ class Main extends Phaser.Scene {
   }
 
   // ---------------- FX ----------------
-  chunk(x, y, vx, vy, col, size) {
-    if (this.debris.length > 260) this.debris.shift();
-    this.debris.push({ x, y, vx, vy, w: size * (0.6 + R() * 0.8), h: size * (0.5 + R() * 0.7), rot: R() * 6, vr: (R() - 0.5) * 10, col, life: 3 + R() * 2 });
+  chunk(x, y, vx, vy, col, size, evap) {
+    if (this.debris.length > 320) this.debris.shift();
+    this.debris.push({ x, y, vx, vy, w: size * (0.6 + R() * 0.8), h: size * (0.5 + R() * 0.7), rot: R() * 6, vr: (R() - 0.5) * 10, col, life: evap ? 1.5 + R() * 1.3 : 3 + R() * 2, g: evap ? 0.3 : 1, evap: !!evap });
   }
   addPart(p) {
-    if (this.parts.length > 700) this.parts.shift();
+    if (this.parts.length > 1100) this.parts.shift();
     p.max = p.life; this.parts.push(p);
+  }
+  vapor(x, y, n, spread, col) {
+    for (let i = 0; i < n; i++) {
+      this.addPart({ kind: 'mote', x: x + (R() - 0.5) * spread, y: y + (R() - 0.5) * 30, vx: (R() - 0.5) * 120, vy: -(60 + R() * 220),
+        life: 1.6 + R() * 1.8, size: 2 + R() * 3, col: R() < 0.5 ? col : 0xcfd3e6 });
+    }
   }
   dust(x, y, n, spread, size) {
     for (let i = 0; i < n; i++) {
@@ -936,7 +1091,7 @@ class Main extends Phaser.Scene {
   updateFx(dt) {
     for (let i = this.debris.length - 1; i >= 0; i--) {
       const d = this.debris[i];
-      d.vy += 1500 * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
+      d.vy += 1500 * (d.g || 1) * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
       if (d.y > GROUND + 6) {
         d.y = GROUND + 6;
         if (Math.abs(d.vy) > 120) { d.vy *= -0.3; d.vx *= 0.6; d.vr *= 0.6; } else { d.vy = 0; d.vx *= 0.85; d.vr *= 0.5; }
@@ -949,6 +1104,7 @@ class Main extends Phaser.Scene {
       p.x += p.vx * dt; p.y += p.vy * dt;
       if (p.kind === 'spark' || p.kind === 'shard') p.vy += 900 * dt;
       else if (p.kind === 'fire') { p.vy -= 150 * dt; p.size += 18 * dt; }
+      else if (p.kind === 'mote') { p.vy -= 60 * dt; p.vx += Math.sin(p.life * 6 + p.x) * 40 * dt; p.size = Math.max(0, p.size - 1.2 * dt); }
       else { p.size += 20 * dt; p.vx *= 0.98; }
       p.life -= dt;
       if (p.life <= 0) this.parts.splice(i, 1);
@@ -963,6 +1119,7 @@ class Main extends Phaser.Scene {
   // ---------------- Drawing ----------------
   drawAll(time) {
     this.drawKaiju(time / 1000);
+    this.drawSky(time / 1000);
     const k = this.k;
     const hgt = Math.max(0, GROUND - k.y);
     const s = 1 - Math.min(0.6, hgt / 400);
@@ -972,15 +1129,96 @@ class Main extends Phaser.Scene {
     this.drawFx();
   }
 
+  spawnFlyer() {
+    const types = ['bird', 'bird', 'bird', 'ufo', 'ufo', 'blimp', 'heli', 'heli', 'jet', 'jet', 'comet', 'comet'];
+    const type = types[Math.floor(R() * types.length)], dir = R() < 0.5 ? 1 : -1;
+    const f = { type: type, dir: dir, ph: R() * 6.28, y: 40 + R() * 190, x: dir > 0 ? -140 : W + 140, vx: 0, vy: 0, life: 0, ad: 0 };
+    if (type === 'bird') { f.vx = 60 + R() * 40; f.y = 60 + R() * 200; }
+    else if (type === 'ufo') { f.vx = 50 + R() * 50; f.y = 50 + R() * 120; }
+    else if (type === 'blimp') { f.vx = 14 + R() * 8; f.y = 60 + R() * 90; f.ad = Math.floor(R() * 4); }
+    else if (type === 'heli') { f.vx = 45 + R() * 30; f.y = 90 + R() * 130; }
+    else if (type === 'jet') { f.vx = 260 + R() * 120; f.y = 40 + R() * 140; }
+    else { f.vx = 420 + R() * 200; f.vy = 120 + R() * 120; f.y = 20 + R() * 80; f.x = R() * W; f.life = 0.7; }
+    this.flyers.push(f);
+  }
+
+  drawFlyer(g, f, t) {
+    const d = f.dir, x = f.x, y = f.y;
+    if (f.type === 'bird') {
+      g.lineStyle(2, 0x120a28, 0.9);
+      for (let q = 0; q < 5; q++) {
+        const bx = x - d * q * 14, by = y + (q % 2 ? 6 : -4) + q * 2, fl = Math.sin(t * 9 + f.ph + q) * 4;
+        g.lineBetween(bx - 6, by + fl, bx, by); g.lineBetween(bx, by, bx + 6, by + fl);
+      }
+    } else if (f.type === 'ufo') {
+      const by = y + Math.sin(t * 2 + f.ph) * 5;
+      if (Math.sin(t * 0.8 + f.ph) > 0.8) {
+        g.fillStyle(0x7dff6a, 0.12);
+        g.fillTriangle(x - 8, by + 6, x + 8, by + 6, x + 40, GROUND - 10); g.fillTriangle(x - 8, by + 6, x - 40, GROUND - 10, x + 40, GROUND - 10);
+      }
+      g.fillStyle(0x8892b0, 1); g.fillEllipse(x, by, 40, 11);
+      g.fillStyle(0x9ff0ff, 0.7); g.fillEllipse(x, by - 6, 18, 12);
+      for (let q = 0; q < 3; q++) { g.fillStyle(ACC[(q + Math.floor(t * 4)) % 4], 1); g.fillCircle(x - 12 + q * 12, by + 1, 2); }
+    } else if (f.type === 'blimp') {
+      g.fillStyle(ACC[f.ad], 0.08); g.fillEllipse(x, y, 130, 50);
+      g.fillStyle(0x2a2f4a, 1); g.fillEllipse(x, y, 100, 32);
+      g.fillTriangle(x - d * 46, y, x - d * 62, y - 14, x - d * 62, y + 14);
+      g.fillRect(x - 10, y + 14, 20, 6);
+      g.fillStyle(ACC[f.ad], 0.85); g.fillRect(x - 26, y - 8, 52, 16);
+      g.fillStyle(0x0b0710, 0.8); for (let q = 0; q < 4; q++) g.fillRect(x - 20 + q * 11, y - 3, 6, 6);
+    } else if (f.type === 'heli') {
+      const gx = x + Math.sin(t * 0.9 + f.ph) * 120;
+      g.fillStyle(0xffffff, 0.07); g.fillTriangle(x, y + 5, gx - 18, GROUND - 6, gx + 18, GROUND - 6);
+      g.fillStyle(0x1b2030, 1); g.fillEllipse(x, y, 24, 10);
+      g.lineStyle(3, 0x1b2030, 1); g.lineBetween(x - d * 10, y, x - d * 30, y - 3);
+      g.lineStyle(2, 0x8892a8, 0.8); g.lineBetween(x - 20 * Math.cos(t * 30), y - 7, x + 20 * Math.cos(t * 30), y - 7);
+      if (Math.floor(t * 3) % 2) { g.fillStyle(0xff4040, 1); g.fillCircle(x - d * 30, y - 3, 2); }
+    } else if (f.type === 'jet') {
+      for (let q = 0; q < 15; q++) { g.fillStyle(0xffffff, (1 - q / 15) * 0.35); g.fillCircle(x - d * (10 + q * 14), y, 2 + q * 0.15); }
+      g.fillStyle(0xdfe6ff, 1); g.fillTriangle(x + d * 12, y, x - d * 8, y - 3, x - d * 8, y + 3);
+    } else {
+      const al = Math.min(1, f.life * 3);
+      g.lineStyle(2, 0xffffff, 0.8 * al); g.lineBetween(x, y, x - d * f.vx * 0.09, y - f.vy * 0.09);
+      g.fillStyle(0xffffff, al); g.fillCircle(x, y, 2);
+      g.fillStyle(0xffe9b0, 0.25 * al); g.fillCircle(x, y, 6);
+    }
+  }
+
+  drawSky(t) {
+    const g = this.skyG; g.clear();
+    const dt = this.skyLast == null ? 0 : Math.min(0.05, Math.max(0, t - this.skyLast)); this.skyLast = t;
+    this.flyT -= dt;
+    if (this.flyT <= 0 && this.flyers.length < 7) { this.spawnFlyer(); this.flyT = 1.5 + R() * 3.5; }
+    for (let i = this.flyers.length - 1; i >= 0; i--) {
+      const f = this.flyers[i];
+      f.x += f.dir * f.vx * dt;
+      if (f.type === 'comet') { f.y += f.vy * dt; f.life -= dt; if (f.life <= 0) { this.flyers.splice(i, 1); continue; } }
+      if (f.x < -220 || f.x > W + 220) this.flyers.splice(i, 1);
+    }
+    for (let i = 0; i < 14; i++) {
+      const lane = 70 + (i % 5) * 38, sp = (30 + (i % 4) * 22) * (i % 2 ? 1 : -1), d = sp > 0 ? 1 : -1;
+      const x = (((i * 173 + t * sp) % (W + 80)) + W + 80) % (W + 80) - 40;
+      g.fillStyle(ACC[i % 4], 0.12); g.fillRect(x - d * 26, lane - 1, 26, 3);
+      g.fillStyle(ACC[i % 4], 0.9); g.fillRect(x, lane - 2, 6, 4);
+    }
+    for (const f of this.flyers) this.drawFlyer(g, f, t);
+  }
+
   drawCars() {
     const g = this.carG; g.clear();
     for (const c of this.cars) {
-      const y = GROUND + 12;
-      if (!c.alive) { g.fillStyle(0x1a1620, 1); g.fillRect(c.x - 23, y - 4, 46, 4); continue; }
-      g.fillStyle(c.col, 1); g.fillRect(c.x - 23, y - 12, 46, 12);
-      g.fillStyle(darken(c.col, 0.85), 1); g.fillRect(c.x - 12, y - 20, 24, 9);
-      g.fillStyle(0x9fd0ee, 1); g.fillRect(c.x - 9, y - 18, 8, 6); g.fillRect(c.x + 1, y - 18, 8, 6);
-      g.fillStyle(0x111111, 1); g.fillCircle(c.x - 13, y, 4); g.fillCircle(c.x + 13, y, 4);
+      const gy = GROUND + 12;
+      if (!c.alive) { g.fillStyle(0x15121a, 1); g.fillRect(c.x - 23, gy - 4, 46, 4); g.fillStyle(0xff6a3a, 0.5); g.fillRect(c.x - 8, gy - 6, 6, 2); continue; }
+      const d = c.dir >= 0 ? 1 : -1, bob = Math.sin(this.t * 4 + c.x * 0.05) * 1.5, y0 = gy - 9 + bob;
+      g.fillStyle(c.col, 0.28); g.fillEllipse(c.x, gy - 1, 60, 8);
+      g.fillStyle(c.col, 0.12); g.fillTriangle(c.x + d * 30, y0 - 5, c.x + d * 95, gy, c.x + d * 30, y0 + 1);
+      g.fillStyle(0x1b2030, 1); g.fillRoundedRect(c.x - 25, y0 - 10, 50, 11, 5);
+      g.fillStyle(c.col, 1); g.fillRect(c.x - 22, y0 - 4, 44, 2);
+      g.fillStyle(0x1b2030, 1); g.fillTriangle(c.x + d * 25, y0 - 10, c.x + d * 25, y0 + 1, c.x + d * 36, y0 + 1);
+      g.fillStyle(0xbff4ff, 0.95); g.fillRoundedRect(c.x - 11, y0 - 18, 24, 9, 4);
+      g.fillStyle(c.col, 1); g.fillRect(c.x - d * 25 - 2, y0 - 8, 4, 6);
+      g.fillStyle(0xffffff, 1); g.fillCircle(c.x + d * 32, y0 - 2, 2);
+      g.fillStyle(c.col, 0.8); g.fillRect(c.x - 14, y0 + 1, 8, 2); g.fillRect(c.x + 6, y0 + 1, 8, 2);
     }
   }
 
@@ -994,7 +1232,8 @@ class Main extends Phaser.Scene {
     for (const d of this.debris) {
       const a = Math.min(1, d.life / 0.8);
       g.save(); g.translateCanvas(d.x, d.y); g.rotateCanvas(d.rot);
-      g.fillStyle(d.col, a); g.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+      const esc = d.evap ? Math.min(1, d.life) : 1;
+      g.fillStyle(d.col, a); g.fillRect(-d.w * esc / 2, -d.h * esc / 2, d.w * esc, d.h * esc);
       g.restore();
     }
     for (const s of this.shots) {
@@ -1009,6 +1248,7 @@ class Main extends Phaser.Scene {
         g.fillStyle(col, Math.min(1, a * 1.4)); g.fillCircle(p.x, p.y, p.size);
       }
       else if (p.kind === 'spark') { g.fillStyle(0xffe27a, a); g.fillRect(p.x, p.y, p.size, p.size); }
+      else if (p.kind === 'mote') { g.fillStyle(p.col, a * 0.9); g.fillRect(p.x, p.y, p.size, p.size); g.fillStyle(p.col, a * 0.18); g.fillCircle(p.x, p.y, p.size * 2.6); }
       else { g.fillStyle(0xbfe6ff, a); g.fillRect(p.x, p.y, p.size, p.size); }
     }
   }
@@ -1031,13 +1271,36 @@ class Main extends Phaser.Scene {
       else if (p < 0.65) ta = lerp(PI + 1.2, 2 * PI + 0.2, (p - 0.35) / 0.3);
       else ta = lerp(2 * PI + 0.2, 2 * PI + 0.2 + (PI + 0.3 - PI) * 0, 0) - ((p - 0.65) / 0.35) * (PI - 0.1);
     } else ta = PI + 0.25 + Math.sin(time * 2 + walk) * 0.12;
+    if (st === 'tail') {
+      const pp = k.st / 0.46;
+      if (pp > 0.3 && pp < 0.8) {
+        g.lineStyle(12, 0xffffff, 0.22 * (1 - Math.abs(pp - 0.55) * 2));
+        g.beginPath(); g.arc(-34, -72, 150, PI + 1.2, ta, false); g.strokePath();
+      }
+    }
     let tx = -34, ty = -72;
-    for (let i = 0; i < 7; i++) {
-      const a = ta + i * 0.07;
-      const nx = tx + Math.cos(a) * 24, ny = ty + Math.sin(a) * 24;
-      g.lineStyle(20 - i * 2.4, gt, 1); g.lineBetween(tx, ty, nx, ny);
+    const segs = [];
+    for (let i = 0; i < 12; i++) {
+      const a = ta + i * 0.06 + (st === 'tail' ? 0 : Math.sin(time * 2.5 - i * 0.55) * 0.045);
+      const nx = tx + Math.cos(a) * 15, ny = ty + Math.sin(a) * 15, wd = 22 - i * 1.6;
+      g.lineStyle(wd, i % 2 ? gt : darken(gt, 0.94), 1); g.lineBetween(tx, ty, nx, ny);
+      segs.push({ x: (tx + nx) / 2, y: (ty + ny) / 2, a: a, w: wd });
       tx = nx; ty = ny;
     }
+    segs.forEach((sg, i) => {
+      const off = sg.w * 0.2;
+      g.fillStyle(gb, 0.5); g.fillCircle(sg.x + Math.sin(sg.a) * off, sg.y - Math.cos(sg.a) * off, sg.w * 0.2);
+      if (i < 10) {
+        const ux = -Math.sin(sg.a), uy = Math.cos(sg.a), h = (11 - i) * 1.1 + 4;
+        const bx = sg.x + ux * sg.w * 0.4, by = sg.y + uy * sg.w * 0.4, dx = Math.cos(sg.a) * 4, dy = Math.sin(sg.a) * 4;
+        g.fillStyle(gs, 1); g.fillTriangle(bx - dx, by - dy, bx + dx, by + dy, bx + ux * h - dx * 0.5, by + uy * h - dy * 0.5);
+      }
+    });
+    const ls = segs[segs.length - 1], lx = ls.x + Math.cos(ls.a) * 8, ly = ls.y + Math.sin(ls.a) * 8;
+    const hot = st === 'tail' || this.rampage > 0;
+    g.fillStyle(0xff9a3c, hot ? 0.4 : 0.15); g.fillCircle(lx + Math.cos(ls.a) * 8, ly + Math.sin(ls.a) * 8, 16);
+    g.fillStyle(0xffd27a, 1);
+    g.fillTriangle(lx - Math.sin(ls.a) * 5, ly + Math.cos(ls.a) * 5, lx + Math.sin(ls.a) * 5, ly - Math.cos(ls.a) * 5, lx + Math.cos(ls.a) * 24, ly + Math.sin(ls.a) * 24);
 
     // legs
     const leg = (hx, ph, front) => {
@@ -1047,14 +1310,26 @@ class Main extends Phaser.Scene {
       else { fx = Math.sin(walk + ph) * 16; lift = Math.max(0, Math.cos(walk + ph)) * 10 * Math.min(1, Math.abs(k.vx) / 80); }
       g.lineStyle(26, gd, 1); g.lineBetween(hx, -62, hx + fx, -lift - 10);
       g.fillStyle(gd, 1); g.fillEllipse(hx + fx + 8, -lift - 4, 38, 16);
+      g.fillStyle(0xf5f0d0, 1); g.fillTriangle(hx + fx + 24, -lift - 8, hx + fx + 33, -lift - 3, hx + fx + 24, -lift - 2); g.fillTriangle(hx + fx + 22, -lift, hx + fx + 31, -lift + 1, hx + fx + 22, -lift + 4);
     };
     leg(-12, 0, false); leg(16, PI, true);
 
     // spikes, body, belly
-    g.fillStyle(gs, 1);
-    for (let i = 0; i < 6; i++) g.fillTriangle(-36, -155 + i * 20, -36, -135 + i * 20, -58, -140 + i * 20);
+    for (let i = 0; i < 6; i++) {
+      const sy = -155 + i * 20;
+      g.fillStyle(0xff9a3c, this.rampage > 0 ? 0.35 : 0.18); g.fillCircle(-46, sy + 11, 16);
+      g.fillStyle(gs, 1); g.fillTriangle(-36, sy, -36, sy + 22, -62, sy + 12);
+      g.fillStyle(0xffd27a, 1); g.fillTriangle(-48, sy + 8, -48, sy + 16, -62, sy + 12);
+    }
     g.fillStyle(gt, 1); g.fillEllipse(0, -108, 92, 124);
+    g.fillStyle(gd, 0.5); g.fillEllipse(-20, -108, 40, 112);
+    g.fillStyle(0x6fd68a, 0.3); g.fillEllipse(14, -146, 34, 34);
     g.fillStyle(gb, 1); g.fillEllipse(14, -100, 50, 96);
+    g.lineStyle(2, 0x8fb858, 0.8);
+    for (let i = 0; i < 6; i++) {
+      const by = -136 + i * 14, dy = by + 100, hw = 25 * Math.sqrt(Math.max(0, 1 - (dy / 48) * (dy / 48)));
+      g.lineBetween(14 - hw + 3, by, 14 + hw - 3, by);
+    }
 
     // arm
     g.lineStyle(10, gd, 1);
@@ -1066,9 +1341,24 @@ class Main extends Phaser.Scene {
     g.fillStyle(gt, 1); g.fillEllipse(34, -176, 64, 50);
     g.fillEllipse(58, -170, 40, 30);
     g.fillStyle(gd, 1); g.fillEllipse(54, -156 + (open ? 10 : 0), 36, 14);
+    g.fillStyle(0xffffff, 1);
+    for (let q = 0; q < 4; q++) {
+      g.fillTriangle(44 + q * 7, -157, 48 + q * 7, -157, 46 + q * 7, -152);
+      if (open) g.fillTriangle(46 + q * 7, -146, 50 + q * 7, -146, 48 + q * 7, -151);
+    }
     if (open) { g.fillStyle(0x3a0d0d, 1); g.fillEllipse(64, -165, 20, 14); }
-    g.fillStyle(0xffffff, 1); g.fillCircle(40, -188, 7);
-    g.fillStyle(0xcc1111, 1); g.fillCircle(42, -188, 3.5);
+    {
+      const rg = this.rampage > 0, narrow = open || rg, blink = (time % 3.4) < 0.12, eh = narrow ? 8 : 13;
+      g.fillStyle(rg ? 0xff2020 : 0xffaa30, 0.28); g.fillCircle(42, -188, 15);
+      if (blink) { g.lineStyle(3, gd, 1); g.lineBetween(33, -188, 50, -188); }
+      else {
+        g.fillStyle(0xfff3d0, 1); g.fillEllipse(41, -188, 18, eh);
+        g.fillStyle(rg ? 0xff3030 : 0xffc21a, 1); g.fillEllipse(43, -188, 10, eh - 1);
+        g.fillStyle(0x140404, 1); g.fillEllipse(44, -188, 3.5, eh - 1);
+        g.fillStyle(0xffffff, 1); g.fillCircle(46, -190.5, 1.8);
+      }
+      g.lineStyle(5, gd, 1); g.lineBetween(29, -201, 52, -192);
+    }
     if (this.foamT > 0) {
       g.fillStyle(0xffffff, 0.9);
       [[0, -120, 22], [-14, -90, 16], [30, -176, 14], [12, -60, 14], [-6, -150, 12]].forEach(f => g.fillCircle(f[0], f[1], f[2]));
