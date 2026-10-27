@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Crumple</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #060608;
+    overflow: hidden;
+    overscroll-behavior: none;
+    height: 100%;
+    font-family: system-ui, -apple-system, sans-serif;
+    color: #f8fafc;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #game-container { position: relative; }
+
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 10px 14px; pointer-events: none; z-index: 5;
+    font-family: 'Courier New', monospace;
+  }
+  .panelBar { display: flex; flex-direction: column; gap: 3px; width: 110px; }
+  .panelBar .name { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #94a3b8; margin-bottom: 2px; }
+  .zoneRow { display: flex; gap: 3px; }
+  .zoneSeg { flex: 1; height: 8px; border-radius: 2px; background: rgba(255,255,255,0.1); }
+  .zoneSeg.full { background: #38bdf8; }
+  .zoneSeg.enemyFull { background: #ef4444; }
+  #streakBox { text-align: center; font-size: 11px; color: #64748b; letter-spacing: 0.06em; margin-top: 2px; }
+  #momentumWrap {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: 180px; z-index: 5; pointer-events: none;
+  }
+  #momentumLabel { font-size: 10px; text-align: center; letter-spacing: 0.1em; color: #94a3b8; margin-bottom: 3px; text-transform: uppercase; }
+  #momentumBarOuter { height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); }
+  #momentumBarInner { height: 100%; width: 0%; background: linear-gradient(90deg, #fbbf24, #f97316); transition: width 0.05s linear; }
+  #chargedFlag { text-align: center; font-size: 11px; font-weight: 700; color: #4ade80; margin-top: 3px; letter-spacing: 0.08em; visibility: hidden; }
+
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(6,6,8,0.94); text-align: center; z-index: 10; padding: 20px;
+  }
+  #overlay h1 {
+    font-size: 2.2rem; letter-spacing: 0.08em; margin: 0 0 6px;
+    background: linear-gradient(90deg, #fbbf24, #f97316, #ef4444);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #overlay p { color: #94a3b8; margin: 4px 0 14px; max-width: 340px; font-size: 0.9rem; line-height: 1.5; }
+  .carPick { display: flex; gap: 10px; margin: 10px 0 16px; flex-wrap: wrap; justify-content: center; }
+  .carOpt {
+    width: 92px; padding: 10px 6px; border-radius: 10px; border: 2px solid #1e293b;
+    background: #0f1420; cursor: pointer; font-family: 'Courier New', monospace;
+  }
+  .carOpt.selected { border-color: #fbbf24; background: #1c1810; }
+  .carOpt.locked { opacity: 0.35; cursor: not-allowed; }
+  .carOpt .carSwatch { width: 36px; height: 20px; border-radius: 4px; margin: 0 auto 6px; }
+  .carOpt .carName { font-size: 12px; font-weight: 700; }
+  .carOpt .carStat { font-size: 9px; color: #64748b; margin-top: 2px; }
+  #overlay button#startBtn {
+    padding: 14px 36px; font-size: 1rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    border: none; border-radius: 10px; background: linear-gradient(135deg, #f97316, #ef4444); color: #fff;
+    cursor: pointer; box-shadow: 0 4px 20px rgba(249,115,22,0.4);
+  }
+  #overlay button#startBtn:active { transform: scale(0.96); }
+  .stat { font-size: 1rem; margin: 2px 0; color: #e2e8f0; }
+  .stat b { color: #fbbf24; }
+
+  #controls-hint {
+    position: absolute; bottom: 70px; left: 0; right: 0; text-align: center;
+    font-size: 11px; color: #4b5563; z-index: 5; pointer-events: none; letter-spacing: 0.03em;
+  }
+
+  #joyZone, #chargeZone {
+    position: absolute; z-index: 4; display: none;
+  }
+  #joyZone.active, #chargeZone.active { display: block; }
+  #joyZone { left: 0; bottom: 0; width: 45%; height: 45%; }
+  #joyBase {
+    position: absolute; width: 90px; height: 90px; border-radius: 50%;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15);
+    display: none;
+  }
+  #joyStick {
+    position: absolute; width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(251,191,36,0.5); top: 25px; left: 25px;
+  }
+  #chargeZone { right: 16px; bottom: 16px; width: 76px; height: 76px; border-radius: 50%;
+    background: rgba(249,115,22,0.15); border: 2px solid rgba(249,115,22,0.4);
+    display: flex; align-items: center; justify-content: center; font-size: 10px;
+    letter-spacing: 0.06em; text-transform: uppercase; color: #fbbf24; text-align: center;
+  }
+  @media (hover: none) { #controls-hint { display: none; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="game-container">
+    <div id="hud">
+      <div class="panelBar" id="playerBar">
+        <div class="name">You</div>
+        <div class="zoneRow" id="playerZones"></div>
+      </div>
+      <div class="panelBar" id="enemyBar" style="text-align:right;">
+        <div class="name" id="enemyName">Rival</div>
+        <div class="zoneRow" id="enemyZones"></div>
+      </div>
+    </div>
+    <div id="streakBox"></div>
+    <div id="momentumWrap">
+      <div id="momentumLabel">Momentum</div>
+      <div id="momentumBarOuter"><div id="momentumBarInner"></div></div>
+      <div id="chargedFlag">CHARGED — RAM NOW</div>
+    </div>
+
+    <div id="joyZone"><div id="joyBase"><div id="joyStick"></div></div></div>
+    <div id="chargeZone">HOLD<br>CHARGE</div>
+
+    <div id="overlay">
+      <h1>CRUMPLE</h1>
+      <p>Ram the panel facing you. Charge Momentum, then land a hit for bonus damage and knockback. Wreck all four panels to win — or push a wrecked wreck toward the fire.</p>
+      <div class="stat">Win Streak: <b id="streakVal">0</b></div>
+      <div class="carPick" id="carPick"></div>
+      <button id="startBtn">Drive</button>
+    </div>
+    <div id="controls-hint">WASD / Arrows to drive · SPACE hold = charge Momentum, release to arm a ram</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const W = 900, H = 600;
+  const STREAK_KEY = 'crumple_win_streak';
+  const WINS_KEY = 'crumple_total_wins';
+
+  const CARS = {
+    heavy: { key: 'heavy', name: 'Heavy', color: 0x475569, zoneHP: 4, accel: 0.0030, maxSpeed: 4.0, turnSpeed: 0.050, density: 0.028, unlockWins: 3 },
+    balanced: { key: 'balanced', name: 'Balanced', color: 0x38bdf8, zoneHP: 3, accel: 0.0038, maxSpeed: 4.8, turnSpeed: 0.068, density: 0.020, unlockWins: 0 },
+    light: { key: 'light', name: 'Light', color: 0xfbbf24, zoneHP: 2, accel: 0.0046, maxSpeed: 5.6, turnSpeed: 0.088, density: 0.014, unlockWins: 1 }
+  };
+  const CAR_LIST = ['balanced', 'light', 'heavy'];
+
+  const AI_TYPES = ['aggressor', 'dodger', 'baiter'];
+
+  // ---------- SFX ----------
+  const SFX = (function () {
+    let ctx = null;
+    function ac() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
+    function tone(freq, dur, type, vol, slideTo) {
+      try {
+        const c = ac();
+        const o = c.createOscillator(); const g = c.createGain();
+        o.type = type || 'sine';
+        o.frequency.setValueAtTime(freq, c.currentTime);
+        if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, c.currentTime + dur);
+        g.gain.setValueAtTime(vol || 0.15, c.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+        o.connect(g); g.connect(c.destination);
+        o.start(); o.stop(c.currentTime + dur);
+      } catch (e) {}
+    }
+    return {
+      hit: (big) => tone(big ? 110 : 160, big ? 0.25 : 0.12, 'sawtooth', big ? 0.2 : 0.12, big ? 40 : 80),
+      crunch: () => tone(80, 0.3, 'square', 0.18, 30),
+      chargeUp: () => tone(300, 0.15, 'triangle', 0.1, 500),
+      fire: () => tone(500, 0.4, 'sawtooth', 0.2, 60),
+      win: () => tone(400, 0.5, 'triangle', 0.2, 900),
+      lose: () => tone(300, 0.6, 'sawtooth', 0.2, 60)
+    };
+  })();
+
+  // ---------- Persistent state ----------
+  const persist = {
+    streak: parseInt(localStorage.getItem(STREAK_KEY) || '0', 10),
+    totalWins: parseInt(localStorage.getItem(WINS_KEY) || '0', 10)
+  };
+
+  const streakVal = document.getElementById('streakVal');
+  const streakBox = document.getElementById('streakBox');
+  streakVal.textContent = persist.streak;
+  streakBox.textContent = 'Streak: ' + persist.streak;
+
+  let selectedCar = 'balanced';
+
+  function buildCarPicker() {
+    const wrap = document.getElementById('carPick');
+    wrap.innerHTML = '';
+    CAR_LIST.forEach(key => {
+      const def = CARS[key];
+      const locked = persist.totalWins < def.unlockWins;
+      const el = document.createElement('div');
+      el.className = 'carOpt' + (key === selectedCar ? ' selected' : '') + (locked ? ' locked' : '');
+      el.innerHTML =
+        '<div class="carSwatch" style="background:#' + def.color.toString(16).padStart(6, '0') + '"></div>' +
+        '<div class="carName">' + def.name + '</div>' +
+        '<div class="carStat">' + (locked ? ('Unlock @ ' + def.unlockWins + ' win' + (def.unlockWins > 1 ? 's' : '')) : (def.zoneHP * 4 + ' HP')) + '</div>';
+      if (!locked) {
+        el.addEventListener('click', () => { selectedCar = key; buildCarPicker(); });
+      }
+      wrap.appendChild(el);
+    });
+  }
+  buildCarPicker();
+
+  // ---------- Zone helpers ----------
+  const ZONES = ['front', 'right', 'back', 'left'];
+  function classifyZone(selfAngle, dirToOther) {
+    let diff = dirToOther - selfAngle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    const a = Math.abs(diff);
+    if (a < Math.PI / 4) return 'front';
+    if (a > Math.PI * 3 / 4) return 'back';
+    return diff > 0 ? 'right' : 'left';
+  }
+
+  function renderZoneBar(elId, zones, maxHP, isEnemy) {
+    const el = document.getElementById(elId);
+    el.innerHTML = '';
+    ZONES.forEach(z => {
+      const seg = document.createElement('div');
+      const hp = zones[z];
+      seg.className = 'zoneSeg' + (hp > 0 ? (isEnemy ? ' enemyFull' : ' full') : '');
+      seg.style.opacity = hp > 0 ? Math.max(0.35, hp / maxHP) : 0.15;
+      el.appendChild(seg);
+    });
+  }
+
+  // ---------- Scene ----------
+  class ArenaScene extends Phaser.Scene {
+    constructor() { super('arena'); }
+
+    create() {
+      this.matter.world.setBounds(0, 0, W, H, 24, true, true, true, true);
+      this.cameras.main.setBackgroundColor('#121018');
+      this.add.rectangle(W / 2, H / 2, W - 20, H - 20, 0x1a1620).setStrokeStyle(3, 0x2d2638);
+
+      this.firePits = [
+        { x: 160, y: 140, r: 46 },
+        { x: W - 160, y: H - 140, r: 46 }
+      ];
+      this.firePits.forEach(fp => {
+        this.add.circle(fp.x, fp.y, fp.r, 0x7f1d1d, 0.5).setStrokeStyle(2, 0xf97316).setDepth(1);
+        this.add.circle(fp.x, fp.y, fp.r * 0.6, 0xf97316, 0.25).setDepth(1);
+        fp.sensor = this.matter.add.circle(fp.x, fp.y, fp.r * 0.75, { isStatic: true, isSensor: true, label: 'firepit' });
+        fp.sensor.fpRef = fp;
+      });
+
+      this.wreckage = [];
+
+      this.player = this.makeCar(W * 0.28, H * 0.5, 0, CARS[selectedCar], false);
+      const aiCarKey = CAR_LIST[Math.floor(Math.random() * CAR_LIST.length)];
+      this.aiType = AI_TYPES[Math.floor(Math.random() * AI_TYPES.length)];
+      this.enemy = this.makeCar(W * 0.72, H * 0.5, Math.PI, CARS[aiCarKey], true);
+      document.getElementById('enemyName').textContent = 'Rival (' + this.aiType[0].toUpperCase() + this.aiType.slice(1) + ')';
+
+      this.gameOver = false;
+
+      this.keys = this.input.keyboard.addKeys({
+        up: 'W', down: 'S', left: 'A', right: 'D',
+        up2: 'UP', down2: 'DOWN', left2: 'LEFT', right2: 'RIGHT',
+        charge: 'SPACE'
+      });
+
+      this.setupTouch();
+
+      this.matter.world.on('collisionstart', (event) => this.handleCollisions(event));
+
+      this.refreshHud();
+    }
+
+    makeCar(x, y, angle, def, isAI) {
+      const w = 34, h = 20;
+      const body = this.matter.add.rectangle(x, y, w, h, {
+        density: def.density, restitution: 0.25, frictionAir: 0.06, friction: 0.01, label: isAI ? 'enemyCar' : 'playerCar'
+      });
+      Phaser.Physics.Matter.Matter.Body.setAngle(body, angle);
+      const gfx = this.add.rectangle(x, y, w, h, def.color).setDepth(6);
+      const nose = this.add.triangle(x, y, 0, -7, 10, 0, 0, 7, 0xf8fafc).setDepth(6.1);
+      const car = {
+        body, gfx, nose, def, isAI,
+        zones: { front: def.zoneHP, right: def.zoneHP, back: def.zoneHP, left: def.zoneHP },
+        maxZoneHP: def.zoneHP,
+        angle,
+        momentum: 0,
+        charging: false,
+        charged: false,
+        chargedUntil: 0,
+        knockbackUntil: 0,
+        wrecked: false,
+        aiState: { mode: 'approach', timer: 0 }
+      };
+      body.carRef = car;
+      return car;
+    }
+
+    setupTouch() {
+      const joyZone = document.getElementById('joyZone');
+      const joyBase = document.getElementById('joyBase');
+      const joyStick = document.getElementById('joyStick');
+      const chargeZone = document.getElementById('chargeZone');
+      joyZone.classList.add('active');
+      chargeZone.classList.add('active');
+
+      this.touchDir = null;
+      let joyActive = false, joyOriginX = 0, joyOriginY = 0;
+
+      const startJoy = (e) => {
+        e.preventDefault();
+        const t = e.touches ? e.touches[0] : e;
+        const rect = joyZone.getBoundingClientRect();
+        joyOriginX = t.clientX; joyOriginY = t.clientY;
+        joyBase.style.display = 'block';
+        joyBase.style.left = (t.clientX - rect.left - 45) + 'px';
+        joyBase.style.top = (t.clientY - rect.top - 45) + 'px';
+        joyActive = true;
+      };
+      const moveJoy = (e) => {
+        if (!joyActive) return;
+        e.preventDefault();
+        const t = e.touches ? e.touches[0] : e;
+        let dx = t.clientX - joyOriginX, dy = t.clientY - joyOriginY;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const maxLen = 45;
+        if (len > maxLen) { dx = dx / len * maxLen; dy = dy / len * maxLen; }
+        joyStick.style.left = (25 + dx) + 'px';
+        joyStick.style.top = (25 + dy) + 'px';
+        if (len > 10) this.touchDir = Math.atan2(dy, dx);
+        else this.touchDir = null;
+      };
+      const endJoy = (e) => {
+        e.preventDefault();
+        joyActive = false; this.touchDir = null;
+        joyBase.style.display = 'none';
+        joyStick.style.left = '25px'; joyStick.style.top = '25px';
+      };
+      joyZone.addEventListener('touchstart', startJoy, { passive: false });
+      joyZone.addEventListener('touchmove', moveJoy, { passive: false });
+      joyZone.addEventListener('touchend', endJoy, { passive: false });
+
+      const startCharge = (e) => { e.preventDefault(); this.beginCharge(this.player); };
+      const endCharge = (e) => { e.preventDefault(); this.releaseCharge(this.player); };
+      chargeZone.addEventListener('touchstart', startCharge, { passive: false });
+      chargeZone.addEventListener('touchend', endCharge, { passive: false });
+    }
+
+    beginCharge(car) {
+      if (car.wrecked || car.charging) return;
+      car.charging = true;
+    }
+    releaseCharge(car) {
+      if (!car.charging) return;
+      car.charging = false;
+      if (car.momentum >= 30) {
+        car.charged = true;
+        car.chargedUntil = this.time.now + 1400;
+      }
+      car.momentum = 0;
+    }
+
+    handleCollisions(event) {
+      event.pairs.forEach(pair => {
+        const a = pair.bodyA, b = pair.bodyB;
+        if (a.label === 'firepit' || b.label === 'firepit') {
+          const fpBody = a.label === 'firepit' ? a : b;
+          const other = a.label === 'firepit' ? b : a;
+          if (other.carRef && !other.carRef.wrecked) this.wreckCar(other.carRef, true);
+          return;
+        }
+        if ((a.label === 'playerCar' && b.label === 'enemyCar') || (a.label === 'enemyCar' && b.label === 'playerCar')) {
+          this.resolveCarHit(a.carRef, b.carRef);
+        }
+      });
+    }
+
+    resolveCarHit(carA, carB) {
+      if (carA.wrecked || carB.wrecked) return;
+      const dx = carB.body.position.x - carA.body.position.x;
+      const dy = carB.body.position.y - carA.body.position.y;
+      const dirAtoB = Math.atan2(dy, dx);
+      const dirBtoA = dirAtoB + Math.PI;
+
+      const vA = carA.body.velocity, vB = carB.body.velocity;
+      const closingA = (vA.x * Math.cos(dirAtoB) + vA.y * Math.sin(dirAtoB));
+      const closingB = (vB.x * Math.cos(dirBtoA) + vB.y * Math.sin(dirBtoA));
+      const relSpeed = Math.abs(closingA) + Math.abs(closingB);
+      if (relSpeed < 1.2) return; // too soft, just a bump
+
+      const now = this.time.now;
+      const aIsRammer = closingA >= closingB;
+      const rammer = aIsRammer ? carA : carB;
+      const defender = aIsRammer ? carB : carA;
+      const rammerCharged = rammer.charged && now < rammer.chargedUntil;
+
+      const zoneOnDefender = classifyZone(defender.body.angle, aIsRammer ? dirBtoA : dirAtoB);
+      let dmg = 1 + (rammerCharged ? 1 : 0);
+      this.damageZone(defender, zoneOnDefender, dmg, rammerCharged);
+
+      // light counter-damage to rammer's front zone
+      const zoneOnRammer = classifyZone(rammer.body.angle, aIsRammer ? dirAtoB : dirBtoA);
+      this.damageZone(rammer, zoneOnRammer, relSpeed > 5 ? 1 : 0, false);
+
+      if (rammerCharged) { rammer.charged = false; }
+
+      // knockback
+      const kb = (rammerCharged ? 0.045 : 0.022) * Math.max(1, relSpeed);
+      Phaser.Physics.Matter.Matter.Body.applyForce(defender.body, defender.body.position, {
+        x: Math.cos(aIsRammer ? dirAtoB : dirBtoA) * kb,
+        y: Math.sin(aIsRammer ? dirAtoB : dirBtoA) * kb
+      });
+      defender.knockbackUntil = now + (rammerCharged ? 380 : 220);
+      rammer.knockbackUntil = now + 120;
+
+      this.cameras.main.shake(rammerCharged ? 140 : 70, rammerCharged ? 0.008 : 0.004);
+      SFX.hit(rammerCharged);
+      this.refreshHud();
+    }
+
+    damageZone(car, zone, amount, big) {
+      if (amount <= 0 || car.wrecked) return;
+      if (car.zones[zone] <= 0) {
+        // already gone — spillover damage to an adjacent still-alive zone, else ignore
+        const idx = ZONES.indexOf(zone);
+        const alt = ZONES[(idx + 1) % 4];
+        if (car.zones[alt] > 0) zone = alt; else return;
+      }
+      car.zones[zone] = Math.max(0, car.zones[zone] - amount);
+      if (car.zones[zone] <= 0) {
+        this.detachZone(car, zone);
+      }
+      const destroyedCount = ZONES.filter(z => car.zones[z] <= 0).length;
+      if (destroyedCount >= 4) {
+        this.wreckCar(car, false);
+      }
+    }
+
+    detachZone(car, zone) {
+      SFX.crunch();
+      const offsets = { front: [0, -1], back: [0, 1], left: [-1, 0], right: [1, 0] };
+      const off = offsets[zone];
+      const worldAngle = car.body.angle;
+      const cos = Math.cos(worldAngle), sin = Math.sin(worldAngle);
+      // rotate local offset into world space (local x=right/left axis maps along car's side, y=front/back along heading)
+      const localX = off[0] * 14, localY = off[1] * 9;
+      const wx = car.body.position.x + (localX * cos - localY * sin);
+      const wy = car.body.position.y + (localX * sin + localY * cos);
+      const debris = this.matter.add.rectangle(wx, wy, 9, 7, {
+        density: 0.006, restitution: 0.5, frictionAir: 0.03, angle: worldAngle, label: 'debris'
+      });
+      const gfx = this.add.rectangle(wx, wy, 9, 7, 0x3f3f46).setDepth(5).setRotation(worldAngle);
+      debris.gfxRef = gfx;
+      this.wreckage.push(debris);
+      Phaser.Physics.Matter.Matter.Body.applyForce(debris, debris.position, {
+        x: (localX * cos - localY * sin) * 0.0006, y: (localX * sin + localY * cos) * 0.0006
+      });
+    }
+
+    wreckCar(car, byFire) {
+      if (car.wrecked) return;
+      car.wrecked = true;
+      ZONES.forEach(z => car.zones[z] = 0);
+      if (byFire) {
+        this.add.circle(car.body.position.x, car.body.position.y, 30, 0xf97316, 0.5).setDepth(8);
+        SFX.fire();
+      }
+      this.cameras.main.shake(300, 0.01);
+      this.endMatch(car.isAI ? 'win' : 'lose');
+    }
+
+    endMatch(result) {
+      if (this.gameOver) return;
+      this.gameOver = true;
+      this.time.delayedCall(600, () => {
+        if (result === 'win') {
+          persist.streak += 1;
+          persist.totalWins += 1;
+          localStorage.setItem(STREAK_KEY, String(persist.streak));
+          localStorage.setItem(WINS_KEY, String(persist.totalWins));
+          SFX.win();
+        } else {
+          persist.streak = 0;
+          localStorage.setItem(STREAK_KEY, '0');
+          SFX.lose();
+        }
+        streakVal.textContent = persist.streak;
+        streakBox.textContent = 'Streak: ' + persist.streak;
+        document.querySelector('#overlay h1').textContent = result === 'win' ? 'WRECKED \'EM' : 'YOU\'RE SCRAP';
+        document.querySelector('#overlay p').innerHTML = result === 'win'
+          ? 'Win streak: <b style="color:#4ade80">' + persist.streak + '</b>'
+          : 'Final streak: <b style="color:#ef4444">0</b> — back to zero.';
+        buildCarPicker();
+        document.getElementById('startBtn').textContent = 'Drive Again';
+        document.getElementById('overlay').style.display = 'flex';
+      });
+    }
+
+    refreshHud() {
+      renderZoneBar('playerZones', this.player.zones, this.player.maxZoneHP, false);
+      renderZoneBar('enemyZones', this.enemy.zones, this.enemy.maxZoneHP, true);
+    }
+
+    getInputDir() {
+      if (this.touchDir !== null) return this.touchDir;
+      const k = this.keys;
+      let dx = 0, dy = 0;
+      if (k.left.isDown || k.left2.isDown) dx -= 1;
+      if (k.right.isDown || k.right2.isDown) dx += 1;
+      if (k.up.isDown || k.up2.isDown) dy -= 1;
+      if (k.down.isDown || k.down2.isDown) dy += 1;
+      if (dx === 0 && dy === 0) return null;
+      return Math.atan2(dy, dx);
+    }
+
+    driveCar(car, inputDir, delta) {
+      if (car.wrecked) return;
+      const now = this.time.now;
+      const inKnockback = now < car.knockbackUntil;
+
+      if (inputDir !== null) {
+        let diff = inputDir - car.body.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        const maxStep = car.def.turnSpeed * (delta / 16.67);
+        const step = Phaser.Math.Clamp(diff, -maxStep, maxStep);
+        Phaser.Physics.Matter.Matter.Body.setAngle(car.body, car.body.angle + step);
+
+        if (!inKnockback) {
+          const forceMag = car.def.accel * (delta / 16.67);
+          Phaser.Physics.Matter.Matter.Body.applyForce(car.body, car.body.position, {
+            x: Math.cos(car.body.angle) * forceMag,
+            y: Math.sin(car.body.angle) * forceMag
+          });
+        }
+      }
+
+      // clamp top speed
+      const v = car.body.velocity;
+      const sp = Math.sqrt(v.x * v.x + v.y * v.y);
+      if (sp > car.def.maxSpeed) {
+        const sc = car.def.maxSpeed / sp;
+        Phaser.Physics.Matter.Matter.Body.setVelocity(car.body, { x: v.x * sc, y: v.y * sc });
+      }
+    }
+
+    updateAI(delta) {
+      const ai = this.enemy;
+      if (ai.wrecked) return;
+      const p = this.player;
+      const dx = p.body.position.x - ai.body.position.x;
+      const dy = p.body.position.y - ai.body.position.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const dirToPlayer = Math.atan2(dy, dx);
+      let targetDir = dirToPlayer;
+      let wantCharge = false;
+
+      if (this.aiType === 'aggressor') {
+        targetDir = dirToPlayer;
+        wantCharge = dist > 180 && dist < 420;
+        if (dist < 90 && ai.charging) this.releaseCharge(ai);
+      } else if (this.aiType === 'dodger') {
+        ai.aiState.timer -= delta;
+        if (ai.aiState.timer <= 0) {
+          ai.aiState.mode = (ai.aiState.mode === 'flee') ? 'rush' : 'flee';
+          ai.aiState.timer = ai.aiState.mode === 'rush' ? 700 : 1400;
+        }
+        if (ai.aiState.mode === 'flee' && dist < 220) {
+          targetDir = dirToPlayer + Math.PI;
+        } else {
+          targetDir = dirToPlayer;
+          wantCharge = dist > 150;
+          if (dist < 100 && ai.charging) this.releaseCharge(ai);
+        }
+      } else { // baiter
+        const fp = this.firePits.reduce((best, f) => {
+          const dd = Math.hypot(p.body.position.x - f.x, p.body.position.y - f.y);
+          return (!best || dd < best.dd) ? { f, dd } : best;
+        }, null).f;
+        // flank: aim for the point opposite the firepit relative to player
+        const awayAngle = Math.atan2(p.body.position.y - fp.y, p.body.position.x - fp.x);
+        const flankX = p.body.position.x + Math.cos(awayAngle) * 130;
+        const flankY = p.body.position.y + Math.sin(awayAngle) * 130;
+        const distFlank = Math.hypot(flankX - ai.body.position.x, flankY - ai.body.position.y);
+        if (distFlank > 60) {
+          targetDir = Math.atan2(flankY - ai.body.position.y, flankX - ai.body.position.x);
+        } else {
+          targetDir = dirToPlayer;
+          wantCharge = dist < 260;
+          if (dist < 110 && ai.charging) this.releaseCharge(ai);
+        }
+      }
+
+      if (wantCharge && !ai.charging && !(ai.charged && this.time.now < ai.chargedUntil)) {
+        this.beginCharge(ai);
+      } else if (!wantCharge && ai.charging) {
+        this.releaseCharge(ai);
+      }
+
+      this.driveCar(ai, ai.charging ? null : targetDir, delta);
+    }
+
+    update(time, delta) {
+      if (this.gameOver) return;
+
+      // charging
+      [this.player, this.enemy].forEach(car => {
+        if (car.charging && car.momentum < 100) {
+          car.momentum = Math.min(100, car.momentum + delta * 0.09);
+        }
+      });
+      if (this.player.charging && Math.floor(time / 180) !== Math.floor((time - delta) / 180)) SFX.chargeUp();
+
+      const inputDir = this.player.charging ? null : this.getInputDir();
+      if (this.keys.charge.isDown && !this.player.charging) this.beginCharge(this.player);
+      if (!this.keys.charge.isDown && this.player.charging) this.releaseCharge(this.player);
+
+      this.driveCar(this.player, this.player.charging ? null : inputDir, delta);
+      this.updateAI(delta);
+
+      // sync graphics
+      [this.player, this.enemy].forEach(car => {
+        if (car.wrecked) { car.gfx.setVisible(false); car.nose.setVisible(false); return; }
+        car.gfx.setPosition(car.body.position.x, car.body.position.y);
+        car.gfx.setRotation(car.body.angle);
+        const noseX = car.body.position.x + Math.cos(car.body.angle) * 17;
+        const noseY = car.body.position.y + Math.sin(car.body.angle) * 17;
+        car.nose.setPosition(noseX, noseY);
+        car.nose.setRotation(car.body.angle + Math.PI / 2);
+      });
+      this.wreckage.forEach(d => { if (d.gfxRef) { d.gfxRef.setPosition(d.position.x, d.position.y); d.gfxRef.setRotation(d.angle); } });
+
+      // momentum UI (player only)
+      document.getElementById('momentumBarInner').style.width = this.player.momentum + '%';
+      const flag = document.getElementById('chargedFlag');
+      flag.style.visibility = (this.player.charged && time < this.player.chargedUntil) ? 'visible' : 'hidden';
+      if (this.player.charged && time >= this.player.chargedUntil) this.player.charged = false;
+      if (this.enemy.charged && time >= this.enemy.chargedUntil) this.enemy.charged = false;
+    }
+  }
+
+  const config = {
+    type: Phaser.AUTO,
+    width: W, height: H,
+    parent: 'game-container',
+    backgroundColor: '#121018',
+    physics: { default: 'matter', matter: { gravity: { y: 0 }, debug: false } },
+    scene: [ArenaScene],
+    scale: { mode: Phaser.Scale.NONE }
+  };
+
+  function sizeCanvas() {
+    const container = document.getElementById('game-container');
+    const maxW = window.innerWidth, maxH = window.innerHeight;
+    const scale = Math.min(maxW / W, maxH / H, 1.1);
+    container.style.width = (W * scale) + 'px';
+    container.style.height = (H * scale) + 'px';
+    const canvas = container.querySelector('canvas');
+    if (canvas) { canvas.style.width = (W * scale) + 'px'; canvas.style.height = (H * scale) + 'px'; }
+  }
+  window.addEventListener('resize', sizeCanvas);
+
+  let game = null;
+  document.getElementById('startBtn').addEventListener('click', () => {
+    document.getElementById('overlay').style.display = 'none';
+    if (game) { game.destroy(true); game = null; }
+    game = new Phaser.Game(config);
+    setTimeout(sizeCanvas, 50);
+  });
+})();
+</script>
+</body>
+</html>
