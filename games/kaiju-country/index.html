@@ -1462,12 +1462,28 @@ float fl_ = step(fract(aSeed.y * 5.31 + aSeed.x * 2.17), 0.04); vec3 fc_ = hv_ <
   };
   const gmesh = new T.Mesh(ig, gm); gmesh.frustumCulled = false; gmesh.receiveShadow = true; gmesh.userData.noReal = true; scene.add(gmesh); window.__grass = gmesh;
 }
+
+// ---- drowning feedback: sinking view, blue vignette, red pulse, bubbles, flailing viewmodel ----
+const uwEl = document.createElement('div'); uwEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:7;opacity:0;background:radial-gradient(ellipse at center, rgba(10,70,110,.05) 25%, rgba(2,22,48,.88) 100%)';
+const drEl = document.createElement('div'); drEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:7;opacity:0;box-shadow:inset 0 0 180px 50px rgba(220,10,10,.85)';
+const tintEl = document.createElement('div'); tintEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:7;opacity:0;background:rgba(20,90,130,.38)';
+document.body.appendChild(tintEl); document.body.appendChild(uwEl); document.body.appendChild(drEl);
+let _bubT = 0;
+function drownFx(dt) {
+  const air = P.air === undefined ? 100 : P.air, inW = !P.dead && P.y < -0.5, k = inW ? Math.max(0, Math.min(1, (45 - air) / 45)) : 0, under = inW && camera.position.y < 0.15;
+  uwEl.style.opacity = k * 0.95; drEl.style.opacity = (inW && air <= 0) ? 0.35 + 0.35 * Math.sin(gt * 6) : 0; tintEl.style.opacity = under ? 1 : 0;
+  if (k <= 0) return;
+  camera.position.y -= k * k * P.eye * 0.4; camera.rotation.z += Math.sin(gt * 2.4) * 0.07 * k; camera.rotation.x += Math.sin(gt * 1.7) * 0.04 * k;
+  HAR.rotation.z = Math.sin(gt * 7) * 0.12 * k; HAR.position.y += Math.sin(gt * 11) * 0.03 * k - 0.05 * k; HAR.position.x = Math.sin(gt * 5) * 0.03 * k; GUN.position.y += Math.sin(gt * 9 + 1) * 0.03 * k; GUN.rotation.z = Math.sin(gt * 6) * 0.08 * k;
+  _bubT -= dt; if (_bubT <= 0 && k > 0.15) { _bubT = 0.18 - 0.1 * k; const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw); burst(camera.position.x + fx * 0.7 + (RND() - 0.5) * 0.5, camera.position.y - 0.35, camera.position.z + fz * 0.7 + (RND() - 0.5) * 0.5, 2, 0xd8f4ff, 0.5, 0.05, 1.4, -1.2); }
+}
 function updateRealism(dt) {
   const c = camera.position; grassU.uPl.value.set(c.x, 0, c.z); grassU.uT.value = gt; grassU.uGS.value = 1 + P.stage * 0.55;
   { const b = biomeAt(c.x, c.z), k = Math.min(1, dt * 4); grassU.uFor.value += ((b === 'forest' ? 1 : 0) - grassU.uFor.value) * k; grassU.uDes.value += ((b === 'desert' ? 1 : 0) - grassU.uDes.value) * k;
     const dk = grassU.uDes.value; if (dk > 0.01) { const dust = _dust; scene.fog.color.lerp(dust, dk * 0.5); skyU.horC.value.lerp(dust, dk * 0.35); scene.fog.far *= (1 - 0.3 * dk); scene.fog.near *= (1 - 0.4 * dk); }
     const fk = grassU.uFor.value; if (fk > 0.01) { scene.fog.color.multiplyScalar(1 - 0.12 * fk); scene.fog.far *= (1 - 0.25 * fk); scene.fog.near *= (1 - 0.3 * fk); }
     if (window.__dustP) { const dp = window.__dustP, pa = dp.geometry.attributes.position, w = 3.5 + 2 * Math.sin(gt * 0.3); dp.material.opacity = dk * 0.22; dp.visible = dk > 0.02; if (dp.visible) { for (let i = 0; i < pa.count; i++) { let x = pa.getX(i) + w * dt * (0.6 + (i % 7) * 0.12), z = pa.getZ(i) + w * dt * 0.25, y = pa.getY(i); if (x - c.x > 45) x -= 90; else if (x - c.x < -45) x += 90; if (z - c.z > 45) z -= 90; else if (z - c.z < -45) z += 90; const gy = heightAt(x, z); if (y < gy + 0.2 || y > gy + 5) y = gy + 0.4 + ((i * 37) % 40) / 10; pa.setXYZ(i, x, y, z); } pa.needsUpdate = true; } } }
+  drownFx(dt);
   const far = scene.fog.far + 450; for (const m of window.__treeChunks) m.visible = Math.hypot(m.userData.cx - c.x, m.userData.cz - c.z) < far;
 }
 
@@ -1684,6 +1700,7 @@ window.__gu = grassU; const _dust = new T.Color(0xc89a6a).convertSRGBToLinear();
 if (window.__env) { carMat.envMap = window.__env; carMat.envMapIntensity = 1.15; carMat.needsUpdate = true; }
 
 // ---------------- player update ----------------
+const airEl = document.createElement('div'); airEl.style.cssText = 'position:fixed;left:18px;bottom:56px;width:200px;height:7px;background:rgba(0,0,0,.5);z-index:5;pointer-events:none;border:1px solid #9cf4'; const airIn = document.createElement('div'); airIn.style.cssText = 'height:100%;width:100%;background:#4aa8ff'; airEl.appendChild(airIn); document.body.appendChild(airEl); airEl.style.opacity = 0;
 const stamEl = document.createElement('div'); stamEl.style.cssText = 'position:fixed;left:18px;bottom:46px;width:200px;height:5px;background:rgba(0,0,0,.45);z-index:5;pointer-events:none;transition:opacity .3s'; const stamIn = document.createElement('div'); stamIn.style.cssText = 'height:100%;background:#9fd8ff;width:100%'; stamEl.appendChild(stamIn); document.body.appendChild(stamEl);
 function updatePlayer(dt) {
   if (P.dead) { deathT += dt; camera.position.y = Math.max(camera.position.y - dt * 2, P.y + 0.4); camera.rotation.z = Math.min(0.9, deathT * 0.8); return; }
@@ -1697,20 +1714,24 @@ function updatePlayer(dt) {
     let f = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0), s = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
     const m = Math.hypot(f, s); if (m > 0) { f /= m; s /= m; }
     const wantC = !!(keys['KeyC'] || keys['ControlLeft']), cEdge = wantC && !P.cPrev; P.cPrev = wantC;
-    P.sprint = !!keys['ShiftLeft'] && f > 0 && P.ads < 0.3 && P.reloadT <= 0 && P.crouch < 0.3 && P.stam > 5 && P.slideT <= 0;
+    P.sprint = !!keys['ShiftLeft'] && heightAt(P.x, P.z) > -0.7 && f > 0 && P.ads < 0.3 && P.reloadT <= 0 && P.crouch < 0.3 && P.stam > 5 && P.slideT <= 0;
     if (cEdge && P.sprint && P.onGround && P.moveV > 6) { P.slideT = 0.8; const vm = Math.hypot(P.vx, P.vz) || 1; P.sdx = P.vx / vm; P.sdz = P.vz / vm; }
     P.crouch += (((wantC || P.slideT > 0) ? 1 : 0) - P.crouch) * Math.min(1, dt * 10);
-    if (P.sprint && m > 0) { P.stam = Math.max(0, P.stam - 22 * dt); P.stamT = 0.9; } else { P.stamT -= dt; if (P.stamT <= 0) P.stam = Math.min(100, P.stam + 20 * dt); } const wet = heightAt(P.x, P.z) < 0.5 && P.onGround;
-    const sp = SPD[P.stage] * (P.sprint ? 9 : 5.55) * (P.ads > 0.5 ? 0.6 : 1) * (wet ? 0.6 : 1) * (1 - P.crouch * 0.45);
+    if (P.sprint && m > 0) { P.stam = Math.max(0, P.stam - 22 * dt); P.stamT = 0.9; } else { P.stamT -= dt; if (P.stamT <= 0) P.stam = Math.min(100, P.stam + 20 * dt); } const wet = heightAt(P.x, P.z) < 0.5 && P.onGround, swim = heightAt(P.x, P.z) < -0.7;
+    const sp = SPD[P.stage] * (P.sprint ? 9 : 5.55) * (P.ads > 0.5 ? 0.6 : 1) * (wet ? 0.6 : 1) * (swim ? 0.75 : 1) * (1 - P.crouch * 0.45);
     const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
     let tvx = (fx * f + rx * s) * sp, tvz = (fz * f + rz * s) * sp; if (P.slideT > 0) { P.slideT -= dt; const k = 0.35 + 0.65 * Math.max(0, P.slideT) / 0.8; tvx = P.sdx * 11 * k; tvz = P.sdz * 11 * k; } P.vx = (P.vx || 0) + (tvx - (P.vx || 0)) * Math.min(1, dt * (P.onGround ? 12 : 3)); P.vz = (P.vz || 0) + (tvz - (P.vz || 0)) * Math.min(1, dt * (P.onGround ? 12 : 3));
     const ox = P.x, oz = P.z; P.x += P.vx * dt; P.z += P.vz * dt; P.hitWall = false; resolveCircle(P, RAD[P.stage], P.y);
-    if (heightAt(P.x, P.z) < -2.4) { P.x = ox; P.z = oz; }
     P.x = clamp(P.x, -HALF + 20, HALF - 20); P.z = clamp(P.z, -HALF + 20, HALF - 20);
     P.moveV = Math.hypot(P.vx, P.vz);
     const g = groundAt(P.x, P.z, P.y + STEP[P.stage] - 0.35); P.vy -= 22 * dt; P.y += P.vy * dt;
     if (P.y <= g) { P.y = g; P.vy = 0; P.onGround = true; } else if (P.y - g > 0.08) P.onGround = false;
-    if (keys['Space'] && P.onGround) { P.vy = 7.2 + P.stage * 1.0; P.onGround = false; }
+    if (swim && g < -0.7) { P.y = -P.eye * 0.6 + Math.sin(gt * 2.2) * 0.06; P.vy = 0; P.onGround = true; }
+    { if (P.air === undefined) { P.air = 100; P.drownT = 0; } const deep = !P.dead && heightAt(P.x, P.z) < -2.4, tmax = 18 + P.stage * 8;
+      if (deep) { P.air = Math.max(0, P.air - 100 / tmax * dt); if (P.air < 30 && !P.airWarn) { P.airWarn = true; showMsg('OUT OF BREATH - SWIM BACK TO SHORE', 3); } } else { P.air = Math.min(100, P.air + 70 * dt); if (P.air > 60) P.airWarn = false; }
+      if (P.air <= 0 && deep) { P.drownT += dt; if (P.drownT >= 0.6) { P.drownT = 0; hurtPlayer(9); } } else P.drownT = 0;
+      airIn.style.width = P.air + '%'; airEl.style.opacity = P.air >= 99 ? 0 : 1; }
+    if (keys['Space'] && P.onGround && !swim) { P.vy = 7.2 + P.stage * 1.0; P.onGround = false; }
     if (P.onGround && P.moveV > 1) { const prev = P.bob; P.bob += dt * (P.sprint ? 13 : 9); if (Math.floor(prev / Math.PI) !== Math.floor(P.bob / Math.PI)) { } }
     camera.position.set(P.x, P.y + P.eye - P.crouch * P.eye * 0.25 + (P.onGround ? Math.sin(P.bob * 2) * 0.03 * (1 + P.stage) * Math.min(1, P.moveV / 5) : 0), P.z);
   }
