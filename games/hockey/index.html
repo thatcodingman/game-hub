@@ -1524,19 +1524,33 @@ function animatePlayer(p, dt) {
   const twT = Math.sin(A.phase) * 0.14 * A.amp + side * ch * 0.45 - side * 0.4 * A.chk;
   A.twist += (twT - A.twist) * k(14);
 
-  // legs
+  // legs: real skating stroke = push (diagonal back + out, knee extends, toe turns out) -> lift + recover forward under the body
+  if (G.freezePhase !== undefined) A.phase = G.freezePhase;
   const crouch = 0.15 + (car ? 0.2 : 0.12) + A.stop * 0.5 + A.chk * 0.3;
+  const sstep = x => x * x * (3 - 2 * x);
   let need = 0;
   for (let i = 0; i < 2; i++) {
-    const lg = u.legs[i], s = Math.sin(A.phase + (i ? Math.PI : 0)), push = s > 0;
-    let a1 = 0.38 + crouch * 0.35 + A.amp * (push ? -0.55 * s : -0.6 * s);
-    let a2 = -(0.75 + crouch * 0.5) + A.amp * (push ? 0.6 * s : 1.0 * s);
-    let spl = 0.05 + A.amp * (push ? 0.45 * s : 0.1 * s) + A.stop * 0.38;
-    a1 += A.fall * 0.95; a2 += A.fall * 0.15; spl += A.fall * (0.3 + 0.12 * lg.sd);
-    lg.th.rotation.set(-lg.sd * spl, 0, a1); lg.sh.rotation.z = a2; lg.bt.rotation.set(lg.sd * spl * 0.9, 0, -(a1 + a2) * 0.8);
+    const lg = u.legs[i];
+    let uu = A.phase / 6.2832 + i * 0.5; uu -= Math.floor(uu);
+    // glide posture (bent support leg, flat blade)
+    const g1 = 0.4 + crouch * 0.3, g2 = -(0.95 + crouch * 0.4), gs = 0.07;
+    let c1, c2, cs, cy;
+    if (uu < 0.5) {            // PUSH
+      const t = uu / 0.5, e = 1 - (1 - t) * (1 - t);
+      c1 = lerp(0.3, -0.55, e); c2 = lerp(-1.1, -0.2, e); cs = lerp(0.08, 0.34, Math.sin(t * 1.5708)); cy = 0.5 * Math.sin(t * 1.5708);
+    } else {                   // LIFT + RECOVER
+      const r = (uu - 0.5) / 0.5, sm = sstep(r);
+      c1 = lerp(-0.55, 0.3, sm); c2 = lerp(-0.2, -1.1, sm) - 0.85 * Math.sin(r * 3.1416); cs = lerp(0.34, 0.08, sm); cy = 0.5 * (1 - sm);
+    }
+    c1 += crouch * 0.3; c2 -= crouch * 0.35;
+    let a1 = lerp(g1, c1, A.amp), a2 = lerp(g2, c2, A.amp), spl = lerp(gs, cs, A.amp), yaw = cy * A.amp;
+    spl += A.stop * 0.38; yaw += A.stop * 0.5;
+    a1 += A.fall * 0.95; a2 += A.fall * 0.15; spl += A.fall * (0.3 + 0.12 * lg.sd); yaw *= 1 - A.fall;
+    lg.th.rotation.set(-lg.sd * spl, 0, a1); lg.sh.rotation.z = a2;
+    lg.bt.rotation.set(lg.sd * spl * 0.9, -lg.sd * yaw, -(a1 + a2) * 0.8);
     need = Math.max(need, (0.75 * Math.cos(a1) + 0.75 * Math.cos(a1 + a2)) * Math.cos(spl) + 0.45);
   }
-  hip.position.set(0, need + 0.2, Math.sin(A.phase) * 0.05 * A.amp);
+  hip.position.set(0, need + 0.2, Math.sin(A.phase) * 0.09 * A.amp);   // weight shifts over the gliding leg
   torso.rotation.set(A.roll, A.twist, -A.pitch);
   u.head.rotation.set(-A.roll * 0.5, -A.twist * 0.5, A.pitch * 0.85);
   hip.updateMatrix(); torso.updateMatrix();
