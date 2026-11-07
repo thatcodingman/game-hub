@@ -41,7 +41,7 @@
   #ctrl.big{bottom:50%;transform:translate(-50%,50%) scale(1.25);padding:14px 18px}
   #hint{position:fixed;left:18px;bottom:14px;font-size:11px;color:#8fa0c8;letter-spacing:.06em;display:none;line-height:1.5;font-weight:600}
   #comm{position:fixed;left:50%;top:108px;transform:translate(-50%,-8px);max-width:min(80vw,640px);display:flex;align-items:center;gap:8px;padding:4px 12px 4px 9px;background:rgba(8,12,24,.82);border-left:3px solid #5aa9ff;border-radius:2px;font-size:11px;font-weight:600;letter-spacing:.02em;opacity:0;pointer-events:none;transition:opacity .22s,transform .22s}
-  #comm.on{opacity:1;transform:translate(-50%,0)}#comm.warm{border-left-color:#ffb020}#comm.hot{border-left-color:#ff4d4d;font-weight:800}
+  #comm.on{opacity:1;transform:translate(-50%,0)}#comm.an{border-left-color:#4ade80}#comm.warm{border-left-color:#ffb020}#comm.hot{border-left-color:#ff4d4d;font-weight:800}
   #comm.cs1{font-size:13px}#comm.cs2{font-size:16px}
   #comm .mic{font-size:8px;font-weight:900;letter-spacing:.16em;color:#9fb4d6}
   .row.cp{padding:6px 18px;margin:3px 0;font-size:14px}.row.cp .l{font-size:11px}.panel.wide{min-width:min(560px,94vw)}
@@ -1010,20 +1010,20 @@ function makePlayerMesh(c1,c2,gk,num,o){
 const GD=Math.PI/180;
 const GT={ /* 12 samples per cycle, c=0 is initial contact. degrees. hip +flex, knee flex, arm + forward, elbow flex */
  walk:{v:1.5,duty:.62,lean:3,pel:5,tor:7,fl:0,
-  hip:[30,24,14,5,-3,-10,-16,-14,2,20,30,32],
-  knee:[6,16,22,14,8,14,38,58,66,42,16,6],
+  hip:[25,20,12,4,-3,-10,-16,-14,0,14,22,26],
+  knee:[10,18,22,14,8,14,38,58,66,46,22,12],
   arm:[-14,-20,-14,-4,6,14,20,14,4,-6,-12,-14].map(x=>x*1.5),
   elb:[20,18,16,16,18,22,28,32,34,32,26,22],
   W:{h:20,p:-30}},
  jog:{v:4.5,duty:.35,lean:9,pel:8,tor:13,fl:.025,
-  hip:[48,30,10,-10,-22,-12,12,36,54,62,62,56],
-  knee:[12,24,24,20,26,64,98,108,92,64,34,16],
+  hip:[34,22,6,-10,-20,-10,10,30,42,48,48,42],
+  knee:[22,28,26,22,26,64,98,108,94,70,46,30],
   arm:[-16,-30,-36,-26,-6,14,28,32,26,12,-4,-12],
   elb:[84,82,78,80,84,88,90,88,86,85,85,85],
   W:{h:12,p:-50}},
  sprint:{v:8.5,duty:.22,lean:21,pel:11,tor:17,fl:.06,
-  hip:[50,26,-2,-22,-26,-8,26,52,70,80,76,62],
-  knee:[14,26,20,42,90,120,134,122,100,74,46,22],
+  hip:[38,20,-2,-18,-24,-6,20,42,54,60,58,48],
+  knee:[26,32,26,42,90,120,134,124,104,82,58,36],
   arm:[-42,-58,-52,-24,8,28,40,42,36,20,-2,-30],
   elb:[95,90,86,86,90,92,88,86,84,88,92,94],
   W:{h:14,p:-55}}
@@ -1095,8 +1095,11 @@ function animPlayer(p,dt){
   const ac=(sp-u.pv)/Math.max(dt,.001);u.pv=sp;u.ac+=(clamp(ac,-14,14)-u.ac)*Math.min(1,dt*6);
   const tr=angDiff(u.pf,p.face)/Math.max(dt,.001);u.pf=p.face;u.tr+=(clamp(tr,-9,9)-u.tr)*Math.min(1,dt*7);
   GX=clamp(Math.sqrt(Math.max(8.5,u.vs)/8.5),1,1.1);
+  if(u.gv===undefined){const h1=((p.team*13+p.idx*7+3)%11)/10,h2=((p.team*5+p.idx*3+1)%7)/6,h3=((p.team*3+p.idx*5+2)%9)/8;u.gv={ca:.95+h1*.1,ln:(h2-.5)*.05,ar:.88+h3*.24,ph:h1*6.28,bn:.8+h2*.4};}
+  const GV=u.gv;
   const gw=gmix(Math.max(.3,u.vs)),fc=gaitCadence(Math.max(.3,u.vs),gw);
-  if(g>.02)u.ph=(u.ph+dt*fc)%1;
+  const carry0=ball.owner===p&&!p.gk;
+  if(g>.02)u.ph=(u.ph+dt*fc*GV.ca*(carry0?1.06:1))%1;
   const cL=u.ph,cR=(u.ph+.5)%1;
   const lgL=gaitLeg(cL,gw),lgR=gaitLeg(cR,gw),agL=gaitArm(cL,gw),agR=gaitArm(cR,gw);
   const idleTh=.05,idleK=.1,lerp=(a,b,t)=>a+(b-a)*t;
@@ -1106,11 +1109,12 @@ function animPlayer(p,dt){
     fL:lerp(0,lgL.ft,g),fR:lerp(0,lgR.ft,g),
     aL:lerp(.04,agL.sh,g),aR:lerp(.04,agR.sh,g),
     eL:lerp(.35,agL.el,g),eR:lerp(.35,agR.el,g),abL:.07+.1*stride,abR:.07+.1*stride,
-    lean:(leanG*GD+clamp(u.ac*.02,-.18,.24)*(sp>1?1:0))*g,
+    lean:(leanG*GD+GV.ln+clamp(u.ac*.028,-.2,.3)*(sp>1?1:0))*g,
     twist:Math.sin(ph2)*torG*GD*g,pelvis:-Math.sin(ph2)*pelG*GD*g,
     sway:0,hipsY:null,bodyX:0,bodyZ:0,lift:0,breath:Math.sin(u.t*2.2+p.idx)*.012,
     flight:flG*(1-Math.max(lgL.ws,lgR.ws))*g,
-    roll:clamp(u.tr*.05*stride,-.38,.38)+Math.sin(ph2+1.2)*.05*stride*g,sx:Math.sin(ph2)*.025*stride*g};
+    roll:clamp(u.tr*.07*stride,-.45,.45)+Math.sin(ph2+1.2)*.075*stride*g*GV.bn,sx:Math.sin(ph2)*.03*stride*g*GV.bn};
+  A.aL*=GV.ar;A.aR*=GV.ar;
   if(sp<.35&&!p.gk){A.sway=Math.sin(u.t*1.3+p.idx)*.03;A.eL=A.eR=.35;A.fL=A.fR=0;}
   const carrying=ball.owner===p,throwIn=S.mode==='setpiece'&&S.sp&&S.sp.taker===p&&S.sp.type==='throw';
   if(p.gk&&p.diveT<=0&&st==='idle'){
@@ -1156,6 +1160,16 @@ function animPlayer(p,dt){
   const leg=(R,th,kn,ft)=>{if(R){A.tR=th;A.kR=kn;if(ft!==undefined){A.fR=ft;fixR=true;}}else{A.tL=th;A.kL=kn;if(ft!==undefined){A.fL=ft;fixL=true;}}};
   const legT=R=>R?A.tR:A.tL,legK=R=>R?A.kR:A.kL;
   if(carrying&&p.cc&&!skm){A.abL+=.3;A.abR+=.3;A.lean+=.14*g;A.kL+=.1*g;A.kR+=.1*g;}
+  let osc=0,dip=0;
+  if(!skm&&!aem&&!trm&&st==='idle'&&!p.gk){
+    osc=Math.sin(ph2*2+.6+GV.ph)*.028*stride*g;A.lean+=osc;                              /* torso pitches with each footfall */
+    const brk=clamp(-u.ac/11,0,1)*(sp>2.5?1:0)*g;                                        /* braking: sit back, bend knees, arms out */
+    A.lean-=.13*brk;A.kL+=.28*brk;A.kR+=.28*brk;A.abL+=.35*brk;A.abR+=.35*brk;A.tL-=.12*brk;A.tR-=.12*brk;
+    if(carrying){                                                                         /* dribbling: over the ball, arms low for balance, glances at it */
+      A.lean+=.07*g;A.abL+=.2*g;A.abR+=.2*g;A.aL*=.78;A.aR*=.78;A.eL+=.12*g;A.eR+=.12*g;
+      dip=g*(.16+.1*Math.sin(ph2*2-1));
+    }
+  }
   if(trm&&!skm&&!aem&&!p.gk){
     const s=trm.t/trm.dur,w=s<.22?ez_(s/.22):Math.max(0,1-(s-.22)/.6),R=trm.lat>=0;poseOn=w>.03;
     if(trm.k==='foot'){leg(R,mx_(legT(R),.8,w),mx_(legK(R),.5,w),-.4*w);leg(!R,mx_(legT(!R),.05,w),legK(!R)+.3*w);A.lean+=.1*w;A.abL+=.4*w;A.abR+=.4*w;}
@@ -1231,7 +1245,7 @@ function animPlayer(p,dt){
   J.uaL.rotation.z=A.aL;J.uaL.rotation.x=A.abL;J.faL.rotation.z=A.eL;
   J.uaR.rotation.z=A.aR;J.uaR.rotation.x=-A.abR;J.faR.rotation.z=A.eR;
   const la=clamp(angDiff(p.face,Math.atan2(ball.z-p.z,ball.x-p.x)),-1.1,1.1);
-  J.head.rotation.y+=(-la*(lie>0?0:1)-J.head.rotation.y)*Math.min(1,dt*10);J.head.rotation.z=A.lean*.55;
+  J.head.rotation.y+=(-la*(lie>0?0:1)-J.head.rotation.y)*Math.min(1,dt*10);J.head.rotation.z=(A.lean-osc*1.1)*.55+dip;
 }
 /* ---------- camera ---------- */
 function updateCamera(dt){
@@ -1360,7 +1374,7 @@ function carryBall(dt){
   else if(p.sk&&p.sk.type!=='rain'&&p.sk.type!=='knock'){const o=skBall(p.sk);dist=o.dist;lat=o.lat;}
   else{
     /* touches are locked to the stride: the ball is struck as the foot reaches forward, then the carrier catches up */
-    const close=p.cc,base=close?.44:.6,amp=(close?.34:.62)*clamp((sp-.8)/4.5,.2,1);
+    const close=p.cc,base=close?.44:.6,amp=(close?.34:.56)*clamp((sp-.8)/4.5,.2,1);
     const ph=sync?(u.ph-touchPhase0()):p.touchPh*.5;
     const q=((ph*2)%1+1)%1;
     const e=q<.2?Math.sin(q/.2*Math.PI/2):Math.pow(1-(q-.2)/.8,1.5);
@@ -2012,48 +2026,71 @@ const OPT=(()=>{const o={cap:1,voice:1,vvol:.9,cvol:1,master:1,sfx:1,cf:1,csize:
 function saveOpt(){try{localStorage.setItem('md_opt',JSON.stringify(OPT));}catch(e){}}
 const CF=()=>[2.2,1,.6][OPT.cf]||1;
 const CM={q:[],speaking:false,curPri:0,recent:{},cool:{},quietT:0,fillT:rnd(24,34),passTeam:-1,passN:0,shot:null,capT:0,duck:1,goals:[0,0],uttr:null,voice:null};
-/* ----- voice ----- */
-function pickVoice(){
-  try{const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));if(!vs.length)return null;
-    const pref=[/Google UK English Male/i,/Daniel/i,/Microsoft (Guy|Ryan|Mark)/i,/Alex/i,/Fred/i,/Google US English/i,/Male/i];
-    for(const r of pref){const v=vs.find(v=>r.test(v.name));if(v)return v;}
-    return vs.find(v=>/GB/i.test(v.lang))||vs[0];}catch(e){return null;}
+/* ----- voices: two commentators (play-by-play + analyst) ----- */
+const CAST=[{n:'HALE',role:'play'},{n:'REYES',role:'analyst'}];
+function pickVoices(){
+  try{const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));if(!vs.length)return[null,null];
+    const pick=(prefs,ex)=>{for(const r of prefs){const v=vs.find(v=>r.test(v.name)&&v!==ex);if(v)return v;}return null;};
+    const a=pick([/Google UK English Male/i,/Daniel/i,/Microsoft (Guy|Ryan|Mark)/i,/Alex/i,/Fred/i,/Google US English/i,/Male/i])||vs.find(v=>/GB/i.test(v.lang))||vs[0];
+    const b=pick([/Google UK English Female/i,/Samantha/i,/Karen/i,/Microsoft (Aria|Jenny|Zira|Sonia)/i,/Female/i,/Google US English/i,/Alex/i,/Fred/i,/Daniel/i],a)||vs.find(v=>v!==a&&v.lang!==a.lang)||vs.find(v=>v!==a)||a;
+    return[a,b];}catch(e){return[null,null];}
 }
 const CAN_TALK=typeof speechSynthesis!=='undefined'&&typeof SpeechSynthesisUtterance!=='undefined';
-if(CAN_TALK){try{speechSynthesis.onvoiceschanged=()=>{CM.voice=pickVoice();};CM.voice=pickVoice();}catch(e){}}
-function speakNow(text,pri,exc){
-  if(!CAN_TALK||!OPT.voice)return;
+if(CAN_TALK){try{speechSynthesis.onvoiceschanged=()=>{CM.voices=pickVoices();};CM.voices=pickVoices();}catch(e){}}
+CM.voices=CM.voices||[null,null];CM.cur=null;
+function speakNow(text,pri,exc,who,done){
+  if(!CAN_TALK||!OPT.voice){if(done)done();return;}
+  who=who||0;
   try{
     const u=new SpeechSynthesisUtterance(text.replace(/&prime;/g,''));
-    if(!CM.voice)CM.voice=pickVoice();if(CM.voice)u.voice=CM.voice;u.lang=(CM.voice&&CM.voice.lang)||'en-GB';
-    u.rate=clamp(1.02+exc*.16,.95,1.3);u.pitch=clamp(.95+exc*.22,.8,1.4);u.volume=clamp(OPT.vvol,0,1);
-    u.onstart=()=>{CM.speaking=true;CM.curPri=pri;};
-    const done=()=>{if(CM.uttr!==u)return;CM.speaking=false;CM.curPri=0;const now=performance.now();while(CM.q.length&&now-CM.q[0].t>4500)CM.q.shift();const n=CM.q.shift();if(n)speakNow(n.text,n.pri,n.exc);};
-    u.onend=done;u.onerror=done;CM.uttr=u;CM.speaking=true;CM.curPri=pri;
+    if(!CM.voices[0])CM.voices=pickVoices();const v=CM.voices[who];if(v)u.voice=v;u.lang=(v&&v.lang)||'en-GB';
+    const same=CM.voices[0]===CM.voices[1];
+    if(who===0){u.rate=clamp(1.04+exc*.16,.95,1.3);u.pitch=clamp(.95+exc*.22,.8,1.4);}
+    else{u.rate=clamp(.94+exc*.1,.85,1.15);u.pitch=clamp((same?.7:.92)+exc*.12,.5,1.3);}
+    u.volume=clamp(OPT.vvol,0,1);
+    const fin=()=>{if(CM.uttr!==u)return;CM.uttr=null;if(done)done();};
+    u.onend=fin;u.onerror=fin;CM.uttr=u;
     speechSynthesis.speak(u);
-  }catch(e){CM.speaking=false;}
+  }catch(e){CM.uttr=null;if(done)done();}
 }
-function speak(text,pri,exc){
-  if(!CAN_TALK||!OPT.voice)return;
-  if(CM.speaking){
-    if(pri>CM.curPri){CM.q.length=0;try{speechSynthesis.cancel();}catch(e){}CM.speaking=false;speakNow(text,pri,exc);}
-    else if(CM.q.length<1)CM.q.push({text,pri,exc,t:performance.now()});
-    return;
-  }
-  speakNow(text,pri,exc);
-}
+function cancelSpeech(){CM.uttr=null;if(CAN_TALK){try{speechSynthesis.cancel();}catch(e){}}}
+function cancelAll(){CM.q.length=0;CM.cur=null;CM.speaking=false;cancelSpeech();const c=$('comm');if(c)c.className='';CM.capT=0;}
 /* ----- captions ----- */
-function caption(text,exc){
+function caption(text,exc,who){
   const c=$('comm');if(!c)return;
   c.querySelector('.tx').textContent=text.replace(/&prime;/g,'′');
-  c.className='on cs'+OPT.csize+(exc>=.85?' hot':exc>=.6?' warm':'');
+  const m=c.querySelector('.mic');if(m)m.textContent=CAST[who||0].n;
+  c.className='on cs'+OPT.csize+(who?' an':'')+(exc>=.85?' hot':exc>=.6?' warm':'');
   CM.capT=clamp(1.8+text.length*.055,2.4,6);
 }
-function say(text,pri,exc){
+/* ----- speech queue ----- */
+function playItem(it){
+  CM.cur=it;CM.speaking=true;it.start=performance.now();
+  const dur=clamp(1.8+it.text.length*.055,2.4,6);it.wd=dur+5;
+  if(OPT.cap)caption(it.text,it.exc,it.who);
+  if(CAN_TALK&&OPT.voice)speakNow(it.text,it.pri,it.exc,it.who,()=>nextItem());
+  else it.timer=dur;
+}
+function nextItem(){
+  CM.cur=null;CM.speaking=false;const now=performance.now();
+  while(CM.q.length&&now-CM.q[0].t>(CM.q[0].follow?9000:4500))CM.q.shift();
+  const n=CM.q.shift();if(n)playItem(n);
+}
+function enqueue(it){
+  if(!OPT.cap&&!(CAN_TALK&&OPT.voice))return;
+  it.t=performance.now();
+  if(CM.cur){
+    if(it.pri>CM.cur.pri&&!it.follow){CM.q.length=0;cancelSpeech();playItem(it);return;}
+    if(it.follow){if(CM.q.length<2)CM.q.push(it);}
+    else if(CM.q.length<1)CM.q.push(it);
+    return;
+  }
+  playItem(it);
+}
+function speak(text,pri,exc,who,follow){enqueue({text,pri,exc,who:who||0,follow:!!follow});}
+function say(text,pri,exc,who,follow){
   if(S.mode==='replay'||S.mode==='menu')return;
-  CM.quietT=0;
-  if(OPT.cap)caption(text,exc);
-  speak(text,pri,exc);
+  CM.quietT=0;speak(text,pri,exc,who,follow);
 }
 /* ----- line pools ----- */
 const LN={
@@ -2091,9 +2128,36 @@ function fillLine(s,d){
   const a=TM[0].def.a,b=TM[1].def.a;
   return s.replace(/\{P\}/g,d.p?d.p.name:'the player').replace(/\{V\}/g,d.v?d.v.name:'his man').replace(/\{K\}/g,d.k?d.k.name:'the keeper')
     .replace(/\{T\}/g,T).replace(/\{O\}/g,O).replace(/\{H\}/g,TM[0].def.n).replace(/\{A\}/g,TM[1].def.n)
-    .replace(/\{SC\}/g,TM[0].def.n+' '+S.score[0]+', '+TM[1].def.n+' '+S.score[1]).replace(/\{RES\}/g,d.res||'');
+    .replace(/\{SC\}/g,TM[0].def.n+' '+S.score[0]+', '+TM[1].def.n+' '+S.score[1]).replace(/\{RES\}/g,d.res||'')
+    .replace(/\{PC\}/g,String(posPct(d.team||0))).replace(/\{SH\}/g,String(S.st[d.team||0].shots)).replace(/\{SO\}/g,String(S.st[1-(d.team||0)].shots)).replace(/\{ST\}/g,String(S.st[d.team||0].sot));
 }
 function cool(type,sec){const n=S.t;if(CM.cool[type]&&n<CM.cool[type])return false;CM.cool[type]=n+sec*CF();return true;}
+/* ----- analyst (co-commentator) lines ----- */
+function posPct(t){const a=S.st[0].poss,b=S.st[1].poss,tot=Math.max(1,a+b);return Math.round((t===0?a:b)/tot*100);}
+Object.assign(LN,{
+  an_goal:['Clinical finish. Not much the keeper could do about that.','The defending was loose there, nobody picked up the runner.','That is what happens when you give a player that much time.','Lovely build-up before that, patient and then direct.','You could see that coming. {T} had been getting closer all half.'],
+  an_goal_lead:['That changes the whole complexion of this match.','Big moment. {T} will feel in control now.','{O} have a lot to think about after that.'],
+  an_goal_level:['Deserved? Probably. {T} have been pressing for it.','The game is completely reset now.'],
+  an_goal_late:['At this stage of the game, that could be decisive.','Huge goal, and the timing could not be better for {T}.'],
+  an_save:['Great positioning. He made himself big and gave the shooter nothing.','He read that early. Keepers make that look easy.','Good shot, better save. That is what a keeper is for.'],
+  an_post:['Fine margins. Half a yard either way and that is a goal.','He will be replaying that one for a while.','So unlucky. That deserved better.'],
+  an_wide:['He rushed that. Needed to get it on target.','He had time there, he should have set himself.','Poor contact, and the chance is gone.'],
+  an_card:['No complaints about that one.','He had to go in, but the timing was poor.','He needs to be careful now, the referee has his eye on him.'],
+  an_red:['That changes everything. {T} have a mountain to climb now.','You cannot argue with the decision. Reckless.'],
+  an_pen:['He will have to keep his nerve here.','The keeper has nothing to lose in this one.'],
+  an_corner:['Watch the near post. {T} will fancy their chances here.','Good delivery needed, and bodies in the box.'],
+  an_foul:['Frustrating for {T}, they had a bit of rhythm there.','The referee is letting some of these go, but not that one.'],
+  an_skill:['Confidence player. He wants the ball in tight spaces.','That is what a bit of quality looks like.'],
+  an_streak:['They are dragging the opposition from side to side. Patient stuff.','{T} are making this pitch big. Lovely movement off the ball.'],
+  afill:['{T} have had {PC} per cent of the ball so far.','{T} have had {SH} shots to {SO}, that tells you where the danger is.','The space is between the lines. Whoever finds it first will hurt the other side.','The tempo has dropped, both teams are conserving a bit of energy.','You can see the shape is holding. Very organised from {T}.','If {T} can get it wide, there is room to exploit out there.','It is all about the second balls in midfield right now.'],
+  an_ht_a:['{T} have had {PC} per cent of the ball, but possession is not everything.','{T} have had {SH} shots to {SO}. That is the story of the half.','Plenty for both managers to work on in that dressing room.'],
+  an_ft_a:['A deserved result, I think. {T} had {SH} shots to {SO}.','The numbers say {T} had the better of it, {PC} per cent possession.','A game that could have gone either way, honestly.']
+});
+function follow(type,d,prob,exc){
+  if(Math.random()>prob)return;if(!cool('anf',7))return;
+  const t=d.team!==undefined?d.team:(d.p?d.p.team:(d.k?1-d.k.team:0));
+  say(fillLine(pickLine(type),Object.assign({},d,{team:t})),0,exc||.55,1,true);
+}
 /* ----- context-aware goal call ----- */
 function goalCall(d){
   const p=d.p,t=d.team,sc=S.score,me=sc[t],th=sc[1-t],min=gameMinute();
@@ -2121,23 +2185,25 @@ function commentOn(type,d){
   switch(type){
     case 'start':say(fillLine(pickLine('start'),d),1,.5);break;
     case 'second':say(fillLine(pickLine('second'),d),1,.45);break;
-    case 'goal':CM.shot=null;say(goalCall(d),3,1);break;
+    case 'goal':{CM.shot=null;say(goalCall(d),3,1);const sc=S.score,t=d.team,me=sc[t],th=sc[1-t],tot=sc[0]+sc[1];
+      const k=gameMinute()>=80&&Math.abs(me-th)<=1?'an_goal_late':tot===1||me===th+1?'an_goal_lead':me===th?'an_goal_level':'an_goal';
+      cool('anf',0);follow(Math.random()<.5?k:'an_goal',{team:t},.85,.7);break;}
     case 'shotq':if(cool('shot',7))say(fillLine(pickLine('shot'),d),1,.7);break;
-    case 'save':{const sh=CM.shot;CM.shot=null;let t=fillLine(pickLine(sh?'save':'save2'),{p:sh&&sh.p,k:d.k});if(sh&&sh.q>.6&&Math.random()<.5)t+=' '+pickLine('chance');say(t,2,.85);break;}
-    case 'post':{const sh=CM.shot;CM.shot=null;say(fillLine(pickLine('post'),{p:sh&&sh.p}),2,.9);break;}
-    case 'wide':{const sh=CM.shot;CM.shot=null;if(!sh)break;let t=fillLine(pickLine('wide'),{p:sh.p});if(sh.q>.62)t+=' '+pickLine('chance');if(cool('wide',6))say(t,sh.q>.62?2:1,sh.q>.62?.8:.5);break;}
-    case 'foul':if(cool('foul',6))say(fillLine(pickLine('foul'),{p:d.off,v:d.vic,team:d.vic?d.vic.team:0}),1,.45);break;
-    case 'card':say(fillLine(pickLine(d.card==='r'?'red':'yellow'),{p:d.p,team:d.p.team}),2,d.card==='r'?.9:.65);break;
+    case 'save':{const sh=CM.shot;CM.shot=null;let t=fillLine(pickLine(sh?'save':'save2'),{p:sh&&sh.p,k:d.k});if(sh&&sh.q>.6&&Math.random()<.5)t+=' '+pickLine('chance');say(t,2,.85);follow('an_save',{k:d.k},.5,.6);break;}
+    case 'post':{const sh=CM.shot;CM.shot=null;say(fillLine(pickLine('post'),{p:sh&&sh.p}),2,.9);follow('an_post',{p:sh&&sh.p},.55,.6);break;}
+    case 'wide':{const sh=CM.shot;CM.shot=null;if(!sh)break;let t=fillLine(pickLine('wide'),{p:sh.p});if(sh.q>.62)t+=' '+pickLine('chance');if(cool('wide',6)){say(t,sh.q>.62?2:1,sh.q>.62?.8:.5);if(sh.q>.5)follow('an_wide',{p:sh.p},.5,.5);}break;}
+    case 'foul':if(cool('foul',6)){say(fillLine(pickLine('foul'),{p:d.off,v:d.vic,team:d.vic?d.vic.team:0}),1,.45);follow('an_foul',{team:d.vic?d.vic.team:0},.25,.4);}break;
+    case 'card':say(fillLine(pickLine(d.card==='r'?'red':'yellow'),{p:d.p,team:d.p.team}),2,d.card==='r'?.9:.65);follow(d.card==='r'?'an_red':'an_card',{team:d.p.team},.6,.55);break;
     case 'offside':if(cool('off',8))say(fillLine(pickLine('offside'),d),1,.4);break;
-    case 'corner':if(cool('corner',9))say(fillLine(pickLine('corner'),d),1,.5);break;
-    case 'penalty':say(fillLine(pickLine('penalty'),d),3,.95);break;
-    case 'skill':if(cool('skill',14)&&Math.random()<.5)say(fillLine(pickLine('skill'),d),1,.6);break;
+    case 'corner':if(cool('corner',9)){say(fillLine(pickLine('corner'),d),1,.5);follow('an_corner',d,.3,.5);}break;
+    case 'penalty':say(fillLine(pickLine('penalty'),d),3,.95);cool('anf',0);follow('an_pen',d,.8,.6);break;
+    case 'skill':if(cool('skill',14)&&Math.random()<.5){say(fillLine(pickLine('skill'),d),1,.6);follow('an_skill',d,.35,.5);}break;
     case 'header':if(cool('header',16)&&Math.random()<.45)say(fillLine(pickLine('header'),d),1,.5);break;
     case 'tackle':if(cool('tackle',16)&&Math.random()<.4)say(fillLine(pickLine('tackle'),d),1,.5);break;
-    case 'streak':if(cool('streak',30))say(fillLine(pickLine('streak'),d),1,.4);break;
-    case 'fill':say(fillLine(pickLine('fill'),d),0,.3);break;
-    case 'ht':say(fillLine(pickLine('ht'),d),2,.5);break;
-    case 'ft':{const a=S.score[0],b=S.score[1];const res=a===b?'It ends '+a+'-'+b+'. Honours even.':(a>b?TM[0].def.n:TM[1].def.n)+' win '+Math.max(a,b)+'-'+Math.min(a,b)+'.';say(fillLine(pickLine('ft'),{res}),3,.7);break;}
+    case 'streak':if(cool('streak',30)){say(fillLine(pickLine('streak'),d),1,.4);follow('an_streak',d,.5,.45);}break;
+    case 'fill':if(Math.random()<.5)say(fillLine(pickLine('afill'),d),0,.35,1);else say(fillLine(pickLine('fill'),d),0,.3);break;
+    case 'ht':{say(fillLine(pickLine('ht'),d),2,.5);const lead=S.st[0].shots>=S.st[1].shots?0:1;cool('anf',0);follow('an_ht_a',{team:lead},1,.5);break;}
+    case 'ft':{const a=S.score[0],b=S.score[1];const res=a===b?'It ends '+a+'-'+b+'. Honours even.':(a>b?TM[0].def.n:TM[1].def.n)+' win '+Math.max(a,b)+'-'+Math.min(a,b)+'.';say(fillLine(pickLine('ft'),{res}),3,.7);const lead=S.st[0].shots>=S.st[1].shots?0:1;cool('anf',0);follow('an_ft_a',{team:lead},1,.55);break;}
   }
 }
 /* ----- crowd synth ----- */
@@ -2184,7 +2250,8 @@ function crowdOn(type,d){
 function commFrame(dt){
   const c=$('comm');
   if(CM.capT>0){CM.capT-=dt;if(CM.capT<=0&&c)c.className='';}
-  if(S.paused&&CAN_TALK&&CM.speaking){try{speechSynthesis.cancel();}catch(e){}CM.speaking=false;CM.q.length=0;}
+  if(S.paused&&(CM.speaking||CM.q.length))cancelAll();
+  if(CM.cur){const it=CM.cur;if(it.timer!==undefined){it.timer-=dt;if(it.timer<=0)nextItem();}else{it.wd-=dt;if(it.wd<=0){cancelSpeech();nextItem();}}}
   if(S.mode==='play'&&!S.paused){CM.quietT+=dt;if(CM.quietT>CM.fillT&&!CM.speaking){CM.quietT=0;CM.fillT=rnd(26,40)*CF();const t=ball.owner?ball.owner.team:(ball.lastTeam||0);mdEmit('fill',{team:t});}}
   const tg=CM.speaking?.78:1;CM.duck+=(tg-CM.duck)*Math.min(1,dt*4);
   if(CM.shot&&S.t-CM.shot.t0>4.2)CM.shot=null;
@@ -2242,17 +2309,15 @@ Object.assign(LN,{
   rp_ev_post:['{P} hits the post!','Off the woodwork! So unlucky, {P}!','Inches away! {P} cannot believe it!'],
   rp_ev_wide:['{P} drags it wide.','Just past the post from {P}!','So close from {P}, but it goes wide.'],
   rp_ev_save:['{K} makes a superb save from {P}!','Brilliant stop from {K}!','{K} keeps it out!'],
-  rp_x:['']
+  rp_an_goal:['Look at the movement before the pass. That is what created the space.','Great composure. He never took his eye off it.','You cannot defend that, the finish is perfect.'],
+  rp_an_near:['Another few inches and that is a different story.','That was a big moment in this match.','The keeper and the post both deserve credit there.']
 });
 function rfill(s,m){
   const T=m&&m.team!==undefined?TM[m.team].def.n:'';
   return s.replace(/\{P\}/g,(m&&m.pn)||'the player').replace(/\{K\}/g,(m&&m.kn)||'the keeper').replace(/\{T\}/g,T).replace(/\{M\}/g,m?m.min:'')
     .replace(/\{SC\}/g,m?TM[0].def.n+' '+m.sc[0]+', '+TM[1].def.n+' '+m.sc[1]:'');
 }
-function rsay(text,pri,exc){
-  if(OPT.cap)caption(text,exc);
-  speak(text,pri,exc);
-}
+function rsay(text,pri,exc,who,follow){speak(text,pri,exc,who,follow);}
 /* ----- selection ----- */
 function clipDur(c,slow){const n=c.fr.length,a=Math.max(0,c.ev-22),b=Math.min(n,c.ev+6);return a/25+(b-a)/25/slow+(n-b)/25/.8+.3;}
 function pickReel(budget){
@@ -2303,17 +2368,17 @@ function rpEvent(){
   const c=RP.clips[RP.ci],m=c.meta,reel=RP.kind==='reel';
   if(c.type==='goal'){
     SND.horn();SND.roar(reel?.8:.6);FP=-4;SHK=Math.max(SHK,.15);
-    if(reel)rsay(rfill(pickLine2('rp_ev_goal'),m),3,1);
-    else rsay(rfill(pickLine2('rp_inst'),m),2,.8);
+    if(reel){rsay(rfill(pickLine2('rp_ev_goal'),m),3,1);if(Math.random()<.6)rsay(pickLine2('rp_an_goal'),0,.6,1,true);}
+    else{rsay(rfill(pickLine2('rp_inst'),m),2,.8);if(Math.random()<.5)rsay(pickLine2('rp_an_goal'),0,.55,1,true);}
   }else{
     SND.gasp();setTimeout(()=>SND.groan(),380);
-    if(reel||RP.kind==='last')rsay(rfill(pickLine2(c.kind==='save'?'rp_ev_save':c.kind==='post'?'rp_ev_post':'rp_ev_wide'),m),2,.9);
+    if(reel||RP.kind==='last'){rsay(rfill(pickLine2(c.kind==='save'?'rp_ev_save':c.kind==='post'?'rp_ev_post':'rp_ev_wide'),m),2,.9);if(Math.random()<.5)rsay(pickLine2('rp_an_near'),0,.55,1,true);}
   }
 }
 function rpEnd(skipped){
   RP.on=false;
   $('rep').style.display='none';$('rpinfo').style.display='none';$('rphint').style.display='none';
-  if(skipped){try{speechSynthesis.cancel();}catch(e){}CM.speaking=false;CM.q.length=0;const c=$('comm');if(c)c.className='';CM.capT=0;$('banner').classList.remove('on');}
+  if(skipped){cancelAll();$('banner').classList.remove('on');}
   for(const p of P){p.vx=p.vz=0;if(!RP.snap)p.st='idle';p.sk=p.aer=p.trap=null;p.jy=0;p.kickT=0;p.diveT=0;}
   if(RP.snap){restoreState(RP.snap);RP.snap=null;}
   const d=RP.done;RP.done=null;if(d)d();
