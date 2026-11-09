@@ -259,9 +259,9 @@ var scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070d10);
 scene.fog = new THREE.Fog(0x070d10, 90, 220);
 
-var camera = new THREE.PerspectiveCamera(52, 1, 0.5, 400);
-var camPos = { x: 0, y: 9, z: -22 };
-var camLook = { x: 0, y: 2.1, z: 4 };
+var camera = new THREE.PerspectiveCamera(46, 1, 0.5, 400);
+var camPos = { x: 0, y: 15, z: -38 };
+var camLook = { x: 0, y: 1.9, z: 5 };
 
 function resize() {
   var w = window.innerWidth, h = window.innerHeight;
@@ -310,7 +310,7 @@ for (var si = -6; si < 6; si++) {
 
 // infield dirt (diamond-ish)
 var dirtShape = new THREE.Shape();
-dirtShape.moveTo(0, 6); dirtShape.lineTo(20, -14); dirtShape.lineTo(0, -34); dirtShape.lineTo(-20, -14); dirtShape.closePath();
+dirtShape.moveTo(0, -6); dirtShape.lineTo(20, 14); dirtShape.lineTo(0, 34); dirtShape.lineTo(-20, 14); dirtShape.closePath();
 var dirt = new THREE.Mesh(new THREE.ShapeGeometry(dirtShape), new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 1 }));
 dirt.rotation.x = -Math.PI / 2;
 dirt.position.y = 0.02;
@@ -373,63 +373,221 @@ scene.add(net);
   scene.add(dug);
 });
 
-// crowd (instanced-ish simple blocks)
-var crowdGeo = new THREE.BoxGeometry(1.6, 1.6, 1.2);
-var crowdColors = [0xc0392b, 0x2e6b8a, 0xe0c040, 0x6b6b6b, 0x3a6b4a, 0xaaaaaa];
-var crowdMesh = new THREE.InstancedMesh(crowdGeo, new THREE.MeshStandardMaterial({ vertexColors: true }), 900);
-crowdMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(900 * 3), 3);
-var ci = 0;
-var dummy = new THREE.Object3D();
-for (var ring = 0; ring < 6; ring++) {
-  var ringR = 100 + ring * 4;
-  var ringY = 8 + ring * 2.2;
-  for (var ang = -70; ang <= 70; ang += 3.3) {
-    if (ci >= 900) break;
-    var rr = ang * Math.PI / 180;
-    var x = Math.sin(rr) * ringR, z = -Math.cos(rr) * ringR - 10;
-    dummy.position.set(x, ringY, z);
-    dummy.lookAt(0, ringY, -20);
-    dummy.updateMatrix();
-    crowdMesh.setMatrixAt(ci, dummy.matrix);
-    var c = new THREE.Color(crowdColors[ci % crowdColors.length]);
-    crowdMesh.setColorAt(ci, c);
-    ci++;
-  }
+// ============================================================
+// Enclosed stadium bowl — full wraparound lower bowl + upper deck,
+// retaining wall, foul poles, scoreboard and a lit city skyline,
+// so the park reads as a real enclosed ballpark, not an open field.
+// ============================================================
+var CENTER = new THREE.Vector3(0, 0, -20); // bowl is centered a bit beyond the infield, toward CF
+// radius of the bowl at a given angle (degrees from dead center field, 0 = CF, 180 = behind backstop)
+function bowlRadius(angleDeg, rMin, rMax) {
+  var a = Math.abs(angleDeg);
+  return rMin + (rMax - rMin) * Math.cos((a / 2) * Math.PI / 180);
 }
-crowdMesh.count = ci;
-scene.add(crowdMesh);
+
+var crowdGeo = new THREE.BoxGeometry(1.5, 1.6, 1.3);
+var crowdColors = [0xc0392b, 0x2e6b8a, 0xe0c040, 0x6b6b6b, 0x3a6b4a, 0xaaaaaa, 0xffffff, 0x8a5a3a];
+var dummy = new THREE.Object3D();
+
+function buildBowl(rMin, rMax, rows, yBase, rowH, rowStep, count) {
+  var mesh = new THREE.InstancedMesh(crowdGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }), count);
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+  var ci = 0;
+  for (var row = 0; row < rows; row++) {
+    var ringY = yBase + row * rowH;
+    var ringGrow = row * rowStep;
+    for (var ang = -176; ang <= 176; ang += 2.6) {
+      if (ci >= count) break;
+      var r = bowlRadius(ang, rMin, rMax) + ringGrow;
+      var rr = ang * Math.PI / 180;
+      var x = Math.sin(rr) * r + CENTER.x, z = -Math.cos(rr) * r + CENTER.z;
+      dummy.position.set(x, ringY, z);
+      dummy.lookAt(CENTER.x, ringY, CENTER.z);
+      dummy.rotation.x = -0.12;
+      dummy.updateMatrix();
+      mesh.setMatrixAt(ci, dummy.matrix);
+      mesh.setColorAt(ci, new THREE.Color(crowdColors[ci % crowdColors.length]));
+      ci++;
+    }
+    if (ci >= count) break;
+  }
+  mesh.count = ci;
+  scene.add(mesh);
+  return mesh;
+}
+
+// lower bowl: close behind the plate (~34), opens up wide in CF (~118)
+var lowerBowl = buildBowl(34, 118, 9, 5, 1.85, 1.1, 2600);
+// upper deck: sits back and higher, same footprint, steeper rise
+var upperDeck = buildBowl(42, 128, 7, 24, 2.15, 1.5, 2000);
+
+// upper-deck overhang band (a dark ring just under the upper deck, reads as the lower-bowl roof)
+(function () {
+  var bandGeo = new THREE.CylinderGeometry(118, 100, 1.4, 48, 1, true, -Math.PI * 0.98, Math.PI * 1.96);
+  var band = new THREE.Mesh(bandGeo, new THREE.MeshStandardMaterial({ color: 0x0b1812, side: THREE.DoubleSide, roughness: 1 }));
+  band.position.set(CENTER.x, 21.5, CENTER.z);
+  scene.add(band);
+})();
+
+// foul poles at the top of the outfield wall
+[[-46, 0xf2e23c], [46, 0xf2e23c]].forEach(function (fp) {
+  var rr = fp[0] * Math.PI / 180;
+  var x = Math.sin(rr) * 95, z = -Math.cos(rr) * 95;
+  var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 14, 8), new THREE.MeshStandardMaterial({ color: fp[1] }));
+  pole.position.set(x, 8.5, z);
+  scene.add(pole);
+});
+
+// center-field scoreboard
+(function () {
+  var sbGroup = new THREE.Group();
+  var frame = new THREE.Mesh(new THREE.BoxGeometry(26, 13, 1.2), new THREE.MeshStandardMaterial({ color: 0x0c1410 }));
+  sbGroup.add(frame);
+  var screenCanvas = document.createElement('canvas');
+  screenCanvas.width = 512; screenCanvas.height = 256;
+  var sctx = screenCanvas.getContext('2d');
+  sctx.fillStyle = '#04120a'; sctx.fillRect(0, 0, 512, 256);
+  sctx.fillStyle = '#7fe08a'; sctx.font = 'bold 54px sans-serif'; sctx.textAlign = 'center';
+  sctx.fillText('PITCH COUNT', 256, 110);
+  sctx.fillStyle = '#f0c04b'; sctx.font = 'bold 30px sans-serif';
+  sctx.fillText('LIVE', 256, 165);
+  var screenTex = new THREE.CanvasTexture(screenCanvas);
+  var screen = new THREE.Mesh(new THREE.PlaneGeometry(23.5, 10.8), new THREE.MeshBasicMaterial({ map: screenTex }));
+  screen.position.z = 0.62;
+  sbGroup.add(screen);
+  sbGroup.position.set(0, 20, -118);
+  sbGroup.lookAt(0, 20, 0);
+  scene.add(sbGroup);
+  var legGeo = new THREE.CylinderGeometry(0.5, 0.5, 13, 8);
+  [-10, 10].forEach(function (dx) {
+    var leg = new THREE.Mesh(legGeo, new THREE.MeshStandardMaterial({ color: 0x0c1410 }));
+    leg.position.set(dx, 7, -118.9);
+    scene.add(leg);
+  });
+})();
+
+// city skyline beyond the bowl — flat-shaded towers with lit windows, like a downtown ballpark backdrop
+(function () {
+  var winCanvas = document.createElement('canvas');
+  winCanvas.width = 32; winCanvas.height = 64;
+  var wctx = winCanvas.getContext('2d');
+  wctx.fillStyle = '#0a1420'; wctx.fillRect(0, 0, 32, 64);
+  for (var wy = 2; wy < 64; wy += 5) {
+    for (var wx = 2; wx < 32; wx += 5) {
+      if (Math.random() < 0.55) {
+        wctx.fillStyle = Math.random() < 0.15 ? '#ffdf8a' : '#f4c96a';
+        wctx.fillRect(wx, wy, 2.4, 3.2);
+      }
+    }
+  }
+  var winTex = new THREE.CanvasTexture(winCanvas);
+  winTex.wrapS = winTex.wrapT = THREE.RepeatWrapping;
+
+  for (var ang = -150; ang <= 150; ang += 7) {
+    if (Math.abs(ang) < 6) continue; // leave a gap right behind the scoreboard
+    var h = 22 + Math.random() * 46;
+    var w = 9 + Math.random() * 9;
+    var r = 165 + Math.random() * 60;
+    var rr2 = ang * Math.PI / 180;
+    var x = Math.sin(rr2) * r + CENTER.x, z = -Math.cos(rr2) * r + CENTER.z;
+    var tex = winTex.clone(); tex.needsUpdate = true;
+    tex.repeat.set(1, Math.max(1, Math.round(h / 14)));
+    var bld = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshStandardMaterial({ color: 0x0d1420, map: tex, roughness: 1 }));
+    bld.position.set(x, h / 2, z);
+    scene.add(bld);
+  }
+})();
 
 // ============================================================
-// Player figures (simple capsule people)
+// Player figures — proportioned low-poly humanoids
 // ============================================================
-function makePerson(color, pos, facing) {
+var SKIN_TONES = [0xe0b088, 0xc98858, 0x8a5a3a, 0xf0c9a0, 0xb87d52];
+// hunch: forward lean in radians, pivoted at the hip (for the umpire crouching to see over the plate)
+function makePerson(shirtColor, pos, facing, opts) {
+  opts = opts || {};
+  var skin = opts.skin || pick(SKIN_TONES);
+  var pants = opts.pants || 0x24303a;
+  var hunch = opts.hunch || 0;
+  var kneeBend = opts.kneeBend || 0;
   var g = new THREE.Group();
-  var body = new THREE.Mesh(new THREE.CapsuleGeometry(0.45, 1.3, 4, 8), new THREE.MeshStandardMaterial({ color: color }));
-  body.position.y = 1.1;
-  g.add(body);
-  var head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 10), new THREE.MeshStandardMaterial({ color: 0xe0b088 }));
-  head.position.y = 2.0;
-  g.add(head);
+
+  var hipY = 0.78 - kneeBend * 0.22;
+  var legMat = new THREE.MeshStandardMaterial({ color: pants });
+  var legLen = 0.62 - kneeBend * 0.18;
+  var legGeo = new THREE.CapsuleGeometry(0.1, legLen, 4, 6);
+  var legL = new THREE.Mesh(legGeo, legMat); legL.position.set(-0.13, legLen / 2 + 0.1, 0); g.add(legL);
+  var legR = new THREE.Mesh(legGeo, legMat); legR.position.set(0.13, legLen / 2 + 0.1, 0); g.add(legR);
+  if (kneeBend) { legL.rotation.x = kneeBend * 0.5; legR.rotation.x = kneeBend * 0.5; }
+
+  // upper body pivots forward from the hip, so a hunch bends the whole torso/arms/head together
+  var upper = new THREE.Group();
+  upper.position.y = hipY;
+  upper.rotation.x = -hunch;
+  g.add(upper);
+
+  var shirtMat = new THREE.MeshStandardMaterial({ color: shirtColor });
+  var torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 8), shirtMat);
+  torso.position.y = 0.23;
+  upper.add(torso);
+
+  var armGeo = new THREE.CapsuleGeometry(0.07, 0.46, 4, 6);
+  var armL = new THREE.Mesh(armGeo, shirtMat); armL.position.set(-0.28, 0.2, 0); armL.rotation.z = 0.14; upper.add(armL);
+  var armR = new THREE.Mesh(armGeo, shirtMat); armR.position.set(0.28, 0.2, 0); armR.rotation.z = -0.14; upper.add(armR);
+
+  var neck = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.1, 8), new THREE.MeshStandardMaterial({ color: skin }));
+  neck.position.y = 0.53; upper.add(neck);
+  var head = new THREE.Mesh(new THREE.SphereGeometry(0.155, 12, 10), new THREE.MeshStandardMaterial({ color: skin }));
+  head.position.y = 0.69; upper.add(head);
+  var cap = new THREE.Mesh(new THREE.SphereGeometry(0.165, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), new THREE.MeshStandardMaterial({ color: opts.cap || shirtColor }));
+  cap.position.y = 0.71; upper.add(cap);
+  if (opts.noCap) cap.visible = false;
+
   g.position.copy(pos);
   if (facing) g.lookAt(pos.x + facing.x, pos.y + 1, pos.z + facing.z);
   scene.add(g);
+  g.userData.armL = armL; g.userData.armR = armR; g.userData.torso = torso; g.userData.upper = upper; g.userData.head = head;
   return g;
 }
 
-var pitcherFig = makePerson(0x3a6b8a, new THREE.Vector3(0, 0, -11), new THREE.Vector3(0, 0, 1));
-var pitcherArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 0.9, 4, 6), new THREE.MeshStandardMaterial({ color: 0x3a6b8a }));
-pitcherArm.position.set(0.5, 1.4, 0);
-pitcherArm.rotation.z = Math.PI / 2.3;
-pitcherFig.add(pitcherArm);
+function makeBat() {
+  var batGroup = new THREE.Group();
+  var gripMat = new THREE.MeshStandardMaterial({ color: 0x2a1c12 });
+  var woodMat = new THREE.MeshStandardMaterial({ color: 0xd9ad66, roughness: 0.55 });
+  var knob = new THREE.Mesh(new THREE.SphereGeometry(0.032, 8, 8), gripMat);
+  knob.position.y = 0; batGroup.add(knob);
+  var handle = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 0.4, 8), gripMat);
+  handle.position.y = 0.2; batGroup.add(handle);
+  var taper = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.022, 0.25, 8), woodMat);
+  taper.position.y = 0.52; batGroup.add(taper);
+  var barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.038, 0.55, 10), woodMat);
+  barrel.position.y = 0.92; batGroup.add(barrel);
+  var cap = new THREE.Mesh(new THREE.SphereGeometry(0.046, 8, 8), woodMat);
+  cap.position.y = 1.19; batGroup.add(cap);
+  return batGroup;
+}
 
-var batterFig = makePerson(0xc0392b, new THREE.Vector3(1.4, 0, 0.6), new THREE.Vector3(-1, 0, -1));
-var bat = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, 1.5, 8), new THREE.MeshStandardMaterial({ color: 0xd9b36c }));
-bat.position.set(-0.4, 1.5, -0.2);
-bat.rotation.z = Math.PI / 3.2;
-batterFig.add(bat);
+var pitcherFig = makePerson(0x3a6b8a, new THREE.Vector3(0, 0, -11), new THREE.Vector3(0, 0, 1), { cap: 0x24445e });
+var pitcherArm = pitcherFig.userData.armR;
+pitcherArm.rotation.z = -Math.PI / 2.3;
 
-var catcherFig = makePerson(0x8a5a3a, FIELD.catcher, new THREE.Vector3(0, 0, -1));
-var umpFig = makePerson(0x222222, FIELD.ump, new THREE.Vector3(0, 0, -1));
+var batterFig = makePerson(0xc0392b, new THREE.Vector3(1.4, 0, 0.6), new THREE.Vector3(-1, 0, -1), { cap: 0x7a1f1f });
+// upright batting stance: both hands together on the handle, bat cocked back near the rear shoulder
+batterFig.userData.armR.rotation.z = -1.55;
+batterFig.userData.armR.rotation.x = -0.35;
+batterFig.userData.armR.position.set(0.2, 0.38, -0.12);
+batterFig.userData.armL.rotation.z = -1.3;
+batterFig.userData.armL.rotation.x = -0.3;
+batterFig.userData.armL.position.set(0.1, 0.36, -0.1);
+var bat = makeBat();
+bat.position.set(0.14, 0.58, -0.3);
+bat.rotation.z = -0.3;
+bat.rotation.x = -1.15;
+bat.rotation.y = 0.3;
+batterFig.userData.upper.add(bat);
+
+var catcherFig = makePerson(0x8a5a3a, FIELD.catcher, new THREE.Vector3(0, 0, -1), { cap: 0x5a3a22 });
+// umpire hunches forward from the hips and bends his knees to see over the catcher into the zone
+var umpFig = makePerson(0x1a1a1a, FIELD.ump, new THREE.Vector3(0, 0, -1), { cap: 0x1a1a1a, pants: 0x1a1a1a, hunch: 0.5, kneeBend: 0.45 });
 
 var infColor = 0x6b6b6b, ofColor = 0x4a6b4a;
 makePerson(infColor, FIELD.fielders.firstB, new THREE.Vector3(-1, 0, -1));
@@ -458,7 +616,7 @@ function cameraTo(pos, look, duration) {
   tweenObj(camPos, pos, duration);
   tweenObj(camLook, look, duration);
 }
-var PITCH_CAM = { pos: { x: 0, y: 9, z: -22 }, look: { x: 0, y: 2.1, z: 4 } };
+var PITCH_CAM = { pos: { x: 0, y: 15, z: -38 }, look: { x: 0, y: 1.9, z: 5 } };
 var WIDE_CAM = { pos: { x: 24, y: 42, z: -36 }, look: { x: 0, y: 1, z: -24 } };
 
 // ============================================================
@@ -715,9 +873,9 @@ function showAimZone(code) {
   var bottom = Math.max.apply(null, corners.map(function (c) { return c.y; }));
   var w = right - left, h = bottom - top;
 
-  var zo = $('zoneOverlay');
-  zo.style.left = left + 'px'; zo.style.top = top + 'px'; zo.style.width = w + 'px'; zo.style.height = h + 'px';
-  show(zo);
+  // strike-zone bounds are still computed (used for aim-area sizing below)
+  // but the visible box outline is intentionally not drawn over the batter —
+  // a broadcast shot doesn't have a big green square floating on the plate.
 
   var areaW = w * PITCH_AREA_SCALE, areaH = h * PITCH_AREA_SCALE;
   var areaLeft = left + w / 2 - areaW / 2, areaTop = top + h / 2 - areaH / 2;
