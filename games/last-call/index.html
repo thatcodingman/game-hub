@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Last Call</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #140d0a;
+    overscroll-behavior: none;
+    touch-action: none;
+    height: 100%;
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+  #game-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+<div id="game-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------- Synthesized audio (self-contained; swap for sfx.js later if desired) ----------
+  var actx = null;
+  function ac() {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    return actx;
+  }
+  function tone(freq, dur, type, vol, delay) {
+    try {
+      var ctx = ac();
+      var t0 = ctx.currentTime + (delay || 0);
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol || 0.2, t0 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0 + dur + 0.02);
+    } catch (e) {}
+  }
+  function sndPull() { tone(180, 0.12, 'sine', 0.08); }
+  function sndLaunch(power) { tone(260 + power * 220, 0.18, 'sawtooth', 0.12); }
+  function sndPerfect() {
+    tone(660, 0.12, 'triangle', 0.18);
+    tone(880, 0.16, 'triangle', 0.16, 0.08);
+    tone(1100, 0.2, 'triangle', 0.14, 0.16);
+  }
+  function sndGood() {
+    tone(520, 0.14, 'triangle', 0.16);
+    tone(700, 0.16, 'triangle', 0.13, 0.07);
+  }
+  function sndMiss() {
+    tone(180, 0.22, 'sawtooth', 0.14);
+    tone(110, 0.3, 'sawtooth', 0.12, 0.05);
+  }
+  function sndStrike() { tone(90, 0.4, 'square', 0.16); }
+  function sndClick() { tone(440, 0.06, 'sine', 0.08); }
+
+  // ---------- Layout constants ----------
+  var W = 900, H = 600;
+  var BAR_Y = 400;
+  var BAR_LEFT = 150;
+  var BAR_RIGHT = W - 90;
+  var MAX_PULL = 130;
+  var MAX_VELOCITY = 760;
+  var FRICTION = 620;
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  var HIGH_SCORE_KEY = 'lastCallHighScore';
+  function getHighScore() {
+    try { return parseInt(localStorage.getItem(HIGH_SCORE_KEY) || '0', 10); } catch (e) { return 0; }
+  }
+  function setHighScore(v) {
+    try { localStorage.setItem(HIGH_SCORE_KEY, String(v)); } catch (e) {}
+  }
+
+  // ======================================================================
+  // MENU SCENE
+  // ======================================================================
+  function MenuScene() { Phaser.Scene.call(this, { key: 'MenuScene' }); }
+  MenuScene.prototype = Object.create(Phaser.Scene.prototype);
+  MenuScene.prototype.constructor = MenuScene;
+
+  MenuScene.prototype.create = function () {
+    var g = this.add.graphics();
+    g.fillStyle(0x1c120c, 1);
+    g.fillRect(0, 0, W, H);
+    for (var i = 0; i < 40; i++) {
+      g.fillStyle(0x2a1c12, 0.5);
+      g.fillCircle(rand(0, W), rand(0, H), rand(1, 2));
+    }
+
+    this.add.text(W / 2, 140, '🍺', { fontSize: '72px' }).setOrigin(0.5);
+    this.add.text(W / 2, 220, 'LAST CALL', {
+      fontFamily: 'Georgia, serif', fontSize: '56px', color: '#f5c97a', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.add.text(W / 2, 270, 'drag back  •  let go  •  stick the landing', {
+      fontFamily: 'Georgia, serif', fontSize: '18px', color: '#c9a876'
+    }).setOrigin(0.5);
+
+    var hs = getHighScore();
+    if (hs > 0) {
+      this.add.text(W / 2, 310, 'Best: ' + hs, {
+        fontFamily: 'Georgia, serif', fontSize: '16px', color: '#8a6f4e'
+      }).setOrigin(0.5);
+    }
+
+    var startBtn = this.add.text(W / 2, 400, '▶  START SHIFT', {
+      fontFamily: 'Georgia, serif', fontSize: '28px', color: '#140d0a',
+      backgroundColor: '#f5c97a', padding: { x: 28, y: 14 }
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    startBtn.on('pointerover', function () { startBtn.setScale(1.05); });
+    startBtn.on('pointerout', function () { startBtn.setScale(1); });
+    startBtn.on('pointerdown', function () {
+      sndClick();
+      this.scene.start('GameScene');
+    }, this);
+
+    this.add.text(W / 2, 470, 'Pull the glass away from the bar to charge power.\nRelease it toward the customer\'s mark.\nCenter the mark for a PERFECT pour. 3 misses ends your shift.', {
+      fontFamily: 'Georgia, serif', fontSize: '14px', color: '#8a6f4e', align: 'center', lineSpacing: 6
+    }).setOrigin(0.5);
+  };
+
+  // ======================================================================
+  // GAME SCENE
+  // ======================================================================
+  function GameScene() { Phaser.Scene.call(this, { key: 'GameScene' }); }
+  GameScene.prototype = Object.create(Phaser.Scene.prototype);
+  GameScene.prototype.constructor = GameScene;
+
+  GameScene.prototype.create = function () {
+    this.score = 0;
+    this.strikes = 0;
+    this.round = 0;
+    this.state = 'idle'; // idle -> charging -> sliding -> resolving
+    this.mugX = BAR_LEFT;
+    this.mugVel = 0;
+    this.pullStartX = 0;
+    this.pullAmount = 0;
+
+    // --- particle texture ---
+    var pg = this.add.graphics();
+    pg.fillStyle(0xffffff, 1);
+    pg.fillCircle(4, 4, 4);
+    pg.generateTexture('particle', 8, 8);
+    pg.destroy();
+
+    // --- background ---
+    var bg = this.add.graphics();
+    bg.fillStyle(0x1c120c, 1);
+    bg.fillRect(0, 0, W, H);
+    bg.fillStyle(0x241a12, 1);
+    bg.fillRect(0, 0, W, BAR_Y - 90);
+
+    // shelf bottles
+    for (var i = 0; i < 10; i++) {
+      var bx = 60 + i * 80;
+      this.add.rectangle(bx, BAR_Y - 150, 14, 46, [0x5a7a4a, 0x6a4a3a, 0x3a5a6a, 0x7a5a2a][i % 4]);
+    }
+
+    // bar counter
+    var bar = this.add.graphics();
+    bar.fillStyle(0x3a2416, 1);
+    bar.fillRect(0, BAR_Y, W, 14);
+    bar.fillStyle(0x4a3020, 1);
+    bar.fillRect(0, BAR_Y - 6, W, 6);
+    bar.fillStyle(0x120b07, 1);
+    bar.fillRect(0, BAR_Y + 14, W, H - (BAR_Y + 14));
+
+    // zone graphic (redrawn per round)
+    this.zoneGfx = this.add.graphics();
+
+    // mug trail graphic
+    this.trailGfx = this.add.graphics();
+
+    // elastic band graphic
+    this.bandGfx = this.add.graphics();
+
+    // mug
+    this.mug = this.add.text(BAR_LEFT, BAR_Y - 14, '🍺', { fontSize: '40px' }).setOrigin(0.5);
+
+    // customer
+    this.customer = this.add.text(0, BAR_Y - 110, '', { fontSize: '48px' }).setOrigin(0.5);
+    this.customerFace = this.add.text(0, BAR_Y - 150, '🙂', { fontSize: '26px' }).setOrigin(0.5);
+
+    // HUD
+    this.scoreText = this.add.text(20, 18, 'SCORE 0', {
+      fontFamily: 'Georgia, serif', fontSize: '22px', color: '#f5c97a', fontStyle: 'bold'
+    });
+    this.strikeText = this.add.text(20, 48, this.strikeDisplay(), {
+      fontFamily: 'Georgia, serif', fontSize: '20px', color: '#f0f0f0'
+    });
+    this.feedbackText = this.add.text(W / 2, 220, '', {
+      fontFamily: 'Georgia, serif', fontSize: '36px', fontStyle: 'bold', color: '#ffffff'
+    }).setOrigin(0.5).setAlpha(0);
+
+    // input zone covers whole scene
+    this.input.on('pointerdown', this.onPointerDown, this);
+    this.input.on('pointermove', this.onPointerMove, this);
+    this.input.on('pointerup', this.onPointerUp, this);
+
+    this.cameras.main.setBackgroundColor('#140d0a');
+
+    this.spawnCustomer();
+  };
+
+  GameScene.prototype.strikeDisplay = function () {
+    var s = '';
+    for (var i = 0; i < 3; i++) s += (i < this.strikes ? '💔' : '🍻');
+    return s;
+  };
+
+  GameScene.prototype.difficultyForRound = function (round) {
+    return {
+      patience: Math.max(1700, 5000 - round * 110),
+      zoneWidth: Math.max(48, 150 - round * 6)
+    };
+  };
+
+  GameScene.prototype.spawnCustomer = function () {
+    var self = this;
+    this.round++;
+    var diff = this.difficultyForRound(this.round);
+
+    var minX = BAR_LEFT + 180;
+    var maxX = BAR_RIGHT - 30;
+    this.zoneCenter = rand(minX, maxX);
+    this.zoneWidth = diff.zoneWidth;
+    this.patienceMax = diff.patience;
+    this.patienceLeft = diff.patience;
+
+    this.customer.setText(pick(['🧑', '👩', '🧔', '👨‍🦱', '👩‍🦰', '🧑‍🦳', '👱']));
+    this.customer.setX(this.zoneCenter);
+    this.customerFace.setText('🙂');
+    this.customerFace.setX(this.zoneCenter);
+
+    this.mugX = BAR_LEFT;
+    this.mugVel = 0;
+    this.mug.setPosition(BAR_LEFT, BAR_Y - 14);
+    this.mug.setAlpha(1).setScale(1);
+    this.trailGfx.clear();
+
+    this.state = 'idle';
+    this.drawZone();
+  };
+
+  GameScene.prototype.drawZone = function () {
+    this.zoneGfx.clear();
+    var left = this.zoneCenter - this.zoneWidth / 2;
+    var w = this.zoneWidth;
+    this.zoneGfx.fillStyle(0xf5c97a, 0.18);
+    this.zoneGfx.fillRect(left, BAR_Y - 10, w, 8);
+    this.zoneGfx.fillStyle(0xf5c97a, 0.5);
+    this.zoneGfx.fillRect(this.zoneCenter - this.zoneWidth * 0.18, BAR_Y - 10, this.zoneWidth * 0.36, 8);
+  };
+
+  GameScene.prototype.onPointerDown = function (p) {
+    if (this.state !== 'idle') return;
+    this.state = 'charging';
+    this.pullStartX = p.x;
+    this.pullAmount = 0;
+    sndPull();
+  };
+
+  GameScene.prototype.onPointerMove = function (p) {
+    if (this.state !== 'charging') return;
+    var drag = this.pullStartX - p.x;
+    this.pullAmount = clamp(drag, 0, MAX_PULL);
+    var mx = BAR_LEFT - this.pullAmount * 0.5;
+    this.mug.setX(mx);
+
+    this.bandGfx.clear();
+    if (this.pullAmount > 4) {
+      this.bandGfx.lineStyle(3, 0xf5c97a, 0.5);
+      this.bandGfx.lineBetween(BAR_LEFT + 30, BAR_Y - 14, mx, BAR_Y - 14);
+    }
+  };
+
+  GameScene.prototype.onPointerUp = function () {
+    if (this.state !== 'charging') return;
+    this.bandGfx.clear();
+    var power = this.pullAmount / MAX_PULL;
+    if (power < 0.06) {
+      // too weak, treat as cancel
+      this.state = 'idle';
+      this.mug.setX(BAR_LEFT);
+      return;
+    }
+    this.mugVel = power * MAX_VELOCITY;
+    this.mugX = BAR_LEFT;
+    this.mug.setX(BAR_LEFT);
+    this.state = 'sliding';
+    sndLaunch(power);
+  };
+
+  GameScene.prototype.update = function (time, delta) {
+    var dt = delta / 1000;
+
+    if (this.state === 'idle' || this.state === 'charging') {
+      this.patienceLeft -= delta;
+      var ratio = clamp(this.patienceLeft / this.patienceMax, 0, 1);
+      if (ratio > 0.55) this.customerFace.setText('🙂');
+      else if (ratio > 0.22) this.customerFace.setText('😐');
+      else this.customerFace.setText('😠');
+
+      if (this.patienceLeft <= 0) {
+        this.resolveMiss('too slow');
+      }
+    } else if (this.state === 'sliding') {
+      this.mugVel -= FRICTION * dt;
+      if (this.mugVel < 0) this.mugVel = 0;
+      this.mugX += this.mugVel * dt;
+      this.mug.setX(this.mugX);
+
+      this.trailGfx.fillStyle(0xf5c97a, 0.12);
+      this.trailGfx.fillCircle(this.mugX, BAR_Y - 14, 5);
+
+      if (this.mugX >= BAR_RIGHT) {
+        this.mugX = BAR_RIGHT;
+        this.mug.setX(this.mugX);
+        this.resolveLanding();
+      } else if (this.mugVel <= 2) {
+        this.resolveLanding();
+      }
+    }
+  };
+
+  GameScene.prototype.resolveLanding = function () {
+    if (this.state !== 'sliding') return;
+    var dist = Math.abs(this.mugX - this.zoneCenter);
+    var half = this.zoneWidth / 2;
+
+    if (dist <= half * 0.22) {
+      this.resolveServe(100, 'PERFECT!', 0x4ade80);
+    } else if (dist <= half) {
+      this.resolveServe(50, 'GOOD POUR', 0xf5c97a);
+    } else {
+      this.resolveMiss('missed the mark');
+    }
+  };
+
+  GameScene.prototype.resolveServe = function (points, label, color) {
+    var self = this;
+    this.state = 'resolving';
+    this.score += points;
+    this.scoreText.setText('SCORE ' + this.score);
+    if (points === 100) sndPerfect(); else sndGood();
+    this.flashFeedback(label, '#' + color.toString(16));
+    this.burst(this.mugX, BAR_Y - 14, color);
+
+    this.cameras.main.flash(90, 255, 230, 180, false);
+    this.tweens.add({
+      targets: this.customer, y: BAR_Y - 160, alpha: 0, duration: 300, ease: 'Back.easeIn'
+    });
+    this.tweens.add({
+      targets: this.customerFace, alpha: 0, duration: 200
+    });
+    this.tweens.add({
+      targets: this.mug, alpha: 0, duration: 250, delay: 100
+    });
+
+    this.time.delayedCall(650, function () {
+      self.customer.setAlpha(1).setY(BAR_Y - 110);
+      self.customerFace.setAlpha(1);
+      self.spawnCustomer();
+    });
+  };
+
+  GameScene.prototype.resolveMiss = function (reason) {
+    var self = this;
+    this.state = 'resolving';
+    this.strikes++;
+    this.strikeText.setText(this.strikeDisplay());
+    sndMiss();
+    this.flashFeedback('SPILLED!', '#ef4444');
+    this.burst(this.mugX, BAR_Y - 14, 0xef4444);
+    this.cameras.main.shake(180, 0.01);
+
+    this.tweens.add({
+      targets: this.customerFace, alpha: 0, duration: 250
+    });
+    this.tweens.add({
+      targets: this.customer, alpha: 0, duration: 250, delay: 100
+    });
+
+    if (this.strikes >= 3) {
+      sndStrike();
+      this.time.delayedCall(700, function () { self.gameOver(); });
+      return;
+    }
+
+    this.time.delayedCall(700, function () {
+      self.customer.setAlpha(1);
+      self.customerFace.setAlpha(1);
+      self.spawnCustomer();
+    });
+  };
+
+  GameScene.prototype.flashFeedback = function (text, colorHex) {
+    this.feedbackText.setText(text);
+    this.feedbackText.setColor(colorHex);
+    this.feedbackText.setAlpha(1).setScale(0.6);
+    this.tweens.add({
+      targets: this.feedbackText,
+      scale: 1.15,
+      duration: 180,
+      ease: 'Back.easeOut',
+      yoyo: false
+    });
+    this.tweens.add({
+      targets: this.feedbackText,
+      alpha: 0,
+      duration: 400,
+      delay: 350
+    });
+  };
+
+  GameScene.prototype.burst = function (x, y, color) {
+    var p = this.add.particles(x, y, 'particle', {
+      speed: { min: 80, max: 260 },
+      lifespan: 400,
+      scale: { start: 1.6, end: 0 },
+      quantity: 14,
+      tint: color,
+      emitting: false
+    });
+    p.explode(14);
+    this.time.delayedCall(500, function () { p.destroy(); });
+  };
+
+  GameScene.prototype.gameOver = function () {
+    var hs = getHighScore();
+    var isNew = this.score > hs;
+    if (isNew) setHighScore(this.score);
+    this.scene.start('GameOverScene', { score: this.score, round: this.round, isNew: isNew, highScore: Math.max(hs, this.score) });
+  };
+
+  // ======================================================================
+  // GAME OVER SCENE
+  // ======================================================================
+  function GameOverScene() { Phaser.Scene.call(this, { key: 'GameOverScene' }); }
+  GameOverScene.prototype = Object.create(Phaser.Scene.prototype);
+  GameOverScene.prototype.constructor = GameOverScene;
+
+  GameOverScene.prototype.init = function (data) { this.data_ = data || {}; };
+
+  GameOverScene.prototype.create = function () {
+    var d = this.data_;
+    var g = this.add.graphics();
+    g.fillStyle(0x140d0a, 1);
+    g.fillRect(0, 0, W, H);
+
+    this.add.text(W / 2, 140, '🚪', { fontSize: '64px' }).setOrigin(0.5);
+    this.add.text(W / 2, 210, "LAST CALL", {
+      fontFamily: 'Georgia, serif', fontSize: '40px', color: '#f5c97a', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.add.text(W / 2, 250, 'Shift over.', {
+      fontFamily: 'Georgia, serif', fontSize: '18px', color: '#c9a876'
+    }).setOrigin(0.5);
+
+    this.add.text(W / 2, 310, 'Score: ' + d.score, {
+      fontFamily: 'Georgia, serif', fontSize: '30px', color: '#ffffff'
+    }).setOrigin(0.5);
+
+    if (d.isNew) {
+      this.add.text(W / 2, 350, '★ NEW BEST ★', {
+        fontFamily: 'Georgia, serif', fontSize: '18px', color: '#4ade80'
+      }).setOrigin(0.5);
+    } else {
+      this.add.text(W / 2, 350, 'Best: ' + d.highScore, {
+        fontFamily: 'Georgia, serif', fontSize: '16px', color: '#8a6f4e'
+      }).setOrigin(0.5);
+    }
+
+    var again = this.add.text(W / 2, 430, '🔁  POUR AGAIN', {
+      fontFamily: 'Georgia, serif', fontSize: '26px', color: '#140d0a',
+      backgroundColor: '#f5c97a', padding: { x: 26, y: 12 }
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    again.on('pointerover', function () { again.setScale(1.05); });
+    again.on('pointerout', function () { again.setScale(1); });
+    again.on('pointerdown', function () {
+      sndClick();
+      this.scene.start('GameScene');
+    }, this);
+
+    var menu = this.add.text(W / 2, 490, 'back to menu', {
+      fontFamily: 'Georgia, serif', fontSize: '14px', color: '#8a6f4e'
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    menu.on('pointerdown', function () {
+      sndClick();
+      this.scene.start('MenuScene');
+    }, this);
+  };
+
+  // ---------- Boot ----------
+  var config = {
+    type: Phaser.AUTO,
+    width: W,
+    height: H,
+    parent: 'game-container',
+    backgroundColor: '#140d0a',
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH
+    },
+    scene: [MenuScene, GameScene, GameOverScene]
+  };
+
+  new Phaser.Game(config);
+})();
+</script>
+</body>
+</html>
