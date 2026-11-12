@@ -396,6 +396,7 @@ function buildLive(){
  const stex=new THREE.CanvasTexture(sc);for(let i=0;i<9;i++){const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:stex,transparent:true,fog:false,depthWrite:false}));sp.scale.set(9,4.5,1);scene.add(sp);LIVE.birds.push({sp,x0:Math.random()*1200,y:130+Math.random()*90,z:-380-Math.random()*220,v:12+Math.random()*10,ph:Math.random()*6});}
 }
 function aliveUpdate(now){
+ {const C=fielders.C;if(C&&C.userData.ready&&typeof flight!=='undefined'&&flight&&flight.E&&!FAST&&G&&G.view!=='bip'){const pr=Math.min(1,Math.max(0,(performance.now()-flight.t0)/1000/(flight.tF||1.2))),w=pr*pr;C.userData.arm2.rotation.x=-1.55-(flight.E[1]-2.5)*.12*w;}}
  BLINK.forEach((b,i)=>{b.visible=((now+i*370)%1700)<320;});
  const t=now/1000;if(FANS.uni){FANS.uni.uTime.value=t;FANS.uni.uCheer.value=FANS.cheer>.05?1:0;}
  if(!LIVE.flash&&FANS.ready)buildLive();
@@ -544,7 +545,7 @@ function crouch(p,d,lean,spread,useUp){
 
 function catcherPose(k){ // k=0 kneeling set -> k=1 deep receiving crouch (wide base, glove arm out)
  const C=fielders.C;if(!C)return;const u=C.userData,e=k*k*(3-2*k);
- crouch(C,1.5-.58*e,.12+.4*e,.34+.3*e,true);
+ const sec=G&&(G.bases.some(Boolean)||G.s===2);crouch(C,1.5-(sec?.72:.58)*e,.12+(sec?.34:.4)*e,.34+.3*e,true);
  u.arm2.rotation.set(-.55-.95*e,0,.1);u.elbow2.rotation.x=-.5+.4*e;u.arm.rotation.set(-.3+.05*e,0,-.1);u.elbow.rotation.x=-.9+.4*e;u.glove.scale.set(1.5,1.4,1.5);
 }
 function catcherRise(ms){const C=fielders.C;if(!C)return;const u=C.userData,id=u.seq=(u.seq||0)+1;u.ready=true;if(FAST||AUTO){catcherPose(1);return;}const t0=performance.now();
@@ -633,6 +634,7 @@ function dressTeams(){
  for(const p of FPOS){const m=person(D.c,0xf2f2f2,D.c2);m.position.set(FP[p][0],0,FP[p][1]);m.rotation.y=p==='C'?Math.PI:0;fielders[p]=m;}
  for(const k in fielders){const h=fielders[k].userData.hand2,gl=new THREE.Group();const gc=k==='C'?0x23262b:0x7a4a24;
   const pm=box(.34,.38,.14,gc,0,-.14,.08,gl),wb=box(.3,.3,.1,gc,0,-.36,.1,gl);wb.rotation.x=-.3;const pk=box(.1,.2,.06,0x5e3a1c,0,-.2,.16,gl);h.add(gl);fielders[k].userData.glove=gl;}
+ crouch(fielders.P,0,0,0,true);
  {const C=fielders.C,u=C.userData;C.position.set(0,0,2.3);C.rotation.y=Math.PI;
   box(1.0,1.05,.2,0x23262b,0,3.1,.42,C);box(.7,.3,.2,0x23262b,0,2.5,.4,C);
   box(.62,.5,.18,0x16181c,0,4.36,.34,C);box(.64,.05,.2,0x6b7280,0,4.42,.35,C);box(.64,.05,.2,0x6b7280,0,4.28,.35,C);
@@ -1057,28 +1059,60 @@ function doGo(){if(!G.canGo||G.jump!=null)return;const w=G.windDur?clamp((perfor
  G.jump=w<0?.25:clamp(1-Math.abs(w-.42)/.45,.05,1);G.canGo=false;
  const tag=w<.2?'EARLY':w<.62?'GREAT JUMP':'LATE';msg(tag,700);buildBar();}
 // per-pitch delivery: arm slot (z), arm lag (changeup looks slow through the zone), lean, wrist snap, glove tuck
-const PARM={FF:{z:.05,lag:1,lean:.28,snap:.2,el:0},SI:{z:.42,lag:1,lean:.22,snap:.1,el:.1},CT:{z:.2,lag:1,lean:.25,snap:.45,el:0},SL:{z:.8,lag:1,lean:.3,snap:.7,el:.25},
- CB:{z:-.28,lag:1,lean:.45,snap:1.1,el:-.2},CH:{z:.12,lag:1.35,lean:.12,snap:-.3,el:.1},SP:{z:.0,lag:1.12,lean:.32,snap:-.15,el:.05}};
-function windupPose(p,u,k){const U=p.userData,A=PARM[k]||PARM.FF;
-  const ua=Math.pow(Math.min(1,u),u>.5?A.lag:1),bump=Math.sin(Math.min(1,Math.max(0,(u-.25)/.6))*Math.PI);
-  U.arm.rotation.x=ua<.5?-ua*5:-2.5+(ua-.5)*7;U.arm.rotation.z=A.z*1.8*bump;
-  U.elbow.rotation.x=(ua<.5?-1.2+ua*1.6:-.4-(ua-.5)*.5)-A.el*bump;
-  if(U.hand)U.hand.rotation.x=A.snap*Math.max(0,Math.min(1,(u-.55)*4))*(u<.85?1:Math.max(0,1-(u-.85)*6));
-  U.arm2.rotation.x=-1.15*Math.sin(Math.min(1,u*1.4)*Math.PI*.5)*(u<.7?1:Math.max(.2,1-(u-.7)*2.5));
-  if(U.torso)U.torso.rotation.x=A.lean*1.3*bump;
-  p.rotation.y=-A.z*.3*bump;
-  p.position.y=0;U.legs.position.y=1.05+(u>.3&&u<.6?.45:0);}
+// Arm slot belongs to the PITCHER (U.slot); pitch type only adds subtle grip/wrist cues. Changeup mirrors the fastball arm action.
+const PARM={FF:{z:0,lag:1,lean:.28,snap:0,el:0},SI:{z:.05,lag:1,lean:.28,snap:0,el:0},CT:{z:.02,lag:1,lean:.28,snap:.12,el:0},SL:{z:.07,lag:1,lean:.3,snap:.3,el:.1},
+ CB:{z:-.07,lag:1,lean:.32,snap:.4,el:-.1},CH:{z:0,lag:1,lean:.28,snap:0,el:0},SP:{z:0,lag:1,lean:.28,snap:-.1,el:0}};
+function slotOf(P){const n=(P&&P.n)||'x';let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;const r=h%10;return r<4?.08:r<8?.4:.75;} // overhand / 3-4 / low 3-4
+function kf(u,K){if(u<=K[0][0])return K[0][1];for(let i=1;i<K.length;i++){if(u<=K[i][0]){const a=K[i-1],b=K[i];let t=(u-a[0])/(b[0]-a[0]);t=t*t*(3-2*t);return a[1]+(b[1]-a[1])*t;}}return K[K.length-1][1];}
+function pitchBall(p){const U=p.userData;if(!U.hb){U.hb=new THREE.Mesh(new THREE.SphereGeometry(.17,10,8),new THREE.MeshBasicMaterial({color:0xffffff}));U.hb.position.set(0,-.2,.06);}return U.hb;}
+function pitchReset(p){if(!p)return;const U=p.userData;U.wseq=(U.wseq||0)+1;
+ U.elbow.rotation.x=-.25;U.arm.rotation.set(0,0,0);U.arm2.rotation.set(0,0,0);U.elbow2.rotation.x=-.25;if(U.hand)U.hand.rotation.x=0;
+ U.hips.forEach((h,i)=>{h.rotation.x=0;U.knees[i].rotation.x=0;U.feet[i].rotation.x=0;});if(U.up)U.up.rotation.set(0,0,0);if(U.torso)U.torso.rotation.x=0;
+ p.rotation.y=0;p.position.y=0;p.position.z=FP.P[1];U.legs.position.y=1.05;if(U.hb&&U.hb.parent)U.hb.parent.remove(U.hb);}
+// WINDUP: u 0..1 = hands together -> leg lift -> arm break -> stride + cock -> release (u=1)
+function windupPose(p,u,k){const U=p.userData,A=PARM[k]||PARM.FF,SS=U.st?.6:1,e=x=>x*x*(3-2*x),sg=(a,b)=>Math.max(0,Math.min(1,(u-a)/(b-a)));
+ const lift=e(sg(.26,.5)),str=e(sg(.5,.82));
+ const th=-1.6*SS*lift*(1-str)-.85*str,kn=1.55*SS*lift*(1-str)+.25*str,L=U.hips[0],Pv=U.hips[1];
+ L.rotation.x=th;U.knees[0].rotation.x=kn;U.feet[0].rotation.x=-(th+kn);
+ const pt=.1*lift-.12*str,pk=.25*lift;Pv.rotation.x=pt;U.knees[1].rotation.x=pk;U.feet[1].rotation.x=-(pt+pk);
+ const slot=(U.slot==null?.2:U.slot)+A.z;
+ U.arm.rotation.set(kf(u,[[0,-1.05],[.42,-1.05],[.6,.5],[.8,-.3],[1,-2.7]]),0,kf(u,[[0,-.3],[.42,-.3],[.6,.4],[.8,1.2+slot*.6],[1,slot*1.2]]));
+ U.elbow.rotation.x=kf(u,[[0,-1.3],[.42,-1.3],[.6,-.5],[.8,-1.5-A.el*.5],[1,-.15-A.el*.2]]);
+ if(U.hand)U.hand.rotation.x=A.snap*Math.max(0,Math.min(1,(u-.88)*8));
+ U.arm2.rotation.set(kf(u,[[0,-1.05],[.42,-1.05],[.8,-1.55],[1,-.95]]),0,kf(u,[[0,.3],[.42,.3],[.8,.75],[1,.45]]));
+ U.elbow2.rotation.x=kf(u,[[0,-1.3],[.42,-1.3],[.8,-.4],[1,-1.7]]);
+ if(U.up)U.up.rotation.set(kf(u,[[0,0],[.3,-.04],[.5,-.15],[.75,.06],[1,.3+A.lean*.5]]),kf(u,[[0,0],[.5,.12],[.85,.35],[1,.2]]),0);
+ p.position.y=0;p.position.z=FP.P[1]+(U.st?3.8:4.6)*str;p.rotation.y=-slot*.15*sg(.6,1);U.legs.position.y=1.05;
+ const hb=pitchBall(p),host=u<.42?U.hand2:U.hand;if(u<.99){if(hb.parent!==host)host.add(hb);}else if(hb.parent)hb.parent.remove(hb);}
+// FOLLOW-THROUGH: v 0..1 after release (arm sweeps across, torso folds, back leg kicks up), then recovery
+function followPose(p,v,k){const U=p.userData,A=PARM[k]||PARM.FF,e=x=>x*x*(3-2*x);
+ U.arm.rotation.set(kf(v,[[0,-2.7],[.35,-1.0],[1,.5]]),0,kf(v,[[0,((U.slot==null?.2:U.slot)+A.z)*1.2],[.35,-.5],[1,-.9]]));U.elbow.rotation.x=kf(v,[[0,-.15-A.el*.2],[.4,-1.0],[1,-1.3]]);
+ if(U.hand)U.hand.rotation.x=A.snap*Math.max(0,1-v*5);
+ U.arm2.rotation.set(kf(v,[[0,-.95],[1,-.7]]),0,.5);U.elbow2.rotation.x=-1.7;
+ U.up.rotation.set(kf(v,[[0,.3+A.lean*.5],[.45,.95],[1,.85]]),kf(v,[[0,.2],[1,.1]]),0);
+ const Pv=U.hips[1],L=U.hips[0];
+ const bt=kf(v,[[0,-.12],[.3,.95],[.75,.5],[1,.25]]),bk=kf(v,[[0,.25],[.3,1.6],[.75,1.1],[1,.6]]);Pv.rotation.x=bt;U.knees[1].rotation.x=bk;U.feet[1].rotation.x=-(bt+bk);
+ const lt=kf(v,[[0,-.85],[.5,-.7],[1,-.6]]),lk=kf(v,[[0,.25],[.5,.5],[1,.5]]);L.rotation.x=lt;U.knees[0].rotation.x=lk;U.feet[0].rotation.x=-(lt+lk);
+ p.position.z=FP.P[1]+kf(v,[[0,4.6],[1,5.4]]);p.rotation.y=0;p.position.y=0;}
+async function followThrough(k){const p=fielders.P;if(!p||FAST||AUTO||!p.userData.up)return;const U=p.userData,id=U.wseq=(U.wseq||0)+1,t0=performance.now(),D=650,R=380;
+ const hb=U.hb;if(hb&&hb.parent)hb.parent.remove(hb);
+ return new Promise(res=>{const st=()=>{if(U.wseq!==id)return res();const t=performance.now()-t0;
+  if(t<D){followPose(p,t/D,k);requestAnimationFrame(st);}
+  else if(t<D+250){followPose(p,1,k);requestAnimationFrame(st);}
+  else if(t<D+250+R){const q=(t-D-250)/R,f=1-q*q*(3-2*q);followPose(p,1,k);// blend back to neutral
+   const sc=f;[U.arm,U.arm2].forEach(a=>{a.rotation.x*=sc;a.rotation.z*=sc;});U.elbow.rotation.x=-.25+(U.elbow.rotation.x+.25)*sc;U.elbow2.rotation.x=-.25+(U.elbow2.rotation.x+.25)*sc;
+   U.hips.forEach((h,i)=>{h.rotation.x*=sc;U.knees[i].rotation.x*=sc;U.feet[i].rotation.x*=sc;});U.up.rotation.x*=sc;U.up.rotation.y*=sc;p.position.z=FP.P[1]+5.4*sc;requestAnimationFrame(st);}
+  else{pitchReset(p);res();}};st();});}
 async function windupAnim(ms,hitch,k){
  if(!(fielders.C&&fielders.C.userData.ready))catcherRise(Math.max(300,ms*.9));
- const p=fielders.P;if(!p||FAST)return;const t0=performance.now();hitch=hitch||0;const base=ms-hitch,A=PARM[k]||PARM.FF,U=p.userData;
- return new Promise(res=>{const st=()=>{let t=performance.now()-t0;if(hitch){if(t>base*.5&&t<base*.5+hitch)t=base*.5;else if(t>=base*.5+hitch)t-=hitch;}const u=t/base;
-  const reset=()=>{U.elbow.rotation.x=-.25;U.arm.rotation.set(0,0,0);U.arm2.rotation.x=0;if(U.hand)U.hand.rotation.x=0;if(U.torso)U.torso.rotation.x=0;p.rotation.y=0;p.position.y=0;U.legs.position.y=1.05;};
-  if(u>=1){reset();return res();}
+ const p=fielders.P;if(!p||FAST)return;const U=p.userData;U.slot=slotOf(G&&G.curP);U.st=!!(G&&G.bases.some(Boolean));if(U.st)ms*=.82;const t0=performance.now();hitch=hitch||0;const base=ms-hitch,id=U.wseq=(U.wseq||0)+1;
+ return new Promise(res=>{const st=()=>{if(U.wseq!==id)return res();let t=performance.now()-t0;if(hitch){if(t>base*.45&&t<base*.45+hitch)t=base*.45;else if(t>=base*.45+hitch)t-=hitch;}const u=t/base;
+  if(u>=1){windupPose(p,1,k);return res();}
   windupPose(p,u,k);requestAnimationFrame(st);};st();});
 }
 /* ----- deliver pitch, resolve swing ----- */
 async function deliver(P,F,userBat,steal,bt){
- P.pc++;G.lastMph=F.mph;hud();
+ P.pc++;G.lastMph=F.mph;hud();followThrough(F.k);
  G.curFlight=F;
  const cpuBat=(!userBat||AUTO)?cpuBatterDecision(bt,P,F):null;if(AUTO)userBat=null;
  let swing=null;
@@ -1543,6 +1577,7 @@ async function animatePlay(res){
  for(const p of FPOS){const m=fielders[p];if(m){m.position.set(FP[p][0],0,FP[p][1]);m.rotation.set(0,p==='C'?Math.PI:0,0);if(m.userData.hips){m.userData.hips.forEach(h=>h.rotation.x=0);m.userData.knees.forEach(k=>k.rotation.x=0);m.userData.feet.forEach(f=>f.rotation.x=0);}}}
 }
 async function playBall(r){
+ pitchReset(fielders.P);
  const off=G.tm[G.off],def=G.tm[G.def],bt=G.batter,ls=off.lineStats[off.lineup.indexOf(bt)];
  const h=r.h;
  SFX.crack(h.q||.7);
