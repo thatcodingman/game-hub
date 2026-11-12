@@ -542,13 +542,22 @@ function crouch(p,d,lean,spread,useUp){
  else if(!u.crouched){u.crouched=1;p.children.filter(c=>c!==u.legs&&!(c.geometry&&c.geometry.type==='CircleGeometry')).forEach(c=>{c.position.y-=d;});}
 }
 
-function catcherPose(k){ // k=0 kneeling set (knees down, signs) -> k=1 deep receiving crouch, glove up
+function catcherPose(k){ // k=0 kneeling set -> k=1 deep receiving crouch (wide base, glove arm out)
  const C=fielders.C;if(!C)return;const u=C.userData,e=k*k*(3-2*k);
- crouch(C,1.5-.5*e,.12+.3*e,.34+.26*e,true);
- u.arm2.rotation.set(-.55-.75*e,0,.1);u.elbow2.rotation.x=-.5+.3*e;u.arm.rotation.set(-.3+.05*e,0,-.1);u.elbow.rotation.x=-.9+.3*e;u.glove.scale.set(1.5,1.4,1.5);
+ crouch(C,1.5-.58*e,.12+.4*e,.34+.3*e,true);
+ u.arm2.rotation.set(-.55-.95*e,0,.1);u.elbow2.rotation.x=-.5+.4*e;u.arm.rotation.set(-.3+.05*e,0,-.1);u.elbow.rotation.x=-.9+.4*e;u.glove.scale.set(1.5,1.4,1.5);
 }
-async function catcherRise(ms){const C=fielders.C;if(!C||FAST||AUTO){catcherPose(1);return;}const t0=performance.now();catcherPose(0);
- return new Promise(res=>{const st=()=>{const k=Math.min(1,(performance.now()-t0)/ms);catcherPose(k);if(k>=1)return res();requestAnimationFrame(st);};st();});}
+function catcherRise(ms){const C=fielders.C;if(!C)return;const u=C.userData,id=u.seq=(u.seq||0)+1;u.ready=true;if(FAST||AUTO){catcherPose(1);return;}const t0=performance.now();
+ const st=()=>{if(u.seq!==id)return;const k=Math.min(1,(performance.now()-t0)/ms);catcherPose(k);if(k<1)requestAnimationFrame(st);};st();}
+// pre-pitch routine: settle in, pound the glove twice, flash the sign, then set the target
+function catcherPre(){const C=fielders.C;if(!C)return;const u=C.userData,id=u.seq=(u.seq||0)+1;u.ready=false;if(FAST||AUTO){catcherPose(1);u.ready=true;return;}
+ const t0=performance.now(),T=[0,380,380+620,380+620+520],tot=T[3];
+ const st=()=>{if(u.seq!==id)return;const t=performance.now()-t0;
+  if(t<T[1]){catcherPose(.55*(t/T[1]));}
+  else if(t<T[2]){const q=(t-T[1])/(T[2]-T[1]);catcherPose(.55);const p=Math.sin(q*Math.PI*4);u.arm2.rotation.x=-1.05-.25*Math.max(0,p);u.elbow2.rotation.x=-.9+.5*Math.max(0,p);u.head.rotation.x=.06*Math.max(0,p);}
+  else if(t<tot){const q=(t-T[2])/(T[3]-T[2]);catcherPose(.55+.45*q*q*(3-2*q));u.head.rotation.x=0;}
+  else{catcherPose(1);u.head.rotation.x=0;u.ready=true;return;}
+  requestAnimationFrame(st);};st();}
 function person(col,pants,cap){
  const g=new THREE.Group(),SK=0xd9a679,cc=cap===undefined?col:cap;
  const cy=(rt,rb,h,c,x,y,z,p,sx,sz,seg)=>{const m=new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,h,seg||8),M(c));m.position.set(x,y,z);if(sx||sz)m.scale.set(sx||1,1,sz||1);(p||g).add(m);return m;};
@@ -977,7 +986,7 @@ function cpuContact(bt,P,F,pc){
 /* ----- USER PITCHES ----- */
 async function userPitchTurn(){
  const P=G.tm[G.def].cur,bt=G.batter,off=G.tm[G.off];
- G.curP=P;view('pitch');if(!AUTO&&!FAST)catcherPose(0);G.pitching=true;G.batting=false;G.batReady=false;
+ G.curP=P;view('pitch');catcherPre();G.pitching=true;G.batting=false;G.batReady=false;
  if(!P.pit.includes(G.sel))G.sel=P.pit[0];
  G.canPC=true;G.canPick=G.bases.some(Boolean);G.canSteal=false;G.canGo=false;G.canChal=false;
  G.errBase=(1.3-P.cmd)*(1+fat(P)*1.1)*.62;
@@ -997,7 +1006,7 @@ async function userPitchTurn(){
   clockStop();
  }
  G.awaitPitch=false;G.canPC=false;G.canPick=false;G.pitching=false;buildBar();hint('');
- if(spec.viol){msg('PITCH CLOCK VIOLATION',1500,'AUTOMATIC BALL');SFX.buzz();await sleep(1200);return{evt:'autoball'};}
+ if(spec.viol){msg('PITCH CLOCK',1300,'AUTO FASTBALL DOWN THE MIDDLE');SFX.buzz();spec={k:P.pit.includes('FF')?'FF':P.pit[0],ax:0,ay:2.5,hold:.9,pick:false};}
  if(spec.pc){return{evt:'noop'};}
  if(spec.pick)return await pickoffMove();
  // error
@@ -1011,7 +1020,7 @@ async function userPitchTurn(){
  if(ci>=0){const rn=G.bases[ci];const tempo=clamp(h,.35,2.2);const pr=(.025+rn.spd*.11)*(tempo>1.3?2.6:tempo<.8?.4:1)*(G.outs===2?1.2:1)*(G.inn>=G.N&&Math.abs(G.score[0]-G.score[1])<=1?.8:1);
   if(Math.random()<pr){steal={ci,j:.6+Math.random()*.4};msg('RUNNER GOING!',900);SFX.chime();}}
  F.tempo=h;
- if(!AUTO){G.windStart=performance.now();G.windDur=0;await windupAnim(620,0);}
+ if(!AUTO){G.windStart=performance.now();G.windDur=0;await windupAnim(620,0,F.k);}
  return await deliver(P,F,null,steal,bt);
 }
 async function pickoffMove(){
@@ -1024,21 +1033,20 @@ async function pickoffMove(){
 /* ----- USER BATS ----- */
 async function userBatTurn(){
  const P=G.tm[G.def].cur,bt=G.batter;G.curP=P;
- view('bat');if(!AUTO&&!FAST)catcherPose(0);G.pitching=false;G.batting=true;G.batReady=false;G.canPC=false;G.canPick=false;
+ view('bat');catcherPre();G.pitching=false;G.batting=true;G.batReady=false;G.canPC=false;G.canPick=false;
  G.batR=(.46+bt.con/260)*df().bat;
  const ci=stealCandidate();G.canSteal=ci>=0;G.canGo=false;G.stealArmed=false;G.canChal=false;
  hint(ci>=0?'MOVE RING • TAP TO SWING • STEAL: S':'MOVE RING OVER THE BALL • TAP TO SWING');
  G.batReady=true;buildBar();hud();
  if(AUTO)await sleep(0);
  else{const base=CLKV[OPT.clock],dur=(base||15)+(G.bases.some(Boolean)?3:0);if(base)clockStart(dur,false);
-  if(base&&Math.random()<.02){await sleep(dur*1000+300);clockStop();msg('PITCH CLOCK VIOLATION',1500,'AUTOMATIC BALL');SFX.buzz();G.batting=false;G.batReady=false;await sleep(1200);return{evt:'autoball'};}
   const tempo=clamp((.9+Math.random()*2.8+(G.s===2?.7:0)+(G.bases.some(Boolean)?.8:0))*tmg().d,.5,dur-1.5);await sleep(tempo*1000);}
  const spec=cpuPitchSpec(P,bt),F=mkFlight(P,spec.k,spec.ax,spec.ay);
  // windup (pitcher leg lift cue)
  const TG=tmg(),wind=AUTO?0:TG.w+TG.h;G.windStart=performance.now();G.windDur=wind;G.released=false;
  const p=fielders.P;
  G.canGo=G.stealArmed;buildBar();
- await windupAnim(wind,TG.h);clockStop();
+ await windupAnim(wind,TG.h,spec.k);clockStop();
  G.released=true;G.canSteal=false;G.canGo=false;buildBar();
  let steal=null;
  if(G.stealArmed&&ci>=0){steal={ci,j:G.jump==null?.25:G.jump};}
@@ -1048,11 +1056,25 @@ function doSteal(){if(!G.canSteal)return;G.stealArmed=true;G.canSteal=false;G.ca
 function doGo(){if(!G.canGo||G.jump!=null)return;const w=G.windDur?clamp((performance.now()-G.windStart)/G.windDur,-1,1.2):0;
  G.jump=w<0?.25:clamp(1-Math.abs(w-.42)/.45,.05,1);G.canGo=false;
  const tag=w<.2?'EARLY':w<.62?'GREAT JUMP':'LATE';msg(tag,700);buildBar();}
-async function windupAnim(ms,hitch){
- catcherRise(Math.max(300,ms*.9));
- const p=fielders.P;if(!p||FAST)return;const t0=performance.now();hitch=hitch||0;const base=ms-hitch;
- return new Promise(res=>{const st=()=>{let t=performance.now()-t0;if(hitch){if(t>base*.5&&t<base*.5+hitch)t=base*.5;else if(t>=base*.5+hitch)t-=hitch;}const u=t/base;if(u>=1){p.userData.elbow.rotation.x=-.25;p.userData.arm.rotation.x=0;p.position.y=0;return res();}
-  p.userData.arm.rotation.x=u<.5?-u*5:-2.5+(u-.5)*7;p.userData.elbow.rotation.x=u<.5?-1.2+u*1.6:-.4-(u-.5)*.5;p.position.y=0;p.userData.legs.position.y=1.05+(u>.3&&u<.6?.45:0);requestAnimationFrame(st);};st();});
+// per-pitch delivery: arm slot (z), arm lag (changeup looks slow through the zone), lean, wrist snap, glove tuck
+const PARM={FF:{z:.05,lag:1,lean:.28,snap:.2,el:0},SI:{z:.42,lag:1,lean:.22,snap:.1,el:.1},CT:{z:.2,lag:1,lean:.25,snap:.45,el:0},SL:{z:.8,lag:1,lean:.3,snap:.7,el:.25},
+ CB:{z:-.28,lag:1,lean:.45,snap:1.1,el:-.2},CH:{z:.12,lag:1.35,lean:.12,snap:-.3,el:.1},SP:{z:.0,lag:1.12,lean:.32,snap:-.15,el:.05}};
+function windupPose(p,u,k){const U=p.userData,A=PARM[k]||PARM.FF;
+  const ua=Math.pow(Math.min(1,u),u>.5?A.lag:1),bump=Math.sin(Math.min(1,Math.max(0,(u-.25)/.6))*Math.PI);
+  U.arm.rotation.x=ua<.5?-ua*5:-2.5+(ua-.5)*7;U.arm.rotation.z=A.z*1.8*bump;
+  U.elbow.rotation.x=(ua<.5?-1.2+ua*1.6:-.4-(ua-.5)*.5)-A.el*bump;
+  if(U.hand)U.hand.rotation.x=A.snap*Math.max(0,Math.min(1,(u-.55)*4))*(u<.85?1:Math.max(0,1-(u-.85)*6));
+  U.arm2.rotation.x=-1.15*Math.sin(Math.min(1,u*1.4)*Math.PI*.5)*(u<.7?1:Math.max(.2,1-(u-.7)*2.5));
+  if(U.torso)U.torso.rotation.x=A.lean*1.3*bump;
+  p.rotation.y=-A.z*.3*bump;
+  p.position.y=0;U.legs.position.y=1.05+(u>.3&&u<.6?.45:0);}
+async function windupAnim(ms,hitch,k){
+ if(!(fielders.C&&fielders.C.userData.ready))catcherRise(Math.max(300,ms*.9));
+ const p=fielders.P;if(!p||FAST)return;const t0=performance.now();hitch=hitch||0;const base=ms-hitch,A=PARM[k]||PARM.FF,U=p.userData;
+ return new Promise(res=>{const st=()=>{let t=performance.now()-t0;if(hitch){if(t>base*.5&&t<base*.5+hitch)t=base*.5;else if(t>=base*.5+hitch)t-=hitch;}const u=t/base;
+  const reset=()=>{U.elbow.rotation.x=-.25;U.arm.rotation.set(0,0,0);U.arm2.rotation.x=0;if(U.hand)U.hand.rotation.x=0;if(U.torso)U.torso.rotation.x=0;p.rotation.y=0;p.position.y=0;U.legs.position.y=1.05;};
+  if(u>=1){reset();return res();}
+  windupPose(p,u,k);requestAnimationFrame(st);};st();});
 }
 /* ----- deliver pitch, resolve swing ----- */
 async function deliver(P,F,userBat,steal,bt){
@@ -1329,7 +1351,7 @@ function planPlay(h,bt){
  const Tth=(from,e,t0,xf)=>t0+xf+Math.hypot(from[0]-BASEP[e][0],from[1]-BASEP[e][1])/vth;
  let dropped=false;
  if(caught){
-  if(Math.random()<.006)dropped=true;
+  if(Math.random()<.025)dropped=true;
   else{
    const xf=xferOf(fp,F.dive);
    outsPush(bt,0,F.s.t,true,'fly');R[R.length-1].final=0;R[R.length-1].out={base:0,t:F.s.t};
@@ -1352,8 +1374,8 @@ function planPlay(h,bt){
  if(!caught||dropped){
   res.kind='';
   let tf=F.s.t;const xf=xferOf(fp,F.dive);
-  let errP=(isOF(fp)?.006:.012)+(h.ev>98?.008:0)+(F.dive?.06:0);
-  if(dropped){res.err=true;tf+=.7;}else if(Math.random()<errP){res.err=true;tf+=.9;}
+  let errP=.015+(h.ev>98?.006:0)+(F.dive?.05:0);
+  if(dropped){res.err=true;res.drop=true;tf+=.7;}else if(Math.random()<errP){res.err=true;tf+=.9;}
   res.F.tf=tf;
   const infield=!isOF(fp)||Math.hypot(pf[0],pf[1])<150;
   const occ=new Set();
@@ -1373,7 +1395,9 @@ function planPlay(h,bt){
   if(bestC){
    const r=bestC.r,base=r.tgt;
    res.throws.push({t0:tf+xf,t1:Math.max(tf+xf+.25,bestC.Te),from:pf,to:BASEP[base],base});
-   if(bestC.m>0&&Math.random()>.035){
+   if(bestC.m>0&&Math.random()<.03){ // wild throw: ball sails past the bag, runner takes an extra base
+    res.err=true;res.wild=true;const th=res.throws[res.throws.length-1],bp=BASEP[base];th.to=base===4?[bp[0],bp[1]+26]:[bp[0]*1.32,bp[1]*1.32];th.t1+=.35;r.tgt=Math.min(4,base+1);
+   }else if(bestC.m>0&&Math.random()>.035){
     r.out={base,t:bestC.Te};outsPush(r.p,base,bestC.Te,bestC.forced||base===1&&r.from===0,bestC.forced||(base===1&&r.from===0)?'force':'tag');
     // relay for the double play
     if(bestC.forced&&base>=2&&outs0+1<3){const bR=R[R.length-1];
@@ -1415,7 +1439,7 @@ function planPlay(h,bt){
  else if(k==='gout'){res.title='GROUND OUT';res.sub=who+(res.throws[0]&&res.throws[0].base===1?' TO FIRST':'');}
  else if(k==='dp'){res.title='DOUBLE PLAY!';res.sub=who+' • TURN TWO';}
  else if(k==='fc'){const o=res.outsList[0];res.title="FIELDER'S CHOICE";res.sub='OUT AT '+BASEN[o.base];}
- else if(k==='error'){res.title='ERROR';res.sub=who+' MISPLAYS IT';}
+ else if(k==='error'){res.title='ERROR';res.sub=res.wild?who+' THROWS IT AWAY':who+(res.drop?' DROPS IT':' MISPLAYS IT');}
  else if(k==='stretch'){res.title='THROWN OUT STRETCHING';res.sub='OUT AT '+BASEN[res.outsList[0].base];}
  else{res.title={single:'SINGLE',double:'DOUBLE',triple:'TRIPLE',hr:'INSIDE-THE-PARK HR!'}[k]||'HIT';const dd=Math.round(Math.hypot(pf[0],pf[1]));res.sub=Math.round(h.ev)+' MPH • '+dd+' FT';}
  return res;
@@ -1475,6 +1499,7 @@ async function animatePlay(res){
   const mesh=r.key==='bat'?bat:runnersM[r.key];if(!mesh)continue;
   const sp=r.key==='bat'?[-3.1,.5]:[BASEP[r.from][0],BASEP[r.from][1]];
   const w=[[0,sp[0],0,sp[1]],[r.start,sp[0],0,sp[1]]];
+  if(r.key==='bat'&&r.out&&r.out.base===0){const p1=BASEP[1],q=Math.max(.15,Math.min(.55,(r.out.t-r.start)/3.2));w.push([r.out.t,sp[0]+(p1[0]-sp[0])*q,0,sp[1]+(p1[1]-sp[1])*q]);}
   const stop=r.out?r.out.base:r.final>=4?4:r.final;
   const ks=Object.keys(r.arr).map(Number).sort((a,b)=>a-b).filter(e=>e<=Math.max(stop,r.from));
   for(const e of ks){w.push([r.arr[e],BASEP[e][0],0,BASEP[e][1]]);}
@@ -1490,7 +1515,12 @@ async function animatePlay(res){
  bU.up.rotation.set(0,0,0);bU.hips.forEach(h=>h.rotation.z=0);
  let msgd=false;
  const fld=Object.keys(ft);
- const T=res.tEnd+.4;
+ const evs=[];
+ for(const o of res.outsList){if(o.base>0)evs.push({t:o.t,txt:'OUT!',out:1});}
+ for(const r of res.R){if(r.out||r.final<=r.from||res.hr)continue;const th=res.throws.find(x=>x.base===r.tgt);if(th&&r.arr[r.tgt]!=null&&!res.wild)evs.push({t:r.arr[r.tgt],txt:'SAFE!'});}
+ evs.sort((a,b)=>a.t-b.t);const ev1=evs.slice(0,2);
+ const tTitle=Math.max(res.tMsg,...ev1.map(e=>e.t+.8));
+ const T=Math.max(res.tEnd+.4,tTitle+1.2);
  for(;;){
   const t=(performance.now()-T0)/1000*SP;
   const bp=trackAt(ballW,t);ball.position.set(bp[0],bp[1],bp[2]);ball.visible=true;
@@ -1503,7 +1533,8 @@ async function animatePlay(res){
   for(const q of rt){const pos=trackAt(q.w,t),m=q.mesh;const px=m.position.x,pz=m.position.z;m.position.set(pos[0],0,pos[2]);
    const dx=pos[0]-px,dz=pos[2]-pz,mv=dx*dx+dz*dz>1e-6;if(mv)m.rotation.y=Math.atan2(dx,dz);
    const u=m.userData;if(u.hips&&mv){const ph=t*16;u.hips.forEach((h,i)=>{h.rotation.x=-Math.sin(ph+Math.PI*i)*.85;u.knees[i].rotation.x=Math.max(0,Math.sin(ph+Math.PI*i+1.5))*1.2;u.feet[i].rotation.x=-(h.rotation.x+u.knees[i].rotation.x);});u.arm.rotation.set(Math.sin(ph)*.9,0,0);u.arm2.rotation.set(-Math.sin(ph)*.9,0,0);u.elbow.rotation.x=-1.1;u.elbow2.rotation.x=-1.1;}}
-  if(!msgd&&t>=res.tMsg){msgd=true;msg(res.title,1700,res.sub);if(res.kind==='hr'){SFX.roar(1.4);dugReact(G.off,'hr');}else if(res.hit||res.runs>0){SFX.roar(.8);dugReact(G.off,res.runs>0?'run':'cheer');}else{SFX.roar(.3);dugReact(G.def,res.dp?'cheer':'k');if(res.dp)dugReact(G.off,'down');}}
+  for(const e of ev1){if(!e.shown&&t>=e.t){e.shown=true;msg(e.txt,750);if(e.out)SFX.out&&SFX.out();}}
+  if(!msgd&&t>=tTitle){msgd=true;msg(res.title,1700,res.sub);if(res.kind==='hr'){SFX.roar(1.4);dugReact(G.off,'hr');}else if(res.hit||res.runs>0){SFX.roar(.8);dugReact(G.off,res.runs>0?'run':'cheer');}else{SFX.roar(.3);dugReact(G.def,res.dp?'cheer':'k');if(res.dp)dugReact(G.off,'down');}}
   if(t>=T)break;
   await frame();
  }
