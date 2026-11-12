@@ -79,6 +79,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}td,th{padd
 <div class="row"><span class="l">DIFFICULTY</span><span class="v"><button data-m="df-1">◀</button><span id="mDf"></span><button data-m="df1">▶</button></span></div>
 <div class="row"><span class="l">TIME OF DAY</span><span class="v"><button data-m="td-1">◀</button><span id="mTd"></span><button data-m="td1">▶</button></span></div>
 <div class="row"><span class="l">PITCH CLOCK</span><span class="v"><button data-m="ck-1">◀</button><span id="mCk"></span><button data-m="ck1">▶</button></span></div>
+<div class="row"><span class="l">PITCH GUIDE</span><span class="v"><button data-m="gd-1">◀</button><span id="mGd"></span><button data-m="gd1">▶</button></span></div>
 <div class="row"><span class="l">PITCH TIMING</span><span class="v"><button data-m="tm-1">◀</button><span id="mTm"></span><button data-m="tm1">▶</button></span></div>
 <div class="row"><span class="l">ABS CHALLENGES</span><span class="v"><button data-m="ch-1">◀</button><span id="mCh"></span><button data-m="ch1">▶</button></span></div>
 <button class="btn go" id="mGo" style="width:100%;font-size:18px;min-height:56px">PLAY BALL</button>
@@ -126,7 +127,8 @@ const trueStrike=(x,y)=>Math.abs(x)<=PW+BR&&y>=ZB-BR&&y<=ZT+BR;
 const edgeDist=(x,y)=>{const dx=Math.abs(x)-(PW+BR),dy=y<2.5?(ZB-BR)-y:y-(ZT+BR);return Math.max(dx,dy);}; // + outside, - inside
 const fence=a=>330+70*Math.cos(2*Math.abs(a)*Math.PI/180);
 /* ============ GLOBAL STATE ============ */
-const OPT={me:0,op:1,inn:1,bat:0,ch:1,mode:0,diff:1,tod:0,clock:2,tm:0};
+const OPT={me:0,op:1,inn:1,bat:0,ch:1,mode:0,diff:1,tod:0,clock:2,tm:0,gd:0};
+const GDN=['FULL GUIDE • BEGINNER','AIM + BREAK ARROW','OFF • VETERAN'];
 const TMN=['STEADY • 0.85s','QUICK PITCH • 0.5s','SLOW WINDUP • 1.25s','RANDOM TEMPO','HITCH / HESITATION'];
 function tmg(){const m=OPT.tm|0;if(m===1)return{w:520,d:.45,h:0};if(m===2)return{w:1250,d:1.2,h:0};if(m===3)return{w:480+Math.random()*820,d:.4+Math.random()*1.4,h:0};if(m===4)return{w:850,d:1,h:Math.random()<.55?260+Math.random()*320:0};return{w:850,d:1,h:0};}
 const CLKN=['OFF','10 SEC','15 SEC (MLB)','20 SEC','30 SEC'],CLKV=[0,10,15,20,30];
@@ -762,7 +764,12 @@ function drawOverlay(now){
   ox.strokeStyle=pt.c;ox.lineWidth=Math.max(2,W/500);ox.beginPath();ox.arc(c[0],c[1],Math.max(6,r),0,7);ox.stroke();
   ox.beginPath();ox.moveTo(c[0]-10,c[1]);ox.lineTo(c[0]+10,c[1]);ox.moveTo(c[0],c[1]-10);ox.lineTo(c[0],c[1]+10);ox.stroke();
   // trajectory preview: tapered glowing ribbon, travelling pulses, ghost ball at the plate, caption pill
-  try{const sc=1-.25*fat(G.curP),f={S:[0,6.1,-55.5],E:[PT.x,PT.y,0],B:[pt.bx*sc,pt.by*sc,0]},f0={S:f.S,E:f.E,B:[0,0,0]};
+  if((OPT.gd|0)===1)try{const sc=1-.25*fat(G.curP),a=scr(PT.x,PT.y),b=scr(PT.x+pt.bx*sc*1.6,PT.y+pt.by*sc*1.6),dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy)||1,len=Math.min(Math.max(L,W/110),W/22),ux=dx/L,uy=dy/L,r0=Math.max(10,r)+6;
+   ox.save();ox.strokeStyle=pt.c;ox.fillStyle=pt.c;ox.globalAlpha=.85;ox.lineWidth=Math.max(2.5,W/380);ox.lineCap='round';
+   const x0=a[0]+ux*r0,y0=a[1]+uy*r0,x1=x0+ux*len,y1=y0+uy*len;ox.beginPath();ox.moveTo(x0,y0);ox.lineTo(x1,y1);ox.stroke();
+   const hs=Math.max(6,W/150);ox.beginPath();ox.moveTo(x1+ux*hs,y1+uy*hs);ox.lineTo(x1-uy*hs*.7,y1+ux*hs*.7);ox.lineTo(x1+uy*hs*.7,y1-ux*hs*.7);ox.closePath();ox.fill();
+   ox.globalAlpha=.9;ox.font='800 '+Math.max(12,W/70)+'px system-ui,sans-serif';ox.textAlign='center';ox.shadowColor='rgba(0,0,0,.8)';ox.shadowBlur=4;ox.fillStyle='#fff';ox.fillText(pt.n,W/2,Math.max(24,H*.06));ox.restore();}catch(e){}
+  if((OPT.gd|0)===0)try{const sc=1-.25*fat(G.curP),f={S:[0,6.1,-55.5],E:[PT.x,PT.y,0],B:[pt.bx*sc,pt.by*sc,0]},f0={S:f.S,E:f.E,B:[0,0,0]};
    const N=36,pts=[],base=[];for(let i=0;i<=N;i++){const p=pitchPos(f,i/N);pts.push(scr(p[0],p[1],p[2]));const p0=pitchPos(f0,i/N);base.push(scr(p0[0],p0[1],p0[2]));}
    ox.save();ox.lineCap='round';
    // straight-line reference: faint dotted
@@ -800,6 +807,19 @@ function drawOverlay(now){
   ox.fillStyle='rgba(255,210,63,.25)';ox.fill();
  }
  if(G.cpuAim){const c=scr(G.cpuAim[0],G.cpuAim[1]);ox.fillStyle='rgba(255,255,255,.0)';}
+ try{drawPitchFeedback(W,H);}catch(e){}
+}
+function drawPitchFeedback(W,H){
+ const fb=G&&G.fb;if(!fb||(OPT.gd|0)===2)return;const now=performance.now();if(now<fb.t||now>fb.t+2400)return;
+ const a=scr(fb.ax,fb.ay),b=scr(fb.tx,fb.ty),k=Math.min(1,(now-fb.t)/180),fade=Math.min(1,(fb.t+2400-now)/500),pf=Math.abs(scr(1,2.5)[0]-scr(0,2.5)[0]);
+ const dxi=(fb.tx-fb.ax)*12,dyi=(fb.ty-fb.ay)*12,mi=Math.hypot(dxi,dyi);
+ const lab=mi<2.5?'PERFECT':Math.round(mi)+'" '+(Math.abs(dyi)>Math.abs(dxi)?(dyi<0?'LOW':'HIGH'):(dxi<0?'LEFT':'RIGHT'))+' OF TARGET';
+ ox.save();ox.globalAlpha=fade;ox.lineCap='round';ox.strokeStyle='rgba(255,255,255,.85)';ox.lineWidth=Math.max(2,W/500);const s=Math.max(7,W/120);
+ ox.beginPath();ox.moveTo(a[0]-s,a[1]-s);ox.lineTo(a[0]+s,a[1]+s);ox.moveTo(a[0]+s,a[1]-s);ox.lineTo(a[0]-s,a[1]+s);ox.stroke();
+ ox.setLineDash([4,5]);ox.beginPath();ox.moveTo(a[0],a[1]);ox.lineTo(a[0]+(b[0]-a[0])*k,a[1]+(b[1]-a[1])*k);ox.stroke();ox.setLineDash([]);
+ ox.fillStyle=mi<2.5?'#4ade80':mi<7?'#fbbf24':'#f87171';ox.beginPath();ox.arc(b[0],b[1],Math.max(5,W/190),0,7);ox.fill();
+ const fs=Math.max(12,W/62);ox.font='800 '+fs+'px system-ui,sans-serif';ox.textAlign='center';ox.shadowColor='rgba(0,0,0,.85)';ox.shadowBlur=5;ox.fillStyle='#fff';
+ ox.fillText(lab+'  •  '+fb.mph+' MPH',W/2,Math.max(24,H*.07));ox.restore();
 }
 /* ============ INPUT ============ */
 const PKEYS=['q','w','e','r','y','u'];
@@ -1052,6 +1072,7 @@ async function userPitchTurn(){
  const a=Math.random()*6.283,rr=Math.sqrt(Math.random())*r*.7+Math.abs(gauss())*r*.18;
  const tx=spec.ax+Math.cos(a)*rr,ty=spec.ay+Math.sin(a)*rr;
  const F=mkFlight(P,spec.k,tx,ty);
+ if(!AUTO)G.fb={ax:spec.ax,ay:spec.ay,tx,ty,mph:F.mph,t:performance.now()+F.tF*1000+120};
  // CPU runner decides to go?
  let steal=null;const ci=stealCandidate();
  if(ci>=0){const rn=G.bases[ci];const tempo=clamp(h,.35,2.2);const pr=(.025+rn.spd*.11)*(tempo>1.3?2.6:tempo<.8?.4:1)*(G.outs===2?1.2:1)*(G.inn>=G.N&&Math.abs(G.score[0]-G.score[1])<=1?.8:1);
@@ -1940,7 +1961,7 @@ function menuRender(){
  $('mMe').innerHTML='<span class="sw" style="background:#'+TEAMS[OPT.me].c.toString(16).padStart(6,'0')+'"></span>'+TEAMS[OPT.me].n;
  $('mOp').innerHTML='<span class="sw" style="background:#'+TEAMS[OPT.op].c.toString(16).padStart(6,'0')+'"></span>'+TEAMS[OPT.op].n;
  $('mIn').textContent=INN[OPT.inn]+' INNINGS';$('mSd').textContent=OPT.bat?'FIRST (AWAY)':'SECOND (HOME)';$('mCh').textContent=CHN[OPT.ch]+' PER TEAM';
- $('mMd').textContent=MODEN[OPT.mode];$('mTm').textContent=TMN[OPT.tm|0];$('mCk').textContent=CLKN[OPT.clock]+(OPT.clock?' • +3 W/ RUNNERS':'');$('mDf').textContent=DIFF[OPT.diff].n;$('mTd').textContent=TODN[OPT.tod];
+ $('mMd').textContent=MODEN[OPT.mode];$('mTm').textContent=TMN[OPT.tm|0];$('mGd').textContent=GDN[OPT.gd|0];$('mCk').textContent=CLKN[OPT.clock]+(OPT.clock?' • +3 W/ RUNNERS':'');$('mDf').textContent=DIFF[OPT.diff].n;$('mTd').textContent=TODN[OPT.tod];
  const d=OPT.mode===1,sn=OPT.mode===2;
  ['mOp','mSd','mCh'].forEach(id=>$(id).closest('.row').style.opacity=d?.35:1);$('mIn').closest('.row').style.opacity=d?.35:1;$('mOp').closest('.row').style.opacity=(d||sn)?.35:1;$('mSd').closest('.row').style.opacity=(d||sn)?.35:1;
  let seaTxt='';try{const S=JSON.parse(localStorage.getItem(SKEY)||'null');if(S&&S.phase!=='done')seaTxt=' • '+TEAMS[S.me].a+' '+S.rec[S.me].w+'-'+S.rec[S.me].l+' IN PROGRESS';}catch(e){}
@@ -1955,6 +1976,7 @@ document.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>
  else if(m.startsWith('md'))OPT.mode=(OPT.mode+(m==='md1'?1:2))%3;
  else if(m.startsWith('df'))OPT.diff=(OPT.diff+(m==='df1'?1:2))%3;
  else if(m.startsWith('td'))OPT.tod=(OPT.tod+(m==='td1'?1:3))%4;
+ else if(m.startsWith('gd'))OPT.gd=((OPT.gd|0)+(m==='gd1'?1:2))%3;
  else if(m.startsWith('tm'))OPT.tm=((OPT.tm|0)+(m==='tm1'?1:4))%5;
  else if(m.startsWith('ck'))OPT.clock=(OPT.clock+(m==='ck1'?1:4))%5;
  try{localStorage.setItem('pc_opt',JSON.stringify(OPT));}catch(e){}
