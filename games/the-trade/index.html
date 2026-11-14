@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Trade: Carpentry</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: #0A0A0F;
+    overscroll-behavior: none;
+    touch-action: none;
+    width: 100%; height: 100%;
+  }
+  #game-root { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  canvas { outline: none; }
+</style>
+</head>
+<body>
+<div id="game-root"></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* =========================================================================
+   PALETTE
+   ========================================================================= */
+var C = {
+  bg: 0x0A0A0F,
+  shadow: 0x11131B,
+  bench: 0x1C2029,
+  boardBase: 0xB9824F,
+  boardHi: 0xE5B878,
+  boardShadow: 0x70462F,
+  grain: 0x815536,
+  grainHi: 0xD8A66E,
+  steel: 0xAEB9C7,
+  grip: 0x293445,
+  accent: 0x55D6C2,
+  clean: 0x58D68D,
+  workable: 0xF2B84B,
+  rework: 0xFF6B78,
+  panel: 0x151821,
+  panelRaised: 0x202431,
+  border: 0x343B49,
+  lampGlow: 0xF4B45E
+};
+var TXT_PRIMARY = '#F3F0E8';
+var TXT_SECONDARY = '#A4ADBA';
+
+/* =========================================================================
+   SYNTHESIZED AUDIO (no sfx.js available in this workspace; self-contained
+   WebAudio engine built to the event table from the spec.)
+   ========================================================================= */
+var SFX = (function () {
+  var ctx = null, master = null, muted = false, noiseBuf = null;
+  function ensure() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain();
+      master.gain.value = 0.55;
+      master.connect(ctx.destination);
+      var len = ctx.sampleRate * 1.0;
+      noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var d = noiseBuf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    } catch (e) { ctx = null; }
+  }
+  function tone(freq, dur, type, peak, delay) {
+    ensure(); if (!ctx || muted) return;
+    var t0 = ctx.currentTime + (delay || 0);
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak || 0.2, t0 + Math.min(0.02, dur * 0.3));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(master);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  }
+  function sweep(f0, f1, dur, type, peak) {
+    ensure(); if (!ctx || muted) return;
+    var t0 = ctx.currentTime;
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    osc.type = type || 'sawtooth';
+    osc.frequency.setValueAtTime(f0, t0);
+    osc.frequency.linearRampToValueAtTime(f1, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak || 0.18, t0 + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(master);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, filterFreq, q, peak) {
+    ensure(); if (!ctx || muted) return;
+    var t0 = ctx.currentTime;
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    var f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = filterFreq || 2000;
+    f.Q.value = q || 1;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak || 0.15, t0 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t0); src.stop(t0 + dur + 0.02);
+  }
+  var sawNodes = null;
+  return {
+    setMuted: function (m) { muted = m; },
+    isMuted: function () { return muted; },
+    unlock: function () { ensure(); if (ctx && ctx.state === 'suspended') ctx.resume(); },
+    tapePull: function () { noise(0.3, 2000, 2.2, 0.08); },
+    tapeLock: function () { tone(1200, 0.03, 'square', 0.1); tone(1800, 0.03, 'square', 0.08, 0.03); },
+    pencilMark: function () { noise(0.05, 1500, 3, 0.06); },
+    knifeScore: function () { noise(0.14, 2600, 4, 0.07); },
+    sawStart: function () { sweep(90, 150, 0.15, 'sawtooth', 0.12); },
+    sawLoopStart: function () {
+      ensure(); if (!ctx || muted) return;
+      if (sawNodes) return;
+      var osc = ctx.createOscillator(), n = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+      osc.type = 'sawtooth'; osc.frequency.value = 150;
+      n.buffer = noiseBuf; n.loop = true;
+      f.type = 'bandpass'; f.frequency.value = 160; f.Q.value = 0.8;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.05);
+      osc.connect(f); n.connect(f); f.connect(g); g.connect(master);
+      osc.start(); n.start();
+      sawNodes = { osc: osc, n: n, g: g };
+    },
+    sawLoopStop: function () {
+      if (!sawNodes || !ctx) return;
+      var t0 = ctx.currentTime;
+      sawNodes.g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
+      var sn = sawNodes; sawNodes = null;
+      setTimeout(function () { try { sn.osc.stop(); sn.n.stop(); } catch (e) {} }, 100);
+    },
+    sawEnd: function () { sweep(160, 70, 0.2, 'sawtooth', 0.1); noise(0.08, 900, 1.5, 0.05); },
+    chiselTapLight: function () { tone(1600, 0.03, 'triangle', 0.08); tone(180, 0.08, 'sine', 0.1); },
+    chiselTapFirm: function () { tone(1800, 0.04, 'triangle', 0.12); tone(150, 0.09, 'sine', 0.14); },
+    chiselPare: function () { noise(0.12, 3000, 3, 0.06); },
+    drillStart: function () { sweep(100, 220, 0.14, 'square', 0.1); },
+    screwDrive: function () { sweep(300, 420, 0.45, 'square', 0.1); },
+    dryfitPlace: function () { tone(220, 0.08, 'sine', 0.1); },
+    dryfitSnapClean: function () { tone(500, 0.08, 'sine', 0.1); tone(640, 0.09, 'sine', 0.09, 0.07); },
+    resultClean: function () { tone(660, 0.18, 'sine', 0.14); tone(880, 0.22, 'sine', 0.12, 0.12); },
+    resultWorkable: function () { tone(440, 0.2, 'sine', 0.12); tone(520, 0.2, 'sine', 0.1, 0.1); },
+    resultRework: function () { tone(330, 0.2, 'sine', 0.1); tone(392, 0.2, 'sine', 0.09, 0.12); },
+    projectComplete: function () { tone(523, 0.3, 'sine', 0.14); tone(659, 0.3, 'sine', 0.13, 0.18); tone(784, 0.4, 'sine', 0.13, 0.36); }
+  };
+})();
+
+/* =========================================================================
+   SAVE SYSTEM
+   ========================================================================= */
+var SAVE_KEY = 'theTrade.carpentry.v1';
+function defaultSave() {
+  return { version: 1, unlockedProject: 0, completed: [], bestMetrics: {}, settings: { reducedMotion: false, muted: false }, seenMentorBeats: [] };
+}
+var Save = (function () {
+  var data = null;
+  function load() {
+    try {
+      var raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) { data = defaultSave(); return data; }
+      var parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== 1 || typeof parsed.unlockedProject !== 'number') { data = defaultSave(); return data; }
+      data = parsed;
+      return data;
+    } catch (e) { data = defaultSave(); return data; }
+  }
+  function persist() {
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {}
+  }
+  return {
+    get: function () { if (!data) load(); return data; },
+    completeProject: function (id, metrics) {
+      if (!data) load();
+      if (data.completed.indexOf(id) === -1) data.completed.push(id);
+      data.bestMetrics[id] = metrics;
+      if (data.unlockedProject < data.completed.length) data.unlockedProject = Math.min(PROJECTS.length - 1, data.completed.length);
+      persist();
+    },
+    isUnlocked: function (idx) { if (!data) load(); return idx <= data.unlockedProject; },
+    setMuted: function (m) { if (!data) load(); data.settings.muted = m; persist(); },
+    isMuted: function () { if (!data) load(); return !!data.settings.muted; }
+  };
+})();
+
+/* =========================================================================
+   PROJECT DATA
+   ========================================================================= */
+var PROJECTS = [
+  {
+    id: 'frame',
+    title: 'Butt-Jointed Frame',
+    emoji: '\u{1FA9A}',
+    summary: 'A small 24"×18" rectangle. The first lesson: a reference edge, a repeatable measurement, and a square check before anything gets fastened.',
+    intro: 'Every measurement needs a known starting edge. If that edge is crooked, the next number can be right and the cut can still be wrong.',
+    boards: [
+      { id: 'rail1', label: 'Rail A', nominal: '1×3', targetIn: 24 },
+      { id: 'rail2', label: 'Rail B', nominal: '1×3', targetIn: 24 },
+      { id: 'stile1', label: 'Stile A', nominal: '1×3', targetIn: 16.5 },
+      { id: 'stile2', label: 'Stile B', nominal: '1×3', targetIn: 16.5 }
+    ],
+    diagonalTargetIn: 30,
+    drill: true,
+    plumb: false,
+    joints: null
+  },
+  {
+    id: 'wall',
+    title: 'Stud-Wall Section',
+    emoji: '\u{1F9F1}',
+    summary: 'A 48"×48" practice wall, 2×4 actual 1½"×3½". Layout, repeatable spacing, and the gap between "measured" and "plumb."',
+    intro: 'We check before we cover it. Once the panel is on, a missed stud becomes a layout problem, not just a pencil mark.',
+    boards: [
+      { id: 'plateTop', label: 'Top Plate', nominal: '2×4', targetIn: 48 },
+      { id: 'plateBottom', label: 'Bottom Plate', nominal: '2×4', targetIn: 48 },
+      { id: 'stud1', label: 'Stud A', nominal: '2×4', targetIn: 45 },
+      { id: 'stud2', label: 'Stud B', nominal: '2×4', targetIn: 45 },
+      { id: 'stud3', label: 'Stud C', nominal: '2×4', targetIn: 45 },
+      { id: 'stud4', label: 'Stud D', nominal: '2×4', targetIn: 45 }
+    ],
+    diagonalTargetIn: 67.88,
+    drill: false,
+    plumb: true,
+    joints: null
+  },
+  {
+    id: 'joinery',
+    title: 'Half-Lap & Dado',
+    emoji: '\u{1FA9B}',
+    summary: 'Two joints, two different waste-removal paths. The half-lap is required; the dado shelf is an optional second practice pass.',
+    intro: 'Take shallow bites. The knife line gives the fibers a boundary to break against.',
+    boards: [],
+    diagonalTargetIn: null,
+    drill: false,
+    plumb: false,
+    joints: [
+      { id: 'halfLap', label: 'Half-Lap Cross Joint', required: true, depthIn: 0.375, clean: 1 / 32, workable: 1 / 16 },
+      { id: 'dado', label: 'Dado Shelf Joint (optional)', required: false, depthIn: 0.25, clean: 1 / 32, workable: 1 / 16 }
+    ]
+  },
+  {
+    id: 'deck',
+    title: 'Deck Mock-Up & Railing',
+    emoji: '\u{1FAA8}',
+    summary: 'A tabletop-scale training mock-up — not a construction plan. Framing, a decking board fit, and a mortise-and-tenon sample joint.',
+    intro: 'This is a practice model. A real deck starts with a plan for the site, loads, and local rules.',
+    boards: [
+      { id: 'perimeter1', label: 'Perimeter A', nominal: '2×4', targetIn: 48 },
+      { id: 'perimeter2', label: 'Perimeter B', nominal: '2×4', targetIn: 48 },
+      { id: 'deckBoard', label: 'Decking Board', nominal: '5/4×6', targetIn: 46 }
+    ],
+    diagonalTargetIn: 67.88,
+    drill: false,
+    plumb: false,
+    joints: [
+      { id: 'mortiseTenon', label: 'Mortise & Tenon (rail sample)', required: true, depthIn: 0.5, clean: 1 / 32, workable: 1 / 16 }
+    ]
+  }
+];
+
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function band(absErr, cleanT, workT) {
+  if (absErr <= cleanT) return 'clean';
+  if (absErr <= workT) return 'workable';
+  return 'rework';
+}
+function bandColor(b) { return b === 'clean' ? C.clean : (b === 'workable' ? C.workable : C.rework); }
+function bandSfx(b) { if (b === 'clean') SFX.resultClean(); else if (b === 'workable') SFX.resultWorkable(); else SFX.resultRework(); }
+function fmtIn(v) {
+  var sign = v < 0 ? '−' : (v > 0 ? '+' : '');
+  return sign + Math.abs(v).toFixed(3) + '″';
+}
+function seededRandom(seed) {
+  var s = seed % 2147483647; if (s <= 0) s += 2147483646;
+  return function () { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+}
+
+/* =========================================================================
+   DRAW HELPERS (procedural board / tool art)
+   ========================================================================= */
+function drawBoard(g, x, y, w, h, grainSeed, lamp) {
+  var rnd = seededRandom(grainSeed || 7);
+  if (lamp) {
+    g.fillStyle(C.lampGlow, 0.12);
+    g.fillEllipse(x + w / 2, y + h / 2, w * 1.35, h * 2.6);
+  }
+  g.fillStyle(C.boardShadow, 1);
+  g.fillRoundedRect(x - 2, y - 2, w + 4, h + 6, 3);
+  g.fillStyle(C.boardBase, 1);
+  g.fillRoundedRect(x, y, w, h, 3);
+  g.fillStyle(C.boardHi, 0.35);
+  g.fillRoundedRect(x, y, w, Math.max(2, h * 0.28), 3);
+  var lines = Math.max(3, Math.floor(w / 26));
+  for (var i = 0; i < lines; i++) {
+    var gy = y + h * (0.15 + 0.7 * rnd());
+    var wob = (rnd() - 0.5) * h * 0.18;
+    g.lineStyle(1, i % 2 === 0 ? C.grain : C.grainHi, 0.55);
+    g.beginPath();
+    g.moveTo(x, gy - wob);
+    g.lineTo(x + w * 0.5, gy + wob * 0.5);
+    g.lineTo(x + w, gy - wob * 0.3);
+    g.strokePath();
+  }
+  g.lineStyle(1, C.boardShadow, 0.9);
+  g.strokeRoundedRect(x, y, w, h, 3);
+}
+
+/* =========================================================================
+   UI HELPERS
+   ========================================================================= */
+function panel(scene, x, y, w, h, raised) {
+  var g = scene.add.graphics();
+  g.fillStyle(raised ? C.panelRaised : C.panel, 1);
+  g.fillRoundedRect(x, y, w, h, 10);
+  g.lineStyle(1, C.border, 1);
+  g.strokeRoundedRect(x, y, w, h, 10);
+  return g;
+}
+function button(scene, x, y, w, h, label, onTap, opts) {
+  opts = opts || {};
+  var c = scene.add.container(x, y);
+  var g = scene.add.graphics();
+  g.fillStyle(opts.accent ? C.accent : C.panelRaised, 1);
+  g.fillRoundedRect(-w / 2, -h / 2, w, h, 8);
+  g.lineStyle(1, C.border, 1);
+  g.strokeRoundedRect(-w / 2, -h / 2, w, h, 8);
+  var t = scene.add.text(0, 0, label, { fontFamily: 'system-ui, sans-serif', fontSize: (opts.fontSize || 15) + 'px', color: opts.accent ? '#0A0A0F' : TXT_PRIMARY, fontStyle: opts.bold ? 'bold' : 'normal' }).setOrigin(0.5);
+  c.add([g, t]);
+  c.setSize(w, h);
+  c.setInteractive({ useHandCursor: true });
+  c.on('pointerdown', function () { g.setAlpha(0.7); });
+  c.on('pointerup', function () { g.setAlpha(1); onTap(); });
+  c.on('pointerout', function () { g.setAlpha(1); });
+  return c;
+}
+function mentorCard(scene, x, y, w, text) {
+  var h = 70;
+  var g = panel(scene, x, y, w, h, false);
+  scene.add.text(x + 12, y + 8, 'MENTOR', { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: '#55D6C2', fontStyle: 'bold' });
+  var t = scene.add.text(x + 12, y + 24, text, { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: TXT_PRIMARY, wordWrap: { width: w - 24 }, lineSpacing: 3 });
+  var realH = Math.max(h, t.height + 36);
+  g.clear();
+  g.fillStyle(C.panel, 1); g.fillRoundedRect(x, y, w, realH, 10);
+  g.lineStyle(1, C.border, 1); g.strokeRoundedRect(x, y, w, realH, 10);
+  return realH;
+}
+
+/* =========================================================================
+   BOOT / MENU
+   ========================================================================= */
+function BootScene() { Phaser.Scene.call(this, { key: 'Boot' }); }
+BootScene.prototype = Object.create(Phaser.Scene.prototype);
+BootScene.prototype.create = function () {
+  Save.get();
+  SFX.setMuted(Save.isMuted());
+  this.scene.start('Menu');
+};
+
+function MenuScene() { Phaser.Scene.call(this, { key: 'Menu' }); }
+MenuScene.prototype = Object.create(Phaser.Scene.prototype);
+MenuScene.prototype.create = function () {
+  var W = this.game.config.width, H = this.game.config.height;
+  this.cameras.main.setBackgroundColor(C.bg);
+  this.add.graphics().fillStyle(C.lampGlow, 0.06).fillEllipse(W / 2, H * 0.3, W * 1.4, H * 0.7);
+  this.add.text(W / 2, H * 0.16, '\u{1FA9A}', { fontSize: '48px' }).setOrigin(0.5);
+  this.add.text(W / 2, H * 0.24, 'THE TRADE', { fontFamily: 'system-ui, sans-serif', fontSize: '26px', color: TXT_PRIMARY, fontStyle: 'bold', letterSpacing: 2 }).setOrigin(0.5);
+  this.add.text(W / 2, H * 0.285, 'CARPENTRY', { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#55D6C2', letterSpacing: 4 }).setOrigin(0.5);
+  this.add.text(W / 2, H * 0.34, 'Learn the real reasoning behind\nmeasuring, cutting, and joinery.', {
+    fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_SECONDARY, align: 'center', lineSpacing: 4
+  }).setOrigin(0.5);
+
+  var hasProgress = Save.get().completed.length > 0;
+  var y0 = H * 0.46;
+  button(this, W / 2, y0, W * 0.72, 50, hasProgress ? 'CONTINUE' : 'BEGIN APPRENTICESHIP', function () {
+    this.scene.start('Workshop');
+  }.bind(this), { accent: true, bold: true });
+
+  if (hasProgress) {
+    button(this, W / 2, y0 + 64, W * 0.72, 40, 'NEW APPRENTICESHIP', function () {
+      localStorage.removeItem(SAVE_KEY);
+      Save.get();
+      this.scene.start('Menu');
+    }.bind(this));
+  }
+
+  var muted = Save.isMuted();
+  var muteBtn = button(this, W / 2, y0 + (hasProgress ? 120 : 64), W * 0.72, 36, muted ? 'SOUND: OFF' : 'SOUND: ON', function () {
+    muted = !muted;
+    Save.setMuted(muted);
+    SFX.setMuted(muted);
+    muteBtn.list[1].setText(muted ? 'SOUND: OFF' : 'SOUND: ON');
+    SFX.unlock();
+  });
+
+  this.add.text(W / 2, H - 28, 'Training simulation — not construction guidance.', {
+    fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: TXT_SECONDARY
+  }).setOrigin(0.5);
+
+  this.input.once('pointerdown', function () { SFX.unlock(); });
+};
+
+/* =========================================================================
+   WORKSHOP (project select)
+   ========================================================================= */
+function WorkshopScene() { Phaser.Scene.call(this, { key: 'Workshop' }); }
+WorkshopScene.prototype = Object.create(Phaser.Scene.prototype);
+WorkshopScene.prototype.create = function () {
+  var W = this.game.config.width, H = this.game.config.height;
+  this.cameras.main.setBackgroundColor(C.bg);
+  this.add.text(16, 16, '←', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: TXT_SECONDARY })
+    .setInteractive({ useHandCursor: true }).on('pointerup', function () { this.scene.start('Menu'); }.bind(this));
+  this.add.text(W / 2, 20, 'THE WORKSHOP', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: TXT_PRIMARY, fontStyle: 'bold' }).setOrigin(0.5, 0);
+
+  var y = 64;
+  var save = Save.get();
+  PROJECTS.forEach(function (proj, idx) {
+    var unlocked = Save.isUnlocked(idx);
+    var done = save.completed.indexOf(proj.id) !== -1;
+    var h = 96;
+    var g = panel(this, 16, y, W - 32, h, false);
+    if (!unlocked) g.setAlpha(0.45);
+    this.add.text(30, y + 12, proj.emoji, { fontSize: '22px' }).setAlpha(unlocked ? 1 : 0.4);
+    this.add.text(68, y + 12, proj.title, { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: TXT_PRIMARY, fontStyle: 'bold' }).setAlpha(unlocked ? 1 : 0.4);
+    this.add.text(68, y + 32, proj.summary, { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: TXT_SECONDARY, wordWrap: { width: W - 100 }, lineSpacing: 2 }).setAlpha(unlocked ? 1 : 0.4);
+    if (done) {
+      this.add.text(W - 30, y + 12, '✓', { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#58D68D', fontStyle: 'bold' }).setOrigin(0.5, 0);
+    } else if (!unlocked) {
+      this.add.text(W - 30, y + 12, '\u{1F512}', { fontSize: '14px' }).setOrigin(0.5, 0);
+    }
+    if (unlocked) {
+      var hit = this.add.zone(16, y, W - 32, h).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+      hit.on('pointerup', function () { this.scene.start('ProjectIntro', { projectIndex: idx }); }.bind(this));
+    }
+    y += h + 12;
+  }.bind(this));
+};
+
+/* =========================================================================
+   PROJECT INTRO
+   ========================================================================= */
+function ProjectIntroScene() { Phaser.Scene.call(this, { key: 'ProjectIntro' }); }
+ProjectIntroScene.prototype = Object.create(Phaser.Scene.prototype);
+ProjectIntroScene.prototype.init = function (data) { this.projectIndex = data.projectIndex; };
+ProjectIntroScene.prototype.create = function () {
+  var W = this.game.config.width, H = this.game.config.height;
+  var proj = PROJECTS[this.projectIndex];
+  this.cameras.main.setBackgroundColor(C.bg);
+  this.add.text(16, 16, '←', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: TXT_SECONDARY })
+    .setInteractive({ useHandCursor: true }).on('pointerup', function () { this.scene.start('Workshop'); }.bind(this));
+  this.add.text(W / 2, 60, proj.emoji, { fontSize: '40px' }).setOrigin(0.5);
+  this.add.text(W / 2, 104, proj.title, { fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: TXT_PRIMARY, fontStyle: 'bold' }).setOrigin(0.5);
+  this.add.text(W / 2, 134, proj.summary, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_SECONDARY, align: 'center', wordWrap: { width: W - 48 }, lineSpacing: 3 }).setOrigin(0.5, 0);
+
+  var listY = 200;
+  if (proj.boards.length) {
+    this.add.text(24, listY, 'CUT LIST', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#55D6C2', fontStyle: 'bold' });
+    listY += 20;
+    proj.boards.forEach(function (b) {
+      this.add.text(24, listY, '• ' + b.label + '  —  ' + b.targetIn + '″', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_PRIMARY });
+      listY += 18;
+    }.bind(this));
+  }
+  if (proj.joints) {
+    listY += 6;
+    this.add.text(24, listY, 'JOINERY', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: '#55D6C2', fontStyle: 'bold' });
+    listY += 20;
+    proj.joints.forEach(function (j) {
+      this.add.text(24, listY, '• ' + j.label, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_PRIMARY });
+      listY += 18;
+    }.bind(this));
+  }
+
+  var mH = mentorCard(this, 16, H - 180, W - 32, proj.intro);
+  button(this, W / 2, H - 50, W * 0.7, 48, 'BEGIN', function () {
+    this.scene.start('Workbench', { projectIndex: this.projectIndex });
+  }.bind(this), { accent: true, bold: true });
+};
+
+/* =========================================================================
+   WORKBENCH — the core interaction scene
+   ========================================================================= */
+function WorkbenchScene() { Phaser.Scene.call(this, { key: 'Workbench' }); }
+WorkbenchScene.prototype = Object.create(Phaser.Scene.prototype);
+
+WorkbenchScene.prototype.init = function (data) {
+  this.projectIndex = data.projectIndex;
+  this.project = PROJECTS[this.projectIndex];
+  this.steps = this.buildSteps(this.project);
+  this.stepIdx = -1;
+  this.results = [];
+  this.parts = {};
+};
+
+WorkbenchScene.prototype.buildSteps = function (proj) {
+  var steps = [];
+  (proj.boards || []).forEach(function (b, i) {
+    steps.push({ type: 'tape', board: b, isFirst: i === 0 && proj.id === 'frame' });
+    steps.push({ type: 'saw', board: b });
+  });
+  if (proj.diagonalTargetIn) steps.push({ type: 'diagonal', target: proj.diagonalTargetIn });
+  if (proj.plumb) steps.push({ type: 'plumb' });
+  if (proj.drill) steps.push({ type: 'drill', reps: 4 });
+  (proj.joints || []).forEach(function (j) { steps.push({ type: 'chisel', joint: j }); });
+  steps.push({ type: 'debrief' });
+  return steps;
+};
+
+WorkbenchScene.prototype.create = function () {
+  var W = this.game.config.width, H = this.game.config.height;
+  this.W = W; this.H = H;
+  this.cameras.main.setBackgroundColor(C.bg);
+
+  this.add.graphics().fillStyle(C.shadow, 1).fillRect(0, 0, W, H);
+
+  this.topBar = this.add.graphics();
+  this.topBar.fillStyle(C.panel, 1).fillRect(0, 0, W, 44);
+  this.backBtn = this.add.text(14, 12, '←', { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: TXT_SECONDARY })
+    .setInteractive({ useHandCursor: true }).on('pointerup', function () { this.scene.start('Workshop'); }.bind(this));
+  this.titleText = this.add.text(W / 2, 14, this.project.title, { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: TXT_PRIMARY, fontStyle: 'bold' }).setOrigin(0.5, 0);
+  this.stepText = this.add.text(W - 14, 14, '', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: TXT_SECONDARY }).setOrigin(1, 0);
+
+  this.benchY = 48;
+  this.benchH = H - 48 - 150;
+  this.add.graphics().fillStyle(C.bench, 1).fillRect(0, this.benchY, W, this.benchH);
+
+  this.workArea = this.add.container(0, 0);
+  this.mentorY = this.benchY + this.benchH + 8;
+  this.mentorPanelH = 0;
+
+  this.toolDockY = H - 76;
+  this.add.graphics().fillStyle(C.panel, 1).fillRect(0, this.toolDockY - 6, W, 82).lineStyle(1, C.border, 1).strokeRect(0, this.toolDockY - 6, W, 1);
+
+  this.nextStep();
+};
+
+WorkbenchScene.prototype.showMentor = function (text) {
+  if (this.mentorGroup) this.mentorGroup.destroy();
+  this.mentorGroup = this.add.container(0, 0);
+  var h = mentorCard(this, 16, this.mentorY, this.W - 32, text);
+  this.mentorPanelH = h;
+};
+
+WorkbenchScene.prototype.clearWork = function () {
+  this.workArea.removeAll(true);
+  if (this.toolDock) { this.toolDock.destroy(); }
+  this.toolDock = this.add.container(0, 0);
+};
+
+WorkbenchScene.prototype.nextStep = function () {
+  this.stepIdx++;
+  this.clearWork();
+  if (this.stepIdx >= this.steps.length) return;
+  this.stepText.setText('Step ' + (this.stepIdx + 1) + ' / ' + this.steps.length);
+  var step = this.steps[this.stepIdx];
+  switch (step.type) {
+    case 'tape': this.runTape(step); break;
+    case 'saw': this.runSaw(step); break;
+    case 'diagonal': this.runDiagonal(step); break;
+    case 'plumb': this.runPlumb(step); break;
+    case 'drill': this.runDrill(step); break;
+    case 'chisel': this.runChisel(step); break;
+    case 'debrief': this.runDebrief(); break;
+  }
+};
+
+WorkbenchScene.prototype.recordResult = function (label, b, detail) {
+  this.results.push({ label: label, band: b, detail: detail });
+};
+
+WorkbenchScene.prototype.continueButton = function (onTap) {
+  var W = this.W, H = this.H;
+  button(this, W / 2, this.toolDockY + 28, W * 0.5, 40, 'CONTINUE', onTap, { accent: true, bold: true });
+};
+
+/* ---------- TAPE MEASURE ---------- */
+WorkbenchScene.prototype.runTape = function (step) {
+  var self = this, W = this.W;
+  var board = step.board;
+  this.showMentor(step.isFirst
+    ? 'Start from a square end. The tape can only measure from the edge you give it. Seat the hook, then pull to your mark.'
+    : 'Measure ' + board.label + ' to ' + board.targetIn + '″. Seat the hook first — a loose hook reads wrong.');
+
+  var benchMidY = this.benchY + this.benchH / 2 - 10;
+  var pxPerInch = clamp((W - 80) / board.targetIn, 6, 16);
+  var boardWpx = board.targetIn * pxPerInch;
+  var originX = (W - boardWpx) / 2;
+
+  var g = this.add.graphics();
+  drawBoard(g, originX, benchMidY - 16, boardWpx, 32, board.id.length * 13 + 3, true);
+  this.workArea.add(g);
+
+  this.workArea.add(this.add.text(originX, benchMidY - 46, board.label + '  (target ' + board.targetIn + '″)', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_PRIMARY }));
+
+  // hook seat zone
+  var seated = false;
+  var hookZoneW = 26;
+  var hookG = this.add.graphics();
+  hookG.fillStyle(C.steel, 1);
+  hookG.fillRoundedRect(originX - 6, benchMidY - 20, 10, 40, 2);
+  this.workArea.add(hookG);
+  var hookLabel = this.add.text(originX - 6, benchMidY + 26, 'HOLD TO SEAT', { fontFamily: 'system-ui, sans-serif', fontSize: '9px', color: TXT_SECONDARY }).setOrigin(0, 0);
+  this.workArea.add(hookLabel);
+  var hookOffsetIn = (Math.random() - 0.5) * 0.25;
+
+  var hookZone = this.add.zone(originX - 16, benchMidY - 30, 40, 70).setOrigin(0, 0).setInteractive();
+  this.workArea.add(hookZone);
+  var seatTimer = null;
+  hookZone.on('pointerdown', function () {
+    SFX.tapePull();
+    seatTimer = self.time.delayedCall(320, function () {
+      seated = true; hookOffsetIn = 0;
+      hookG.clear(); hookG.fillStyle(C.accent, 1); hookG.fillRoundedRect(originX - 6, benchMidY - 20, 10, 40, 2);
+      hookLabel.setText('SEATED ✓');
+      SFX.tapeLock();
+    });
+  });
+  hookZone.on('pointerup', function () { if (seatTimer) seatTimer.remove(); });
+  hookZone.on('pointerout', function () { if (seatTimer) seatTimer.remove(); });
+
+  // blade / mark drag
+  var dragging = false, dragX = 0;
+  var bladeG = this.add.graphics();
+  this.workArea.add(bladeG);
+  var readout = this.add.text(originX, benchMidY + 50, '0.000″', { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#55D6C2', fontStyle: 'bold' });
+  this.workArea.add(readout);
+
+  var dragZone = this.add.zone(originX, benchMidY - 40, boardWpx, 90).setOrigin(0, 0).setInteractive();
+  this.workArea.add(dragZone);
+
+  function updateBlade(xPx) {
+    var measuredIn = Math.max(0, xPx - originX) / pxPerInch + hookOffsetIn;
+    bladeG.clear();
+    bladeG.lineStyle(2, C.steel, 1);
+    bladeG.lineBetween(originX, benchMidY, originX + Math.max(0, xPx - originX), benchMidY);
+    bladeG.fillStyle(C.accent, 1);
+    bladeG.fillTriangle(xPx, benchMidY - 10, xPx - 6, benchMidY + 6, xPx + 6, benchMidY + 6);
+    readout.setText(measuredIn.toFixed(3) + '″').setX(clamp(xPx - 24, originX, originX + boardWpx - 48));
+    return measuredIn;
+  }
+  var lastMeasured = 0;
+  dragZone.on('pointerdown', function (p) { dragging = true; SFX.tapePull(); updateBlade(p.x); });
+  dragZone.on('pointermove', function (p) { if (dragging) lastMeasured = updateBlade(p.x); });
+  this.input.on('pointerup', function () {
+    if (!dragging) return;
+    dragging = false;
+    var signedErrorIn = lastMeasured - board.targetIn;
+    var b = band(Math.abs(signedErrorIn), 1 / 16, 1 / 8);
+    SFX.pencilMark(); self.time.delayedCall(90, function () { SFX.knifeScore(); });
+    bandSfx(b);
+    self.parts[board.id] = { targetIn: board.targetIn, measuredIn: lastMeasured, signedErrorIn: signedErrorIn, boardLabel: board.label };
+    self.recordResult(board.label + ' — measure', b, fmtIn(signedErrorIn));
+    self.finishTapeStep(board, signedErrorIn, b);
+  });
+};
+
+WorkbenchScene.prototype.finishTapeStep = function (board, signedErrorIn, b) {
+  var self = this;
+  var W = this.W;
+  var resultText = this.add.text(W / 2, this.benchY + this.benchH - 36,
+    (b === 'clean' ? 'Clean mark. ' : b === 'workable' ? 'Workable — ' : 'Needs attention — ') + fmtIn(signedErrorIn) + ' from target.',
+    { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(b).toString(16).padStart(6, '0'), align: 'center' }).setOrigin(0.5);
+  this.workArea.add(resultText);
+  this.continueButton(function () { self.nextStep(); });
+};
+
+/* ---------- SAW ---------- */
+WorkbenchScene.prototype.runSaw = function (step) {
+  var self = this, W = this.W;
+  var board = step.board;
+  var part = this.parts[board.id] || { signedErrorIn: 0 };
+  this.showMentor('Secure the stock and align your guide. Keep the saw in the lane — drift changes the edge, not just the look of it.');
+
+  var benchMidY = this.benchY + this.benchH / 2;
+  var pxPerInch = clamp((W - 80) / board.targetIn, 6, 16);
+  var boardWpx = board.targetIn * pxPerInch;
+  var originX = (W - boardWpx) / 2;
+
+  var g = this.add.graphics();
+  drawBoard(g, originX, benchMidY - 16, boardWpx, 32, board.id.length * 13 + 5, true);
+  this.workArea.add(g);
+  this.workArea.add(this.add.text(originX, benchMidY - 46, 'Cut ' + board.label + ' to length', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_PRIMARY }));
+
+  // guide line placed at target length (plus tape's error already baked into "mark")
+  var guideX = originX + boardWpx * clamp((board.targetIn + part.signedErrorIn) / board.targetIn, 0.3, 1.3);
+  guideX = clamp(guideX, originX + 10, originX + boardWpx - 10);
+  var guideG = this.add.graphics();
+  guideG.lineStyle(2, C.workable, 0.9);
+  guideG.lineBetween(guideX, benchMidY - 26, guideX, benchMidY + 26);
+  this.workArea.add(guideG);
+
+  var laneG = this.add.graphics();
+  this.workArea.add(laneG);
+
+  var pass = null;
+  var sawDot = this.add.graphics();
+  this.workArea.add(sawDot);
+
+  var startZone = this.add.zone(guideX - 20, benchMidY - 40, 40, 80).setOrigin(0, 0).setInteractive();
+  this.workArea.add(startZone);
+  var fullZone = this.add.zone(originX - 20, benchMidY - 40, boardWpx + 40, 80).setOrigin(0, 0).setInteractive();
+  this.workArea.add(fullZone);
+
+  startZone.on('pointerdown', function (p) {
+    pass = { maxDev: 0, started: true };
+    SFX.sawStart(); SFX.sawLoopStart();
+    laneG.clear();
+    laneG.fillStyle(C.accent, 0.08);
+    laneG.fillRect(guideX - 10, benchMidY - 30, 20, 60);
+  });
+  fullZone.on('pointermove', function (p) {
+    if (!pass) return;
+    var dev = Math.abs(p.y - benchMidY) / pxPerInch;
+    pass.maxDev = Math.max(pass.maxDev, dev);
+    sawDot.clear();
+    sawDot.fillStyle(C.steel, 1);
+    sawDot.fillCircle(p.x, p.y, 7);
+    sawDot.fillStyle(dev > 0.125 ? C.rework : (dev > 0.0625 ? C.workable : C.clean), 1);
+    sawDot.fillCircle(p.x, p.y, 3);
+  });
+  this.input.on('pointerup', function (p) {
+    if (!pass) return;
+    SFX.sawLoopStop(); SFX.sawEnd();
+    var maxDev = pass.maxDev;
+    var cutBand = maxDev > 0.125 ? 'rework' : (maxDev > 0.0625 ? 'workable' : 'clean');
+    // combine with any existing tape error to get a final length-error magnitude
+    var finalErrorIn = part.signedErrorIn + (cutBand === 'clean' ? 0 : cutBand === 'workable' ? 0.06 * (Math.random() > 0.5 ? 1 : -1) : 0.18 * (Math.random() > 0.5 ? 1 : -1));
+    self.parts[board.id] = Object.assign({}, part, { cutErrorIn: finalErrorIn, cutBand: cutBand });
+    bandSfx(cutBand);
+    self.recordResult(board.label + ' — cut', cutBand, 'edge drift ' + maxDev.toFixed(3) + '″');
+    pass = null;
+    self.finishSawStep(board, cutBand, maxDev);
+  });
+};
+
+WorkbenchScene.prototype.finishSawStep = function (board, cutBand, maxDev) {
+  var self = this, W = this.W;
+  var msg = cutBand === 'clean' ? 'Clean edge, square to the line.' : cutBand === 'workable' ? 'Workable — a little drift (' + maxDev.toFixed(3) + '″), still usable.' : 'Needs rework — drifted ' + maxDev.toFixed(3) + '″ off the guide.';
+  var t = this.add.text(W / 2, this.benchY + this.benchH - 36, msg, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(cutBand).toString(16).padStart(6, '0'), align: 'center', wordWrap: { width: W - 60 } }).setOrigin(0.5);
+  this.workArea.add(t);
+  this.continueButton(function () { self.nextStep(); });
+};
+
+/* ---------- DIAGONAL CHECK ---------- */
+WorkbenchScene.prototype.runDiagonal = function (step) {
+  var self = this, W = this.W, H = this.H;
+  this.showMentor('Measure corner to corner, both ways. Equal diagonals tell us the rectangle is actually square.');
+
+  var cx = W / 2, cy = this.benchY + this.benchH / 2;
+  var halfW = Math.min(W * 0.32, 140), halfH = this.benchH * 0.3;
+
+  // aggregate error from parts feeds a simulated diagonal difference
+  var errs = Object.keys(this.parts).map(function (k) { return self.parts[k].cutErrorIn !== undefined ? self.parts[k].cutErrorIn : (self.parts[k].signedErrorIn || 0); });
+  var aggregate = errs.reduce(function (a, b) { return a + Math.abs(b); }, 0);
+  var simulatedDiff = Math.min(0.75, aggregate * 0.6 + Math.random() * 0.02);
+
+  var g = this.add.graphics();
+  var skew = clamp(simulatedDiff * 14, 0, 18);
+  g.lineStyle(2, C.steel, 1);
+  g.strokeRect(cx - halfW, cy - halfH, halfW * 2, halfH * 2);
+  this.workArea.add(g);
+
+  var corners = [
+    { x: cx - halfW, y: cy - halfH }, { x: cx + halfW, y: cy - halfH },
+    { x: cx + halfW + skew, y: cy + halfH }, { x: cx - halfW + skew, y: cy + halfH }
+  ];
+  corners.forEach(function (c, i) {
+    var dot = self.add.circle(c.x, c.y, 6, C.accent).setInteractive({ useHandCursor: true });
+    self.workArea.add(dot);
+    dot.cornerIndex = i;
+  });
+
+  var picks = [];
+  var infoText = this.add.text(W / 2, cy + halfH + 36, 'Tap two opposite corners to measure a diagonal.', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: TXT_SECONDARY, align: 'center', wordWrap: { width: W - 60 } }).setOrigin(0.5, 0);
+  this.workArea.add(infoText);
+
+  var diag1 = null, diag2 = null;
+  var lineG = this.add.graphics();
+  this.workArea.add(lineG);
+
+  this.workArea.list.forEach(function (obj) {
+    if (obj.cornerIndex !== undefined) {
+      obj.on('pointerup', function () {
+        picks.push(obj.cornerIndex);
+        if (picks.length === 2) {
+          var a = corners[picks[0]], b = corners[picks[1]];
+          var distPx = Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y);
+          lineG.lineStyle(2, C.accent, 1);
+          lineG.lineBetween(a.x, a.y, b.x, b.y);
+          if (diag1 === null) { diag1 = distPx; infoText.setText('First diagonal measured. Tap the other two corners.'); SFX.tapeLock(); }
+          else { diag2 = distPx; SFX.tapeLock(); self.finishDiagonal(step, diag1, diag2, simulatedDiff); }
+          picks = [];
+        } else {
+          SFX.pencilMark();
+        }
+      });
+    }
+  });
+};
+
+WorkbenchScene.prototype.finishDiagonal = function (step, diag1, diag2, simulatedDiff) {
+  var self = this, W = this.W;
+  var b = band(simulatedDiff, 1 / 8, 1 / 4);
+  bandSfx(b);
+  this.recordResult('Square check (diagonals)', b, fmtIn(simulatedDiff) + ' difference');
+  var msg = b === 'clean' ? 'Equal within 1/8″ — square.' : b === 'workable' ? 'Diagonals differ by ' + simulatedDiff.toFixed(3) + '″ — workable, slightly racked.' : 'Diagonals differ by ' + simulatedDiff.toFixed(3) + '″ — this needs squaring before fastening.';
+  var t = this.add.text(W / 2, this.benchY + this.benchH - 36, msg, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(b).toString(16).padStart(6, '0'), align: 'center', wordWrap: { width: W - 60 } }).setOrigin(0.5);
+  this.workArea.add(t);
+  this.continueButton(function () { self.nextStep(); });
+};
+
+/* ---------- PLUMB / LEVEL ---------- */
+WorkbenchScene.prototype.runPlumb = function (step) {
+  var self = this, W = this.W, H = this.H;
+  this.showMentor('Level tells us horizontal. Plumb tells us vertical. They answer different questions — drag the bubble to center it.');
+
+  var cx = W / 2, topY = this.benchY + 20, botY = this.benchY + this.benchH - 20;
+  var errs = Object.keys(this.parts).map(function (k) { return self.parts[k].cutErrorIn !== undefined ? self.parts[k].cutErrorIn : (self.parts[k].signedErrorIn || 0); });
+  var leanBiasIn = errs.reduce(function (a, b) { return a + b; }, 0) * 2.2;
+
+  var wallG = this.add.graphics();
+  this.workArea.add(wallG);
+  var lean = clamp(leanBiasIn * 20, -40, 40);
+  wallG.lineStyle(10, C.boardBase, 1);
+  wallG.lineBetween(cx, botY, cx + lean, topY);
+  wallG.lineStyle(1, C.boardShadow, 1);
+  wallG.strokeLineShape(new Phaser.Geom.Line(cx, botY, cx + lean, topY));
+
+  var vialW = 90, vialY = this.benchY + this.benchH / 2;
+  var vialG = this.add.graphics();
+  vialG.fillStyle(C.panelRaised, 1).fillRoundedRect(cx - vialW / 2, vialY - 14, vialW, 28, 14);
+  vialG.lineStyle(1, C.border, 1).strokeRoundedRect(cx - vialW / 2, vialY - 14, vialW, 28, 14);
+  this.workArea.add(vialG);
+  this.workArea.add(this.add.graphics().lineStyle(2, C.accent, 0.6).lineBetween(cx, vialY - 14, cx, vialY + 14));
+
+  var bubbleX = cx + clamp(lean * 0.9, -34, 34);
+  var bubble = this.add.circle(bubbleX, vialY, 9, C.workable).setInteractive({ useHandCursor: true, draggable: true });
+  this.workArea.add(bubble);
+  this.input.setDraggable(bubble);
+
+  var deviationText = this.add.text(W / 2, vialY + 36, '', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_SECONDARY }).setOrigin(0.5);
+  this.workArea.add(deviationText);
+
+  function updateColor() {
+    var offsetIn = Math.abs(bubbleX - cx) / 34 * 0.5;
+    var b = band(offsetIn, 1 / 8, 1 / 4);
+    bubble.setFillStyle(bandColor(b));
+    deviationText.setText('Lean: ' + (offsetIn).toFixed(3) + '″ over 48″');
+    return { offsetIn: offsetIn, b: b };
+  }
+  var state = updateColor();
+
+  this.input.on('drag', function (pointer, obj) {
+    if (obj !== bubble) return;
+    bubbleX = clamp(pointer.x, cx - 34, cx + 34);
+    obj.x = bubbleX;
+    state = updateColor();
+  });
+
+  var done = false;
+  var confirmBtn = button(this, W / 2, this.toolDockY + 28, W * 0.5, 40, 'CHECK', function () {
+    if (done) return; done = true;
+    bandSfx(state.b);
+    self.recordResult('Plumb check', state.b, fmtIn(state.offsetIn) + ' lean over 48″');
+    confirmBtn.destroy();
+    self.finishPlumb(state.b, state.offsetIn);
+  });
+  this.toolDock.add(confirmBtn);
+};
+
+WorkbenchScene.prototype.finishPlumb = function (b, offsetIn) {
+  var self = this, W = this.W;
+  var msg = b === 'clean' ? 'Plumb within 1/8″ — the sheathing will sit flush.' : b === 'workable' ? 'A little lean (' + offsetIn.toFixed(3) + '″) — workable, worth noting.' : 'Off plumb by ' + offsetIn.toFixed(3) + '″ — the next panel will show it.';
+  var t = this.add.text(W / 2, this.benchY + this.benchH - 36, msg, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(b).toString(16).padStart(6, '0'), align: 'center', wordWrap: { width: W - 60 } }).setOrigin(0.5);
+  this.workArea.add(t);
+  this.continueButton(function () { self.nextStep(); });
+};
+
+/* ---------- DRILL / SCREW ---------- */
+WorkbenchScene.prototype.runDrill = function (step) {
+  this.drillRepsLeft = step.reps;
+  this.drillOutcomes = [];
+  this.runDrillRep();
+};
+
+WorkbenchScene.prototype.runDrillRep = function () {
+  var self = this, W = this.W;
+  this.clearWork();
+  var repNum = (this.steps[this.stepIdx].reps - this.drillRepsLeft) + 1;
+  this.showMentor('The screw needs a path. A pilot helps keep the end grain from splitting. Corner ' + repNum + ' of ' + this.steps[this.stepIdx].reps + '.');
+
+  var benchMidY = this.benchY + this.benchH / 2;
+  var boardWpx = 220, boardH = 32;
+  var originX = (W - boardWpx) / 2;
+  var g = this.add.graphics();
+  drawBoard(g, originX, benchMidY - 16, boardWpx, boardH, repNum * 11, true);
+  this.workArea.add(g);
+
+  var edgeMargin = boardH * 0.3;
+  var pilotPlaced = false;
+  var pilotDot = null;
+  var zone = this.add.zone(originX, benchMidY - 16, boardWpx, boardH).setOrigin(0, 0).setInteractive();
+  this.workArea.add(zone);
+  var infoText = this.add.text(W / 2, benchMidY + 36, 'Tap to set the pilot hole — keep clear of the edge.', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: TXT_SECONDARY }).setOrigin(0.5);
+  this.workArea.add(infoText);
+
+  zone.on('pointerup', function (p) {
+    if (pilotPlaced) return;
+    pilotPlaced = true;
+    var distFromEdge = Math.min(p.y - (benchMidY - 16), (benchMidY - 16 + boardH) - p.y);
+    var splitRisk = distFromEdge < edgeMargin * 0.5;
+    pilotDot = self.add.circle(p.x, p.y, 4, splitRisk ? C.rework : C.accent);
+    self.workArea.add(pilotDot);
+    SFX.drillStart();
+    infoText.setText(splitRisk ? 'Close to the edge — higher split risk. Hold to drive.' : 'Good placement. Hold to drive the screw.');
+    self.startScrewHold(splitRisk);
+  });
+};
+
+WorkbenchScene.prototype.startScrewHold = function (splitRisk) {
+  var self = this, W = this.W;
+  var barY = this.benchY + this.benchH - 60;
+  var barW = W * 0.6, barX = (W - barW) / 2;
+  var trackG = this.add.graphics();
+  trackG.fillStyle(C.panelRaised, 1).fillRoundedRect(barX, barY, barW, 18, 9);
+  this.workArea.add(trackG);
+  var targetX0 = barX + barW * 0.62, targetX1 = barX + barW * 0.8;
+  var zoneG = this.add.graphics();
+  zoneG.fillStyle(C.clean, 0.35).fillRoundedRect(targetX0, barY, targetX1 - targetX0, 18, 9);
+  this.workArea.add(zoneG);
+  var fillG = this.add.graphics();
+  this.workArea.add(fillG);
+
+  var holding = false, progress = 0;
+  var btnZone = this.add.zone(0, this.toolDockY - 10, W, 70).setOrigin(0, 0).setInteractive();
+  this.toolDock.add(btnZone);
+  var holdLabel = this.add.text(W / 2, this.toolDockY + 28, 'HOLD TO DRIVE', { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: TXT_PRIMARY, fontStyle: 'bold' }).setOrigin(0.5);
+  this.toolDock.add(holdLabel);
+
+  var driving = false, finished = false;
+  btnZone.on('pointerdown', function () {
+    if (finished) return;
+    holding = true; driving = true; SFX.screwDrive();
+  });
+  var ev = this.time.addEvent({
+    delay: 16, loop: true, callback: function () {
+      if (finished) return;
+      if (holding) progress += 0.014;
+      progress = clamp(progress, 0, 1.15);
+      fillG.clear();
+      fillG.fillStyle(C.accent, 1).fillRoundedRect(barX, barY, barW * Math.min(1, progress), 18, 9);
+      if (progress >= 1.15 && !finished) {
+        finished = true; ev.remove();
+        self.finishDrillRep(splitRisk, 'over');
+      }
+    }
+  });
+  this.input.on('pointerup', function () {
+    if (!holding || finished) return;
+    holding = false; finished = true; ev.remove();
+    var inZone = progress >= 0.62 && progress <= 0.8;
+    var state = progress < 0.3 ? 'short' : (inZone ? 'seated' : (progress < 0.62 ? 'under' : 'over'));
+    self.finishDrillRep(splitRisk, state);
+  });
+};
+
+WorkbenchScene.prototype.finishDrillRep = function (splitRisk, state) {
+  var self = this, W = this.W;
+  var b = state === 'seated' && !splitRisk ? 'clean' : (state === 'seated' || state === 'under' ? 'workable' : 'rework');
+  bandSfx(b);
+  var msg = state === 'seated' ? (splitRisk ? 'Seated, but close to the edge.' : 'Seated cleanly.') : state === 'under' ? 'A little under-driven.' : state === 'over' ? 'Overdriven — risk of stripping.' : 'Too short — the joint will shift.';
+  this.recordResult('Fastener', b, msg);
+  var t = this.add.text(W / 2, this.benchY + this.benchH - 36, msg, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(b).toString(16).padStart(6, '0') }).setOrigin(0.5);
+  this.workArea.add(t);
+  var self2 = this;
+  this.continueButton(function () {
+    self2.drillRepsLeft--;
+    if (self2.drillRepsLeft > 0) self2.runDrillRep();
+    else self2.nextStep();
+  });
+};
+
+/* ---------- CHISEL / JOINT PARING ---------- */
+WorkbenchScene.prototype.runChisel = function (step) {
+  var self = this, W = this.W, H = this.H;
+  var joint = step.joint;
+
+  if (!joint.required) {
+    this.showMentor(joint.label + ' is optional practice. Want to try it, or move on?');
+    var tryBtn = button(this, W / 2 - 90, this.toolDockY + 28, 160, 42, 'TRY IT', function () { tryBtn.destroy(); skipBtn.destroy(); self.beginChisel(joint); });
+    var skipBtn = button(this, W / 2 + 90, this.toolDockY + 28, 160, 42, 'SKIP', function () { self.nextStep(); });
+    this.toolDock.add(tryBtn); this.toolDock.add(skipBtn);
+    return;
+  }
+  this.beginChisel(joint);
+};
+
+WorkbenchScene.prototype.beginChisel = function (joint) {
+  var self = this, W = this.W, H = this.H;
+  this.clearWork();
+  this.showMentor(joint.id === 'dado'
+    ? 'The groove follows the actual board. Score both walls, then pare shallow passes to depth.'
+    : joint.id === 'mortiseTenon'
+      ? 'Same reference face, same gauge setting. Pare in shallow passes until the shoulders close.'
+      : 'The depth is half on each piece, so the faces meet in one plane. Shallow passes — the knife line is your boundary.');
+
+  var sectionX = 60, sectionW = W - 120;
+  var surfaceY = this.benchY + 60;
+  var targetDepthPx = joint.depthIn * 90; // px per inch scaled for section view (larger for precision)
+  var maxDepthPx = targetDepthPx * 1.6;
+
+  var g = this.add.graphics();
+  g.fillStyle(C.boardBase, 1).fillRect(sectionX, surfaceY, sectionW, maxDepthPx + 20);
+  g.lineStyle(1, C.boardShadow, 1).strokeRect(sectionX, surfaceY, sectionW, maxDepthPx + 20);
+  this.workArea.add(g);
+
+  var targetLineG = this.add.graphics();
+  targetLineG.lineStyle(2, C.workable, 0.9);
+  targetLineG.lineBetween(sectionX, surfaceY + targetDepthPx, sectionX + sectionW, surfaceY + targetDepthPx);
+  this.workArea.add(targetLineG);
+  this.workArea.add(this.add.text(sectionX, surfaceY + targetDepthPx - 16, 'target depth ' + joint.depthIn + '″', { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: TXT_SECONDARY }));
+
+  var paredPx = 0;
+  var wasteG = this.add.graphics();
+  this.workArea.add(wasteG);
+  var depthReadout = this.add.text(sectionX + sectionW - 10, surfaceY - 18, '0.000″', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#55D6C2' }).setOrigin(1, 0);
+  this.workArea.add(depthReadout);
+
+  var passCapPx = (1 / 16) * 90;
+  var dragging = false, dragStartY = 0;
+  var overshoot = 0;
+  var zone = this.add.zone(sectionX, surfaceY, sectionW, maxDepthPx + 20).setOrigin(0, 0).setInteractive();
+  this.workArea.add(zone);
+
+  function redrawWaste() {
+    wasteG.clear();
+    wasteG.fillStyle(C.shadow, 1);
+    wasteG.fillRect(sectionX, surfaceY, sectionW, Math.min(paredPx, maxDepthPx));
+    var depthIn = paredPx / 90;
+    depthReadout.setText(depthIn.toFixed(3) + '″');
+    var over = paredPx > targetDepthPx + (90 * joint.workable);
+    depthReadout.setColor(over ? '#FF6B78' : '#55D6C2');
+  }
+
+  zone.on('pointerdown', function (p) { dragging = true; dragStartY = p.y; SFX.chiselTapLight(); });
+  zone.on('pointermove', function (p) {
+    if (!dragging) return;
+    var deltaPx = p.y - dragStartY;
+    if (deltaPx > 4) {
+      var bite = Math.min(deltaPx, passCapPx);
+      paredPx = clamp(paredPx + bite * 0.3, 0, maxDepthPx);
+      dragStartY = p.y;
+      redrawWaste();
+    }
+  });
+  this.input.on('pointerup', function () {
+    if (!dragging) return;
+    dragging = false;
+    SFX.chiselPare();
+  });
+
+  var doneBtn = button(this, W / 2, this.toolDockY + 28, W * 0.5, 42, 'TEST FIT', function () {
+    doneBtn.destroy();
+    var depthIn = paredPx / 90;
+    var errIn = Math.abs(depthIn - joint.depthIn);
+    var b = band(errIn, joint.clean, joint.workable);
+    bandSfx(b);
+    self.recordResult(joint.label, b, 'depth ' + depthIn.toFixed(3) + '″ vs target ' + joint.depthIn + '″');
+    var msg = b === 'clean' ? 'Clean fit — faces flush.' : b === 'workable' ? 'Workable — a slight step, still seats.' : (depthIn < joint.depthIn ? 'Too shallow — it stops before the shoulders close. Pare a little more next time.' : 'Pared past the line — a visible gap remains.');
+    var t = self.add.text(W / 2, self.benchY + self.benchH - 36, msg, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#' + bandColor(b).toString(16).padStart(6, '0'), align: 'center', wordWrap: { width: W - 60 } }).setOrigin(0.5);
+    self.workArea.add(t);
+    SFX.dryfitPlace();
+    if (b === 'clean') SFX.dryfitSnapClean();
+    self.continueButton(function () { self.nextStep(); });
+  });
+  this.toolDock.add(doneBtn);
+};
+
+/* ---------- DEBRIEF ---------- */
+WorkbenchScene.prototype.runDebrief = function () {
+  var self = this, W = this.W, H = this.H;
+  this.clearWork();
+  if (this.mentorGroup) this.mentorGroup.destroy();
+
+  this.add.text(W / 2, this.benchY + 16, 'WORKMANSHIP SUMMARY', { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: TXT_PRIMARY, fontStyle: 'bold' }).setOrigin(0.5, 0);
+
+  var y = this.benchY + 48;
+  var counts = { clean: 0, workable: 0, rework: 0 };
+  this.results.forEach(function (r) {
+    counts[r.band]++;
+    var icon = r.band === 'clean' ? '✓' : r.band === 'workable' ? '△' : '✕';
+    var color = '#' + bandColor(r.band).toString(16).padStart(6, '0');
+    self.add.text(24, y, icon, { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: color, fontStyle: 'bold' });
+    self.add.text(48, y, r.label + (r.detail ? '  (' + r.detail + ')' : ''), { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: TXT_SECONDARY, wordWrap: { width: W - 70 } });
+    y += 22;
+  });
+
+  var overall = counts.rework > 0 ? 'Some rework needed — that is normal this early. The mentor has notes.' : counts.workable > 0 ? 'Solid work, a few workable spots to tighten up next time.' : 'Clean work across the board — well done.';
+  this.add.text(W / 2, y + 10, overall, { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: TXT_PRIMARY, align: 'center', wordWrap: { width: W - 48 } }).setOrigin(0.5, 0);
+
+  SFX.projectComplete();
+  Save.completeProject(this.project.id, counts);
+
+  var self2 = this;
+  button(this, W / 2, H - 44, W * 0.7, 48, 'BACK TO WORKSHOP', function () {
+    self2.scene.start('Workshop');
+  }, { accent: true, bold: true });
+};
+
+/* =========================================================================
+   GAME CONFIG
+   ========================================================================= */
+var GAME_W = 450, GAME_H = 800;
+var config = {
+  type: Phaser.AUTO,
+  width: GAME_W,
+  height: GAME_H,
+  backgroundColor: '#0A0A0F',
+  parent: 'game-root',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [BootScene, MenuScene, WorkshopScene, ProjectIntroScene, WorkbenchScene],
+  input: { activePointers: 2 }
+};
+window.addEventListener('load', function () {
+  new Phaser.Game(config);
+});
+})();
+</script>
+</body>
+</html>
