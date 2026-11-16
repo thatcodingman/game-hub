@@ -422,7 +422,7 @@ MenuScene.prototype.buildUI = function(){
     self.save.soundEnabled = !self.save.soundEnabled; Save.save(self.save); SFX.setEnabled(self.save.soundEnabled); self.buildUI();
   });
 
-  this.add.text(W/2, H*0.93, 'A/D or drag to move · 1-6 target zones · W/S top/back spin · Q/E side spin · Space serve/swing',
+  this.add.text(W/2, H*0.93, 'A/D or drag to move · Space serve/swing (shot is picked automatically) · optional: 1-6 aim, W/S Q/E spin',
     {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'}).setOrigin(0.5);
 };
 MenuScene.prototype.startMatch = function(opponentIndex){
@@ -495,6 +495,7 @@ MatchScene.prototype.buildHudTexts = function(){
   this.msgText = this.add.text(W/2, 300, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#EAF3E7'}).setOrigin(0.5).setAlpha(0);
   this.opponentText = this.add.text(16,16, this.opponent.name+' ('+this.opponent.tier+')', {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'});
   this.hintText = this.add.text(16, this.scale.height-24, '', {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'});
+  this.feedbackText = this.add.text(W/2, 548, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#FCDE5A', fontStyle:'bold', stroke:'#101923', strokeThickness:5}).setOrigin(0.5).setAlpha(0).setDepth(50);
   this.actionText = this.add.text(W/2, 78, '', {fontFamily:'Georgia,serif', fontSize:'26px', color:'#F2A34C', fontStyle:'bold'}).setOrigin(0.5).setAlpha(0);
 };
 
@@ -633,7 +634,7 @@ MatchScene.prototype.pressedEnter = function(){
 
 MatchScene.prototype.handleContinuousInput = function(dt){
   var h = this.human;
-  var speed = 2.5;
+  var speed = 1.9;
   if (this.keys.left.isDown || this.keys.a.isDown) h.x -= speed*dt;
   if (this.keys.right.isDown || this.keys.d.isDown) h.x += speed*dt;
   if (this.pointerDown && this.pointerX != null){
@@ -643,6 +644,10 @@ MatchScene.prototype.handleContinuousInput = function(dt){
   }
   h.x = clamp(h.x, PADDLE_X_MIN, PADDLE_X_MAX);
 
+  var nowMs = this.time.now;
+  if (this.keys.one.isDown || this.keys.two.isDown || this.keys.three.isDown ||
+      this.keys.four.isDown || this.keys.five.isDown || this.keys.six.isDown) this.manualZoneAt = nowMs;
+  if (this.keys.w.isDown || this.keys.s.isDown || this.keys.q.isDown || this.keys.e.isDown || this.mobileSpinLock) this.manualSpinAt = nowMs;
   if (this.keys.one.isDown){ h.laneIndex=0; h.depthIndex=0; }
   else if (this.keys.two.isDown){ h.laneIndex=1; h.depthIndex=0; }
   else if (this.keys.three.isDown){ h.laneIndex=2; h.depthIndex=0; }
@@ -670,9 +675,22 @@ MatchScene.prototype.handleZoneTap = function(sx,sy){
     if (Math.abs(sx-cx) < zoneW/2){
       this.human.laneIndex = i%3;
       this.human.depthIndex = i<3?0:1;
+      this.manualZoneAt = this.time.now;
       return;
     }
   }
+};
+
+MatchScene.prototype.applyAutoServeAim = function(){
+  var now = this.time.now, h = this.human, m = this.match;
+  var aiFrac = this.ai.x / TABLE.width;
+  var lane;
+  if (aiFrac < 0.40) lane = 2;
+  else if (aiFrac > 0.60) lane = 0;
+  else lane = (m.score.human + m.score.ai) % 3; // AI centered: rotate serve placement
+  this.autoShot = { label: 'SERVE DEEP '+LANE_NAMES[lane] };
+  if ((now - (this.manualZoneAt||-9999)) >= 1500){ h.laneIndex = lane; h.depthIndex = 1; }
+  if ((now - (this.manualSpinAt||-9999)) >= 1500){ h.spinTop = 0; h.spinSide = 0; }
 };
 
 /* ---------- serve toss timing ---------- */
@@ -685,8 +703,10 @@ MatchScene.prototype.updateServeToss = function(dt){
   this.ball.h = 0.30 + Math.max(0, (peak - Math.abs(tossT-peak))) * 0.9;
 
   if (serverIsHuman){
+    this.applyAutoServeAim();
     if (this.pressedSpace()){
       var quality = 1 - clamp(Math.abs(tossT-peak)/peak, 0, 1);
+      this.human.swingUntil = this.time.now + 180;
       SFX.serveTone();
       this.executeServe('human', quality);
       return;
@@ -721,6 +741,7 @@ MatchScene.prototype.updateRally = function(dt){
   if (!ball.alive) return;
 
   this.updateAiPaddle(dt);
+  if (ball.lastHitBy !== 'human' && !ball.servePhase) this.applyAutoAim();
   this.checkHumanSwing();
   this.checkAiAutoHit();
 };
@@ -764,9 +785,53 @@ MatchScene.prototype.onBallBounce = function(ball, side){
 MatchScene.prototype.onBallOut = function(ball){
   if (!ball.alive) return;
   ball.alive = false;
-  var winner = ball.lastHitBy === 'human' ? 'ai' : 'human';
-  // if the ball simply flew out without ever bouncing on the intended side, it's the hitter's fault
-  this.awardPoint(ball.lastHitBy ? winner : 'human', 'Out');
+  var hitter = ball.lastHitBy;
+  if (!hitter){ this.awardPoint('human', 'Out'); return; }
+  var receiver = hitter === 'human' ? 'ai' : 'human';
+  // If the shot legally bounced on the receiver's side first and the receiver simply
+  // didn't get to it, that is a winner for the hitter. Only a ball that left without
+  // ever landing on the receiver's side is the hitter's fault.
+  var landedLegally = ball.lastBounceSideSameHit === receiver;
+  if (landedLegally) this.awardPoint(hitter, 'Winner');
+  else this.awardPoint(receiver, 'Out');
+};
+
+/* ---------- automatic shot selection ----------
+   The player only has to time Space. Target lane/depth and spin are chosen from the
+   incoming ball:
+     lane  : aim away from the AI (AI on the left half -> right lane, and vice versa);
+             if the AI is near center, go cross-court from where the ball is arriving
+             (ball on the left -> right lane), or center for a ball right down the middle.
+     height: HIGH ball (>=0.30m)  -> ATTACK: deep + topspin
+             MID ball  (0.17-0.30) -> DRIVE : deep, flat
+             LOW ball  (<0.17m)    -> PUSH  : short + backspin (keeps it safe and low)
+   Holding a zone key (1-6), tapping a zone button, or holding a spin key (W/S/Q/E)
+   still overrides that part manually for ~1.5s. */
+var LANE_NAMES = ['LEFT','CENTER','RIGHT'];
+function pickAutoShot(ball, humanX, aiX){
+  var aiFrac = aiX / TABLE.width;
+  var ballFrac = ball.x / TABLE.width;
+  var lane;
+  if (aiFrac < 0.40) lane = 2;
+  else if (aiFrac > 0.60) lane = 0;
+  else if (Math.abs(ballFrac-0.5) < 0.12) lane = 1;
+  else lane = ballFrac < 0.5 ? 2 : 0;
+  var depth, spinTop, kind;
+  if (ball.h >= 0.30){ depth = 1; spinTop = 1; kind = 'ATTACK'; }
+  else if (ball.h >= 0.17){ depth = 1; spinTop = 0; kind = 'DRIVE'; }
+  else { depth = 0; spinTop = -1; kind = 'PUSH'; }
+  return { laneIndex:lane, depthIndex:depth, spinTop:spinTop, spinSide:0,
+           label: kind+' '+(depth?'DEEP':'SHORT')+' '+LANE_NAMES[lane] };
+}
+MatchScene.prototype.applyAutoAim = function(){
+  var now = this.time.now;
+  var h = this.human;
+  var a = pickAutoShot(this.ball, h.x, this.ai.x);
+  this.autoShot = a;
+  var manualZone = (now - (this.manualZoneAt||-9999)) < 1500;
+  var manualSpin = (now - (this.manualSpinAt||-9999)) < 1500;
+  if (!manualZone){ h.laneIndex = a.laneIndex; h.depthIndex = a.depthIndex; }
+  if (!manualSpin){ h.spinTop = a.spinTop; h.spinSide = a.spinSide; }
 };
 
 MatchScene.prototype.checkHumanSwing = function(){
@@ -785,8 +850,12 @@ MatchScene.prototype.checkHumanSwing = function(){
 
   this.swingPromptActive = true; // ball is in range right now -- show the on-screen prompt
   if (!spacePressed) return;
+  this.human.swingUntil = this.time.now + 180;
 
   var target = targetCoords(this.human.laneIndex, this.human.depthIndex, true);
+  var te = Math.abs(timeToPlane);
+  var fb = te < 0.05 ? ['PERFECT!', '#FCDE5A'] : te < 0.12 ? ['GOOD', '#9FE1CB'] : [timeToPlane > 0 ? 'EARLY' : 'LATE', '#F09595'];
+  this.hitFeedback = { text: fb[0], color: fb[1], at: this.time.now };
   resolveHit(ball, 'human', {
     targetX: target.x, targetY: target.y,
     offset: offset, timingError: timeToPlane,
@@ -1028,7 +1097,9 @@ MatchScene.prototype.render = function(){
 
   // players + paddles (one anchored draw each, so body/paddle/head never drift
   // apart the way they did when paddle and body used two different projected depths)
-  this.drawPlayerWithPaddle(g, this.human.x, false, 0x4a3a2f, COLORS.paddleRed);
+  var swingP = clamp(1 - (this.human.swingUntil - this.time.now)/180, 0, 1);
+  if (this.human.swingUntil < this.time.now) swingP = 0;
+  this.drawPlayerWithPaddle(g, this.human.x, false, 0x4a3a2f, COLORS.paddleRed, swingP);
   this.drawPlayerWithPaddle(g, this.ai.x, true, 0x3a4a55, COLORS.paddleBlue);
 
   // ball trail
@@ -1070,7 +1141,8 @@ MatchScene.prototype.render = function(){
    the player's lateral (x) position is taken from the real table projection at
    their own baseline, but their vertical anchor is a fixed screen offset from
    that table edge rather than a second, mismatched depth projection. */
-MatchScene.prototype.drawPlayerWithPaddle = function(g, tableX, isAi, bodyColor, paddleColor){
+MatchScene.prototype.drawPlayerWithPaddle = function(g, tableX, isAi, bodyColor, paddleColor, swing){
+  swing = swing || 0; // 0..1 swing progress (sin-shaped sweep)
   var farY = 225, nearY = 645;
   var edgeY = isAi ? TABLE.length : 0;
   var p = this.project(tableX, edgeY, 0);
@@ -1112,7 +1184,8 @@ MatchScene.prototype.drawPlayerWithPaddle = function(g, tableX, isAi, bodyColor,
 
   // paddle arm, reaching toward the ball side, bent at the elbow
   var elbowX = p.x + side*9*s, elbowY = shoulderY+10*s;
-  var handX = p.x + side*15*s, handY = shoulderY+4*s;
+  var sw = Math.sin(swing*Math.PI);
+  var handX = p.x + side*(15 - 20*sw)*s, handY = shoulderY+(4 - 7*sw)*s;
   g.lineStyle(4*s, bodyColor, 1);
   g.lineBetween(p.x+side*3*s, shoulderY+2*s, elbowX, elbowY);
   g.lineBetween(elbowX, elbowY, handX, handY);
@@ -1179,17 +1252,27 @@ MatchScene.prototype.renderHud = function(){
   if (m.state === 'serveToss' && m.server === 'human'){
     this.actionText.setAlpha(1);
     this.actionText.setColor(pulse ? '#F2A34C' : '#FCDE5A');
-    this.actionText.setText('PRESS SPACE TO SERVE');
+    this.actionText.setText('PRESS SPACE TO SERVE' + (this.autoShot ? '  ·  '+this.autoShot.label : ''));
   } else if (m.state === 'rally' && this.swingPromptActive){
     this.actionText.setAlpha(1);
     this.actionText.setColor(pulse ? '#1D9E75' : '#9FE1CB');
-    this.actionText.setText('SWING NOW! (SPACE)');
-  } else if (m.state === 'rally'){
+    this.actionText.setText('SWING NOW! (SPACE)' + (this.autoShot ? '  ·  '+this.autoShot.label : ''));
+  } else if (m.state === 'rally' && this.ball.alive && this.ball.lastHitBy !== 'human' && !this.ball.servePhase){
     this.actionText.setAlpha(0.55);
     this.actionText.setColor('#6c7a74');
     this.actionText.setText('Get ready -- ball is on the way');
   } else {
     this.actionText.setAlpha(0);
+  }
+
+  var fbAge = this.hitFeedback ? (this.time.now - this.hitFeedback.at) : 99999;
+  if (this.hitFeedback && fbAge < 700){
+    var hp = this.project(this.human.x, 0, 0);
+    this.feedbackText.setText(this.hitFeedback.text).setColor(this.hitFeedback.color);
+    this.feedbackText.setPosition(hp.x, 548 - fbAge*0.02);
+    this.feedbackText.setAlpha(fbAge < 400 ? 1 : 1 - (fbAge-400)/300);
+  } else {
+    this.feedbackText.setAlpha(0);
   }
 
   if (this.keys.esc.isDown){ this.scene.start('Menu'); }
