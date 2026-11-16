@@ -1,1140 +1,496 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Spin Rally</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Arcade</title>
 <style>
-  html,body{margin:0;padding:0;background:#101923;overflow:hidden;height:100%;}
-  #game{width:100vw;height:100vh;}
-  canvas{display:block;}
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: #0a0a0f;
+    background-image: radial-gradient(circle at 20% 20%, #1a1a2e 0%, #0a0a0f 60%);
+    color: #f8fafc;
+    font-family: system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    text-align: center;
+    padding: 48px 20px 24px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 2.2rem;
+    letter-spacing: 0.08em;
+    background: linear-gradient(90deg, #4ade80, #38bdf8, #fbbf24);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  header p {
+    color: #94a3b8;
+    margin-top: 8px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 20px;
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0 20px 60px;
+  }
+  .card {
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    height: 220px;
+    transition: transform 0.15s ease;
+  }
+  .card:hover { transform: translateY(-4px); }
+  .card .art {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 3.5rem;
+  }
+  .card .info {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 14px 16px;
+    background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+  }
+  .card .info h2 { margin: 0; font-size: 1.1rem; }
+  .card .info p { margin: 4px 0 0; font-size: 0.85rem; color: #cbd5e1; }
+  footer {
+    text-align: center;
+    color: #475569;
+    font-size: 0.8rem;
+    padding: 20px;
+  }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
 </head>
 <body>
-<div id="game"></div>
+<style>
+  .quote-rail {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 220px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+    mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+  }
+  .quote-rail--left { left: 0; }
+  .quote-rail--right { right: 0; }
+  .quote-track {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    padding: 40px 24px;
+    animation: quote-scroll 220s linear infinite;
+  }
+  .quote-rail--right .quote-track {
+    animation-duration: 260s;
+    animation-direction: reverse;
+  }
+  .quote-item {
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: rgba(226, 232, 240, 0.28);
+  }
+  .quote-item .quote-author {
+    display: block;
+    margin-top: 4px;
+    color: rgba(148, 163, 184, 0.24);
+    font-size: 11px;
+  }
+  @keyframes quote-scroll {
+    from { transform: translateY(0); }
+    to { transform: translateY(-50%); }
+  }
+  @media (max-width: 1100px) {
+    .quote-rail { display: none; }
+  }
+</style>
+
+<div class="quote-rail quote-rail--left">
+  <div class="quote-track" id="quoteTrackLeft"></div>
+</div>
+<div class="quote-rail quote-rail--right">
+  <div class="quote-track" id="quoteTrackRight"></div>
+</div>
+
+<script src="assets/quotes.js"></script>
 <script>
-(function(){
-'use strict';
-
-/* ============================================================
-   HELPERS
-   ============================================================ */
-function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
-function shadeColor(hex, amt){
-  var r=(hex>>16&0xff), g=(hex>>8&0xff), b=(hex&0xff);
-  r=clamp(Math.round(r+amt*255),0,255); g=clamp(Math.round(g+amt*255),0,255); b=clamp(Math.round(b+amt*255),0,255);
-  return (r<<16)|(g<<8)|b;
-}
-function lerp(a,b,t){ return a+(b-a)*t; }
-function deg2rad(d){ return d*Math.PI/180; }
-function randRange(a,b){ return a+Math.random()*(b-a); }
-
-/* ============================================================
-   CONSTANTS  (table-tennis coordinates, meters)
-   ============================================================ */
-var TABLE = { width:1.525, length:2.740, netY:1.370, netHeight:0.1525 };
-var BALL_RADIUS = 0.020;
-var GRAVITY = 9.81;
-var DT = 1/240;
-
-var LANE_FRACS = [0.22,0.50,0.78];
-var DEPTH_SHORT = 2.02, DEPTH_LONG = 2.52; // distances from the y=0 (human) end -- used as targets into the +y half
-var STRIKE_Y_HUMAN = 0.55;
-var STRIKE_Y_AI = TABLE.length - 0.55;
-var SERVE_OWN_Y_HUMAN = 0.95;             // first-bounce target on the server's own side
-var SERVE_OWN_Y_AI = TABLE.length - 0.95;
-var PADDLE_X_MIN = 0.12, PADDLE_X_MAX = 1.405;
-var PADDLE_HALF_W = 0.095;
-var STRIKE_H_MIN = 0.08, STRIKE_H_MAX = 0.45;
-var TIMING_WINDOW = 0.09;
-
-var PADDLES = {
-  starter:{ key:'starter', name:'Starter', power:1.00, control:1.00, spin:1.00, unlock:0 },
-  speed:  { key:'speed',   name:'Speed',   power:1.10, control:0.90, spin:0.95, unlock:3 },
-  control:{ key:'control', name:'Control', power:0.92, control:1.12, spin:0.95, unlock:6 },
-  spin:   { key:'spin',    name:'Spin',    power:0.95, control:0.95, spin:1.12, unlock:9 }
-};
-var PADDLE_ORDER = ['starter','speed','control','spin'];
-
-var OPPONENTS = [
-  { name:'Rookie Rae',   tier:'easy' },
-  { name:'Steady Sam',   tier:'easy' },
-  { name:'Lena Loop',    tier:'medium' },
-  { name:'Marcus Spin',  tier:'medium' },
-  { name:'The Wall',     tier:'hard' }
-];
-
-var AI_TIERS = {
-  easy:   { reactMs:240, aimErr:0.22, timeErr:0.090, spinUse:0.10, paddleSpeed:2.2, aggressive:0.15 },
-  medium: { reactMs:150, aimErr:0.13, timeErr:0.050, spinUse:0.35, paddleSpeed:3.0, aggressive:0.40 },
-  hard:   { reactMs:80,  aimErr:0.06, timeErr:0.022, spinUse:0.65, paddleSpeed:3.8, aggressive:0.55 }
-};
-
-var COLORS = {
-  background:0x101923, tableTop:0x5B3A7A, tableEdge:0x2E1D40, lines:0xEAF3E7,
-  net:0xD6E0DC, ball:0xF4F0D7, paddleRed:0xE65B4F, paddleBlue:0x4677D1, shadow:0x07100F,
-  topSpin:0xF2A34C, backSpin:0x6FD8E0, sideSpin:0xB07CE0
-};
-
-/* ============================================================
-   SAVE
-   ============================================================ */
-var SAVE_KEY = 'spinRally.v1';
-var Save = {
-  defaults:function(){
-    return { version:1, wins:0, losses:0, unlockedPaddles:['starter'], selectedPaddle:'starter', highestOpponent:0, soundEnabled:true };
-  },
-  load:function(){
-    try{
-      var raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) return this.defaults();
-      var s = JSON.parse(raw);
-      var d = this.defaults();
-      for (var k in d){ if (!(k in s)) s[k]=d[k]; }
-      return s;
-    } catch(e){ return this.defaults(); }
-  },
-  save:function(s){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch(e){} }
-};
-
-/* ============================================================
-   SFX  -- small synthesized sound set (WebAudio), no sample files
-   ============================================================ */
-var SFX = (function(){
-  var ctx=null, enabled=true, ambientNodes=null;
-  function ensureCtx(){ if (!ctx){ try{ ctx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return ctx; }
-  function env(node, t0, a, d, sustain, r, dur){
-    node.gain.setValueAtTime(0, t0);
-    node.gain.linearRampToValueAtTime(1, t0+a);
-    node.gain.linearRampToValueAtTime(sustain, t0+a+d);
-    node.gain.setValueAtTime(sustain, t0+dur-r);
-    node.gain.linearRampToValueAtTime(0, t0+dur);
+(function () {
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
   }
-  function tone(freq, dur, type, vol, pitchSlide){
-    if (!enabled) return;
-    var c = ensureCtx(); if (!c) return;
-    var t0 = c.currentTime;
-    var osc = c.createOscillator(); osc.type = type||'sine';
-    osc.frequency.setValueAtTime(freq, t0);
-    if (pitchSlide) osc.frequency.linearRampToValueAtTime(freq*pitchSlide, t0+dur);
-    var g = c.createGain();
-    env(g, t0, 0.005, dur*0.3, (vol||0.5)*0.7, dur*0.4, dur);
-    osc.connect(g); g.connect(c.destination);
-    osc.start(t0); osc.stop(t0+dur+0.02);
+
+  function renderTrack(elementId, quoteSubset) {
+    const el = document.getElementById(elementId);
+    if (!el || typeof QUOTES === 'undefined') return;
+    // render the subset twice back-to-back so the -50% translateY loop is seamless
+    const doubled = quoteSubset.concat(quoteSubset);
+    el.innerHTML = doubled.map(q =>
+      '<div class="quote-item">"' + q.text.replace(/</g, '&lt;') + '"' +
+      '<span class="quote-author">— ' + q.author.replace(/</g, '&lt;') + '</span></div>'
+    ).join('');
   }
-  function noiseBurst(dur, vol, filterFreq){
-    if (!enabled) return;
-    var c = ensureCtx(); if (!c) return;
-    var t0 = c.currentTime;
-    var bufferSize = Math.floor(c.sampleRate*dur);
-    var buffer = c.createBuffer(1, bufferSize, c.sampleRate);
-    var data = buffer.getChannelData(0);
-    for (var i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-    var src = c.createBufferSource(); src.buffer = buffer;
-    var filt = c.createBiquadFilter(); filt.type='bandpass'; filt.frequency.value = filterFreq||1200;
-    var g = c.createGain(); g.gain.setValueAtTime((vol||0.4), t0); g.gain.linearRampToValueAtTime(0, t0+dur);
-    src.connect(filt); filt.connect(g); g.connect(c.destination);
-    src.start(t0);
+
+  if (typeof QUOTES !== 'undefined' && QUOTES.length > 0) {
+    const shuffled = shuffle(QUOTES);
+    const half = Math.floor(shuffled.length / 2);
+    renderTrack('quoteTrackLeft', shuffled.slice(0, half).slice(0, 60));
+    renderTrack('quoteTrackRight', shuffled.slice(half).slice(0, 60));
   }
-  return {
-    setEnabled:function(v){ enabled=!!v; },
-    paddleHit:function(speedNorm){
-      var s = clamp(speedNorm,0,1);
-      tone(520+s*260, 0.07, 'triangle', 0.35+0.25*s);
+})();
+</script>
+
+<header>
+  <h1>THE ARCADE</h1>
+  <p>Free browser games. No installs, no accounts, just play.</p>
+</header>
+<div class="grid" id="game-grid"></div>
+<footer>New games added regularly.</footer>
+
+<script>
+  // Add one entry here per game — the hub renders itself, so shipping a new
+  // game never requires touching this page's HTML/CSS.
+  const GAMES = [
+    {
+      title: 'Matchday',
+      tagline: 'Full 11v11 console football — fouls, cards, offside, set pieces and instant replays.',
+      path: 'games/matchday/',
+      emoji: '⚽',
+      gradient: 'linear-gradient(135deg, #0b1d12, #2e7d32, #f4f7ff)'
     },
-    tableBounce:function(){ tone(260, 0.06, 'sine', 0.3); },
-    netClip:function(){ noiseBurst(0.12, 0.35, 900); },
-    pointPlayer:function(){ tone(660,0.09,'square',0.3); setTimeout(function(){ tone(880,0.12,'square',0.3); }, 90); },
-    pointAI:function(){ tone(420,0.1,'square',0.28); setTimeout(function(){ tone(300,0.14,'square',0.28); }, 90); },
-    serveTone:function(){ tone(900,0.05,'sine',0.2); }
-  };
-})();
-
-/* ============================================================
-   BALL PHYSICS
-   ============================================================ */
-function makeBall(){
-  return { x:TABLE.width/2, y:0.55, h:0.35, vx:0, vy:0, vh:0,
-    topSpin:0, sideSpin:0, alive:false, lastHitBy:null,
-    lastBounceSideSameHit:null, bouncesSinceHit:0, servePhase:false,
-    serveBounceSeq:[], pendingServe:null, trail:[] };
-}
-
-function stepBall(ball, dt, onBounce, onNet, onOut){
-  if (!ball.alive) return;
-  var prevY = ball.y, prevH = ball.h;
-  var speed = Math.hypot(ball.vx, ball.vy);
-  var ax = clamp(0.18*ball.sideSpin*speed, -3, 3);
-  var ah = clamp(-0.08*ball.topSpin*speed, -1.5, 1.5);
-  ball.vx += ax*dt;
-  ball.vh += (ah - GRAVITY)*dt;
-  ball.x += ball.vx*dt;
-  ball.y += ball.vy*dt;
-  ball.h += ball.vh*dt;
-
-  // net crossing
-  if (!ball.alive) return;
-  if ((prevY - TABLE.netY) * (ball.y - TABLE.netY) < 0){
-    if (ball.h < TABLE.netHeight + BALL_RADIUS){
-      ball.vy = -ball.vy*0.15;
-      ball.vx *= 0.8;
-      if (onNet) onNet(ball);
+    {
+      title: 'Rooftop Parkour',
+      tagline: 'First-person rooftop parkour — vault, slide, wall-run and chain your flow against the clock.',
+      path: 'games/rooftop-parkour/',
+      emoji: '🏃',
+      gradient: 'linear-gradient(135deg, #1d1840, #ec4899, #fbbf24)'
+    },
+    {
+      title: 'Hockey',
+      tagline: 'Full-contact arcade hockey — momentum hits, shot-charge bluffs, real NHL rules.',
+      path: 'games/hockey/',
+      emoji: '🏒',
+      gradient: 'linear-gradient(135deg, #0a1420, #1e3a5f, #6fd3ff)'
+    },
+    {
+      title: 'Tidal Rush',
+      tagline: 'Surf a wave that never stops breaking. Get barreled, launch the lip, chase gold in timed heats.',
+      path: 'games/tidal-rush/',
+      emoji: '🏄',
+      gradient: 'linear-gradient(135deg, #0e7490, #f59e0b)'
+    },
+    {
+      title: 'Kaiju Country',
+      tagline: 'First-person monster hunting across an open world of grass, rivers and sea.',
+      path: 'games/kaiju-country/',
+      emoji: '🦖',
+      gradient: 'linear-gradient(135deg, #365314, #0f172a)'
+    },
+    {
+      title: 'The Shrink',
+      tagline: 'Dodge, shoot, and survive as you shrink to nothing.',
+      path: 'games/the-shrink/',
+      emoji: '🔻',
+      gradient: 'linear-gradient(135deg, #14532d, #052e16)'
+    },
+    {
+      title: 'Gap Flyer',
+      tagline: 'Fly a horse through the gaps, catch hay, beat your best.',
+      path: 'games/gap-flyer/',
+      emoji: '🐎',
+      gradient: 'linear-gradient(135deg, #7dd3fc, #fed7aa)'
+    },
+    {
+      title: 'DirtySet',
+      tagline: 'Whack the cleaning supplies, dodge the dirt, beat the clock.',
+      path: 'games/dirtyset/',
+      emoji: '🧽',
+      gradient: 'linear-gradient(135deg, #e0f2fe, #bae6fd)'
+    },
+    {
+      title: 'Stack Shift',
+      tagline: 'Stack ice over lava — every few blocks, the tower turns a corner.',
+      path: 'games/stack-shift/',
+      emoji: '🧊',
+      gradient: 'linear-gradient(135deg, #431407, #ea580c)'
+    },
+    {
+      title: 'Home Run Derby',
+      tagline: 'Time your swing perfectly — three strikes and you\'re out.',
+      path: 'games/home-run-derby/',
+      emoji: '⚾',
+      gradient: 'linear-gradient(135deg, #4d7c0f, #7dd3fc)'
+    },
+    {
+      title: 'Crossword',
+      tagline: 'A mini word puzzle — no timer pressure, just clues and letters.',
+      path: 'games/crossword/',
+      emoji: '📝',
+      gradient: 'linear-gradient(135deg, #fffbeb, #fde047)'
+    },
+    {
+      title: 'Color Drop',
+      tagline: 'Choose your color, become it, and shrink with every success.',
+      path: 'games/color-drop/',
+      emoji: '🎮',
+      gradient: 'linear-gradient(135deg, #ef4444, #22c55e, #3b82f6)'
+    },
+    {
+      title: 'Highway Heat',
+      tagline: 'Weave through traffic and stay ahead of the cops on your tail.',
+      path: 'games/highway-heat/',
+      emoji: '🚔',
+      gradient: 'linear-gradient(135deg, #18181b, #ef4444)'
+    },
+    {
+      title: 'Trick or Die',
+      tagline: 'Stack tricks for a bigger score, then stick a landing the game demands.',
+      path: 'games/trick-or-die/',
+      emoji: '🔥',
+      gradient: 'linear-gradient(135deg, #0c0a09, #f97316, #fde047)'
+    },
+    {
+      title: 'One More Second',
+      tagline: 'Freeze the world for one second — you keep moving.',
+      path: 'games/one-more-second/',
+      emoji: '⏱',
+      gradient: 'linear-gradient(135deg, #0b0e14, #2f7bff)'
+    },
+    {
+      title: 'Wok Star',
+      tagline: 'Read the ticket, build the order, beat the patience meter.',
+      path: 'games/wok-star/',
+      emoji: '🥡',
+      gradient: 'linear-gradient(135deg, #7f1d1d, #f59e0b)'
+    },
+    {
+      title: 'Tank Duel',
+      tagline: 'Every shell reshapes the arena — one hit ends the round.',
+      path: 'games/tank-duel/',
+      emoji: '💥',
+      gradient: 'linear-gradient(135deg, #1c1814, #5be37b)'
+    },
+    {
+      title: 'Rhythm Shift',
+      tagline: 'You don’t follow the beat — your tap IS the beat.',
+      path: 'games/rhythm-shift/',
+      emoji: '🎵',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #4fd1ff, #ffd23f)'
+    },
+    {
+      title: 'Last Fist',
+      tagline: 'Panda vs Bear — full fight system, best-of-3 rounds.',
+      path: 'games/last-fist/',
+      emoji: '🐼',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #f4f4f4, #8b5a2b)'
+    },
+    {
+      title: 'Grapple Swing',
+      tagline: 'You don’t control where you go. You control when you let go.',
+      path: 'games/grapple-swing/',
+      emoji: '🦍',
+      gradient: 'linear-gradient(135deg, #0c0a1a, #38bdf8, #a78bfa)'
+    },
+    {
+      title: 'Blade Duel',
+      tagline: 'Every attack is a commitment. One good read wins the exchange.',
+      path: 'games/blade-duel/',
+      emoji: '⚔️',
+      gradient: 'linear-gradient(135deg, #1a0a0a, #f87171, #fde047)'
+    },
+    {
+      title: 'Dodgeball Arena',
+      tagline: 'Charge your throw, read theirs — a caught ball is an instant counter.',
+      path: 'games/dodgeball-arena/',
+      emoji: '🏐',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #ff5a5a, #ffd23f)'
+    },
+    {
+      title: 'Paddle Duel',
+      tagline: 'The ball remembers every hit — control the rally, break their timing.',
+      path: 'games/paddle-duel/',
+      emoji: '🏓',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #8fd3ff, #ff9f6b)'
+    },
+    {
+      title: 'Sumo Push',
+      tagline: 'One ring. One shove. One mistake.',
+      path: 'games/sumo-push/',
+      emoji: '🤼',
+      gradient: 'linear-gradient(135deg, #1b140d, #c9a15a, #ff5a5a)'
+    },
+    {
+      title: 'Overpressure',
+      tagline: 'Every balloon gets more valuable the longer it survives — how greedy can you be?',
+      path: 'games/overpressure/',
+      emoji: '🎈',
+      gradient: 'linear-gradient(135deg, #12161c, #3ad1c8, #ffcc33)'
+    },
+    {
+      title: 'Quick Draw',
+      tagline: "One signal is real. Everything else is a bluff — don't flinch.",
+      path: 'games/quick-draw/',
+      emoji: '🤠',
+      gradient: 'linear-gradient(135deg, #241a12, #ff7b39, #ffcc33)'
+    },
+    {
+      title: 'Riptide',
+      tagline: 'Sometimes the safest move is to stop swimming.',
+      path: 'games/riptide/',
+      emoji: '🌊',
+      gradient: 'linear-gradient(135deg, #08141f, #1f3d52, #7fd8e8)'
+    },
+    {
+      title: 'Getaway Driver',
+      tagline: 'You saw the route. Now drive it blind.',
+      path: 'games/getaway-driver/',
+      emoji: '🏎️',
+      gradient: 'linear-gradient(135deg, #0a0a10, #15151d, #ffc94d)'
+    },
+    {
+      title: 'Skyline Slingshot',
+      tagline: "You don't fly. You commit to a line, and find out if you were right.",
+      path: 'games/skyline-slingshot/',
+      emoji: '🪢',
+      gradient: 'linear-gradient(135deg, #1a1030, #3a1f3d, #ff9f4d)'
+    },
+    {
+      title: 'Basketball Arcade',
+      tagline: 'Every collision builds Momentum. Every Momentum bar is a play waiting to happen.',
+      path: 'games/basketball-arcade/',
+      emoji: '🏀',
+      gradient: 'linear-gradient(135deg, #14532d, #f97316, #fbbf24)'
+    },
+    {
+      title: 'Football Arcade',
+      tagline: 'Read the defense, break the tackle — you control both sides of the ball.',
+      path: 'games/football-arcade/',
+      emoji: '🏈',
+      gradient: 'linear-gradient(135deg, #1a3a1f, #7c3f14, #f2f4f7)'
+    },
+    {
+      title: 'Paintball Arcade',
+      tagline: 'Every shot gives you away — one hit ends it.',
+      path: 'games/paintball-arcade/',
+      emoji: '🎯',
+      gradient: 'linear-gradient(135deg, #2e5230, #8b3a3a, #1d4ed8)'
+    },
+    {
+      title: 'Basketball Arcade 3v3',
+      tagline: 'Solo vs a full AI squad — switch control between your three players and drive downcourt.',
+      path: 'games/basketball-arcade-3v3/',
+      emoji: '🏀',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #38bdf8, #f97316)'
+    },
+    {
+      title: 'Fireteam Zero',
+      tagline: 'Small maps, tight gunfights, movement that actually matters.',
+      path: 'games/fireteam-zero/',
+      emoji: '🔫',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #3d3d47, #ffd24d)'
+    },
+    {
+      title: 'Tee Time',
+      tagline: 'Real 3-click golf — driver to putter, water and sand in play.',
+      path: 'games/tee-time/',
+      emoji: '⛳',
+      gradient: 'linear-gradient(135deg, #0c1410, #3c7a3f, #e4c87a)'
+    },
+    {
+      title: 'Drift Circuit',
+      tagline: 'Slide through the sunset — chain drifts, chase the ghost, beat your lap.',
+      path: 'games/drift-circuit/',
+      emoji: '🏁',
+      gradient: 'linear-gradient(135deg, #1a1030, #ff7a45, #ffd9a0)'
+    },
+    {
+      title: 'Grind Session',
+      tagline: 'Pop tricks, grind rails, chain combos — 120 seconds at the skatepark.',
+      path: 'games/grind-session/',
+      emoji: '🛹',
+      gradient: 'linear-gradient(135deg, #2a1236, #ff8a3c, #ffd83d)'
+    },
+    {
+      title: 'Reel Deep',
+      tagline: 'Cast, read the water, and land the big one — fish four sites from dock and boat.',
+      path: 'games/reel-deep/',
+      emoji: '🎣',
+      gradient: 'linear-gradient(135deg, #06202b, #1f8a8a, #f2b84b)'
+    },
+    {
+      title: 'Scorch',
+      tagline: 'Keep the ball hot for a bigger multiplier — bank it before you lose control.',
+      path: 'games/scorch/',
+      emoji: '🌋',
+      gradient: 'linear-gradient(135deg, #1a0a05, #f97316, #ef4444)'
+    },
+    {
+      title: 'Kaiju Commute',
+      tagline: "You're a giant monster late for work — smash the city, mind the traffic.",
+      path: 'games/kaiju-commute/',
+      emoji: '🦖',
+      gradient: 'linear-gradient(135deg, #1b1240, #2f8f4e, #ff8a5c)'
+    },
+    {
+      title: 'Last Call',
+      tagline: 'Pull back, let go, land the pour — the bar never stops getting rowdier.',
+      path: 'games/last-call/',
+      emoji: '🍺',
+      gradient: 'linear-gradient(135deg, #1c120c, #f5c97a, #3a2416)'
+    },
+    {
+      title: 'Pitch Count',
+      tagline: 'Full 9 innings, your arm and your swing — broadcast camera, real count.',
+      path: 'games/pitch-count/',
+      emoji: '⚾',
+      gradient: 'linear-gradient(135deg, #0a1f12, #1c4a28, #f5f0e6)'
+    },
+    {
+      title: 'The Trade',
+      tagline: 'Measure. Cut. Make it fit.',
+      path: 'games/the-trade/',
+      emoji: '🪚',
+      gradient: 'linear-gradient(135deg, #17111f, #4b2f46, #c17a42)'
+    },
+    {
+      title: 'Table Takedown',
+      tagline: 'Slide fast. Strike clean.',
+      path: 'games/table-takedown/',
+      emoji: '🥅',
+      gradient: 'linear-gradient(135deg, #D62828 0%, #F4C542 58%, #2457A6 100%)'
     }
-  }
+  ];
 
-  // table bounce
-  if (ball.h <= 0 && ball.vh < 0 && ball.x >= -0.05 && ball.x <= TABLE.width+0.05 && ball.y >= -0.05 && ball.y <= TABLE.length+0.05){
-    ball.h = 0;
-    ball.vy *= (1 + 0.10*ball.topSpin);
-    ball.vh = -ball.vh * (0.87 - 0.08*ball.topSpin);
-    ball.vx += 0.06*ball.sideSpin*Math.abs(ball.vy);
-    ball.vx *= 0.99; ball.vy *= 0.99;
-    ball.topSpin *= 0.72; ball.sideSpin *= 0.72;
-    var side = ball.y < TABLE.netY ? 'human' : 'ai';
-    if (onBounce) onBounce(ball, side);
-  }
-
-  // out of play volume
-  if (ball.y < -0.5 || ball.y > TABLE.length+0.5 || ball.x < -0.6 || ball.x > TABLE.width+0.6 || ball.h < -1.0){
-    if (onOut) onOut(ball);
-  }
-
-  ball.trail.push({x:ball.x,y:ball.y,h:ball.h,t:0});
-  if (ball.trail.length > 10) ball.trail.shift();
-  for (var i=0;i<ball.trail.length;i++) ball.trail[i].t += dt;
-}
-
-/* Solve a launch velocity that lands the ball at (targetX,targetY,0) over time T,
-   stepping T upward until the flight clears the net by the required margin
-   (or falls back to a slow high arc rather than firing it through the net). */
-function solveShot(ball, targetX, targetY, baseT){
-  var g = GRAVITY;
-  var T = clamp(baseT||0.34, 0.22, 0.58);
-  var vx, vy, vh, cleared=false;
-  var guard = 0;
-  while (T <= 0.60+1e-6 && guard < 20){
-    vx = (targetX - ball.x)/T;
-    vy = (targetY - ball.y)/T;
-    vh = (0 - ball.h + 0.5*g*T*T)/T;
-    var tn = (TABLE.netY - ball.y)/vy;
-    if (tn > 0 && tn < T){
-      var hAtNet = ball.h + vh*tn - 0.5*g*tn*tn;
-      if (hAtNet > TABLE.netHeight + 0.04){ cleared = true; break; }
-    } else {
-      cleared = true; break;
-    }
-    T += 0.02; guard++;
-  }
-  if (!cleared){
-    T = 0.72;
-    vx = (targetX - ball.x)/T;
-    vy = (targetY - ball.y)/T;
-    vh = (0 - ball.h + 0.5*g*T*T)/T * 1.18;
-  }
-  return { vx:vx, vy:vy, vh:vh, T:T };
-}
-
-/* Resolve a paddle contact: computes power/control quality from timing + offset,
-   applies paddle stats + spin selection, and launches the ball toward the chosen
-   lane/depth target with aim error inversely proportional to control quality. */
-function resolveHit(ball, hitterSide, opts){
-  var timingQ = clamp(1 - Math.abs(opts.timingError)/TIMING_WINDOW, 0, 1);
-  var centerQ = clamp(1 - Math.abs(opts.offset), 0, 1);
-  var power = 0.55 + 0.45*timingQ;
-  var control = 0.55 + 0.45*centerQ;
-  var aimErrorM = (1-control) * 0.18;
-  var finalTargetX = clamp(opts.targetX + randRange(-aimErrorM, aimErrorM), BALL_RADIUS, TABLE.width - BALL_RADIUS);
-
-  var baseT = lerp(0.50, 0.30, power) / Math.max(0.5, opts.paddleStats.power);
-  var shot = solveShot(ball, finalTargetX, opts.targetY, baseT);
-
-  ball.vx = shot.vx; ball.vy = shot.vy; ball.vh = shot.vh;
-  ball.topSpin = opts.spinTop * opts.paddleStats.spin * (0.5+0.5*timingQ);
-  ball.sideSpin = opts.spinSide * opts.paddleStats.spin * (0.5+0.5*timingQ);
-  ball.lastHitBy = hitterSide;
-  ball.lastBounceSideSameHit = null;
-  ball.bouncesSinceHit = 0;
-  // Any hit ends serve-phase bookkeeping -- the serve's own bounce sequence is only
-  // relevant up until it is first legally returned (executeServe re-arms it right
-  // after this call for the serve itself). Leaving it set after a return hit was
-  // the bug that let a later, unrelated bounce get misread as part of the original
-  // serve's legality check and award a contradictory point.
-  ball.servePhase = false;
-
-  SFX.paddleHit(power);
-  return { power:power, control:control, timingQ:timingQ, centerQ:centerQ };
-}
-
-function targetCoords(laneIndex, depthIndex, towardAi){
-  var x = LANE_FRACS[laneIndex] * TABLE.width;
-  var yHuman = depthIndex===0 ? DEPTH_SHORT : DEPTH_LONG; // distance measured from y=0 end
-  var y = towardAi ? yHuman : (TABLE.length - yHuman);
-  return { x:x, y:y };
-}
-
-/* ============================================================
-   BOOT
-   ============================================================ */
-function BootScene(){ Phaser.Scene.call(this, {key:'Boot'}); }
-BootScene.prototype = Object.create(Phaser.Scene.prototype);
-BootScene.prototype.create = function(){ this.scene.start('Menu'); };
-
-/* ============================================================
-   MENU
-   ============================================================ */
-function MenuScene(){ Phaser.Scene.call(this, {key:'Menu'}); }
-MenuScene.prototype = Object.create(Phaser.Scene.prototype);
-MenuScene.prototype.create = function(){
-  this.save = Save.load();
-  SFX.setEnabled(this.save.soundEnabled);
-  this.buildUI();
-};
-MenuScene.prototype.buildUI = function(){
-  this.children.removeAll();
-  var self = this;
-  var W = this.scale.width, H = this.scale.height;
-  var g = this.add.graphics();
-  g.fillGradientStyle(0x13202b,0x13202b,0x0b141c,0x0b141c,1);
-  g.fillRect(0,0,W,H);
-
-  this.add.text(W/2, 56, 'SPIN RALLY', {fontFamily:'Georgia,serif', fontSize:'44px', color:'#EAF3E7'}).setOrigin(0.5);
-  this.add.text(W/2, 96, 'Time your swing. Place your shot. Read the spin.', {fontFamily:'Arial', fontSize:'15px', color:'#9fb0a8'}).setOrigin(0.5);
-
-  // paddle selection
-  this.add.text(W/2, 142, 'Paddle', {fontFamily:'Georgia,serif', fontSize:'18px', color:'#EAF3E7'}).setOrigin(0.5);
-  var pW = 150, startPX = W/2 - (pW*PADDLE_ORDER.length)/2 + pW/2;
-  PADDLE_ORDER.forEach(function(key, i){
-    var p = PADDLES[key];
-    var unlocked = self.save.unlockedPaddles.indexOf(key) >= 0;
-    var cx = startPX + i*pW, cy = 190;
-    var card = self.add.graphics();
-    var selected = self.save.selectedPaddle === key;
-    card.fillStyle(unlocked ? (selected?0x24433f:0x1c2d28) : 0x171f1d, 1);
-    card.fillRoundedRect(cx-66, cy-34, 132, 68, 8);
-    card.lineStyle(2, selected?0x4FD1B8:0x2d3f3a, 1);
-    card.strokeRoundedRect(cx-66, cy-34, 132, 68, 8);
-    self.add.text(cx, cy-14, p.name, {fontFamily:'Arial', fontSize:'14px', color: unlocked?'#EAF3E7':'#5c6a65'}).setOrigin(0.5);
-    self.add.text(cx, cy+8, unlocked ? ('P'+p.power.toFixed(2)+' C'+p.control.toFixed(2)+' S'+p.spin.toFixed(2)) : ('Win '+p.unlock+' matches'),
-      {fontFamily:'Arial', fontSize:'10px', color: unlocked?'#9fb0a8':'#56625d'}).setOrigin(0.5);
-    if (unlocked){
-      var hit = self.add.rectangle(cx, cy, 132, 68, 0xffffff, 0.001).setInteractive({useHandCursor:true});
-      hit.on('pointerup', function(){ self.save.selectedPaddle = key; Save.save(self.save); self.buildUI(); });
-    }
+  const grid = document.getElementById('game-grid');
+  GAMES.forEach(function (game) {
+    const card = document.createElement('a');
+    card.className = 'card';
+    card.href = game.path;
+    card.style.background = game.gradient;
+    card.innerHTML =
+      '<div class="art">' + game.emoji + '</div>' +
+      '<div class="info">' +
+        '<h2>' + game.title + '</h2>' +
+        '<p>' + game.tagline + '</p>' +
+      '</div>';
+    grid.appendChild(card);
   });
-
-  // opponent ladder
-  this.add.text(W/2, 282, 'Opponent', {fontFamily:'Georgia,serif', fontSize:'18px', color:'#EAF3E7'}).setOrigin(0.5);
-  var oW = Math.min(170, (W-60)/OPPONENTS.length);
-  var startOX = W/2 - (oW*OPPONENTS.length)/2 + oW/2;
-  OPPONENTS.forEach(function(o,i){
-    var unlocked = i <= self.save.highestOpponent;
-    var cx = startOX + i*oW, cy = 332;
-    var card = self.add.graphics();
-    card.fillStyle(unlocked ? 0x1c2d28 : 0x171f1d, 1);
-    card.fillRoundedRect(cx-oW*0.44, cy-28, oW*0.88, 58, 8);
-    card.lineStyle(2, unlocked?0x2d3f3a:0x202a27, 1);
-    card.strokeRoundedRect(cx-oW*0.44, cy-28, oW*0.88, 58, 8);
-    self.add.text(cx, cy-10, unlocked?o.name:'???', {fontFamily:'Arial', fontSize:'12px', color: unlocked?'#EAF3E7':'#5c6a65'}).setOrigin(0.5);
-    self.add.text(cx, cy+10, unlocked?o.tier.toUpperCase():'Locked', {fontFamily:'Arial', fontSize:'10px', color: unlocked?'#9fb0a8':'#56625d'}).setOrigin(0.5);
-    if (unlocked){
-      var hit = self.add.rectangle(cx, cy, oW*0.88, 58, 0xffffff, 0.001).setInteractive({useHandCursor:true});
-      hit.on('pointerup', function(){ self.startMatch(i); });
-    }
-  });
-
-  this.add.text(W/2, H*0.78, 'Wins: '+this.save.wins+'   Losses: '+this.save.losses, {fontFamily:'Arial', fontSize:'14px', color:'#9fb0a8'}).setOrigin(0.5);
-
-  var startBtn = this.add.rectangle(W/2, H*0.86, 220, 46, 0x4FD1B8).setInteractive({useHandCursor:true});
-  this.add.text(W/2, H*0.86, 'PLAY', {fontFamily:'Arial', fontSize:'16px', color:'#0b141c', fontStyle:'bold'}).setOrigin(0.5);
-  startBtn.on('pointerup', function(){ self.startMatch(self.save.highestOpponent); });
-
-  var soundLabel = this.save.soundEnabled ? 'Sound: On' : 'Sound: Off';
-  var sbtn = this.add.text(W-16,16, soundLabel, {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'}).setOrigin(1,0).setInteractive({useHandCursor:true});
-  sbtn.on('pointerup', function(){
-    self.save.soundEnabled = !self.save.soundEnabled; Save.save(self.save); SFX.setEnabled(self.save.soundEnabled); self.buildUI();
-  });
-
-  this.add.text(W/2, H*0.93, 'A/D or drag to move · 1-6 target zones · W/S top/back spin · Q/E side spin · Space swing · Enter serve',
-    {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'}).setOrigin(0.5);
-};
-MenuScene.prototype.startMatch = function(opponentIndex){
-  this.scene.start('Match', { opponentIndex: opponentIndex });
-};
-
-/* ============================================================
-   MATCH SCENE
-   ============================================================ */
-function MatchScene(){ Phaser.Scene.call(this, {key:'Match'}); }
-MatchScene.prototype = Object.create(Phaser.Scene.prototype);
-
-MatchScene.prototype.init = function(data){ this.cfg = data || {}; };
-
-MatchScene.prototype.create = function(){
-  var self = this;
-  this.save = Save.load();
-  this.paddleStats = PADDLES[this.save.selectedPaddle] || PADDLES.starter;
-  this.opponent = OPPONENTS[clamp(this.cfg.opponentIndex||0, 0, OPPONENTS.length-1)];
-  this.aiTier = AI_TIERS[this.opponent.tier];
-
-  this.match = {
-    gameWins: {human:0, ai:0},
-    score: {human:0, ai:0},
-    firstServer: 'human',
-    server: 'human',
-    gameNum: 1,
-    state: 'awaitingServe', // awaitingServe -> serveToss -> rally -> pointPause -> gameOver -> matchOver
-    pointMsg: '', pointTimer: 0,
-    matchOver:false, matchWinner:null
-  };
-
-  this.ball = makeBall();
-  this.human = { x: TABLE.width/2, laneIndex:1, depthIndex:1, spinTop:0, spinSide:0, swingUntil:-1, lastSwingAt:-999 };
-  this.ai = { x: TABLE.width/2, targetX: TABLE.width/2, reactTimer:0, planned:null };
-
-  this.serveToss = { active:false, t:0, window:0.55 };
-
-  this.keys = this.input.keyboard.addKeys({
-    left:'LEFT', right:'RIGHT', a:'A', d:'D',
-    one:'ONE', two:'TWO', three:'THREE', four:'FOUR', five:'FIVE', six:'SIX',
-    w:'W', s:'S', q:'Q', e:'E', space:'SPACE', enter:'ENTER', esc:'ESC'
-  });
-  this.prevSpace = false; this.prevEnter = false;
-
-  this.pointerDown = false; this.pointerX = null;
-  this.input.on('pointerdown', function(p){ self.pointerDown = true; self.pointerX = p.x; self.handleZoneTap(p.x,p.y); });
-  this.input.on('pointermove', function(p){ if (self.pointerDown) self.pointerX = p.x; });
-  this.input.on('pointerup', function(){ self.pointerDown = false; });
-
-  this.skyG = this.add.graphics();
-  this.tableG = this.add.graphics();
-  this.sceneG = this.add.graphics();
-  this.fxG = this.add.graphics();
-  this.hudG = this.add.graphics();
-  this.hudText = this.add.text(0,0,'',{fontFamily:'Arial'});
-  this.buildHudTexts();
-
-  this.beginServeSequence();
-
-  this.scale.on('resize', function(){ /* fixed design resolution via Scale.FIT, nothing to rebuild */ });
-
-  this.events.on('shutdown', function(){ SFX.setEnabled(self.save.soundEnabled); });
-};
-
-MatchScene.prototype.buildHudTexts = function(){
-  var W = this.scale.width;
-  this.scoreText = this.add.text(W/2, 16, '', {fontFamily:'Georgia,serif', fontSize:'22px', color:'#EAF3E7'}).setOrigin(0.5,0);
-  this.gameText = this.add.text(W/2, 44, '', {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'}).setOrigin(0.5,0);
-  this.msgText = this.add.text(W/2, 300, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#EAF3E7'}).setOrigin(0.5).setAlpha(0);
-  this.opponentText = this.add.text(16,16, this.opponent.name+' ('+this.opponent.tier+')', {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'});
-  this.hintText = this.add.text(16, this.scale.height-24, '', {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'});
-};
-
-/* ---------- projection (fixed 1280x720 design resolution via Phaser Scale.FIT) ---------- */
-MatchScene.prototype.project = function(x,y,h){
-  var W = this.scale.width;
-  var t = clamp(y/TABLE.length, 0, 1);
-  var tableWidthPx = lerp(520,380,t);
-  var centerX = W/2;
-  var leftPx = centerX - tableWidthPx/2;
-  var screenX = leftPx + (x/TABLE.width)*tableWidthPx;
-  var groundY = lerp(630,250,t);
-  var screenY = groundY - h*lerp(150,85,t);
-  return { x:screenX, y:screenY, groundY:groundY, scale:tableWidthPx/TABLE.width };
-};
-MatchScene.prototype.screenXToTableX = function(sx, y){
-  var W = this.scale.width;
-  var t = clamp(y/TABLE.length, 0, 1);
-  var tableWidthPx = lerp(520,380,t);
-  var centerX = W/2;
-  var leftPx = centerX - tableWidthPx/2;
-  return clamp((sx-leftPx)/tableWidthPx * TABLE.width, 0, TABLE.width);
-};
-
-/* ============================================================
-   SERVE SEQUENCE
-   ============================================================ */
-MatchScene.prototype.beginServeSequence = function(){
-  var m = this.match;
-  this.ball = makeBall();
-  var serverIsHuman = m.server === 'human';
-  this.ball.x = TABLE.width/2;
-  this.ball.y = serverIsHuman ? STRIKE_Y_HUMAN : STRIKE_Y_AI;
-  this.ball.h = 0.30;
-  this.ball.alive = false;
-  this.ball.servePhase = true;
-  this.ball.serveBounceSeq = [];
-  this.serveToss = { active:true, t:0, window: serverIsHuman?0.55:0.001 };
-  m.state = 'serveToss';
-  if (!serverIsHuman){
-    this.aiServeTimer = randRange(0.5,0.9);
-  }
-};
-
-/* A legal serve has to bounce on the SERVER'S OWN side before crossing to the
-   receiver -- one paddle hit can't physically produce two separately-aimed
-   bounces from a single solveShot call (that solver aims one flight at one
-   landing point). So a serve is executed as two legs: an initial, lightly-aimed
-   toss-hit that lands on the server's own side (this is the only part resolved
-   here), then onBallBounce redirects the ball toward the real chosen target the
-   instant that first bounce happens -- see the servePhase handling there. */
-MatchScene.prototype.executeServe = function(side, quality){
-  var m = this.match;
-  var ball = this.ball;
-  ball.alive = true;
-  var towardAi = side === 'human';
-  var laneIndex, depthIndex, spinTop, spinSide, offset, timingError, paddleStats;
-  if (side === 'human'){
-    laneIndex = this.human.laneIndex; depthIndex = this.human.depthIndex;
-    spinTop = this.human.spinTop; spinSide = this.human.spinSide;
-    paddleStats = this.paddleStats;
-    offset = 0; timingError = (1-quality)*TIMING_WINDOW*0.6;
-  } else {
-    var plan = this.planAiServe();
-    laneIndex = plan.laneIndex; depthIndex = plan.depthIndex; spinTop = plan.spinTop; spinSide = plan.spinSide;
-    paddleStats = PADDLES.starter;
-    offset = plan.offsetNoise; timingError = plan.timingNoise;
-  }
-  var realTarget = targetCoords(laneIndex, depthIndex, towardAi);
-  ball.pendingServe = { targetX: realTarget.x, targetY: realTarget.y, offset: offset, timingError: timingError,
-    paddleStats: paddleStats, spinTop: spinTop, spinSide: spinSide };
-
-  var ownY = side === 'human' ? SERVE_OWN_Y_HUMAN : SERVE_OWN_Y_AI;
-  var ownX = LANE_FRACS[laneIndex] * TABLE.width;
-  var shot = solveShot(ball, ownX, ownY, 0.30);
-  ball.vx = shot.vx; ball.vy = shot.vy; ball.vh = shot.vh;
-  ball.topSpin = 0; ball.sideSpin = 0;
-  ball.lastHitBy = side;
-  ball.servePhase = true;
-  ball.serveBounceSeq = [];
-  SFX.paddleHit(0.4);
-  m.state = 'rally';
-};
-
-MatchScene.prototype.planAiServe = function(){
-  var tier = this.aiTier;
-  var laneIndex = Math.floor(randRange(0,3));
-  var depthIndex = Math.random() < 0.5 ? 0 : 1;
-  var useSpin = Math.random() < tier.spinUse;
-  var spinTop = useSpin ? (Math.random()<0.5?1:-1) : 0;
-  var spinSide = (useSpin && Math.random()<0.5) ? (Math.random()<0.5?-1:1) : 0;
-  return { laneIndex:laneIndex, depthIndex:depthIndex, spinTop:spinTop, spinSide:spinSide,
-    offsetNoise: randRange(-tier.aimErr,tier.aimErr), timingNoise: randRange(-tier.timeErr,tier.timeErr) };
-};
-
-/* ============================================================
-   UPDATE
-   ============================================================ */
-MatchScene.prototype.update = function(t, dtMs){
-  var dt = Math.min(dtMs/1000, 0.05);
-  var m = this.match;
-
-  this.handleContinuousInput(dt);
-
-  if (m.state === 'serveToss'){
-    this.updateServeToss(dt);
-  } else if (m.state === 'rally'){
-    this.updateRally(dt);
-  } else if (m.state === 'pointPause'){
-    m.pointTimer -= dt;
-    if (m.pointTimer <= 0 || this.pressedEnter()){
-      this.advanceAfterPoint();
-    }
-  } else if (m.state === 'gameOver'){
-    m.pointTimer -= dt;
-    if (m.pointTimer <= 0 || this.pressedEnter()) this.startNextGame();
-  } else if (m.state === 'matchOver'){
-    if (this.pressedEnter() || this.pressedSpace()) this.scene.start('Menu');
-  }
-
-  this.render();
-};
-
-MatchScene.prototype.pressedSpace = function(){
-  var now = this.keys.space.isDown;
-  var edge = now && !this.prevSpace;
-  this.prevSpace = now;
-  return edge;
-};
-MatchScene.prototype.pressedEnter = function(){
-  var now = this.keys.enter.isDown;
-  var edge = now && !this.prevEnter;
-  this.prevEnter = now;
-  return edge;
-};
-
-MatchScene.prototype.handleContinuousInput = function(dt){
-  var h = this.human;
-  var speed = 2.0;
-  if (this.keys.left.isDown || this.keys.a.isDown) h.x -= speed*dt;
-  if (this.keys.right.isDown || this.keys.d.isDown) h.x += speed*dt;
-  if (this.pointerDown && this.pointerX != null){
-    var ty = STRIKE_Y_HUMAN;
-    var tx = this.screenXToTableX(this.pointerX, ty);
-    h.x += clamp(tx - h.x, -speed*dt, speed*dt);
-  }
-  h.x = clamp(h.x, PADDLE_X_MIN, PADDLE_X_MAX);
-
-  if (this.keys.one.isDown){ h.laneIndex=0; h.depthIndex=0; }
-  else if (this.keys.two.isDown){ h.laneIndex=1; h.depthIndex=0; }
-  else if (this.keys.three.isDown){ h.laneIndex=2; h.depthIndex=0; }
-  else if (this.keys.four.isDown){ h.laneIndex=0; h.depthIndex=1; }
-  else if (this.keys.five.isDown){ h.laneIndex=1; h.depthIndex=1; }
-  else if (this.keys.six.isDown){ h.laneIndex=2; h.depthIndex=1; }
-
-  if (this.keys.w.isDown) h.spinTop = 1;
-  else if (this.keys.s.isDown) h.spinTop = -1;
-  else if (!this.mobileSpinLock) h.spinTop = 0;
-
-  if (this.keys.q.isDown && !this.keys.e.isDown) h.spinSide = -1;
-  else if (this.keys.e.isDown && !this.keys.q.isDown) h.spinSide = 1;
-  else if (!this.mobileSpinLock) h.spinSide = 0;
-};
-
-MatchScene.prototype.handleZoneTap = function(sx,sy){
-  // six target zone buttons across the bottom
-  var W = this.scale.width, H = this.scale.height;
-  var zoneY = H-70;
-  if (sy < zoneY-26 || sy > zoneY+26) return;
-  var zoneW = 70, startX = W/2 - zoneW*3;
-  for (var i=0;i<6;i++){
-    var cx = startX + zoneW*i + zoneW/2;
-    if (Math.abs(sx-cx) < zoneW/2){
-      this.human.laneIndex = i%3;
-      this.human.depthIndex = i<3?0:1;
-      return;
-    }
-  }
-};
-
-/* ---------- serve toss timing ---------- */
-MatchScene.prototype.updateServeToss = function(dt){
-  var m = this.match;
-  var serverIsHuman = m.server === 'human';
-  this.serveToss.t += dt;
-  var tossT = this.serveToss.t;
-  var peak = 0.35;
-  this.ball.h = 0.30 + Math.max(0, (peak - Math.abs(tossT-peak))) * 0.9;
-
-  if (serverIsHuman){
-    if (this.pressedSpace()){
-      var quality = 1 - clamp(Math.abs(tossT-peak)/peak, 0, 1);
-      SFX.serveTone();
-      this.executeServe('human', quality);
-      return;
-    }
-    if (tossT > this.serveToss.window){
-      // double fault on serve timeout
-      this.awardPoint('ai', 'Serve fault');
-    }
-  } else {
-    this.aiServeTimer -= dt;
-    if (this.aiServeTimer <= 0){
-      SFX.serveTone();
-      this.executeServe('ai', 0.85);
-    }
-  }
-};
-
-/* ---------- rally ---------- */
-MatchScene.prototype.updateRally = function(dt){
-  var self = this;
-  var ball = this.ball;
-  var steps = Math.max(1, Math.round(dt/DT));
-  var subDt = dt/steps;
-  for (var i=0;i<steps;i++){
-    if (!ball.alive) break;
-    stepBall(ball, subDt,
-      function(b, side){ self.onBallBounce(b, side); },
-      function(b){ SFX.netClip(); b.netTouchedThisFlight = true; },
-      function(b){ self.onBallOut(b); }
-    );
-  }
-  if (!ball.alive) return;
-
-  this.updateAiPaddle(dt);
-  this.checkHumanSwing();
-  this.checkAiAutoHit();
-};
-
-MatchScene.prototype.onBallBounce = function(ball, side){
-  SFX.tableBounce();
-  if (ball.servePhase){
-    var expected = ball.lastHitBy === 'human' ? 'human' : 'ai';
-    if (side !== expected){
-      // didn't bounce on the server's own side first -- a genuine serve fault
-      this.awardPoint(ball.lastHitBy==='human'?'ai':'human', 'Serve fault');
-      ball.alive = false;
-      return;
-    }
-    // legal first bounce on the server's own side -- redirect toward the real
-    // chosen target now, same as any other paddle contact. This is what actually
-    // sends the ball over the net; servePhase is cleared inside resolveHit.
-    var p = ball.pendingServe;
-    if (p){
-      resolveHit(ball, ball.lastHitBy, {
-        targetX: p.targetX, targetY: p.targetY, offset: p.offset, timingError: p.timingError,
-        paddleStats: p.paddleStats, spinTop: p.spinTop, spinSide: p.spinSide
-      });
-      ball.pendingServe = null;
-    } else {
-      ball.servePhase = false;
-    }
-    return;
-  }
-
-  if (ball.lastBounceSideSameHit === side){
-    // double bounce on the same side without a return in between -- fault
-    var faultSide = side === 'human' ? 'human' : 'ai';
-    this.awardPoint(faultSide === 'human' ? 'ai' : 'human', 'No return');
-    ball.alive = false;
-    return;
-  }
-  ball.lastBounceSideSameHit = side;
-};
-
-MatchScene.prototype.onBallOut = function(ball){
-  if (!ball.alive) return;
-  ball.alive = false;
-  var winner = ball.lastHitBy === 'human' ? 'ai' : 'human';
-  // if the ball simply flew out without ever bouncing on the intended side, it's the hitter's fault
-  this.awardPoint(ball.lastHitBy ? winner : 'human', 'Out');
-};
-
-MatchScene.prototype.checkHumanSwing = function(){
-  if (!this.pressedSpace()) return;
-  var ball = this.ball;
-  if (!ball.alive) return;
-  if (ball.lastHitBy === 'human') return; // already heading to opponent
-  if (ball.servePhase) return; // can't return a serve before it legally bounces on the server's own side
-  if (ball.h < STRIKE_H_MIN || ball.h > STRIKE_H_MAX) return;
-  if (ball.vy >= 0) return; // ball must be approaching the human side (moving toward y=0)
-  var timeToPlane = (STRIKE_Y_HUMAN - ball.y) / ball.vy;
-  if (Math.abs(timeToPlane) > TIMING_WINDOW*1.6) return; // not close enough to even attempt
-  var offset = (ball.x - this.human.x) / PADDLE_HALF_W;
-  if (Math.abs(offset) > 1.6) return; // nowhere near the paddle
-
-  var target = targetCoords(this.human.laneIndex, this.human.depthIndex, true);
-  resolveHit(ball, 'human', {
-    targetX: target.x, targetY: target.y,
-    offset: offset, timingError: timeToPlane,
-    paddleStats: this.paddleStats, spinTop: this.human.spinTop, spinSide: this.human.spinSide
-  });
-};
-
-MatchScene.prototype.updateAiPaddle = function(dt){
-  var ball = this.ball, ai = this.ai, tier = this.aiTier;
-  if (ball.lastHitBy !== 'human' && ball.lastHitBy !== null){
-    // ball is heading away from AI or already handled; still track toward center softly
-  }
-  if (ai.reactTimer > 0){
-    ai.reactTimer -= dt*1000;
-  } else if (ball.vy > 0 && ball.lastHitBy !== 'ai'){
-    // predict landing x at AI's strike plane
-    if (Math.abs(ball.vy) > 0.01){
-      var tArrive = (STRIKE_Y_AI - ball.y)/ball.vy;
-      if (tArrive > 0){
-        ai.targetX = clamp(ball.x + ball.vx*tArrive, PADDLE_X_MIN, PADDLE_X_MAX);
-      }
-    }
-  }
-  var maxStep = tier.paddleSpeed*dt;
-  ai.x += clamp(ai.targetX-ai.x, -maxStep, maxStep);
-  ai.x = clamp(ai.x, PADDLE_X_MIN, PADDLE_X_MAX);
-};
-
-MatchScene.prototype.checkAiAutoHit = function(){
-  var ball = this.ball, ai = this.ai, tier = this.aiTier;
-  if (ball.lastHitBy === 'ai') return;
-  if (ball.servePhase) return; // can't return a serve before it legally bounces on the server's own side
-  if (ball.vy <= 0) return; // only hit balls approaching the AI side
-  if (ball.h < STRIKE_H_MIN || ball.h > STRIKE_H_MAX) return;
-  if (Math.abs(ball.y - STRIKE_Y_AI) > Math.max(0.05, Math.abs(ball.vy)*DT*6)) return;
-  if (Math.abs(ball.x - ai.x) > PADDLE_HALF_W*1.3) return;
-
-  // reset reaction gate for the next incoming ball once this one resolves
-  this.ai.reactTimer = tier.reactMs;
-
-  var plan = this.planAiShot();
-  var target = targetCoords(plan.laneIndex, plan.depthIndex, false);
-  resolveHit(ball, 'ai', {
-    targetX: target.x, targetY: target.y,
-    offset: randRange(-tier.aimErr,tier.aimErr)/PADDLE_HALF_W,
-    timingError: randRange(-tier.timeErr,tier.timeErr),
-    paddleStats: PADDLES.starter, spinTop: plan.spinTop, spinSide: plan.spinSide
-  });
-};
-
-MatchScene.prototype.planAiShot = function(){
-  var tier = this.aiTier;
-  var laneIndex = 1;
-  if (Math.random() < tier.aggressive){
-    // aim away from the human paddle's current lateral position
-    var humanFrac = clamp((this.human.x/TABLE.width - 0) , 0, 1);
-    laneIndex = humanFrac < 0.5 ? 2 : 0;
-  }
-  var depthIndex = Math.random() < (0.4 + tier.aggressive*0.3) ? 1 : 0;
-  var useSpin = Math.random() < tier.spinUse;
-  var spinTop = useSpin ? (Math.random()<0.6?1:-1) : 0;
-  var spinSide = (useSpin && Math.random()<0.5) ? (Math.random()<0.5?-1:1) : 0;
-  return { laneIndex:laneIndex, depthIndex:depthIndex, spinTop:spinTop, spinSide:spinSide };
-};
-
-/* ============================================================
-   SCORING
-   ============================================================ */
-MatchScene.prototype.awardPoint = function(winner, reason){
-  var m = this.match;
-  m.score[winner]++;
-  if (winner === 'human') SFX.pointPlayer(); else SFX.pointAI();
-  m.pointMsg = (winner==='human' ? 'You score' : this.opponent.name+' scores') + ' — ' + reason;
-
-  var hs = m.score.human, as = m.score.ai;
-  var gameOver = (hs>=11 || as>=11) && Math.abs(hs-as)>=2;
-  if (gameOver){
-    var gw = hs>as ? 'human' : 'ai';
-    m.gameWins[gw]++;
-    m.pointMsg = (gw==='human'?'You win the game':this.opponent.name+' wins the game') + '  ('+hs+'-'+as+')';
-    if (m.gameWins[gw] >= 2){
-      m.matchOver = true; m.matchWinner = gw;
-      m.state = 'gameOver';
-      m.pointTimer = 2.2;
-    } else {
-      m.state = 'gameOver';
-      m.pointTimer = 2.2;
-    }
-  } else {
-    // serve rotation: switch server every 2 points, every 1 point once both reach 10
-    var total = hs+as;
-    if (hs>=10 && as>=10){
-      m.server = (total % 2 === 0) ? m.lastDeuceServer : this.other(m.lastDeuceServer);
-      if (total === 20) m.lastDeuceServer = m.server; // lock baseline at the deuce transition
-    } else {
-      m.server = (Math.floor(total/2) % 2 === 0) ? m.firstServer : this.other(m.firstServer);
-    }
-    m.state = 'pointPause';
-    m.pointTimer = 1.1;
-  }
-};
-MatchScene.prototype.other = function(side){ return side==='human' ? 'ai' : 'human'; };
-
-MatchScene.prototype.advanceAfterPoint = function(){
-  this.match.state = 'serveToss';
-  this.beginServeSequence();
-};
-
-MatchScene.prototype.startNextGame = function(){
-  var m = this.match;
-  if (m.matchOver){
-    var won = m.matchWinner === 'human';
-    if (won){ this.save.wins++; this.save.highestOpponent = Math.min(OPPONENTS.length-1, Math.max(this.save.highestOpponent, this.cfg.opponentIndex+1)); }
-    else { this.save.losses++; }
-    Save.save(this.save);
-    m.state = 'matchOver';
-    return;
-  }
-  m.score = {human:0, ai:0};
-  m.gameNum++;
-  m.firstServer = this.other(m.firstServer);
-  m.server = m.firstServer;
-  m.lastDeuceServer = m.firstServer;
-  m.state = 'serveToss';
-  this.beginServeSequence();
-};
-
-/* ============================================================
-   RENDER
-   ============================================================ */
-MatchScene.prototype.render = function(){
-  var W = this.scale.width, H = this.scale.height;
-  var self = this;
-
-  this.skyG.clear();
-  var horizonY = 330;
-
-  // back wall -- gymnasium-style, light and even
-  this.skyG.fillStyle(0xd8d3c4, 1);
-  this.skyG.fillRect(0, 0, W, horizonY);
-  this.skyG.fillStyle(0xc7c1ae, 1);
-  this.skyG.fillRect(0, horizonY-14, W, 14); // wall/floor trim
-
-  // blank wall for now -- no windows, no banners
-
-  // ceiling light glow strips
-  this.skyG.fillStyle(0xfffaee, 0.18);
-  this.skyG.fillRect(0, 0, W, 26);
-
-  // polished wood floor, filling the hall beyond the playing surface
-  this.skyG.fillStyle(0x8a6a44, 1);
-  this.skyG.fillRect(0, horizonY, W, H-horizonY);
-  this.skyG.fillGradientStyle(0xa3824f, 0xa3824f, 0x6e5234, 0x6e5234, 1);
-  this.skyG.fillRect(0, horizonY, W, H-horizonY);
-  // converging floor planks toward the back-wall vanishing point for depth
-  this.skyG.lineStyle(1, 0x5c4428, 0.4);
-  for (var fx=-2; fx<=2; fx++){
-    this.skyG.lineBetween(W/2 + fx*70, H, W/2 + fx*14, horizonY);
-  }
-  this.skyG.lineStyle(1, 0x5c4428, 0.25);
-  for (var fy=horizonY+26; fy<H; fy+=34){
-    this.skyG.lineBetween(0, fy, W, fy);
-  }
-  // soft shadow where floor meets wall
-  this.skyG.fillStyle(0x000000, 0.12);
-  this.skyG.fillRect(0, horizonY, W, 18);
-
-  this.tableG.clear();
-  var nearW=520, farW=380, nearY=630, farY=250;
-  var cx = W/2;
-
-  // dark wood/laminate apron beneath the playing surface, with simple legs for depth
-  this.tableG.fillStyle(0x241a12, 1);
-  this.tableG.fillTriangle(cx-nearW/2-20, nearY+26, cx+nearW/2+20, nearY+26, cx+farW/2+10, farY-10);
-  this.tableG.fillTriangle(cx-nearW/2-20, nearY+26, cx+farW/2+10, farY-10, cx-farW/2-10, farY-10);
-  this.tableG.fillStyle(0x1a120c, 1);
-  this.tableG.fillRect(cx-nearW/2+30, nearY+10, 16, 46);
-  this.tableG.fillRect(cx+nearW/2-46, nearY+10, 16, 46);
-
-  // playing surface: a subtle gradient (brighter toward the near edge, catching more
-  // light) instead of one flat fill, plus a painted edge trim just inside the apron
-  this.tableG.fillStyle(COLORS.tableEdge,1);
-  this.tableG.fillTriangle(cx-nearW/2-10, nearY+10, cx+nearW/2+10, nearY+10, cx+farW/2+6, farY-6);
-  this.tableG.fillTriangle(cx-nearW/2-10, nearY+10, cx+farW/2+6, farY-6, cx-farW/2-6, farY-6);
-  this.tableG.fillGradientStyle(shadeColor(COLORS.tableTop,0.10), shadeColor(COLORS.tableTop,0.10), shadeColor(COLORS.tableTop,-0.10), shadeColor(COLORS.tableTop,-0.10), 1);
-  this.tableG.fillTriangle(cx-nearW/2, nearY, cx+nearW/2, nearY, cx+farW/2, farY);
-  this.tableG.fillTriangle(cx-nearW/2, nearY, cx+farW/2, farY, cx-farW/2, farY);
-  // soft sheen highlight down the middle, like light glancing off a glossy top
-  this.tableG.fillStyle(0xffffff, 0.05);
-  this.tableG.fillTriangle(cx-40, nearY, cx+40, nearY, cx+farW*0.08, farY);
-
-  // boundary + center lines (proportioned like a real table's painted lines)
-  this.tableG.lineStyle(3, COLORS.lines, 0.9);
-  this.tableG.lineBetween(cx-nearW/2, nearY, cx+nearW/2, nearY);
-  this.tableG.lineBetween(cx-farW/2, farY, cx+farW/2, farY);
-  this.tableG.lineBetween(cx-nearW/2, nearY, cx-farW/2, farY);
-  this.tableG.lineBetween(cx+nearW/2, nearY, cx+farW/2, farY);
-  this.tableG.lineStyle(1.5, COLORS.lines, 0.55);
-  this.tableG.lineBetween(cx, nearY, cx, farY);
-
-  // net assembly ("the gate"): clamp posts at both edges, taut mesh, and a white
-  // top tape -- not just a flat translucent band
-  var postNear = this.project(0, TABLE.netY, 0), postFar = this.project(TABLE.width, TABLE.netY, 0);
-  var postNearTop = this.project(0, TABLE.netY, TABLE.netHeight), postFarTop = this.project(TABLE.width, TABLE.netY, TABLE.netHeight);
-  this.tableG.fillStyle(0x050505, 0.4);
-  this.tableG.fillEllipse(postNear.x, postNear.y+3, 12, 4);
-  this.tableG.fillEllipse(postFar.x, postFar.y+3, 12, 4);
-
-  this.tableG.fillStyle(COLORS.net, 0.5);
-  this.tableG.fillPoints([
-    {x:postNear.x,y:postNear.y},{x:postFar.x,y:postFar.y},{x:postFarTop.x,y:postFarTop.y},{x:postNearTop.x,y:postNearTop.y}
-  ], true);
-  // mesh grid (vertical + horizontal threads), finer than before
-  for (var nx=0; nx<=1.0001; nx+=0.07){
-    var b = this.project(nx*TABLE.width, TABLE.netY, 0), tp = this.project(nx*TABLE.width, TABLE.netY, TABLE.netHeight);
-    this.tableG.lineStyle(1, COLORS.net, 0.3);
-    this.tableG.lineBetween(b.x,b.y,tp.x,tp.y);
-  }
-  for (var nh=0.15; nh<=0.86; nh+=0.22){
-    var lp = this.project(0, TABLE.netY, nh*TABLE.netHeight), rp = this.project(TABLE.width, TABLE.netY, nh*TABLE.netHeight);
-    this.tableG.lineStyle(1, COLORS.net, 0.3);
-    this.tableG.lineBetween(lp.x,lp.y,rp.x,rp.y);
-  }
-  // white top tape, drawn slightly thick so it reads as fabric, not a wire
-  this.tableG.lineStyle(4, 0xffffff, 0.95);
-  this.tableG.lineBetween(postNearTop.x, postNearTop.y, postFarTop.x, postFarTop.y);
-  // clamp posts at each end, standing a touch taller than the tape
-  var postTopNear = this.project(0, TABLE.netY, TABLE.netHeight+0.018);
-  var postTopFar = this.project(TABLE.width, TABLE.netY, TABLE.netHeight+0.018);
-  this.tableG.lineStyle(4, 0x2a2a2a, 1);
-  this.tableG.lineBetween(postNear.x, postNear.y, postTopNear.x, postTopNear.y);
-  this.tableG.lineBetween(postFar.x, postFar.y, postTopFar.x, postTopFar.y);
-  this.tableG.fillStyle(0x1f1f1f, 1);
-  this.tableG.fillCircle(postTopNear.x, postTopNear.y, 4);
-  this.tableG.fillCircle(postTopFar.x, postTopFar.y, 4);
-
-  var g = this.sceneG; g.clear();
-  var fx = this.fxG; fx.clear();
-
-  // players + paddles (one anchored draw each, so body/paddle/head never drift
-  // apart the way they did when paddle and body used two different projected depths)
-  this.drawPlayerWithPaddle(g, this.human.x, false, 0x4a3a2f, COLORS.paddleRed);
-  this.drawPlayerWithPaddle(g, this.ai.x, true, 0x3a4a55, COLORS.paddleBlue);
-
-  // ball trail
-  var ball = this.ball;
-  if (ball.alive && ball.trail.length>1){
-    for (var i=0;i<ball.trail.length-1;i++){
-      var tp0 = ball.trail[i], tp1 = ball.trail[i+1];
-      var a0 = this.project(tp0.x,tp0.y,tp0.h), a1 = this.project(tp1.x,tp1.y,tp1.h);
-      var alpha = (i/ball.trail.length) * 0.35;
-      var spinCol = ball.topSpin>0.15?COLORS.topSpin:(ball.topSpin<-0.15?COLORS.backSpin:(Math.abs(ball.sideSpin)>0.15?COLORS.sideSpin:COLORS.ball));
-      g.lineStyle(2, spinCol, alpha);
-      g.lineBetween(a0.x,a0.y,a1.x,a1.y);
-    }
-  }
-
-  // ball + shadow
-  if (ball.alive || this.match.state==='serveToss'){
-    var shadowP = this.project(ball.x, ball.y, 0);
-    var r = lerp(8,5, clamp(ball.y/TABLE.length,0,1));
-    g.fillStyle(COLORS.shadow, 0.35);
-    g.fillEllipse(shadowP.x, shadowP.y+2, r*1.6, r*0.5);
-    var bp = this.project(ball.x, ball.y, ball.h);
-    var spinRing = ball.alive && (Math.abs(ball.topSpin)>0.15 || Math.abs(ball.sideSpin)>0.15);
-    if (spinRing){
-      var ringCol = Math.abs(ball.topSpin) >= Math.abs(ball.sideSpin) ? (ball.topSpin>0?COLORS.topSpin:COLORS.backSpin) : COLORS.sideSpin;
-      g.lineStyle(2, ringCol, 0.8);
-      g.strokeCircle(bp.x, bp.y, r+2);
-    }
-    g.fillStyle(COLORS.ball,1);
-    g.fillCircle(bp.x, bp.y, r);
-    g.fillStyle(0xffffff, 0.5);
-    g.fillCircle(bp.x-r*0.3, bp.y-r*0.3, r*0.35);
-  }
-
-  this.renderHud();
-};
-
-/* Draws body + paddle from a single anchor point so they never drift apart --
-   the player's lateral (x) position is taken from the real table projection at
-   their own baseline, but their vertical anchor is a fixed screen offset from
-   that table edge rather than a second, mismatched depth projection. */
-MatchScene.prototype.drawPlayerWithPaddle = function(g, tableX, isAi, bodyColor, paddleColor){
-  var farY = 250, nearY = 630;
-  var edgeY = isAi ? TABLE.length : 0;
-  var p = this.project(tableX, edgeY, 0);
-  var anchorY = isAi ? farY - 46 : nearY + 46;
-  var s = 1.7;
-  var side = isAi ? -1 : 1; // which way the paddle arm reaches
-
-  var hipY = anchorY - 14*s;
-  var shoulderY = anchorY - 34*s;
-  var headCy = shoulderY - 9*s;
-  var feetY = anchorY;
-  var skin = 0xd8b896;
-  var shorts = 0x2c2f33;
-
-  g.fillStyle(0x060b09, 0.32);
-  g.fillEllipse(p.x, feetY + 6*s, 26*s, 6*s); // ground shadow at the feet
-
-  // back leg + front leg, slightly splayed for a ready stance
-  g.fillStyle(0x1c1e21, 1);
-  g.fillRect(p.x - 7*s, hipY, 5*s, feetY-hipY);
-  g.fillRect(p.x + 2*s, hipY, 5*s, feetY-hipY);
-  g.fillStyle(0x111214, 1);
-  g.fillEllipse(p.x - 4.5*s, feetY, 7*s, 3.5*s); // shoes
-  g.fillEllipse(p.x + 4.5*s, feetY, 7*s, 3.5*s);
-
-  // shorts
-  g.fillStyle(shorts, 1);
-  g.fillRoundedRect(p.x-9*s, hipY-7*s, 18*s, 9*s, 3*s);
-
-  // torso (jersey)
-  g.fillStyle(bodyColor, 1);
-  g.fillRoundedRect(p.x-9*s, shoulderY, 18*s, hipY-shoulderY+2*s, 4*s);
-
-  // far-side arm (hangs by the body)
-  g.fillStyle(bodyColor, 1);
-  g.fillRoundedRect(p.x - side*11*s - 2*s, shoulderY+2*s, 4*s, 16*s, 2*s);
-  g.fillStyle(skin, 1);
-  g.fillCircle(p.x - side*11*s, shoulderY+19*s, 2.6*s);
-
-  // paddle arm, reaching toward the ball side, bent at the elbow
-  var elbowX = p.x + side*9*s, elbowY = shoulderY+10*s;
-  var handX = p.x + side*15*s, handY = shoulderY+4*s;
-  g.lineStyle(4*s, bodyColor, 1);
-  g.lineBetween(p.x+side*3*s, shoulderY+2*s, elbowX, elbowY);
-  g.lineBetween(elbowX, elbowY, handX, handY);
-  g.fillStyle(skin, 1);
-  g.fillCircle(handX, handY, 2.8*s);
-
-  // head + simple hair cap
-  g.fillStyle(skin, 1);
-  g.fillCircle(p.x, headCy, 8.5*s);
-  g.fillStyle(0x3a2a1e, 1);
-  g.beginPath();
-  g.arc(p.x, headCy, 8.6*s, Math.PI, 0, false);
-  g.fillPath();
-
-  // paddle: handle + blade, held at the hand
-  g.fillStyle(0x6b4a30, 1);
-  g.fillRect(handX - 1.6*s, handY - 2*s, 3.2*s, 8*s);
-  g.fillStyle(paddleColor, 1);
-  g.fillEllipse(handX, handY - 8*s, 11*s, 14*s);
-};
-
-MatchScene.prototype.renderHud = function(){
-  var W = this.scale.width, H = this.scale.height;
-  var m = this.match;
-  this.scoreText.setText(m.score.human + '  —  ' + m.score.ai);
-  this.gameText.setText('Game '+m.gameNum+'   You '+m.gameWins.human+' – '+m.gameWins.ai+' '+this.opponent.name+
-    '   Serve: '+(m.server==='human'?'You':this.opponent.name));
-
-  this.hudG.clear();
-  // target zone buttons
-  var zoneY = H-70, zoneW=70, startX = W/2 - zoneW*3;
-  var labels = ['1 Short-L','2 Short-C','3 Short-R','4 Deep-L','5 Deep-C','6 Deep-R'];
-  for (var i=0;i<6;i++){
-    var cx = startX + zoneW*i + zoneW/2;
-    var selected = (this.human.laneIndex===i%3) && (this.human.depthIndex === (i<3?0:1));
-    this.hudG.fillStyle(selected?0x4FD1B8:0x1c2d28, selected?0.9:0.6);
-    this.hudG.fillRoundedRect(cx-zoneW/2+4, zoneY-22, zoneW-8, 44, 6);
-    this.hudG.lineStyle(1, 0x2d3f3a, 0.8);
-    this.hudG.strokeRoundedRect(cx-zoneW/2+4, zoneY-22, zoneW-8, 44, 6);
-  }
-  if (!this.zoneLabels){
-    this.zoneLabels = [];
-    for (var j=0;j<6;j++){
-      this.zoneLabels.push(this.add.text(0,0,'',{fontFamily:'Arial', fontSize:'10px', color:'#EAF3E7'}).setOrigin(0.5));
-    }
-  }
-  for (var k=0;k<6;k++){
-    var cxk = startX + zoneW*k + zoneW/2;
-    this.zoneLabels[k].setPosition(cxk, zoneY);
-    this.zoneLabels[k].setText(labels[k].replace(/^\d /,''));
-  }
-
-  // spin indicator
-  var spinLabel = '';
-  if (this.human.spinTop>0) spinLabel += 'TOP ';
-  if (this.human.spinTop<0) spinLabel += 'BACK ';
-  if (this.human.spinSide<0) spinLabel += 'LEFT ';
-  if (this.human.spinSide>0) spinLabel += 'RIGHT ';
-  if (!spinLabel) spinLabel = 'FLAT';
-  this.hintText.setText('Spin: '+spinLabel.trim()+'   [Space] Swing   [Enter] Serve/Continue   [Esc] Menu');
-
-  if (this.keys.esc.isDown){ this.scene.start('Menu'); }
-
-  // point / game / match messages
-  var showMsg = (m.state==='pointPause' || m.state==='gameOver' || m.state==='matchOver' || (m.state==='serveToss' && m.pointMsg));
-  if (m.state==='matchOver'){
-    this.msgText.setAlpha(1);
-    this.msgText.setText((m.matchWinner==='human'?'YOU WIN THE MATCH':this.opponent.name.toUpperCase()+' WINS') + '\n\nPress Enter for Menu');
-  } else if (m.state==='gameOver'){
-    this.msgText.setAlpha(1);
-    this.msgText.setText(m.pointMsg);
-  } else if (m.state==='pointPause'){
-    this.msgText.setAlpha(1);
-    this.msgText.setText(m.pointMsg);
-  } else {
-    this.msgText.setAlpha(0);
-  }
-};
-
-/* ============================================================
-   BOOTSTRAP
-   ============================================================ */
-var config = {
-  type: Phaser.AUTO,
-  parent: 'game',
-  backgroundColor: '#101923',
-  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 1280, height: 720 },
-  physics: { default: 'none' },
-  scene: [BootScene, MenuScene, MatchScene]
-};
-window.addEventListener('load', function(){
-  window.game = new Phaser.Game(config);
-});
-})();
 </script>
 </body>
 </html>
