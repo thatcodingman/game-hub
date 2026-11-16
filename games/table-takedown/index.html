@@ -428,6 +428,7 @@ MatchScene.prototype.buildHudTexts = function(){
   this.msgText = this.add.text(W/2, 300, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#EAF3E7'}).setOrigin(0.5).setAlpha(0);
   this.opponentText = this.add.text(16,16, this.opponent.name+' ('+this.opponent.tier+')', {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'});
   this.hintText = this.add.text(16, this.scale.height-24, '', {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'});
+  this.actionText = this.add.text(W/2, 78, '', {fontFamily:'Georgia,serif', fontSize:'26px', color:'#F2A34C', fontStyle:'bold'}).setOrigin(0.5).setAlpha(0);
 };
 
 /* ---------- projection (fixed 1280x720 design resolution via Phaser Scale.FIT) ---------- */
@@ -702,8 +703,9 @@ MatchScene.prototype.onBallOut = function(ball){
 };
 
 MatchScene.prototype.checkHumanSwing = function(){
-  if (!this.pressedSpace()) return;
+  var spacePressed = this.pressedSpace();
   var ball = this.ball;
+  this.swingPromptActive = false;
   if (!ball.alive) return;
   if (ball.lastHitBy === 'human') return; // already heading to opponent
   if (ball.servePhase) return; // can't return a serve before it legally bounces on the server's own side
@@ -713,6 +715,9 @@ MatchScene.prototype.checkHumanSwing = function(){
   if (Math.abs(timeToPlane) > TIMING_WINDOW*1.6) return; // not close enough to even attempt
   var offset = (ball.x - this.human.x) / PADDLE_HALF_W;
   if (Math.abs(offset) > 1.6) return; // nowhere near the paddle
+
+  this.swingPromptActive = true; // ball is in range right now -- show the on-screen prompt
+  if (!spacePressed) return;
 
   var target = targetCoords(this.human.laneIndex, this.human.depthIndex, true);
   resolveHit(ball, 'human', {
@@ -1101,6 +1106,24 @@ MatchScene.prototype.renderHud = function(){
   if (this.human.spinSide>0) spinLabel += 'RIGHT ';
   if (!spinLabel) spinLabel = 'FLAT';
   this.hintText.setText('Spin: '+spinLabel.trim()+'   [Space] Swing   [Enter] Serve/Continue   [Esc] Menu');
+
+  // big, hard-to-miss prompt telling the player exactly what to do right now
+  var pulse = Math.sin(this.time.now/140) > 0;
+  if (m.state === 'serveToss' && m.server === 'human'){
+    this.actionText.setAlpha(1);
+    this.actionText.setColor(pulse ? '#F2A34C' : '#FCDE5A');
+    this.actionText.setText('PRESS SPACE OR ENTER TO SERVE');
+  } else if (m.state === 'rally' && this.swingPromptActive){
+    this.actionText.setAlpha(1);
+    this.actionText.setColor(pulse ? '#1D9E75' : '#9FE1CB');
+    this.actionText.setText('SWING NOW! (SPACE)');
+  } else if (m.state === 'rally'){
+    this.actionText.setAlpha(0.55);
+    this.actionText.setColor('#6c7a74');
+    this.actionText.setText('Get ready -- ball is on the way');
+  } else {
+    this.actionText.setAlpha(0);
+  }
 
   if (this.keys.esc.isDown){ this.scene.start('Menu'); }
 
