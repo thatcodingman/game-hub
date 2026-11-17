@@ -2,925 +2,523 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Table Takedown</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Arcade</title>
 <style>
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body {
-    margin: 0; padding: 0; overflow: hidden;
-    background: #0A0A0F;
-    overscroll-behavior: none;
-    touch-action: none;
-    width: 100%; height: 100%;
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: #0a0a0f;
+    background-image: radial-gradient(circle at 20% 20%, #1a1a2e 0%, #0a0a0f 60%);
+    color: #f8fafc;
+    font-family: system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
   }
-  #game-root { width: 100%; height: 100%; }
-  canvas { outline: none; display: block; }
+  header {
+    text-align: center;
+    padding: 48px 20px 24px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 2.2rem;
+    letter-spacing: 0.08em;
+    background: linear-gradient(90deg, #4ade80, #38bdf8, #fbbf24);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  header p {
+    color: #94a3b8;
+    margin-top: 8px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 20px;
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0 20px 60px;
+  }
+  .card {
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    height: 220px;
+    transition: transform 0.15s ease;
+  }
+  .card:hover { transform: translateY(-4px); }
+  .card .art {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 3.5rem;
+  }
+  .card .info {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 14px 16px;
+    background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+  }
+  .card .info h2 { margin: 0; font-size: 1.1rem; }
+  .card .info p { margin: 4px 0 0; font-size: 0.85rem; color: #cbd5e1; }
+  footer {
+    text-align: center;
+    color: #475569;
+    font-size: 0.8rem;
+    padding: 20px;
+  }
 </style>
 </head>
 <body>
-<div id="game-root"></div>
-<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<style>
+  .quote-rail {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 220px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+    mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+  }
+  .quote-rail--left { left: 0; }
+  .quote-rail--right { right: 0; }
+  .quote-track {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    padding: 40px 24px;
+    animation: quote-scroll 220s linear infinite;
+  }
+  .quote-rail--right .quote-track {
+    animation-duration: 260s;
+    animation-direction: reverse;
+  }
+  .quote-item {
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: rgba(226, 232, 240, 0.28);
+  }
+  .quote-item .quote-author {
+    display: block;
+    margin-top: 4px;
+    color: rgba(148, 163, 184, 0.24);
+    font-size: 11px;
+  }
+  @keyframes quote-scroll {
+    from { transform: translateY(0); }
+    to { transform: translateY(-50%); }
+  }
+  @media (max-width: 1100px) {
+    .quote-rail { display: none; }
+  }
+</style>
+
+<div class="quote-rail quote-rail--left">
+  <div class="quote-track" id="quoteTrackLeft"></div>
+</div>
+<div class="quote-rail quote-rail--right">
+  <div class="quote-track" id="quoteTrackRight"></div>
+</div>
+
+<script src="assets/quotes.js"></script>
 <script>
 (function () {
-'use strict';
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
 
-/* =========================================================================
-   PALETTE
-   ========================================================================= */
-var C = {
-  bg: 0x0A0A0F,
-  cabinet: 0x3D261A,
-  cabinetHi: 0x8B5A35,
-  fieldA: 0x2E9B58,
-  fieldB: 0x27864C,
-  fieldLine: 0xF4F1DC,
-  home: 0xE43B3B,
-  homeTrim: 0x8F1E2B,
-  away: 0xF4C542,
-  awayTrim: 0x2469C8,
-  rod: 0xBCC6CF,
-  ball: 0xFFFDF3,
-  goalPocket: 0x173B2C,
-  panel: 0x151821,
-  panelRaised: 0x1E2230,
-  border: 0x343B49,
-  text: '#F7F3E8',
-  textSecondary: '#9AA3B2',
-  accent: 0xF4C542
-};
+  function renderTrack(elementId, quoteSubset) {
+    const el = document.getElementById(elementId);
+    if (!el || typeof QUOTES === 'undefined') return;
+    // render the subset twice back-to-back so the -50% translateY loop is seamless
+    const doubled = quoteSubset.concat(quoteSubset);
+    el.innerHTML = doubled.map(q =>
+      '<div class="quote-item">"' + q.text.replace(/</g, '&lt;') + '"' +
+      '<span class="quote-author">— ' + q.author.replace(/</g, '&lt;') + '</span></div>'
+    ).join('');
+  }
 
-/* =========================================================================
-   AUDIO — synthesized (WebAudio), no external files
-   ========================================================================= */
-var SFX = (function () {
-  var ctx = null, master = null, muted = false, noiseBuf = null;
-  function ensure() {
-    if (ctx) return;
-    try {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-      master = ctx.createGain(); master.gain.value = 0.5; master.connect(ctx.destination);
-      var len = ctx.sampleRate; noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
-      var d = noiseBuf.getChannelData(0);
-      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    } catch (e) { ctx = null; }
+  if (typeof QUOTES !== 'undefined' && QUOTES.length > 0) {
+    const shuffled = shuffle(QUOTES);
+    const half = Math.floor(shuffled.length / 2);
+    renderTrack('quoteTrackLeft', shuffled.slice(0, half).slice(0, 60));
+    renderTrack('quoteTrackRight', shuffled.slice(half).slice(0, 60));
   }
-  function tone(freq, dur, type, peak, delay) {
-    ensure(); if (!ctx || muted) return;
-    var t0 = ctx.currentTime + (delay || 0);
-    var osc = ctx.createOscillator(), g = ctx.createGain();
-    osc.type = type || 'sine'; osc.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(peak || 0.2, t0 + Math.min(0.02, dur * 0.3));
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(g); g.connect(master); osc.start(t0); osc.stop(t0 + dur + 0.02);
-  }
-  function noise(dur, filterFreq, q, peak, delay) {
-    ensure(); if (!ctx || muted) return;
-    var t0 = ctx.currentTime + (delay || 0);
-    var src = ctx.createBufferSource(); src.buffer = noiseBuf;
-    var f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = filterFreq || 2000; f.Q.value = q || 1;
-    var g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(peak || 0.15, t0 + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(f); f.connect(g); g.connect(master); src.start(t0); src.stop(t0 + dur + 0.02);
-  }
-  return {
-    setMuted: function (m) { muted = m; },
-    unlock: function () { ensure(); if (ctx && ctx.state === 'suspended') ctx.resume(); },
-    rodSlide: function () { noise(0.1, 500, 2, 0.04); },
-    rodStop: function () { tone(220, 0.04, 'triangle', 0.06); },
-    kickSwing: function () { noise(0.07, 2200, 2, 0.05); },
-    kickHit: function (power) { tone(260 + power * 180, 0.07, 'square', 0.14 + power * 0.1); noise(0.05, 1800, 2, 0.08); },
-    ballWall: function () { tone(900, 0.03, 'square', 0.08); },
-    ballFigure: function () { tone(500, 0.04, 'triangle', 0.07); },
-    ballFree: function () { tone(400, 0.05, 'sine', 0.05); tone(500, 0.05, 'sine', 0.05, 0.05); },
-    ballGoal: function () { tone(140, 0.12, 'sine', 0.18); noise(0.1, 300, 1.5, 0.1); },
-    scoreGoal: function () { tone(660, 0.2, 'sine', 0.16); tone(990, 0.3, 'sine', 0.15, 0.15); },
-    matchWin: function () { tone(523, 0.25, 'sine', 0.15); tone(659, 0.25, 'sine', 0.14, 0.18); tone(784, 0.4, 'sine', 0.14, 0.36); },
-    uiSelect: function () { tone(700, 0.03, 'square', 0.06); },
-    kickReady: function () { tone(500, 0.02, 'triangle', 0.04); }
-  };
 })();
+</script>
 
-/* =========================================================================
-   SAVE
-   ========================================================================= */
-var SAVE_KEY = 'foosballArcade.v1';
-function defaultSave() {
-  return {
-    version: 1,
-    settings: { difficulty: 'medium', soundEnabled: true, reducedMotion: false },
-    records: { matchesPlayed: 0, wins: 0, losses: 0, draws: 0, bestGoalsFor: 0, bestGoalDifference: -99, fastestWinSeconds: null }
-  };
-}
-var Save = (function () {
-  var data = null;
-  function load() {
-    try {
-      var raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) { data = defaultSave(); return data; }
-      var p = JSON.parse(raw);
-      if (!p || p.version !== 1) { data = defaultSave(); return data; }
-      data = p; return data;
-    } catch (e) { data = defaultSave(); return data; }
-  }
-  function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {} }
-  return {
-    get: function () { if (!data) load(); return data; },
-    setDifficulty: function (d) { this.get().settings.difficulty = d; persist(); },
-    setSound: function (b) { this.get().settings.soundEnabled = b; persist(); },
-    recordMatch: function (won, draw, goalsFor, goalsAgainst, seconds) {
-      var s = this.get(); var r = s.records;
-      r.matchesPlayed++;
-      if (draw) r.draws++; else if (won) r.wins++; else r.losses++;
-      r.bestGoalsFor = Math.max(r.bestGoalsFor, goalsFor);
-      r.bestGoalDifference = Math.max(r.bestGoalDifference, goalsFor - goalsAgainst);
-      if (won && (r.fastestWinSeconds === null || seconds < r.fastestWinSeconds)) r.fastestWinSeconds = seconds;
-      persist();
+<header>
+  <h1>THE ARCADE</h1>
+  <p>Free browser games. No installs, no accounts, just play.</p>
+</header>
+<div class="grid" id="game-grid"></div>
+<footer>New games added regularly.</footer>
+
+<script>
+  // Add one entry here per game — the hub renders itself, so shipping a new
+  // game never requires touching this page's HTML/CSS.
+  const GAMES = [
+    {
+      title: "Spin Rally",
+      tagline: "Time your swing, place your shot, read the spin — real table tennis physics.",
+      path: "games/spin-rally/",
+      emoji: "🏓",
+      gradient: "linear-gradient(135deg, #101923, #5B3A7A, #F2A34C)"
+    },
+    {
+      title: 'Spin Rally',
+      tagline: 'Time your swing, place your shot, read the spin — real table tennis physics.',
+      path: 'games/spin-rally/',
+      emoji: '🏓',
+      gradient: 'linear-gradient(135deg, #101923, #5B3A7A, #F2A34C)'
+    },
+    {
+      title: 'Matchday',
+      tagline: 'Full 11v11 console football — fouls, cards, offside, set pieces and instant replays.',
+      path: 'games/matchday/',
+      emoji: '⚽',
+      gradient: 'linear-gradient(135deg, #0b1d12, #2e7d32, #f4f7ff)'
+    },
+    {
+      title: 'Rooftop Parkour',
+      tagline: 'First-person rooftop parkour — vault, slide, wall-run and chain your flow against the clock.',
+      path: 'games/rooftop-parkour/',
+      emoji: '🏃',
+      gradient: 'linear-gradient(135deg, #1d1840, #ec4899, #fbbf24)'
+    },
+    {
+      title: 'Hockey',
+      tagline: 'Full-contact arcade hockey — momentum hits, shot-charge bluffs, real NHL rules.',
+      path: 'games/hockey/',
+      emoji: '🏒',
+      gradient: 'linear-gradient(135deg, #0a1420, #1e3a5f, #6fd3ff)'
+    },
+    {
+      title: 'Tidal Rush',
+      tagline: 'Surf a wave that never stops breaking. Get barreled, launch the lip, chase gold in timed heats.',
+      path: 'games/tidal-rush/',
+      emoji: '🏄',
+      gradient: 'linear-gradient(135deg, #0e7490, #f59e0b)'
+    },
+    {
+      title: 'Kaiju Country',
+      tagline: 'First-person monster hunting across an open world of grass, rivers and sea.',
+      path: 'games/kaiju-country/',
+      emoji: '🦖',
+      gradient: 'linear-gradient(135deg, #365314, #0f172a)'
+    },
+    {
+      title: 'The Shrink',
+      tagline: 'Dodge, shoot, and survive as you shrink to nothing.',
+      path: 'games/the-shrink/',
+      emoji: '🔻',
+      gradient: 'linear-gradient(135deg, #14532d, #052e16)'
+    },
+    {
+      title: 'Gap Flyer',
+      tagline: 'Fly a horse through the gaps, catch hay, beat your best.',
+      path: 'games/gap-flyer/',
+      emoji: '🐎',
+      gradient: 'linear-gradient(135deg, #7dd3fc, #fed7aa)'
+    },
+    {
+      title: 'DirtySet',
+      tagline: 'Whack the cleaning supplies, dodge the dirt, beat the clock.',
+      path: 'games/dirtyset/',
+      emoji: '🧽',
+      gradient: 'linear-gradient(135deg, #e0f2fe, #bae6fd)'
+    },
+    {
+      title: 'Stack Shift',
+      tagline: 'Stack ice over lava — every few blocks, the tower turns a corner.',
+      path: 'games/stack-shift/',
+      emoji: '🧊',
+      gradient: 'linear-gradient(135deg, #431407, #ea580c)'
+    },
+    {
+      title: 'Home Run Derby',
+      tagline: 'Time your swing perfectly — three strikes and you\'re out.',
+      path: 'games/home-run-derby/',
+      emoji: '⚾',
+      gradient: 'linear-gradient(135deg, #4d7c0f, #7dd3fc)'
+    },
+    {
+      title: 'Crossword',
+      tagline: 'A mini word puzzle — no timer pressure, just clues and letters.',
+      path: 'games/crossword/',
+      emoji: '📝',
+      gradient: 'linear-gradient(135deg, #fffbeb, #fde047)'
+    },
+    {
+      title: 'Color Drop',
+      tagline: 'Choose your color, become it, and shrink with every success.',
+      path: 'games/color-drop/',
+      emoji: '🎮',
+      gradient: 'linear-gradient(135deg, #ef4444, #22c55e, #3b82f6)'
+    },
+    {
+      title: 'Highway Heat',
+      tagline: 'Weave through traffic and stay ahead of the cops on your tail.',
+      path: 'games/highway-heat/',
+      emoji: '🚔',
+      gradient: 'linear-gradient(135deg, #18181b, #ef4444)'
+    },
+    {
+      title: 'Trick or Die',
+      tagline: 'Stack tricks for a bigger score, then stick a landing the game demands.',
+      path: 'games/trick-or-die/',
+      emoji: '🔥',
+      gradient: 'linear-gradient(135deg, #0c0a09, #f97316, #fde047)'
+    },
+    {
+      title: 'One More Second',
+      tagline: 'Freeze the world for one second — you keep moving.',
+      path: 'games/one-more-second/',
+      emoji: '⏱',
+      gradient: 'linear-gradient(135deg, #0b0e14, #2f7bff)'
+    },
+    {
+      title: 'Wok Star',
+      tagline: 'Read the ticket, build the order, beat the patience meter.',
+      path: 'games/wok-star/',
+      emoji: '🥡',
+      gradient: 'linear-gradient(135deg, #7f1d1d, #f59e0b)'
+    },
+    {
+      title: 'Tank Duel',
+      tagline: 'Every shell reshapes the arena — one hit ends the round.',
+      path: 'games/tank-duel/',
+      emoji: '💥',
+      gradient: 'linear-gradient(135deg, #1c1814, #5be37b)'
+    },
+    {
+      title: 'Rhythm Shift',
+      tagline: 'You don’t follow the beat — your tap IS the beat.',
+      path: 'games/rhythm-shift/',
+      emoji: '🎵',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #4fd1ff, #ffd23f)'
+    },
+    {
+      title: 'Last Fist',
+      tagline: 'Panda vs Bear — full fight system, best-of-3 rounds.',
+      path: 'games/last-fist/',
+      emoji: '🐼',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #f4f4f4, #8b5a2b)'
+    },
+    {
+      title: 'Grapple Swing',
+      tagline: 'You don’t control where you go. You control when you let go.',
+      path: 'games/grapple-swing/',
+      emoji: '🦍',
+      gradient: 'linear-gradient(135deg, #0c0a1a, #38bdf8, #a78bfa)'
+    },
+    {
+      title: 'Blade Duel',
+      tagline: 'Every attack is a commitment. One good read wins the exchange.',
+      path: 'games/blade-duel/',
+      emoji: '⚔️',
+      gradient: 'linear-gradient(135deg, #1a0a0a, #f87171, #fde047)'
+    },
+    {
+      title: 'Dodgeball Arena',
+      tagline: 'Charge your throw, read theirs — a caught ball is an instant counter.',
+      path: 'games/dodgeball-arena/',
+      emoji: '🏐',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #ff5a5a, #ffd23f)'
+    },
+    {
+      title: 'Paddle Duel',
+      tagline: 'The ball remembers every hit — control the rally, break their timing.',
+      path: 'games/paddle-duel/',
+      emoji: '🏓',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #8fd3ff, #ff9f6b)'
+    },
+    {
+      title: 'Sumo Push',
+      tagline: 'One ring. One shove. One mistake.',
+      path: 'games/sumo-push/',
+      emoji: '🤼',
+      gradient: 'linear-gradient(135deg, #1b140d, #c9a15a, #ff5a5a)'
+    },
+    {
+      title: 'Overpressure',
+      tagline: 'Every balloon gets more valuable the longer it survives — how greedy can you be?',
+      path: 'games/overpressure/',
+      emoji: '🎈',
+      gradient: 'linear-gradient(135deg, #12161c, #3ad1c8, #ffcc33)'
+    },
+    {
+      title: 'Quick Draw',
+      tagline: "One signal is real. Everything else is a bluff — don't flinch.",
+      path: 'games/quick-draw/',
+      emoji: '🤠',
+      gradient: 'linear-gradient(135deg, #241a12, #ff7b39, #ffcc33)'
+    },
+    {
+      title: 'Riptide',
+      tagline: 'Sometimes the safest move is to stop swimming.',
+      path: 'games/riptide/',
+      emoji: '🌊',
+      gradient: 'linear-gradient(135deg, #08141f, #1f3d52, #7fd8e8)'
+    },
+    {
+      title: 'Getaway Driver',
+      tagline: 'You saw the route. Now drive it blind.',
+      path: 'games/getaway-driver/',
+      emoji: '🏎️',
+      gradient: 'linear-gradient(135deg, #0a0a10, #15151d, #ffc94d)'
+    },
+    {
+      title: 'Skyline Slingshot',
+      tagline: "You don't fly. You commit to a line, and find out if you were right.",
+      path: 'games/skyline-slingshot/',
+      emoji: '🪢',
+      gradient: 'linear-gradient(135deg, #1a1030, #3a1f3d, #ff9f4d)'
+    },
+    {
+      title: 'Basketball Arcade',
+      tagline: 'Every collision builds Momentum. Every Momentum bar is a play waiting to happen.',
+      path: 'games/basketball-arcade/',
+      emoji: '🏀',
+      gradient: 'linear-gradient(135deg, #14532d, #f97316, #fbbf24)'
+    },
+    {
+      title: 'Football Arcade',
+      tagline: 'Read the defense, break the tackle — you control both sides of the ball.',
+      path: 'games/football-arcade/',
+      emoji: '🏈',
+      gradient: 'linear-gradient(135deg, #1a3a1f, #7c3f14, #f2f4f7)'
+    },
+    {
+      title: 'Paintball Arcade',
+      tagline: 'Every shot gives you away — one hit ends it.',
+      path: 'games/paintball-arcade/',
+      emoji: '🎯',
+      gradient: 'linear-gradient(135deg, #2e5230, #8b3a3a, #1d4ed8)'
+    },
+    {
+      title: 'Basketball Arcade 3v3',
+      tagline: 'Solo vs a full AI squad — switch control between your three players and drive downcourt.',
+      path: 'games/basketball-arcade-3v3/',
+      emoji: '🏀',
+      gradient: 'linear-gradient(135deg, #0a0f1a, #38bdf8, #f97316)'
+    },
+    {
+      title: 'Fireteam Zero',
+      tagline: 'Small maps, tight gunfights, movement that actually matters.',
+      path: 'games/fireteam-zero/',
+      emoji: '🔫',
+      gradient: 'linear-gradient(135deg, #0a0a0d, #3d3d47, #ffd24d)'
+    },
+    {
+      title: 'Tee Time',
+      tagline: 'Real 3-click golf — driver to putter, water and sand in play.',
+      path: 'games/tee-time/',
+      emoji: '⛳',
+      gradient: 'linear-gradient(135deg, #0c1410, #3c7a3f, #e4c87a)'
+    },
+    {
+      title: 'Drift Circuit',
+      tagline: 'Slide through the sunset — chain drifts, chase the ghost, beat your lap.',
+      path: 'games/drift-circuit/',
+      emoji: '🏁',
+      gradient: 'linear-gradient(135deg, #1a1030, #ff7a45, #ffd9a0)'
+    },
+    {
+      title: 'Grind Session',
+      tagline: 'Pop tricks, grind rails, chain combos — 120 seconds at the skatepark.',
+      path: 'games/grind-session/',
+      emoji: '🛹',
+      gradient: 'linear-gradient(135deg, #2a1236, #ff8a3c, #ffd83d)'
+    },
+    {
+      title: 'Reel Deep',
+      tagline: 'Cast, read the water, and land the big one — fish four sites from dock and boat.',
+      path: 'games/reel-deep/',
+      emoji: '🎣',
+      gradient: 'linear-gradient(135deg, #06202b, #1f8a8a, #f2b84b)'
+    },
+    {
+      title: 'Scorch',
+      tagline: 'Keep the ball hot for a bigger multiplier — bank it before you lose control.',
+      path: 'games/scorch/',
+      emoji: '🌋',
+      gradient: 'linear-gradient(135deg, #1a0a05, #f97316, #ef4444)'
+    },
+    {
+      title: 'Kaiju Commute',
+      tagline: "You're a giant monster late for work — smash the city, mind the traffic.",
+      path: 'games/kaiju-commute/',
+      emoji: '🦖',
+      gradient: 'linear-gradient(135deg, #1b1240, #2f8f4e, #ff8a5c)'
+    },
+    {
+      title: 'Last Call',
+      tagline: 'Pull back, let go, land the pour — the bar never stops getting rowdier.',
+      path: 'games/last-call/',
+      emoji: '🍺',
+      gradient: 'linear-gradient(135deg, #1c120c, #f5c97a, #3a2416)'
+    },
+    {
+      title: 'Pitch Count',
+      tagline: 'Full 9 innings, your arm and your swing — broadcast camera, real count.',
+      path: 'games/pitch-count/',
+      emoji: '⚾',
+      gradient: 'linear-gradient(135deg, #0a1f12, #1c4a28, #f5f0e6)'
+    },
+    {
+      title: 'The Trade',
+      tagline: 'Measure. Cut. Make it fit.',
+      path: 'games/the-trade/',
+      emoji: '🪚',
+      gradient: 'linear-gradient(135deg, #17111f, #4b2f46, #c17a42)'
+    },
+    {
+      title: 'Table Takedown',
+      tagline: 'Slide fast. Strike clean.',
+      path: 'games/table-takedown/',
+      emoji: '🥅',
+      gradient: 'linear-gradient(135deg, #D62828 0%, #F4C542 58%, #2457A6 100%)'
+    },
+    {
+      title: 'Lane Memory',
+      tagline: 'Every roll leaves a mark.',
+      path: 'games/lane-memory/',
+      emoji: '🎳',
+      gradient: 'linear-gradient(135deg, #2b1b12 0%, #c9a66b 55%, #1b3a4b 100%)'
+    },
+    {
+      title: 'Still Hunt',
+      tagline: 'Patience. Wind. One clean shot.',
+      path: 'games/still-hunt/',
+      emoji: '🏹',
+      gradient: 'linear-gradient(135deg, #1b2415 0%, #5c6a3a 55%, #8a7a52 100%)'
     }
-  };
-})();
+  ];
 
-/* =========================================================================
-   FIELD / ROD DATA  (millimeters)
-   ========================================================================= */
-var FIELD_W = 700, FIELD_H = 1200;
-var BALL_R = 17.25;
-var GOAL_HALF = 100; // 200mm mouth
-var ROD_SLIDE = 55; // +/- mm
-var ROD_DEFS = [
-  { id: 'awayGoalie', team: 'away', y: 75, figures: [0], slot: 'Goalie' },
-  { id: 'homeForward', team: 'home', y: 324, figures: [-210, 0, 210], slot: 'Forward' },
-  { id: 'awayMidfield', team: 'away', y: 515, figures: [-280, -140, 0, 140, 280], slot: 'Midfield' },
-  { id: 'homeMidfield', team: 'home', y: 685, figures: [-280, -140, 0, 140, 280], slot: 'Midfield' },
-  { id: 'awayForward', team: 'away', y: 876, figures: [-210, 0, 210], slot: 'Forward' },
-  { id: 'homeGoalie', team: 'home', y: 1125, figures: [0], slot: 'Goalie' }
-];
-var FIGURE_R = 26; // approximate foot-collider radius in mm (simplified from oriented rect)
-var HOME_RODS = ['homeGoalie', 'homeMidfield', 'homeForward'];
-var AWAY_RODS = ['awayGoalie', 'awayMidfield', 'awayForward'];
-
-var AI_TIERS = {
-  easy: { reactionMs: 260, predictMs: 0, speed: 420, contactWin: 25, posErr: 45, aimErr: 18 },
-  medium: { reactionMs: 150, predictMs: 350, speed: 620, contactWin: 18, posErr: 25, aimErr: 9 },
-  hard: { reactionMs: 80, predictMs: 550, speed: 800, contactWin: 12, posErr: 12, aimErr: 4 }
-};
-
-/* =========================================================================
-   HELPERS
-   ========================================================================= */
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-function lerp(a, b, t) { return a + (b - a) * t; }
-
-// closest point on segment a-b to point p; returns {t, x, y, dist}
-function closestOnSegment(px, py, ax, ay, bx, by) {
-  var vx = bx - ax, vy = by - ay;
-  var lenSq = vx * vx + vy * vy || 1e-9;
-  var t = clamp(((px - ax) * vx + (py - ay) * vy) / lenSq, 0, 1);
-  var cx = ax + t * vx, cy = ay + t * vy;
-  return { t: t, x: cx, y: cy, dist: Math.hypot(px - cx, py - cy) };
-}
-
-/* =========================================================================
-   PHYSICS WORLD
-   ========================================================================= */
-function createBall() {
-  return { x: FIELD_W / 2, y: FIELD_H / 2, vx: 0, vy: 0, spin: 0, trail: [] };
-}
-function serveBall(ball, towardHome) {
-  ball.x = FIELD_W / 2; ball.y = FIELD_H / 2;
-  var ang = (Math.random() - 0.5) * 0.6 + (towardHome ? Math.PI / 2 : -Math.PI / 2);
-  ball.vx = Math.cos(ang) * 650; ball.vy = Math.sin(ang) * 650;
-  ball.spin = 0; ball.trail = [];
-}
-
-function World(difficulty) {
-  this.ball = createBall();
-  this.rods = {};
-  ROD_DEFS.forEach(function (def) { this.rods[def.id] = { def: def, x: 0, kickT: -1, kickPower: 0, kickAim: 0, contactMs: 0 }; }.bind(this));
-  this.scoreHome = 0; this.scoreAway = 0;
-  this.tier = AI_TIERS[difficulty] || AI_TIERS.medium;
-  this.aiState = { selectedRod: 'awayMidfield', lastSwitch: 0, timer: 0 };
-  this.goalCooldown = 0;
-  this.golden = false;
-  this.lastGoal = null;
-  serveBall(this.ball, Math.random() > 0.5);
-}
-
-World.prototype.rodFigureWorldX = function (rodId) {
-  var r = this.rods[rodId];
-  return r.def.figures.map(function (fx) { return fx + r.x; });
-};
-
-World.prototype.setRodX = function (rodId, xMm) {
-  this.rods[rodId].x = clamp(xMm, -ROD_SLIDE, ROD_SLIDE);
-};
-
-World.prototype.tryKick = function (rodId, power, aimDeg) {
-  var r = this.rods[rodId];
-  if (r.kickT >= 0) return false; // already kicking
-  r.kickT = 0; r.kickPower = clamp(power, 0, 1); r.kickAim = clamp(aimDeg, -20, 20);
-  return true;
-};
-
-// one fixed step, dt in seconds (1/120)
-World.prototype.step = function (dt, onEvent) {
-  var ball = this.ball;
-  if (this.goalCooldown > 0) { this.goalCooldown -= dt * 1000; return; }
-
-  // advance kick animations
-  var self = this;
-  Object.keys(this.rods).forEach(function (id) {
-    var r = self.rods[id];
-    if (r.kickT >= 0) {
-      r.kickT += dt * 1000; // snap window (<=90ms) is checked against ball contact in the collision pass below
-      if (r.kickT > 90 + 35 + 120) r.kickT = -1;
-    }
+  const grid = document.getElementById('game-grid');
+  GAMES.forEach(function (game) {
+    const card = document.createElement('a');
+    card.className = 'card';
+    card.href = game.path;
+    card.style.background = game.gradient;
+    card.innerHTML =
+      '<div class="art">' + game.emoji + '</div>' +
+      '<div class="info">' +
+        '<h2>' + game.title + '</h2>' +
+        '<p>' + game.tagline + '</p>' +
+      '</div>';
+    grid.appendChild(card);
   });
-
-  var prevX = ball.x, prevY = ball.y;
-  // integrate
-  ball.x += ball.vx * dt; ball.y += ball.vy * dt;
-  // light drag, tuned for stability
-  ball.vx *= Math.exp(-0.12 * dt); ball.vy *= Math.exp(-0.12 * dt);
-  // spin decay + lateral curve
-  if (Math.abs(ball.spin) > 0.001) {
-    ball.vx += ball.spin * 90 * dt;
-    ball.spin *= Math.exp(-3.0 * dt);
-  }
-
-  // collisions: walls
-  var r_ = BALL_R;
-  if (ball.x - r_ < 0) { ball.x = r_; ball.vx = Math.abs(ball.vx) * 0.82; if (onEvent) onEvent('wall'); }
-  if (ball.x + r_ > FIELD_W) { ball.x = FIELD_W - r_; ball.vx = -Math.abs(ball.vx) * 0.82; if (onEvent) onEvent('wall'); }
-
-  // goal planes (y<0 = away goal / home scores; y>FIELD_H = home goal / away scores)
-  var scored = null;
-  if (ball.y - r_ < 0) {
-    if (Math.abs(ball.x - FIELD_W / 2) <= GOAL_HALF - r_ * 0.3) {
-      scored = 'home';
-    } else {
-      ball.y = r_; ball.vy = Math.abs(ball.vy) * 0.82; if (onEvent) onEvent('wall');
-    }
-  }
-  if (ball.y + r_ > FIELD_H) {
-    if (Math.abs(ball.x - FIELD_W / 2) <= GOAL_HALF - r_ * 0.3) {
-      scored = 'away';
-    } else {
-      ball.y = FIELD_H - r_; ball.vy = -Math.abs(ball.vy) * 0.82; if (onEvent) onEvent('wall');
-    }
-  }
-  if (scored) {
-    if (scored === 'home') this.scoreHome++; else this.scoreAway++;
-    this.lastGoal = scored;
-    this.goalCooldown = 1200;
-    if (onEvent) onEvent('goal', scored);
-    serveBall(ball, scored === 'away'); // serve toward the team that was scored on... loser restarts toward winner's side per feel
-    return;
-  }
-
-  // figure collisions (segment-based, cheap swept approximation)
-  var bestHit = null;
-  Object.keys(this.rods).forEach(function (id) {
-    var r = self.rods[id];
-    var fx = self.rodFigureWorldX(id);
-    fx.forEach(function (x) {
-      var fy = r.def.y;
-      var hit = closestOnSegment(x, fy, prevX, prevY, ball.x, ball.y);
-      var minDist = r_ + FIGURE_R;
-      if (hit.dist < minDist) {
-        if (!bestHit || hit.t < bestHit.t) bestHit = { t: hit.t, fx: x, fy: fy, rodId: id, isKicking: r.kickT >= 0 && r.kickT <= 90 };
-      }
-    });
-  });
-  if (bestHit) {
-    var nx = ball.x - bestHit.fx, ny = ball.y - bestHit.fy;
-    var ndist = Math.hypot(nx, ny) || 1;
-    nx /= ndist; ny /= ndist;
-    var sep = r_ + FIGURE_R + 0.5;
-    ball.x = bestHit.fx + nx * sep; ball.y = bestHit.fy + ny * sep;
-    var vn = ball.vx * nx + ball.vy * ny;
-    var restitution = bestHit.isKicking ? 0.78 : 0.28;
-    if (vn < 0) {
-      ball.vx -= (1 + restitution) * vn * nx;
-      ball.vy -= (1 + restitution) * vn * ny;
-    }
-    if (bestHit.isKicking) {
-      var r = self.rods[bestHit.rodId];
-      var kickSpeed = 850 + r.kickPower * 1050;
-      var aimRad = r.kickAim * Math.PI / 180;
-      var dirY = r.def.team === 'home' ? -1 : 1;
-      ball.vx = Math.sin(aimRad) * kickSpeed;
-      ball.vy = dirY * Math.cos(aimRad) * kickSpeed;
-      ball.spin = clamp(r.kickAim / 20, -1, 1) * 1.0;
-      if (onEvent) onEvent('kickHit', r.kickPower);
-      r.kickT = -1; // consumed
-    } else {
-      if (onEvent) onEvent('figure');
-    }
-  }
-
-  // anti-stall: low speed + sustained contact
-  var spd = Math.hypot(ball.vx, ball.vy);
-  if (bestHit && spd < 40) {
-    this._stallMs = (this._stallMs || 0) + dt * 1000;
-    if (this._stallMs > 350) {
-      var nearGoal = ball.y < BALL_R * 1.5 * 2 || ball.y > FIELD_H - BALL_R * 1.5 * 2;
-      var pushMag = nearGoal ? 180 : 220;
-      var nx2 = ball.x - bestHit.fx, ny2 = ball.y - bestHit.fy;
-      var nd2 = Math.hypot(nx2, ny2) || 1;
-      ball.vx += (nx2 / nd2) * pushMag + (Math.random() - 0.5) * 40;
-      ball.vy += (ny2 / nd2) * pushMag + (Math.random() - 0.5) * 40;
-      this._stallMs = 0;
-      if (onEvent) onEvent('free');
-    }
-  } else { this._stallMs = 0; }
-
-  // clamp max speed
-  var sp2 = Math.hypot(ball.vx, ball.vy);
-  if (sp2 > 2400) { var k = 2400 / sp2; ball.vx *= k; ball.vy *= k; }
-
-  ball.trail.push({ x: ball.x, y: ball.y });
-  if (ball.trail.length > 6) ball.trail.shift();
-};
-
-/* =========================================================================
-   AI
-   ========================================================================= */
-World.prototype.updateAI = function (dtMs) {
-  var self = this;
-  this.aiState.timer += dtMs;
-  if (this.aiState.timer < 80) return;
-  this.aiState.timer = 0;
-
-  var ball = this.ball;
-  // choose best rod among away rods
-  var best = null, bestScore = -Infinity;
-  AWAY_RODS.forEach(function (id) {
-    var r = self.rods[id];
-    var distY = Math.abs(ball.y - r.def.y);
-    var towardAway = ball.vy > 0;
-    var score = -distY + (towardAway ? 150 : 0);
-    if (score > bestScore) { bestScore = score; best = id; }
-  });
-  var cur = this.aiState.selectedRod;
-  var curScore = -Infinity;
-  if (cur) {
-    var r2 = this.rods[cur];
-    var distY2 = Math.abs(ball.y - r2.def.y);
-    curScore = -distY2 + (ball.vy > 0 ? 150 : 0);
-  }
-  if (!cur || bestScore > curScore * 1.2 || curScore === -Infinity) this.aiState.selectedRod = best;
-
-  var active = this.rods[this.aiState.selectedRod];
-  var tier = this.tier;
-  // predict ball x at rod's y line (simple linear + one wall bounce)
-  var predictedX = ball.x;
-  if (Math.abs(ball.vy) > 1) {
-    var tToLine = (active.def.y - ball.y) / ball.vy;
-    tToLine = clamp(tToLine, 0, tier.predictMs / 1000 + 0.001);
-    predictedX = ball.x + ball.vx * tToLine;
-    if (predictedX < 0) predictedX = -predictedX;
-    if (predictedX > FIELD_W) predictedX = FIELD_W - (predictedX - FIELD_W);
-  }
-  var targetLocal = clamp(predictedX - FIELD_W / 2 + (Math.random() - 0.5) * tier.posErr, -ROD_SLIDE, ROD_SLIDE);
-  var curX = active.x;
-  var maxStep = tier.speed * (dtMs / 1000) / 1000 * 1000; // mm this tick (dtMs already small call interval, approx)
-  var dx = clamp(targetLocal - curX, -tier.speed * 0.08, tier.speed * 0.08);
-  active.x = clamp(curX + dx, -ROD_SLIDE, ROD_SLIDE);
-
-  // kick decision
-  var distY = Math.abs(ball.y - active.def.y);
-  if (distY < tier.contactWin && active.kickT < 0) {
-    var aim = (Math.random() - 0.5) * 2 * tier.aimErr;
-    this.tryKick(this.aiState.selectedRod, 0.75 + Math.random() * 0.25, aim);
-  }
-};
-
-/* =========================================================================
-   SCENES
-   ========================================================================= */
-function BootScene() { Phaser.Scene.call(this, { key: 'Boot' }); }
-BootScene.prototype = Object.create(Phaser.Scene.prototype);
-BootScene.prototype.create = function () { Save.get(); SFX.setMuted(!Save.get().settings.soundEnabled); this.scene.start('Menu'); };
-
-function MenuScene() { Phaser.Scene.call(this, { key: 'Menu' }); }
-MenuScene.prototype = Object.create(Phaser.Scene.prototype);
-MenuScene.prototype.create = function () {
-  var W = this.scale.width, H = this.scale.height;
-  this.cameras.main.setBackgroundColor(C.bg);
-  this.add.graphics().fillStyle(C.accent, 0.05).fillEllipse(W / 2, H * 0.22, W * 1.3, H * 0.5);
-
-  this.add.text(W / 2, H * 0.12, '\u{1F945}', { fontSize: '44px' }).setOrigin(0.5);
-  this.add.text(W / 2, H * 0.19, 'TABLE TAKEDOWN', { fontFamily: 'system-ui, sans-serif', fontSize: '24px', color: C.text, fontStyle: 'bold', letterSpacing: 1 }).setOrigin(0.5);
-  this.add.text(W / 2, H * 0.235, 'Slide fast. Strike clean.', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#F4C542' }).setOrigin(0.5);
-
-  var save = Save.get();
-  var diffs = ['easy', 'medium', 'hard'];
-  var diffLabels = { easy: 'EASY', medium: 'MEDIUM', hard: 'HARD' };
-  var selected = save.settings.difficulty;
-  var btnY = H * 0.34;
-  var self = this;
-  var diffBtns = [];
-  function redrawDiff() {
-    diffBtns.forEach(function (b) { b.bg.clear(); b.bg.fillStyle(b.key === selected ? C.accent : C.panelRaised, 1).fillRoundedRect(-52, -18, 104, 36, 8); b.bg.lineStyle(1, C.border, 1).strokeRoundedRect(-52, -18, 104, 36, 8); b.label.setColor(b.key === selected ? '#0A0A0F' : C.text); });
-  }
-  diffs.forEach(function (d, i) {
-    var bx = W / 2 + (i - 1) * 116;
-    var c = self.add.container(bx, btnY);
-    var bg = self.add.graphics();
-    var label = self.add.text(0, 0, diffLabels[d], { fontFamily: 'system-ui, sans-serif', fontSize: '12px', fontStyle: 'bold' }).setOrigin(0.5);
-    c.add([bg, label]); c.setSize(104, 36); c.setInteractive({ useHandCursor: true });
-    c.on('pointerup', function () { selected = d; Save.setDifficulty(d); redrawDiff(); SFX.uiSelect(); });
-    diffBtns.push({ key: d, bg: bg, label: label });
-  });
-  redrawDiff();
-  this.add.text(W / 2, btnY + 34, 'Reaction, prediction, and aim get sharper — not just faster.', { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: C.textSecondary, align: 'center', wordWrap: { width: Math.min(360, W - 40) } }).setOrigin(0.5, 0);
-
-  simpleButton(this, W / 2, btnY + 100, Math.min(280, W * 0.7), 50, 'PLAY', function () {
-    this.scene.start('Match');
-  }.bind(this), true);
-
-  var r = save.records;
-  if (r.matchesPlayed > 0) {
-    this.add.text(W / 2, btnY + 166, r.wins + 'W – ' + r.losses + 'L – ' + r.draws + 'D   ·   best diff +' + Math.max(0, r.bestGoalDifference), { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: C.textSecondary }).setOrigin(0.5);
-  }
-
-  var muted = !save.settings.soundEnabled;
-  var soundBtn = simpleButton(this, W / 2, btnY + 210, Math.min(280, W * 0.7), 36, muted ? 'SOUND: OFF' : 'SOUND: ON', function () {
-    muted = !muted; Save.setSound(!muted); SFX.setMuted(muted); SFX.unlock();
-    soundBtn.list[1].setText(muted ? 'SOUND: OFF' : 'SOUND: ON');
-  }, false);
-
-  this.add.text(W / 2, H - 20, 'Tap a rod · slide to position · flick to kick', { fontFamily: 'system-ui, sans-serif', fontSize: '10px', color: C.textSecondary }).setOrigin(0.5, 1);
-  this.input.once('pointerdown', function () { SFX.unlock(); });
-};
-
-function simpleButton(scene, x, y, w, h, label, onTap, accent) {
-  var c = scene.add.container(x, y);
-  var g = scene.add.graphics();
-  g.fillStyle(accent ? C.accent : C.panelRaised, 1).fillRoundedRect(-w / 2, -h / 2, w, h, 10);
-  g.lineStyle(1, C.border, 1).strokeRoundedRect(-w / 2, -h / 2, w, h, 10);
-  var t = scene.add.text(0, 0, label, { fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: accent ? '#0A0A0F' : C.text, fontStyle: 'bold' }).setOrigin(0.5);
-  c.add([g, t]); c.setSize(w, h); c.setInteractive({ useHandCursor: true });
-  c.on('pointerdown', function () { g.setAlpha(0.75); });
-  c.on('pointerup', function () { g.setAlpha(1); onTap(); });
-  c.on('pointerout', function () { g.setAlpha(1); });
-  return c;
-}
-
-/* ---------- MATCH SCENE ---------- */
-function MatchScene() { Phaser.Scene.call(this, { key: 'Match' }); }
-MatchScene.prototype = Object.create(Phaser.Scene.prototype);
-
-MatchScene.prototype.create = function () {
-  var save = Save.get();
-  this.world = new World(save.settings.difficulty);
-  this.selectedRod = 'homeMidfield';
-  this.matchTimeMs = 0;
-  this.MATCH_LIMIT_MS = 150000; // 2:30
-  this.golden = false;
-  this.ended = false;
-  this.accumulator = 0;
-  this.STEP = 1 / 120;
-  this.gestures = new Map();
-  if (this.input.pointer2 === undefined) this.input.addPointer(1);
-
-  this.cameras.main.setBackgroundColor(C.bg);
-  this.buildLayout();
-  this.buildStatic();
-  this.buildDynamic();
-  this.bindInput();
-
-  this.keys = this.input.keyboard ? this.input.keyboard.addKeys('ONE,TWO,THREE,LEFT,RIGHT,SPACE') : null;
-
-  this.scale.on('resize', this.onResize, this);
-};
-
-MatchScene.prototype.computeLayout = function (W, H) {
-  var side = W / H > 1.15;
-  var layout = { side: side };
-  var margin = 16;
-  if (side) {
-    var headerH = 64;
-    var panelW = Math.min(300, W * 0.26);
-    var tableAreaW = W - panelW * 2 - margin * 2;
-    var tableAreaH = H - headerH - margin * 2;
-    var ratio = FIELD_W / FIELD_H;
-    var tW = tableAreaH * ratio, tH = tableAreaH;
-    if (tW > tableAreaW) { tW = tableAreaW; tH = tW / ratio; }
-    var tX = panelW + margin + (tableAreaW - tW) / 2;
-    var tY = headerH + margin + (tableAreaH - tH) / 2;
-    layout.header = { x: 0, y: 0, w: W, h: headerH };
-    layout.table = { x: tX, y: tY, w: tW, h: tH };
-    layout.leftPanel = { x: margin, y: headerH + margin, w: panelW - margin, h: H - headerH - margin * 2 };
-    layout.rightPanel = { x: W - panelW, y: headerH + margin, w: panelW - margin, h: H - headerH - margin * 2 };
-  } else {
-    var CABINET_PAD = 14;
-    var headerH2 = Math.max(50, H * 0.07);
-    var controlsH = Math.max(150, H * 0.2);
-    var tableAreaH2 = H - headerH2 - controlsH - margin * 2 - CABINET_PAD;
-    var ratio2 = FIELD_W / FIELD_H;
-    var tW2 = Math.min(W - margin * 2 - CABINET_PAD * 2, tableAreaH2 * ratio2);
-    var tH2 = tW2 / ratio2;
-    if (tH2 > tableAreaH2) { tH2 = tableAreaH2; tW2 = tH2 * ratio2; }
-    var tableY2 = headerH2 + (tableAreaH2 - tH2) / 2;
-    layout.header = { x: 0, y: 0, w: W, h: headerH2 };
-    layout.table = { x: (W - tW2) / 2, y: tableY2, w: tW2, h: tH2 };
-    layout.controlsY = tableY2 + tH2 + CABINET_PAD + 26;
-    layout.controlsH = controlsH;
-  }
-  return layout;
-};
-
-MatchScene.prototype.mmToPxFactory = function () {
-  var t = this.layout.table;
-  var scaleX = t.w / FIELD_W, scaleY = t.h / FIELD_H;
-  return function (mmX, mmY) { return { x: t.x + mmX * scaleX, y: t.y + mmY * scaleY }; };
-};
-MatchScene.prototype.pxScale = function () { return this.layout.table.w / FIELD_W; };
-
-MatchScene.prototype.buildLayout = function () {
-  this.layout = this.computeLayout(this.scale.width, this.scale.height);
-};
-
-MatchScene.prototype.onResize = function () {
-  this.layout = this.computeLayout(this.scale.width, this.scale.height);
-  this.redrawStatic();
-};
-
-MatchScene.prototype.buildStatic = function () {
-  this.staticG = this.add.graphics();
-  this.headerBg = this.add.graphics();
-  this.scoreText = this.add.text(0, 0, '0 – 0', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: C.text, fontStyle: 'bold' }).setOrigin(0.5);
-  this.clockText = this.add.text(0, 0, '2:30', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: C.textSecondary }).setOrigin(0.5);
-  this.backBtn = this.add.text(14, 14, '←', { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: C.textSecondary })
-    .setInteractive({ useHandCursor: true }).on('pointerup', function () { this.scene.start('Menu'); }.bind(this));
-
-  // rod selector buttons
-  this.rodButtons = {};
-  this.rodOrder = ['homeGoalie', 'homeMidfield', 'homeForward'];
-  this.rodOrder.forEach(function (id, i) {
-    var c = this.add.container(0, 0);
-    var bg = this.add.graphics();
-    var def = ROD_DEFS_BYID(id);
-    var label = this.add.text(0, 2, def.slot.toUpperCase(), { fontFamily: 'system-ui, sans-serif', fontSize: '11px', fontStyle: 'bold' }).setOrigin(0.5);
-    var num = this.add.text(-34, -10, String(i + 1), { fontFamily: 'system-ui, sans-serif', fontSize: '9px', color: C.textSecondary }).setOrigin(0.5);
-    c.add([bg, label, num]);
-    c.setSize(84, 40); c.setInteractive({ useHandCursor: true });
-    c.on('pointerup', function () { this.selectRod(id); SFX.uiSelect(); }.bind(this));
-    this.rodButtons[id] = { c: c, bg: bg, label: label };
-  }.bind(this));
-
-  // slider track
-  this.sliderG = this.add.graphics();
-  this.sliderThumb = this.add.graphics();
-  this.sliderZone = this.add.zone(0, 0, 10, 10).setOrigin(0, 0).setInteractive();
-
-  // kick pad
-  this.kickPadG = this.add.graphics();
-  this.kickPadLabel = this.add.text(0, 0, 'KICK', { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: C.text, fontStyle: 'bold' }).setOrigin(0.5);
-  this.kickPadZone = this.add.zone(0, 0, 10, 10).setOrigin(0, 0).setInteractive();
-
-  this.statusText = this.add.text(0, 0, '', { fontFamily: 'system-ui, sans-serif', fontSize: '11px', color: C.textSecondary, align: 'center' }).setOrigin(0.5);
-
-  this.redrawStatic();
-};
-
-function ROD_DEFS_BYID(id) { for (var i = 0; i < ROD_DEFS.length; i++) if (ROD_DEFS[i].id === id) return ROD_DEFS[i]; return null; }
-
-MatchScene.prototype.redrawStatic = function () {
-  var W = this.scale.width, H = this.scale.height, L = this.layout;
-  this.headerBg.clear().fillStyle(C.panel, 1).fillRect(L.header.x, L.header.y, L.header.w, L.header.h);
-  this.headerBg.lineStyle(1, C.border, 0.6).lineBetween(0, L.header.h, W, L.header.h);
-  this.scoreText.setPosition(W / 2, L.header.h / 2 - 6);
-  this.clockText.setPosition(W / 2, L.header.h / 2 + 16);
-
-  var rodBtnW = 78, rodBtnH = 38, gap = 8;
-  var kickSize, sliderRect;
-  if (L.side) {
-    // left panel: rod buttons stacked, then slider below
-    var lp = L.leftPanel;
-    this.rodOrder.forEach(function (id, i) {
-      var y = lp.y + 20 + i * (rodBtnH + gap);
-      this.rodButtons[id].c.setPosition(lp.x + lp.w / 2, y);
-    }.bind(this));
-    var sliderY = lp.y + 20 + 3 * (rodBtnH + gap) + 30;
-    sliderRect = { x: lp.x, y: sliderY, w: lp.w, h: 44 };
-    this.sliderZone.setPosition(sliderRect.x, sliderRect.y).setSize(sliderRect.w, sliderRect.h);
-    this.statusText.setPosition(lp.x + lp.w / 2, sliderY + 70).setWordWrapWidth(lp.w).setFontSize(11);
-
-    var rp = L.rightPanel;
-    kickSize = Math.min(rp.w, 140);
-    var kx = rp.x + (rp.w - kickSize) / 2, ky = rp.y + 30;
-    this.kickPadZone.setPosition(kx, ky).setSize(kickSize, kickSize);
-    this.kickPadLabel.setPosition(kx + kickSize / 2, ky + kickSize / 2);
-  } else {
-    var cy = L.controlsY;
-    this.statusText.setPosition(W / 2, cy - 8).setWordWrapWidth(W - 32).setFontSize(9);
-    var btnRowY = cy + 30;
-    var totalBtnW = this.rodOrder.length * rodBtnW + (this.rodOrder.length - 1) * gap;
-    var startX = W / 2 - totalBtnW / 2;
-    this.rodOrder.forEach(function (id, i) {
-      this.rodButtons[id].c.setPosition(startX + i * (rodBtnW + gap) + rodBtnW / 2, btnRowY);
-    }.bind(this));
-    var sliderY2 = btnRowY + 38;
-    var kickSize2 = Math.min(90, L.controlsH - 86);
-    var sliderW = W - kickSize2 - 48;
-    sliderRect = { x: 16, y: sliderY2, w: sliderW, h: 48 };
-    this.sliderZone.setPosition(sliderRect.x, sliderRect.y).setSize(sliderRect.w, sliderRect.h);
-    var kx2 = 16 + sliderW + 16, ky2 = sliderY2 - 2;
-    this.kickPadZone.setPosition(kx2, ky2).setSize(kickSize2, kickSize2);
-    this.kickPadLabel.setPosition(kx2 + kickSize2 / 2, ky2 + kickSize2 / 2);
-    kickSize = kickSize2;
-  }
-  this._sliderRect = sliderRect;
-  this._kickSize = kickSize;
-  this._kickRect = { x: this.kickPadZone.x, y: this.kickPadZone.y, w: this.kickPadZone.width, h: this.kickPadZone.height };
-
-  this.sliderG.clear();
-  this.sliderG.fillStyle(C.panelRaised, 1).fillRoundedRect(sliderRect.x, sliderRect.y, sliderRect.w, sliderRect.h, 10);
-  this.sliderG.lineStyle(1, C.border, 1).strokeRoundedRect(sliderRect.x, sliderRect.y, sliderRect.w, sliderRect.h, 10);
-
-  this.kickPadG.clear();
-  this.kickPadG.fillStyle(C.homeTrim, 1).fillRoundedRect(this._kickRect.x, this._kickRect.y, this._kickRect.w, this._kickRect.h, 12);
-  this.kickPadG.lineStyle(2, C.home, 1).strokeRoundedRect(this._kickRect.x, this._kickRect.y, this._kickRect.w, this._kickRect.h, 12);
-
-  this.updateRodHighlights();
-  this.drawTable();
-};
-
-MatchScene.prototype.selectRod = function (id) { this.selectedRod = id; this.updateRodHighlights(); };
-MatchScene.prototype.updateRodHighlights = function () {
-  var self = this;
-  this.rodOrder.forEach(function (id) {
-    var b = self.rodButtons[id];
-    b.bg.clear();
-    var active = id === self.selectedRod;
-    b.bg.fillStyle(active ? C.accent : C.panelRaised, 1).fillRoundedRect(-42, -19, 84, 38, 8);
-    b.bg.lineStyle(active ? 2 : 1, active ? C.accent : C.border, 1).strokeRoundedRect(-42, -19, 84, 38, 8);
-    b.label.setColor(active ? '#0A0A0F' : C.text);
-  });
-};
-
-MatchScene.prototype.drawTable = function () {
-  if (this.tableG) this.tableG.destroy();
-  var t = this.layout.table;
-  var g = this.add.graphics();
-  this.tableG = g;
-  var pad = 14;
-  g.fillStyle(C.cabinet, 1).fillRoundedRect(t.x - pad, t.y - pad, t.w + pad * 2, t.h + pad * 2, 10);
-  g.lineStyle(2, C.cabinetHi, 0.6).strokeRoundedRect(t.x - pad, t.y - pad, t.w + pad * 2, t.h + pad * 2, 10);
-  var bands = 12;
-  for (var i = 0; i < bands; i++) {
-    g.fillStyle(i % 2 === 0 ? C.fieldA : C.fieldB, 1).fillRect(t.x, t.y + (t.h / bands) * i, t.w, t.h / bands + 1);
-  }
-  g.lineStyle(2, C.fieldLine, 0.7);
-  g.lineBetween(t.x, t.y + t.h / 2, t.x + t.w, t.y + t.h / 2);
-  g.strokeCircle(t.x + t.w / 2, t.y + t.h / 2, t.w * (90 / FIELD_W));
-  // goal mouths
-  var goalWpx = (GOAL_HALF * 2) * (t.w / FIELD_W);
-  g.fillStyle(C.goalPocket, 1);
-  g.fillRect(t.x + t.w / 2 - goalWpx / 2, t.y - 10, goalWpx, 10);
-  g.fillRect(t.x + t.w / 2 - goalWpx / 2, t.y + t.h, goalWpx, 10);
-  g.lineStyle(2, C.fieldLine, 0.8);
-  g.strokeRect(t.x, t.y, t.w, t.h);
-};
-
-MatchScene.prototype.buildDynamic = function () {
-  this.dynG = this.add.graphics();
-  this.goalBanner = this.add.text(0, 0, '', { fontFamily: 'system-ui, sans-serif', fontSize: '28px', color: '#F4C542', fontStyle: 'bold' }).setOrigin(0.5).setAlpha(0);
-};
-
-MatchScene.prototype.bindInput = function () {
-  var self = this;
-  this.input.on('pointerdown', function (pointer) {
-    var p = { x: pointer.x, y: pointer.y, id: pointer.id, t: pointer.time };
-    if (self.hitRectObj(p, self._sliderRect)) {
-      if (self.hasGestureType('slider')) return;
-      self.gestures.set(p.id, { type: 'slider' });
-      self.applySliderPointer(p.x);
-      return;
-    }
-    if (self.hitRectObj(p, self._kickRect)) {
-      if (self.hasGestureType('kick')) return;
-      self.gestures.set(p.id, { type: 'kick', rodId: self.selectedRod, samples: [{ x: p.x, y: p.y, t: p.t }] });
-      SFX.kickReady();
-    }
-  });
-  this.input.on('pointermove', function (pointer) {
-    var g = self.gestures.get(pointer.id);
-    if (!g) return;
-    if (g.type === 'slider') self.applySliderPointer(pointer.x);
-    else {
-      g.samples.push({ x: pointer.x, y: pointer.y, t: pointer.time });
-      g.samples = g.samples.filter(function (s) { return pointer.time - s.t <= 100; });
-    }
-  });
-  this.input.on('pointerup', function (pointer) {
-    var g = self.gestures.get(pointer.id);
-    if (!g) return;
-    if (g.type === 'kick') {
-      g.samples.push({ x: pointer.x, y: pointer.y, t: pointer.time });
-      var first = g.samples[0], last = g.samples[g.samples.length - 1];
-      var dt = Math.max(1, last.t - first.t);
-      var dx = last.x - first.x, dy = last.y - first.y;
-      var dist = Math.hypot(dx, dy);
-      var speedPxPerS = dist / (dt / 1000);
-      var scalePx = self.pxScale();
-      var speedMm = speedPxPerS / scalePx;
-      var durationMs = dt;
-      var triggerTap = durationMs <= 220 && dist < 18 * scalePx;
-      if (triggerTap || speedMm >= 350) {
-        var power = triggerTap ? 0.45 : clamp((speedMm - 350) / 1150, 0, 1);
-        var bias = clamp(dx / (40 * scalePx), -1, 1);
-        self.world.tryKick(g.rodId, Math.max(power, 0.3), bias * 20);
-      }
-    }
-    self.gestures.delete(pointer.id);
-  });
-};
-
-MatchScene.prototype.hasGestureType = function (type) {
-  var found = false;
-  this.gestures.forEach(function (g) { if (g.type === type) found = true; });
-  return found;
-};
-MatchScene.prototype.hitRectObj = function (p, r) { return r && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; };
-
-MatchScene.prototype.applySliderPointer = function (px) {
-  var r = this._sliderRect;
-  var t = clamp((px - r.x) / r.w, 0, 1);
-  var mm = lerp(-ROD_SLIDE, ROD_SLIDE, t);
-  this.world.setRodX(this.selectedRod, mm);
-};
-
-MatchScene.prototype.update = function (time, delta) {
-  if (this.ended) return;
-  var dtMs = Math.min(delta, 50);
-  this.matchTimeMs += dtMs;
-
-  // keyboard
-  if (this.keys) {
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectRod('homeGoalie');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectRod('homeMidfield');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectRod('homeForward');
-    if (this.keys.LEFT.isDown) this.world.setRodX(this.selectedRod, this.world.rods[this.selectedRod].x - 4);
-    if (this.keys.RIGHT.isDown) this.world.setRodX(this.selectedRod, this.world.rods[this.selectedRod].x + 4);
-    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) this.world.tryKick(this.selectedRod, 0.6, 0);
-  }
-
-  this.world.updateAI(dtMs);
-
-  this.accumulator += dtMs / 1000;
-  var steps = 0;
-  var self = this;
-  var events = [];
-  while (this.accumulator >= this.STEP && steps < 8) {
-    this.world.step(this.STEP, function (type, payload) { events.push([type, payload]); });
-    this.accumulator -= this.STEP; steps++;
-  }
-  this.handleEvents(events);
-
-  this.renderDynamic();
-  this.updateHud();
-  this.checkMatchEnd();
-};
-
-MatchScene.prototype.handleEvents = function (events) {
-  var self = this;
-  events.forEach(function (e) {
-    var type = e[0], payload = e[1];
-    if (type === 'wall') SFX.ballWall();
-    else if (type === 'figure') SFX.ballFigure();
-    else if (type === 'free') SFX.ballFree();
-    else if (type === 'kickHit') SFX.kickHit(payload);
-    else if (type === 'goal') self.onGoal(payload);
-  });
-};
-
-MatchScene.prototype.onGoal = function (scorer) {
-  SFX.ballGoal();
-  var self = this;
-  this.time.delayedCall(150, function () { SFX.scoreGoal(); });
-  this.goalBanner.setText((scorer === 'home' ? 'YOU SCORE!' : 'OPPONENT SCORES') ).setAlpha(1);
-  this.goalBanner.setPosition(this.layout.table.x + this.layout.table.w / 2, this.layout.table.y + this.layout.table.h / 2);
-  this.tweens.add({ targets: this.goalBanner, alpha: 0, delay: 700, duration: 400 });
-  this.cameras.main.shake(90, 0.004);
-};
-
-MatchScene.prototype.updateHud = function () {
-  this.scoreText.setText(this.world.scoreHome + ' – ' + this.world.scoreAway);
-  var remaining = Math.max(0, this.MATCH_LIMIT_MS - this.matchTimeMs);
-  if (this.golden) { this.clockText.setText('GOLDEN GOAL'); }
-  else {
-    var secs = Math.ceil(remaining / 1000);
-    this.clockText.setText(Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'));
-  }
-  var def = ROD_DEFS_BYID(this.selectedRod);
-  this.statusText.setText(def.slot.toUpperCase() + ' selected · drag to slide · flick pad to kick');
-};
-
-MatchScene.prototype.checkMatchEnd = function () {
-  var w = this.world;
-  if (!this.golden && this.matchTimeMs >= this.MATCH_LIMIT_MS) {
-    if (w.scoreHome === w.scoreAway) { this.golden = true; this.matchTimeMs = 0; this.MATCH_LIMIT_MS = 45000; }
-    else { this.endMatch(); }
-    return;
-  }
-  if (this.golden && this.matchTimeMs >= this.MATCH_LIMIT_MS) { this.endMatch(); return; }
-  if (w.scoreHome >= 5 || w.scoreAway >= 5) this.endMatch();
-};
-
-MatchScene.prototype.endMatch = function () {
-  if (this.ended) return;
-  this.ended = true;
-  var w = this.world;
-  var won = w.scoreHome > w.scoreAway;
-  var draw = w.scoreHome === w.scoreAway;
-  Save.recordMatch(won, draw, w.scoreHome, w.scoreAway, Math.round(this.matchTimeMs / 1000));
-  if (won) SFX.matchWin();
-  this.scene.start('Debrief', { scoreHome: w.scoreHome, scoreAway: w.scoreAway, won: won, draw: draw });
-};
-
-MatchScene.prototype.renderDynamic = function () {
-  var g = this.dynG; g.clear();
-  var toPx = this.mmToPxFactory();
-  var scale = this.pxScale();
-  var self = this;
-
-  // rods + figures
-  ROD_DEFS.forEach(function (def) {
-    var r = self.world.rods[def.id];
-    var p = toPx(FIELD_W / 2, def.y);
-    g.lineStyle(Math.max(2, 3 * scale), C.rod, 0.9);
-    g.lineBetween(self.layout.table.x, p.y, self.layout.table.x + self.layout.table.w, p.y);
-    var isSelected = def.id === self.selectedRod;
-    self.world.rodFigureWorldX(def.id).forEach(function (fx) {
-      var fp = toPx(fx + FIELD_W / 2, def.y);
-      var kicking = r.kickT >= 0 && r.kickT <= 90;
-      var radiusPx = FIGURE_R * scale * (kicking ? 1.15 : 1);
-      g.fillStyle(def.team === 'home' ? C.home : C.away, 1);
-      g.fillCircle(fp.x, fp.y, radiusPx);
-      g.lineStyle(2, def.team === 'home' ? C.homeTrim : C.awayTrim, 1);
-      g.strokeCircle(fp.x, fp.y, radiusPx);
-    });
-    if (isSelected) {
-      g.lineStyle(2, C.accent, 0.9);
-      g.strokeRect(self.layout.table.x, p.y - 8 * scale, self.layout.table.w, 16 * scale);
-    }
-  });
-
-  // ball trail
-  var ball = this.world.ball;
-  var spd = Math.hypot(ball.vx, ball.vy);
-  if (spd > 900) {
-    ball.trail.forEach(function (pt, i) {
-      var pp = toPx(pt.x, pt.y);
-      g.fillStyle(C.ball, 0.08 * (i + 1));
-      g.fillCircle(pp.x, pp.y, BALL_R * scale * 0.8);
-    });
-  }
-  var bp = toPx(ball.x, ball.y);
-  g.fillStyle(C.ball, 1);
-  g.fillCircle(bp.x, bp.y, BALL_R * scale);
-  g.lineStyle(1, 0x000000, 0.4);
-  g.strokeCircle(bp.x, bp.y, BALL_R * scale);
-};
-
-/* ---------- DEBRIEF ---------- */
-function DebriefScene() { Phaser.Scene.call(this, { key: 'Debrief' }); }
-DebriefScene.prototype = Object.create(Phaser.Scene.prototype);
-DebriefScene.prototype.init = function (data) { this.result = data; };
-DebriefScene.prototype.create = function () {
-  var W = this.scale.width, H = this.scale.height;
-  this.cameras.main.setBackgroundColor(C.bg);
-  var r = this.result;
-  var headline = r.draw ? 'DRAW' : (r.won ? 'YOU WIN' : 'YOU LOSE');
-  var color = r.draw ? C.textSecondary : (r.won ? '#58D68D' : '#FF6B78');
-  this.add.text(W / 2, H * 0.3, headline, { fontFamily: 'system-ui, sans-serif', fontSize: '30px', color: color, fontStyle: 'bold' }).setOrigin(0.5);
-  this.add.text(W / 2, H * 0.37, r.scoreHome + ' – ' + r.scoreAway, { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: C.text }).setOrigin(0.5);
-
-  simpleButton(this, W / 2, H * 0.52, Math.min(280, W * 0.7), 50, 'REMATCH', function () { this.scene.start('Match'); }.bind(this), true);
-  simpleButton(this, W / 2, H * 0.52 + 64, Math.min(280, W * 0.7), 44, 'MENU', function () { this.scene.start('Menu'); }.bind(this), false);
-};
-
-/* =========================================================================
-   CONFIG
-   ========================================================================= */
-var config = {
-  type: Phaser.AUTO,
-  parent: 'game-root',
-  backgroundColor: '#0A0A0F',
-  scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH, width: '100%', height: '100%' },
-  scene: [BootScene, MenuScene, MatchScene, DebriefScene],
-  input: { activePointers: 3 }
-};
-window.addEventListener('load', function () {
-  new Phaser.Game(config);
-});
-})();
 </script>
 </body>
 </html>
