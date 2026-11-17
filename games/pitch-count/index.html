@@ -46,7 +46,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 .btn.off{opacity:.35}
 .btn.go{background:#15803d}
 #chal{left:50%;top:50%;transform:translate(-50%,-50%);z-index:6;display:none;background:rgba(7,16,28,.95);border:1px solid #6b7;border-radius:14px;padding:14px;text-align:center;pointer-events:none}
-#chal canvas{position:static;width:min(300px,70vw);height:min(330px,60vh);display:block;margin:0 auto 6px;border-radius:8px}
+#chal canvas{position:static;width:min(340px,76vw);height:auto;display:block;margin:0 auto 6px;border-radius:8px}
 #menu,#pcp,#end{position:fixed;inset:0;z-index:10;background:radial-gradient(circle at 50% 30%,#13314f,#07101c 70%);display:none;overflow:auto;touch-action:pan-y}
 .panel{max-width:560px;margin:0 auto;padding:max(18px,3vh) 16px 30px}
 h1{margin:0 0 4px;font-size:clamp(28px,6vh,46px);letter-spacing:.03em}
@@ -71,7 +71,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}td,th{padd
 <div class="hud" id="pit"><div class="n" id="pn">—</div><div id="pr"></div><div class="bar"><i id="pf"></i></div><div id="pc"></div><div id="ch"></div></div>
 <div class="hud" id="clk"><b id="clkN">15</b><span>PITCH CLOCK</span></div>
 <div class="hud" id="msg"></div><div class="hud" id="sub"></div><div class="hud" id="hint"></div>
-<div id="chal"><canvas id="cc" width="300" height="330"></canvas><div id="ct" style="font-weight:800"></div></div>
+<div id="chal"><canvas id="cc" width="380" height="480"></canvas><div id="ct" style="font-weight:800"></div></div>
 <div id="bar"></div>
 <div id="menu"><div class="panel">
 <h1>PITCH <span>COUNT</span></h1><div class="tag">Full-rules baseball. You pitch. You bat. Win the count.</div>
@@ -97,7 +97,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}td,th{padd
 <b>BUNTING</b> — press B (or the BUNT button) to square around, then tap as the ball arrives. A missed bunt is a strike, and a bunt that goes foul is a strike too (even with two strikes). Keep it inside the lines.<br>
 <b>RUNNING</b> — hit STEAL, then tap GO when the pitcher's leg lifts. On defense a long hold lets runners run: quick pitches and PICKOFF hold them.<br>
 <b>FIELDING</b> — on defense, as a ball in play is fielded press 1–4 to throw to that base (1st, 2nd, 3rd, home) or 5 to relay through the cutoff man. Do nothing and the fielder decides.<br>
-<b>CATCHING</b> — on defense, when a fly ball or pop-up is hit, control jumps to the fielder who has the best chance and a ball icon marks where the ball will come down. Move him with the arrow keys / WASD (or tap the field) and stand on the icon before the ring runs out. Let go and he finishes the route himself. Miss the spot and the ball drops. Turn it off with MANUAL FIELDING.<br>
+<b>CATCHING</b> — on defense, when a fly ball or pop-up is hit, control jumps to the fielder who has the best chance and a ball icon marks where the ball will come down. Move him with the arrow keys / WASD (or tap the field) and stand on the icon before the ring runs out. Let go and he finishes the route himself. Miss the spot and the ball drops. Grounders and bunts work the same way, including the pitcher: run to the ball, then press 1–4 to pick the base to throw to (even after he has the ball). Turn it off with MANUAL FIELDING.<br>
 <b>PLAY CHALLENGE</b> — on a close call at a base, a manager gets one challenge per game (kept if the call is overturned).<br>
 <b>ABS</b> — after a called ball/strike you can CHALLENGE. Win = keep it. Lose = it is gone. Extra innings start with a runner on 2nd.<br>
 <b>PITCH CLOCK</b> — set it in the menu (off, 10, 15 MLB, 20 or 30 seconds; +3 with runners on). Pitcher not into his motion in time = automatic ball.<br>
@@ -966,7 +966,8 @@ function groundAll(){
  if(FAST)return;for(const o of scene.children){if(o.userData&&o.userData.feet&&o.visible)groundOne(o,moundY(o.position.x,o.position.z));}
 }
 function aliveUpdate(now){
- {const C=fielders.C;if(C&&C.userData.ready&&typeof flight!=='undefined'&&flight&&flight.E&&!FAST&&G&&G.view!=='bip'){const pr=Math.min(1,Math.max(0,(performance.now()-flight.t0)/1000/(flight.tF||1.2))),w=pr*pr;C.userData.arm2.rotation.x=-1.55-(flight.E[1]-2.5)*.12*w;}}
+ {const C=fielders.C;if(C&&C.userData.ready&&typeof flight!=='undefined'&&flight&&flight.E&&!FAST&&G&&G.view!=='bip'){const pr=Math.min(1,Math.max(0,(performance.now()-flight.t0)/1000/(flight.tF||1.2))),w=pr*pr;const A=flight.aim;if(A){C.userData.arm2.rotation.set(lerp(-1.5,A.rx,w),0,lerp(.1,A.rz,w));C.position.x=A.sx*w;}else C.userData.arm2.rotation.x=-1.55-(flight.E[1]-2.5)*.12*w;}
+  else if(C&&C.userData.ready&&C.position.x!==0&&G&&G.view!=='bip'&&!G.fielding){C.position.x=Math.abs(C.position.x)<.01?0:C.position.x*.86;}}
  BLINK.forEach((b,i)=>{b.visible=((now+i*370)%1700)<320;});
  rxUpdate();dustUpdate();
  {const _t=now/1000;lifeUpdate(_t,Math.min(.1,_t-(LIFE.lt||_t)));LIFE.lt=_t;}
@@ -1307,7 +1308,21 @@ function dugPose(p,standing,ph){
 const BASEXY=[[63.64,-63.64],[0,-127.28],[-63.64,-63.64]];
 function placeRunner(i){const O=TEAMS[G.tm[G.off].i];if(runnersM[i])scene.remove(runnersM[i]);const m=person(O.c,0xf2f2f2,O.c2);const b=BASEXY[i];m.position.set(b[0]*.92+(i===0?-1.5:0),0,b[1]*.97+(i===1?3:0));runnersM[i]=m;}
 /* ============ TWEENS / RENDER LOOP ============ */
-const TW=[];let flight=null,seg=null;
+const TW=[];let flight=null,seg=null;const _cv=new THREE.Vector3();
+// the catcher shifts and reaches so the mitt meets the pitch where it crosses the plate
+function catcherAim(E){
+ const C=fielders.C;if(FAST||!C||!C.userData.ready||!C.userData.glove||E[1]<1||E[1]>4.6||Math.abs(E[0])>2.6)return null;
+ const u=C.userData,sx=clamp(E[0]*.8,-1.4,1.4),px=C.position.x,o=[u.arm2.rotation.x,u.arm2.rotation.y,u.arm2.rotation.z];
+ C.position.x=sx;let rx=-1.5,rz=.1;
+ const err=()=>{C.updateMatrixWorld(true);u.glove.getWorldPosition(_cv);return[_cv.x-E[0],_cv.y-E[1]];};
+ for(let i=0;i<26;i++){u.arm2.rotation.set(rx,0,rz);const e=err();if(Math.hypot(e[0],e[1])<.03)break;
+  u.arm2.rotation.set(rx+.02,0,rz);const a1=err();u.arm2.rotation.set(rx,0,rz+.02);const a2=err();
+  const a=(a1[0]-e[0])/.02,b=(a2[0]-e[0])/.02,c=(a1[1]-e[1])/.02,d=(a2[1]-e[1])/.02,det=a*d-b*c;if(Math.abs(det)<1e-4)break;
+  rx=clamp(rx-(d*e[0]-b*e[1])/det*.8,-2.8,-.2);rz=clamp(rz-(-c*e[0]+a*e[1])/det*.8,-1.2,1.2);}
+ u.arm2.rotation.set(rx,0,rz);const fe=err();
+ u.arm2.rotation.set(o[0],o[1],o[2]);C.position.x=px;C.updateMatrixWorld(true);
+ return Math.hypot(fe[0],fe[1])>.12?null:{rx,rz,sx};
+}
 function tweenObj(o,to,dur,arc){return new Promise(res=>{if(FAST||dur<=0){o.position.set(to[0],to[1],to[2]);return res();}TW.push({o,f:o.position.toArray(),t:to,t0:performance.now(),d:dur*1000,a:arc||0,res});});}
 function moveBall(to,dur,arc){ball.visible=true;return tweenObj(ball,to,dur,arc);}
 function pitchPos(f,u){
@@ -1318,7 +1333,7 @@ function loop(now){
  requestAnimationFrame(loop);
  if(_lt){const dt=now-_lt;if(dt<500){_ema=_ema*.93+dt*.07;if(_ema>34){if(++_slow>120){_slow=0;if(_pr>.7){_pr=Math.max(.7,_pr-.35);R.setPixelRatio(Math.min(devicePixelRatio||1,_pr));R.setSize(innerWidth,innerHeight,false);polishSync();_ema=16;}else if(FANS.hair&&FANS.hair.visible){FANS.hair.visible=false;_ema=16;}else if(OPT.pol&&COMP){OPT.pol=0;_ema=16;try{$('mPl').textContent='OFF (auto)';}catch(e){}}}}else _slow=0;}}_lt=now;
  for(let i=TW.length-1;i>=0;i--){const t=TW[i],u=clamp((now-t.t0)/t.d,0,1);const e=t.a?u:u*u*(3-2*u);t.o.position.set(lerp(t.f[0],t.t[0],u),lerp(t.f[1],t.t[1],u)+(t.a?4*t.a*u*(1-u):0),lerp(t.f[2],t.t[2],u));if(t.o.userData&&t.o.userData.face!==false&&t.o!==ball){const dx=t.t[0]-t.f[0],dz=t.t[2]-t.f[2];if(Math.abs(dx)+Math.abs(dz)>1)t.o.rotation.y=Math.atan2(dx,dz);t.o.userData.legs&&(t.o.userData.legs.position.y=1.05+Math.abs(Math.sin(now/90))*.25);if(t.o.userData.arm2&&t.o!==fielders.P){const sw=Math.sin(now/90)*.9;t.o.userData.arm.rotation.x=sw;t.o.userData.arm2.rotation.x=-sw;t.o.userData.elbow.rotation.x=-1.1;t.o.userData.elbow2.rotation.x=-1.1;}}if(u>=1){if(t.o.userData&&t.o.userData.arm2&&t.o!==fielders.P&&!Object.values(fielders).includes(t.o)){t.o.userData.arm.rotation.x=0;t.o.userData.arm2.rotation.x=0;t.o.userData.elbow.rotation.x=-.25;t.o.userData.elbow2.rotation.x=-.25;}TW.splice(i,1);t.res();}}
- if(flight){const u=(now-flight.t0)/(flight.tF*1000);if(u<1.35){const uu=Math.min(u,1.35),p=u<=1?pitchPos(flight,u):[flight.E[0]+(u-1)*flight.dirx*8,flight.E[1]-(u-1)*3,flight.E[2]+(u-1)*14];ball.visible=true;ball.position.set(p[0],p[1],p[2]);const sc=G&&G.view==='pitch'?2.6:(G&&G.view==='bat'?1.6+Math.max(0,1-u)*3.2:1.3);ball.scale.setScalar(sc);
+ if(flight){const u=(now-flight.t0)/(flight.tF*1000);if(u<1.35){const uu=Math.min(u,1.35),p=u<=1?pitchPos(flight,u):flight.aim?(()=>{const C=fielders.C;C.updateMatrixWorld(true);C.userData.glove.getWorldPosition(_cv);const k=clamp((u-1)/.12,0,1);return[lerp(flight.E[0],_cv.x,k),lerp(flight.E[1],_cv.y,k),lerp(flight.E[2],_cv.z,k)];})():[flight.E[0]+(u-1)*flight.dirx*8,flight.E[1]-(u-1)*3,flight.E[2]+(u-1)*14];ball.visible=true;ball.position.set(p[0],p[1],p[2]);const sc=G&&G.view==='pitch'?2.6:(G&&G.view==='bat'?1.6+Math.max(0,1-u)*3.2:1.3);ball.scale.setScalar(sc);
    for(let i=0;i<trailM.length;i++){const ut=Math.max(0,Math.min(1,u)-(i+1)*.035);const q=pitchPos(flight,ut);trailM[i].position.set(q[0],q[1],q[2]);trailM[i].scale.setScalar(sc*(1-i*.07));trailM[i].material.opacity=(u<=1&&!(G&&G.view==='bat'))?(.5-i*.045):0;}}
   else{flight=null;trailM.forEach(t=>t.material.opacity=0);ball.scale.setScalar(1);}}
  // camera
@@ -1918,7 +1933,7 @@ async function deliver(P,F,userBat,steal,bt){
  const cpuBat=(!userBat||AUTO)?cpuBatterDecision(bt,P,F):null;if(AUTO)userBat=null;
  let swing=null;
  if(userBat){G.swing=null;G.onSwing=()=>{if(G.swing)return;const ts=(performance.now()-G.flightT0)/1000+.13;G.swing={ts,sx:PT.x,sy:PT.y,bunt:!!G.bunt};G.onSwing=null;G.canBunt=false;if(G.bunt)buntPush();else swingAnim();};}
- flight={...F};F.t0=flight.t0=performance.now();G.flightT0=F.t0;flight.t0=F.t0;
+ flight={...F};flight.aim=catcherAim(F.E);F.t0=flight.t0=performance.now();G.flightT0=F.t0;flight.t0=F.t0;
  if(FAST){flight=null;}
 
  if(cpuBat){setTimeout(()=>swingAnim(),Math.max(0,(F.tF-.13)*1000));}
@@ -1974,6 +1989,7 @@ async function catcherReturn(){
  const ap=new Promise(res=>{const t0=performance.now(),st=()=>{if(u.seq!==id)return res();const k=Math.min(1,(performance.now()-t0)/260),e=ease2(k);
   u.arm.rotation.set(-1.9+1.7*e,0,.15);u.elbow.rotation.x=-1.2+.9*e;u.up&&(u.up.rotation.x=.4-.12*e);if(k>=1)return res();requestAnimationFrame(st);};st();});
  SFX.mitt&&SFX.mitt();
+ if(G&&G.bases.some(Boolean)){const hd=u.head;if(hd){hd.rotation.y=.55;await sleep(300);hd.rotation.y=0;}} // runners on: the catcher checks the lead runner before he throws
  await animateThrow(C,P,.46);await ap;
  pu.arm2.rotation.x=-1.3;await sleep(120);pu.arm2.rotation.x=-.25;
  ball.visible=false;ball.scale.setScalar(1);
@@ -2185,22 +2201,42 @@ async function challengeWindow(out,kind){ // kind: 'strike'|'ball' as called
  }
  if(!challenge)return kind;
  chTeam.ch--;SFX.chime();
- await showChallenge(F,tr,chTeam,wrong);
+ await showChallenge(F,tr,chTeam,wrong,kind);
  if(wrong){chTeam.ch++;chTeam.chWon++;msg('CALL OVERTURNED',1400,'CHALLENGE RETAINED');return calledStrike?'ball':'strike';}
  chTeam.chLost++;msg('CALL STANDS',1300,'CHALLENGE LOST');return kind;
 }
-async function showChallenge(F,tr,team,wrong){
- const cc=$('cc'),g=cc.getContext('2d');$('chal').style.display='block';
- const sx=cc.width/4.4,cx=cc.width/2,cy=cc.height*.5,py=y=>cy-(y-2.5)*sx;
- const draw=(u)=>{g.clearRect(0,0,cc.width,cc.height);g.fillStyle='#0b1220';g.fillRect(0,0,cc.width,cc.height);
-  g.strokeStyle='#fff';g.lineWidth=3;g.strokeRect(cx-PW*sx,py(ZT),PW*2*sx,(ZT-ZB)*sx);
-  g.strokeStyle='rgba(255,255,255,.3)';g.lineWidth=1;g.strokeRect(cx-(PW+BR)*sx,py(ZT+BR),(PW+BR)*2*sx,(ZT-ZB+BR*2)*sx);
-  const x=cx+F.E[0]*-sx*-1,y=py(F.E[1]);g.fillStyle=tr?'#4ade80':'#f87171';g.beginPath();g.arc(cx+F.E[0]*sx*(u),y,BR*sx*1.1,0,7);g.fill();
-  g.fillStyle='#fff';g.font='bold 15px system-ui';g.textAlign='center';g.fillText('ABS REVIEW',cx,22);};
+async function showChallenge(F,tr,team,wrong,kind){
+ const cc=$('cc'),g=cc.getContext('2d'),W=cc.width,H=cc.height;$('chal').style.display='block';
+ const sx=Math.min(W/2.8,(H-150)/3.4),cx=W/2,cy=H*.5-6,py=y=>cy-(y-2.5)*sx,pxx=x=>cx+x*sx;
+ const ex=F.E[0],ey=F.E[1],ed=edgeDist(ex,ey),inch=Math.abs(ed)*12;
+ const dxo=Math.abs(ex)-(PW+BR),dyo=ey<2.5?(ZB-BR)-ey:ey-(ZT+BR),horiz=dxo>=dyo;
+ const dir=horiz?((ex*bsg()<0)?'INSIDE':'OUTSIDE'):(ey<2.5?'LOW':'HIGH');
+ const col=tr?'#4ade80':'#f87171';
+ const txt=(t,x,y,f,c)=>{g.fillStyle=c||'#fff';g.font=f;g.textAlign='center';g.fillText(t,x,y);};
+ const draw=(u)=>{g.clearRect(0,0,W,H);g.fillStyle='#0b1220';g.fillRect(0,0,W,H);
+  txt('ABS REVIEW',cx,26,'bold 17px system-ui');txt('UMPIRE CALLED: '+(kind==='strike'?'STRIKE':'BALL'),cx,46,'600 12px system-ui','#9fb0c8');
+  // strike zone: front of the plate, 17 in wide, knees to letters, with the ball-width rule
+  g.fillStyle='rgba(255,255,255,.06)';g.fillRect(pxx(-PW),py(ZT),PW*2*sx,(ZT-ZB)*sx);
+  g.strokeStyle='rgba(255,255,255,.22)';g.lineWidth=1;g.beginPath();for(let k=1;k<3;k++){g.moveTo(pxx(-PW+PW*2*k/3),py(ZT));g.lineTo(pxx(-PW+PW*2*k/3),py(ZB));g.moveTo(pxx(-PW),py(ZT-(ZT-ZB)*k/3));g.lineTo(pxx(PW),py(ZT-(ZT-ZB)*k/3));}g.stroke();
+  g.strokeStyle='#fff';g.lineWidth=3;g.strokeRect(pxx(-PW),py(ZT),PW*2*sx,(ZT-ZB)*sx);
+  g.setLineDash([5,4]);g.strokeStyle='rgba(255,255,255,.35)';g.lineWidth=1;g.strokeRect(pxx(-PW-BR),py(ZT+BR),(PW+BR)*2*sx,(ZT-ZB+BR*2)*sx);g.setLineDash([]);
+  txt('STRIKE ZONE',cx,py((ZB+ZT)/2)+4,'600 12px system-ui','rgba(255,255,255,.28)');
+  // the pitch: tracked in along its line, shrinking to its true size at the plate
+  const e=u<=0?0:u>=1?1:u*u*(3-2*u),bx=ex*e,by=ey+(1-e)*.9,r=BR*sx*(1+(1-e)*1.3);
+  for(let k=5;k>=1;k--){const t=Math.max(0,e-k*.07);g.fillStyle='rgba(255,255,255,'+(.08*(6-k))+')';g.beginPath();g.arc(pxx(ex*t),py(ey+(1-t)*.9),BR*sx*(1+(1-t)*1.3)*.8,0,7);g.fill();}
+  g.fillStyle=col;g.beginPath();g.arc(pxx(bx),py(by),r,0,7);g.fill();g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke();
+  if(u>=1){ // exact distance between the edge of the ball and the zone line
+   g.strokeStyle='#ffd23f';g.fillStyle='#ffd23f';g.lineWidth=2;g.beginPath();let lx,ly;
+   if(horiz){const sg=ex<0?-1:1,ze=pxx(sg*PW),be=pxx(ex-sg*BR),yy=py(ey)+BR*sx+18;g.moveTo(ze,yy);g.lineTo(be,yy);g.moveTo(ze,yy-7);g.lineTo(ze,yy+7);g.moveTo(be,yy-7);g.lineTo(be,yy+7);g.moveTo(ze,py(ey)-BR*sx);g.lineTo(ze,yy-7);lx=(ze+be)/2;ly=yy+20;}
+   else{const lo=ey<2.5,ze=py(lo?ZB:ZT),be=py(ey+(lo?BR:-BR)),xx=pxx(ex);const bx2=xx+BR*sx+18;g.moveTo(bx2,ze);g.lineTo(bx2,be);g.moveTo(bx2-7,ze);g.lineTo(bx2+7,ze);g.moveTo(bx2-7,be);g.lineTo(bx2+7,be);lx=bx2+34;ly=(ze+be)/2+5;}
+   g.stroke();txt(inch.toFixed(1)+' IN',Math.max(34,Math.min(W-34,lx)),ly,'bold 15px system-ui','#ffd23f');
+   txt(tr?'STRIKE':'BALL',cx,H-62,'bold 30px system-ui',col);
+   txt(tr?(inch.toFixed(1)+' IN INTO THE ZONE'):(inch.toFixed(1)+' IN OFF THE ZONE • '+dir),cx,H-38,'600 14px system-ui','#e6edf7');
+  }};
  $('ct').textContent=team.you?'YOU CHALLENGED':'CPU CHALLENGES';
- draw(0);for(let i=1;i<=10&&!FAST;i++){await sleep(60);draw(i/10);}
+ draw(0);for(let i=1;i<=14&&!FAST;i++){await sleep(55);draw(i/14);}
  draw(1);$('ct').textContent=(tr?'STRIKE':'BALL')+' — '+(wrong?'CALL OVERTURNED':'CALL STANDS');
- await sleep(1400);$('chal').style.display='none';
+ await sleep(2200);$('chal').style.display='none';
 }
 function doChal(){if(G.onChal)G.onChal();}
 /* ----- manager challenge on close plays at a base ----- */
@@ -2240,7 +2276,7 @@ async function applyPitchResult(r){
  if(evt==='take'){
   const tr=trueStrike(F.E[0],F.E[1]),ed=Math.abs(edgeDist(F.E[0],F.E[1]));
   let called=tr?'strike':'ball';
-  if(ed<.16&&Math.random()<.4)called=called==='strike'?'ball':'strike';
+  {const pm=ed<.03?.4:ed<.06?.32:ed<.1?.2:ed<.15?.1:ed<.2?.04:0;if(Math.random()<pm)called=called==='strike'?'ball':'strike';} // only the true edge-of-the-zone pitches get missed
   sayCall(called==='strike'?'STRIKE':'BALL',called==='strike'?'CALLED STRIKE':'');
   called==='strike'?SFX.strike():SFX.ball();
   SFX.mitt();
@@ -2282,7 +2318,7 @@ async function applyPitchResult(r){
  }
  hud();
  if(r.steal&&evt==='inplay'){/* hit-and-run: handled in playBall */}
- if(!paDone&&evt!=='foul'){if(!FAST&&!AUTO&&(evt==='ball'||evt==='cstrike'||evt==='swing_miss')&&!r.bunt)await catcherReturn();else await sleep(350);}
+ if(evt!=='foul'&&evt!=='hbp'&&evt!=='inplay'){if(!FAST&&!AUTO&&(evt==='ball'||evt==='cstrike'||evt==='swing_miss'))await catcherReturn();else if(!paDone)await sleep(350);}
  if(paDone){await sleep(300);}
  return paDone||G.outs>=3;
 }
@@ -2417,6 +2453,7 @@ function planPlay(h,bt){
    }
   }
  }
+ if(!caught&&G.forceDrop&&res.gb&&!F.late)dropped=true;
  if(!caught||dropped){
   res.kind='';
   let tf=F.s.t;const xf=xferOf(fp,F.dive);
@@ -2553,7 +2590,7 @@ function landMkRemove(M){if(!M)return;for(const m of [M.ring,M.arc,M.icon]){scen
 async function animatePlay(res,tOff,ov){
  if(FAST)return;
  const S=res.B.S,F=res.F,SP=1.25,T0=performance.now()-(tOff||0)*1000/SP;
- const MAN=!AUTO&&!ov&&res.miss&&F.caught&&!res.hr&&G.tm[G.def].you&&!G.derby&&OPT.mf!==0;
+ const MAN=!AUTO&&!ov&&res.miss&&(F.caught||res.gb)&&!res.hr&&G.tm[G.def].you&&!G.derby&&OPT.mf!==0;
  if(!FAST&&!AUTO&&!ov&&F&&F.caught&&!res.hr&&F.p!=='C'){const fm=fielders[F.p],o=isOF(F.p);setTimeout(()=>{if(G&&fm&&!G.done){callout(fm,o?'I GOT IT!':'MINE!',1500);}},Math.max(250,(F.t*1000/SP)*.4));}
  const ballW=S.filter((s,i)=>i%2===0||i===S.length-1).map(s=>[s.t,s.x,s.y,s.z]),relays=[];
  if(!res.hr){
@@ -2638,7 +2675,7 @@ async function animatePlay(res,tOff,ov){
   ctl={x:0,z:0,user:false,lastIn:-9,lt:tOff||0,tgt:null,done:false,R:F.dive?5:3.8,you,
    ptr:e=>{const b=R.domElement.getBoundingClientRect();v2.set((e.clientX-b.left)/b.width*2-1,-((e.clientY-b.top)/b.height*2-1));rc.setFromCamera(v2,camera);const o=rc.ray.origin,d=rc.ray.direction;if(d.y>=-1e-4)return;const k=-o.y/d.y;ctl.tgt=[o.x+d.x*k,o.z+d.z*k];}};
   R.domElement.addEventListener('pointerdown',ctl.ptr);
-  G.fielding=true;G.fk={};hint('FIELD IT • ARROWS / WASD OR TAP TO MOVE • STAND ON THE BALL ICON');callout(fielders[F.p],'YOU',1600);
+  G.fielding=true;G.fk={};hint(res.gb?'GET TO THE BALL • ARROWS / WASD OR TAP TO MOVE • 1-4 = THROW TO A BASE':'FIELD IT • ARROWS / WASD OR TAP TO MOVE • STAND ON THE BALL ICON');callout(fielders[F.p],'YOU',1600);
  }
  const endMan=()=>{if(!ctl)return;R.domElement.removeEventListener('pointerdown',ctl.ptr);scene.remove(ctl.you);ctl.you.geometry.dispose();ctl.you.material.dispose();G.fielding=false;G.fk={};hint('');ctl=null;};
  const endLM=()=>{if(LM){landMkRemove(LM);LM=null;}};
@@ -2703,7 +2740,9 @@ async function animatePlay(res,tOff,ov){
    if(ctl.user&&Math.hypot(fm.position.x-F.pos[0],fm.position.z-F.pos[1])>ctl.R){
     const run={};for(const q of rt)run[q.r.key]=[q.mesh.position.x,q.mesh.position.z];const o={t,x:fm.position.x,z:fm.position.z,run};endMan();endLM();msg('MISSED IT!',900);return{miss:true,ov:o};}
    ctl.done=true;}
-  if(ctl&&ctl.done&&t>F.t+.4)endMan();
+  if(ctl&&ctl.done&&res.gb&&!ctl.rt&&G.thChoice){const ch=G.thChoice,cur=res.throws[0]?res.throws[0].base:0;
+   if(t<(res.throws[0]?res.throws[0].t0-.08:F.t+.5)){G.thChoice=0;if(ch!==cur){ctl.rt=1;const fm=fielders[F.p],run={};for(const q of rt)run[q.r.key]=[q.mesh.position.x,q.mesh.position.z];const o={t,x:fm.position.x,z:fm.position.z,run};endMan();endLM();return{thr:ch,ov:o};}}}
+  if(ctl&&ctl.done&&t>F.t+(res.gb?.8:.4))endMan();
   for(const p of fld){const m=fielders[p],u=m&&m.userData;if(!u||!u.hips||p===F.p&&F.dive)continue;const w=ft[p],end=w[w.length-1];
    if(t>=end[0]&&!(stoop.some(q=>q.p===p&&q.on))){u.hips.forEach((h,i)=>{h.rotation.x*=.78;u.knees[i].rotation.x*=.78;u.feet[i].rotation.x*=.78;});const a=a1s[p];if(a&&!thrs.some(q=>q.p===p&&t>q.t-.4&&t<q.t+.7)){u.arm.rotation.x+=(a[0]-u.arm.rotation.x)*.2;u.arm.rotation.z+=(a[1]-u.arm.rotation.z)*.2;u.elbow.rotation.x+=(a[2]-u.elbow.rotation.x)*.2;}if(a2s[p]&&!rcv.some(rc=>rc.p===p&&rc.on)){u.arm2.rotation.x+=(a2s[p][0]-u.arm2.rotation.x)*.2;u.arm2.rotation.z+=(a2s[p][1]-u.arm2.rotation.z)*.2;}}}
   for(const q of stoop){const m=fielders[q.p],u=m&&m.userData;if(!u||!u.hips)continue;
@@ -2815,13 +2854,18 @@ async function playBall(r){
   if(resGo){await sleep(250);if(G.advChoice==='go')res=resGo;G.canAdv=false;G.advChoice=null;hint('');buildBar();}
  }else{view('bip');ball.visible=true;ball.scale.setScalar(1);ball.position.set(0,3.2,0);}
  ball.scale.setScalar(1);
- if(!FAST&&!AUTO&&G.tm[G.def].you&&!res.hr&&res.F.caught&&!G.derby&&OPT.mf!==0){ // the same play if the user muffs the catch
+ if(!FAST&&!AUTO&&G.tm[G.def].you&&!res.hr&&(res.F.caught||res.gb)&&!G.derby&&OPT.mf!==0){ // the same play if the user muffs the catch
   G.forceDrop=true;let m2=null;try{m2=planPlay(h,bt);}catch(e){m2=null;}G.forceDrop=false;
-  if(m2&&!m2.hr&&m2.drop&&m2.F.p===res.F.p)res.miss=m2;}
+  if(m2&&!m2.hr&&m2.drop&&m2.F.p===res.F.p)res.miss=m2;
+  if(res.miss&&res.gb){G.canThrow=true;G.thChoice=0;buildBar();}}
  if(FAST){/* headless */}else{const ar=await animatePlay(res,tOff);if(ar&&ar.miss&&res.miss){ // he was out of position: re-plan the dropped ball with the extra time it takes him to run it down
    const dly=Math.max(0,Math.hypot(res.F.pos[0]-ar.ov.x,res.F.pos[1]-ar.ov.z)/(SPD_F[res.F.p]*.95)-.5);let m3=null;
    if(dly>.05){G.forceDrop=true;G.dropDelay=dly;try{m3=planPlay(h,bt);}catch(e){m3=null;}G.forceDrop=false;G.dropDelay=0;}
-   res=m3&&!m3.hr&&m3.drop&&m3.F.p===res.F.p?m3:res.miss;await animatePlay(res,ar.ov.t,ar.ov);}}
+   res=m3&&!m3.hr&&m3.drop&&m3.F.p===res.F.p?m3:res.miss;await animatePlay(res,ar.ov.t,ar.ov);}
+  else if(ar&&ar.thr){ // new throw chosen as he fields it
+   G.forceThrow=ar.thr<=4?ar.thr:null;G.relay=ar.thr===5;let r2=null;try{r2=planPlay(h,bt);}catch(e){r2=null;}G.forceThrow=null;G.relay=false;
+   if(r2&&!r2.hr&&r2.F.p===res.F.p&&!r2.drop)res=r2;await animatePlay(res,ar.ov.t,ar.ov);}
+  if(G.canThrow){G.canThrow=false;G.thChoice=0;hint('');buildBar();}}
  if(res.hr&&!FAST&&!AUTO){playerReact('hr');fireworks(TOD==='night'?3:0);await hrReplay(res);await hrSweep(res);hrMob();}
  else if(!FAST&&!AUTO){try{await playReplays(res);}catch(e){view('wide');REP.on=false;}}
  if(res.close)res=await playChallenge(res,h,bt);
