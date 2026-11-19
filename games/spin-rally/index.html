@@ -8,11 +8,14 @@
   html,body{margin:0;padding:0;background:#101923;overflow:hidden;height:100%;}
   #game{width:100vw;height:100vh;}
   canvas{display:block;}
+  #rotate-hint{display:none;position:fixed;top:0;left:0;right:0;padding:8px 10px;text-align:center;background:#3c3489;color:#EAF3E7;font:13px Arial,sans-serif;z-index:10;pointer-events:none;}
+  @media (orientation: portrait) and (max-width: 820px){ #rotate-hint{display:block;} }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
 </head>
 <body>
 <div id="game"></div>
+<div id="rotate-hint">Rotate your phone to landscape for the best view</div>
 <script>
 (function(){
 'use strict';
@@ -53,9 +56,12 @@ var PADDLES = {
   starter:{ key:'starter', name:'Starter', power:1.00, control:1.00, spin:1.00, unlock:0 },
   speed:  { key:'speed',   name:'Speed',   power:1.10, control:0.90, spin:0.95, unlock:3 },
   control:{ key:'control', name:'Control', power:0.92, control:1.12, spin:0.95, unlock:6 },
-  spin:   { key:'spin',    name:'Spin',    power:0.95, control:0.95, spin:1.12, unlock:9 }
+  spin:   { key:'spin',    name:'Spin',    power:0.95, control:0.95, spin:1.12, unlock:9 },
+  defender:{ key:'defender',name:'Defender',power:0.88, control:1.18, spin:1.06, unlock:5 },
+  pro:    { key:'pro',     name:'Pro',     power:1.05, control:1.05, spin:1.05, unlock:12 },
+  carbon: { key:'carbon',  name:'Carbon',  power:1.10, control:1.08, spin:1.08, unlock:15 }
 };
-var PADDLE_ORDER = ['starter','speed','control','spin'];
+var PADDLE_ORDER = ['starter','speed','control','defender','spin','pro','carbon'];
 
 /* ---------- character looks (all drawn in code; options unlock with total match wins) ---------- */
 var SKIN_TONES = [
@@ -69,12 +75,14 @@ var HAIR_STYLES = [
 var HAIR_COLORS = [
   {name:'Black',  v:0x1b1410, unlock:0}, {name:'Dark',   v:0x3a2a1e, unlock:0}, {name:'Brown',  v:0x6b4423, unlock:0},
   {name:'Blond',  v:0xd2a85a, unlock:2}, {name:'Ginger', v:0xb5502b, unlock:4}, {name:'Gray',   v:0x9aa0a6, unlock:6},
-  {name:'Blue',   v:0x3a6ee8, unlock:8}, {name:'Pink',   v:0xe468a8, unlock:9}
+  {name:'Blue',   v:0x3a6ee8, unlock:8}, {name:'Pink',   v:0xe468a8, unlock:9},
+  {name:'Purple', v:0x8a4ee0, unlock:10}, {name:'Teal',   v:0x2bb8a6, unlock:11}, {name:'White',  v:0xeeeeee, unlock:12}
 ];
 var JERSEY_COLORS = [
   {name:'Walnut', v:0x4a3a2f, unlock:0}, {name:'Slate',  v:0x3a4a55, unlock:0}, {name:'Crimson',v:0xb83a3a, unlock:0},
   {name:'Teal',   v:0x1f8a78, unlock:0}, {name:'Amber',  v:0xd8892a, unlock:2}, {name:'Royal',  v:0x3858c4, unlock:3},
-  {name:'Violet', v:0x7a4cc2, unlock:5}, {name:'White',  v:0xe8e8e2, unlock:7}, {name:'Black',  v:0x1b1b1f, unlock:9}
+  {name:'Violet', v:0x7a4cc2, unlock:5}, {name:'White',  v:0xe8e8e2, unlock:7}, {name:'Black',  v:0x1b1b1f, unlock:9},
+  {name:'Maroon', v:0x6b1f2e, unlock:4}, {name:'Lime',   v:0x8ac43a, unlock:6}, {name:'Gold',   v:0xd9b13a, unlock:8}, {name:'Pink',   v:0xe468a8, unlock:10}
 ];
 var JERSEY_STYLES = [
   {name:'Plain', key:'plain', unlock:0}, {name:'Stripes', key:'stripe', unlock:2},
@@ -82,7 +90,8 @@ var JERSEY_STYLES = [
 ];
 var SHORTS_COLORS = [
   {name:'Charcoal', v:0x2c2f33, unlock:0}, {name:'Navy',  v:0x1f2c55, unlock:0}, {name:'White', v:0xe4e4de, unlock:0},
-  {name:'Red',      v:0x9c2a2a, unlock:3}, {name:'Green', v:0x236b4a, unlock:5}, {name:'Gold',  v:0xc79a2a, unlock:8}
+  {name:'Red',      v:0x9c2a2a, unlock:3}, {name:'Green', v:0x236b4a, unlock:5}, {name:'Gold',  v:0xc79a2a, unlock:8},
+  {name:'Royal',    v:0x3858c4, unlock:6}, {name:'Teal',  v:0x1f8a78, unlock:7}, {name:'Purple', v:0x7a4cc2, unlock:9}
 ];
 var EXTRAS = [
   {name:'None',     key:'none',     unlock:0}, {name:'Headband', key:'headband', unlock:1},
@@ -97,36 +106,82 @@ var LOOK_ROWS = [
   {label:'Shorts',       key:'shortsColor', list:SHORTS_COLORS, type:'swatch'},
   {label:'Extras',       key:'extra',       list:EXTRAS,        type:'chip'}
 ];
+var LOOK_BY_KEY = {}; LOOK_ROWS.forEach(function(r){ LOOK_BY_KEY[r.key] = r.list; });
+var PADDLE_PRICE = { starter:0, speed:250, control:450, defender:500, spin:700, pro:1000, carbon:1600 };
+var ARENAS = [
+  { key:'gym',    name:'Gym',      price:0,   wall:0xd8d3c4, trim:0xc7c1ae, f0:0x8a6a44, f1:0xa3824f, f2:0x6e5234, fl:0x5c4428 },
+  { key:'night',  name:'Midnight', price:250, wall:0x1d2140, trim:0x151934, f0:0x2b2f4d, f1:0x3a4066, f2:0x20243d, fl:0x141831 },
+  { key:'sunset', name:'Sunset',   price:400, wall:0xe9a77c, trim:0xcf8b63, f0:0x7b5a5e, f1:0x94707a, f2:0x5e444c, fl:0x45303a },
+  { key:'mint',   name:'Mint Club',price:550, wall:0xbfe0d2, trim:0xa6cbbb, f0:0x5f7f7a, f1:0x78998f, f2:0x496560, fl:0x364d49 },
+  { key:'green',  name:'Club Green',price:600, wall:0x2f5a44, trim:0x244636, f0:0x7a6840, f1:0x917d4c, f2:0x5e5030, fl:0x483d25 },
+  { key:'neon',   name:'Neon',     price:750, wall:0x2a1245, trim:0xd23fa0, f0:0x2a2147, f1:0x3a2e66, f2:0x1f1838, fl:0x150f28 }
+];
+function arenaOf(key){ for (var i=0;i<ARENAS.length;i++) if (ARENAS[i].key === key) return ARENAS[i]; return ARENAS[0]; }
+var DAILY_MODS = [
+  { key:'blitz',     name:'Blitz',     desc:'The ball is 12% faster',           pace:0.88 },
+  { key:'iron',      name:'Iron Mode', desc:'The opponent plays at Hard level',  diff:'hard' },
+  { key:'precision', name:'Precision', desc:'Your timing window is 20% tighter', win:0.8 }
+];
+/* progression helpers */
+function levelInfo(xp){ var lvl = 1, need = 100; xp = xp||0; while (xp >= need){ xp -= need; lvl++; need += 40; } return { lvl:lvl, cur:xp, need:need }; }
+function lookPrice(opt){ return opt.unlock * 40; }
+function ownsLook(sv, key, oi){ var l = LOOK_BY_KEY[key]; return !l[oi] || l[oi].unlock === 0 || ((sv.ownedLook && sv.ownedLook[key]) || []).indexOf(oi) >= 0; }
+function dayKey(off){ var d = new Date(Date.now() + (off||0)*864e5); return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2); }
+function hashStr(str){ var h = 2166136261; for (var i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h>>>0; }
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; var t = Math.imul(a ^ a>>>15, 1 | a); t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t; return ((t ^ t>>>14) >>> 0) / 4294967296; }; }
+/* everyone gets the same opponent + twist on the same calendar day (seeded, not Math.random) */
+function dailyConfig(key){ var r = mulberry32(hashStr('spinrally-' + key)); return { key:key, opp:Math.floor(r()*OPPONENTS.length), mod:DAILY_MODS[Math.floor(r()*DAILY_MODS.length)] }; }
 var DEFAULT_LOOK = { skin:1, hairStyle:0, hairColor:1, jerseyColor:0, jerseyStyle:0, shortsColor:0, extra:0 };
 
 var OPPONENTS = [
-  { name:'Rookie Rae',   tier:'easy',   look:{ skin:1, hairStyle:3, hairColor:3, jerseyColor:3, jerseyStyle:0, shortsColor:1, extra:1 } },
-  { name:'Steady Sam',   tier:'easy',   look:{ skin:2, hairStyle:0, hairColor:1, jerseyColor:5, jerseyStyle:1, shortsColor:0, extra:0 } },
-  { name:'Lena Loop',    tier:'medium', look:{ skin:3, hairStyle:2, hairColor:0, jerseyColor:2, jerseyStyle:2, shortsColor:2, extra:2 } },
-  { name:'Marcus Spin',  tier:'medium', look:{ skin:0, hairStyle:4, hairColor:4, jerseyColor:4, jerseyStyle:3, shortsColor:1, extra:3 } },
-  { name:'The Wall',     tier:'hard',   look:{ skin:4, hairStyle:1, hairColor:0, jerseyColor:8, jerseyStyle:0, shortsColor:0, extra:4 } }
+  { name:'Rookie Rae',   style:'errorprone', blurb:'Streaky - makes unforced errors', tier:'easy',   look:{ skin:1, hairStyle:3, hairColor:3, jerseyColor:3, jerseyStyle:0, shortsColor:1, extra:1 } },
+  { name:'Steady Sam',   style:'steady', blurb:'Consistent - keeps it safe', tier:'easy',   look:{ skin:2, hairStyle:0, hairColor:1, jerseyColor:5, jerseyStyle:1, shortsColor:0, extra:0 } },
+  { name:'Lena Loop',    style:'looper', blurb:'Heavy topspin loops', tier:'medium', look:{ skin:3, hairStyle:2, hairColor:0, jerseyColor:2, jerseyStyle:2, shortsColor:2, extra:2 } },
+  { name:'Marcus Spin',  style:'spinner', blurb:'Mixes top, back and side spin', tier:'medium', look:{ skin:0, hairStyle:4, hairColor:4, jerseyColor:4, jerseyStyle:3, shortsColor:1, extra:3 } },
+  { name:'The Wall',     style:'wall', blurb:'Blocks everything, rarely errs', tier:'hard',   look:{ skin:4, hairStyle:1, hairColor:0, jerseyColor:8, jerseyStyle:0, shortsColor:0, extra:4 } },
+  { name:'Tina Smash',   style:'smasher',  blurb:'Goes for big attacking shots - risky', tier:'hard',   look:{ skin:2, hairStyle:3, hairColor:7, jerseyColor:6, jerseyStyle:2, shortsColor:3, extra:2 } },
+  { name:'Daria Chop',   style:'chopper',  blurb:'Heavy backspin, hard to attack',        tier:'hard',   look:{ skin:0, hairStyle:2, hairColor:5, jerseyColor:7, jerseyStyle:1, shortsColor:1, extra:3 } },
+  { name:'Champion Kai', style:'allround', blurb:'Complete player - no weaknesses',      tier:'expert', look:{ skin:3, hairStyle:1, hairColor:0, jerseyColor:5, jerseyStyle:3, shortsColor:5, extra:4 } }
 ];
 
 var AI_TIERS = {
-  easy:   { reactMs:240, aimErr:0.22, timeErr:0.090, spinUse:0.10, paddleSpeed:2.2, aggressive:0.15 },
-  medium: { reactMs:150, aimErr:0.13, timeErr:0.050, spinUse:0.35, paddleSpeed:3.0, aggressive:0.40 },
-  hard:   { reactMs:80,  aimErr:0.06, timeErr:0.022, spinUse:0.65, paddleSpeed:3.8, aggressive:0.55 },
+  easy:   { reactMs:240, aimErr:0.22, timeErr:0.090, spinUse:0.10, paddleSpeed:2.2, aggressive:0.15, adapt:0 },
+  medium: { reactMs:150, aimErr:0.13, timeErr:0.050, spinUse:0.35, paddleSpeed:3.0, aggressive:0.40, adapt:0.25 },
+  hard:   { reactMs:80,  aimErr:0.06, timeErr:0.022, spinUse:0.65, paddleSpeed:3.8, aggressive:0.55, adapt:0.40 },
+  expert: { reactMs:55,  aimErr:0.04, timeErr:0.016, spinUse:0.75, paddleSpeed:4.4, aggressive:0.65, adapt:0.55 },
   rally:  { reactMs:50,  aimErr:0.02, timeErr:0.012, spinUse:0.00, paddleSpeed:6.5, aggressive:0.00 }
 };
 var RALLY_OPPONENT = { name:'Rally Bot', tier:'rally', look:{ skin:5, hairStyle:1, hairColor:0, jerseyColor:7, jerseyStyle:3, shortsColor:1, extra:1 } };
 var MACHINE_OPPONENT = { name:'Ball Machine', tier:'rally', look:RALLY_OPPONENT.look };
-var ROUND_NAMES = ['Round 1','Round 2','Quarterfinal','Semifinal','Final'];
+(function(){ var sn = ['Rae','Sam','Lena','Marcus','Wall','Tina','Daria','Kai']; OPPONENTS.forEach(function(o,i){ o.short = sn[i] || o.name; }); })();
+var PARTNER = { name:'Pip', short:'Pip', tier:'medium', style:'steady', look:{ skin:2, hairStyle:1, hairColor:2, jerseyColor:0, jerseyStyle:0, shortsColor:1, extra:1 } };
+var D_TEAM = { you:'human', pt:'human', a1:'ai', a2:'ai' }, D_MATE = { you:'pt', pt:'you', a1:'a2', a2:'a1' };
+var ROUND_NAMES = ['Round 1','Round 2','Round 3','Round 4','Round 5','Quarterfinal','Semifinal','Final'];
+/* Survival: level 1..N climbs the ladder, then it loops back through the hardest three with a faster ball */
+var TRAINER_DRILLS = [
+  { key:'top',   name:'Topspin',  desc:'The machine feeds topspin loops. Learn to time the kick.' },
+  { key:'back',  name:'Backspin', desc:'Heavy backspin (chop) balls that dip and stay low.' },
+  { key:'side',  name:'Sidespin', desc:'Balls that curve off line. Watch where they go.' },
+  { key:'mixed', name:'Mixed',    desc:'A random spin every ball - the real test.' },
+  { key:'serve', name:'Serving',  desc:'You serve. Pick the glowing zone with 1-6 (or the AIM buttons) and land it there.' }
+];
+var TRAINER_BALLS = 20;
+function survOpp(L){ var N = OPPONENTS.length; return L <= N ? L-1 : N-1-((L-1-N) % 3); }
+function oppPartner(i){ return i < OPPONENTS.length-1 ? i+1 : i-1; }   // doubles partner on the opposing team
 
 /* difficulty: scales your timing window / reach, and the opponent's reactions (match modes only) */
 var DIFFICULTY = {
-  easy:   { label:'Easy',   desc:'Bigger timing window, slower opponents', win:1.3, reach:3.6, ai:{ react:1.4, aim:1.35, time:1.35, speed:0.85, spin:-0.10 } },
-  normal: { label:'Normal', desc:'The standard game',                      win:1.0, reach:3.0, ai:{ react:1.0, aim:1.0,  time:1.0,  speed:1.0,  spin:0 } },
-  hard:   { label:'Hard',   desc:'Tight timing, sharper opponents',        win:0.8, reach:2.5, ai:{ react:0.7, aim:0.7,  time:0.7,  speed:1.15, spin:0.15 } }
+  easy:   { label:'Easy',   desc:'Bigger timing window, slower opponents', win:1.3, reach:3.6, ai:{ react:1.4, aim:1.35, time:1.35, speed:0.85, spin:-0.10 },
+            assist:{ safety:1.35, wf:1.0, read:1.0, noise:0 }, pace:1.12 },
+  normal: { label:'Normal', desc:'The standard game',                      win:1.0, reach:3.0, ai:{ react:1.0, aim:1.0,  time:1.0,  speed:1.0,  spin:0 },
+            assist:{ safety:1.0,  wf:0.8, read:0.9, noise:0.35 }, pace:1.0 },
+  hard:   { label:'Hard',   desc:'Tight timing, sharper opponents',        win:0.8, reach:2.5, ai:{ react:0.7, aim:0.7,  time:0.7,  speed:1.15, spin:0.15 },
+            assist:{ safety:0.7,  wf:0.4, read:0.7, noise:0.8 }, pace:0.9 }
 };
 var DIFF_ORDER = ['easy','normal','hard'];
 function tierWithDifficulty(t, d){
   return { reactMs:t.reactMs*d.react, aimErr:t.aimErr*d.aim, timeErr:t.timeErr*d.time,
-           spinUse:clamp(t.spinUse+d.spin,0,1), paddleSpeed:t.paddleSpeed*d.speed, aggressive:t.aggressive };
+           spinUse:clamp(t.spinUse+d.spin,0,1), paddleSpeed:t.paddleSpeed*d.speed, aggressive:t.aggressive, adapt:t.adapt||0 };
 }
 
 var COLORS = {
@@ -321,8 +376,8 @@ function drawGripHand(g, hx, hy, s, skin, ang){
 /* Full figure from one anchor point (px = center x, anchorY = feet baseline, s = scale).
    side: +1 paddle arm reaches right, -1 left.  swing: 0..1.  front: true = facing the camera
    (shows a face); false = seen from behind/side (no face, glasses become a thin band). */
-function drawFigure(g, px, anchorY, s, look, paddleColor, side, swing, front){
-  swing = swing || 0;
+function drawFigure(g, px, anchorY, s, look, paddleColor, side, swing, front, swingVar){
+  swing = swing || 0; swingVar = swingVar || 0;
   var skin   = optOf(SKIN_TONES, look.skin).v;
   var hairC  = optOf(HAIR_COLORS, look.hairColor).v;
   var jersey = optOf(JERSEY_COLORS, look.jerseyColor).v;
@@ -401,9 +456,9 @@ function drawFigure(g, px, anchorY, s, look, paddleColor, side, swing, front){
   // paddle arm: shoulder -> elbow -> hand, rotating about each joint during the swing
   var sw = Math.sin(swing*Math.PI);
   var psx = px + side*8.5*s, psy = shoulderY + 3*s;
-  var psi = deg2rad(lerp(55, 75, sw));
+  var psi = deg2rad(lerp(55, 75 + swingVar*22, sw));
   var elbowX = psx + side*Math.cos(psi)*9*s, elbowY = psy + Math.sin(psi)*9*s;
-  var phi = deg2rad(lerp(-65, -170, sw));
+  var phi = deg2rad(lerp(-65, -170 + swingVar*45, sw));
   var handX = elbowX + side*Math.cos(phi)*8*s, handY = elbowY + Math.sin(phi)*8*s;
   limb(psx, psy, elbowX, elbowY, 4.2*s, sleeve);
   limb(elbowX, elbowY, handX, handY, 3.2*s, skin);
@@ -414,7 +469,7 @@ function drawFigure(g, px, anchorY, s, look, paddleColor, side, swing, front){
 
   drawHead(g, px, headCy, s, look, front);
 
-  var padAng = side*(0.22 - 1.2*sw);
+  var padAng = side*(0.22 - (1.2 + swingVar*0.55)*sw);
   drawPaddleShape(g, handX, handY, s, paddleColor, padAng);
   drawGripHand(g, handX, handY, s, skin, padAng);
 }
@@ -426,7 +481,8 @@ var W_DESIGN = 1280;
 var SAVE_KEY = 'spinRally.v1';
 var Save = {
   defaults:function(){
-    return { version:1, wins:0, losses:0, unlockedPaddles:['starter'], selectedPaddle:'starter', highestOpponent:0, soundEnabled:true, rallyBest:0, hintsSeen:false, difficulty:'normal', targetBest:0, tourneyTrophies:0, tourneyBestRound:0,
+    return { version:1, wins:0, losses:0, unlockedPaddles:['starter'], selectedPaddle:'starter', highestOpponent:0, soundEnabled:true, rallyBest:0, hintsSeen:false, life:{ pointsWon:0, pointsLost:0, aces:0, winners:0, longest:0, kinds:{} }, difficulty:'normal', targetBest:0, survivalBest:0, streakNow:0, streakBest:0, dailyBest:0, h2h:{}, trainerBest:{}, tourneyTrophies:0, tourneyBestRound:0,
+             doublesWon:0, doublesLost:0, doublesHintSeen:false, ach:{}, coins:0, xp:0, ownedLook:{}, arena:'gym', ownedArenas:['gym'], daily:{ date:'', won:false, streak:0, lastWon:'' },
              look:{ skin:1, hairStyle:0, hairColor:1, jerseyColor:0, jerseyStyle:0, shortsColor:0, extra:0 } };
   },
   load:function(){
@@ -435,14 +491,69 @@ var Save = {
       if (!raw) return this.defaults();
       var s = JSON.parse(raw);
       var d = this.defaults();
+      var needMig = !('ownedLook' in s);
       for (var k in d){ if (!(k in s)) s[k]=d[k]; }
+      if (needMig){                                        // looks that wins used to unlock stay owned
+        LOOK_ROWS.forEach(function(row){ row.list.forEach(function(opt, oi){
+          if (opt.unlock > 0 && s.wins >= opt.unlock){ (s.ownedLook[row.key] = s.ownedLook[row.key] || []).push(oi); }
+        }); });
+      }
+      if (!s.ownedLook || typeof s.ownedLook !== 'object') s.ownedLook = {};
+      if (!Array.isArray(s.ownedArenas) || s.ownedArenas.indexOf('gym') < 0) s.ownedArenas = ['gym'].concat(s.ownedArenas||[]);
+      if (!s.daily || typeof s.daily !== 'object') s.daily = d.daily;
+      for (var dk in d.daily){ if (!(dk in s.daily)) s.daily[dk] = d.daily[dk]; }
+      if (!s.ach || typeof s.ach !== 'object') s.ach = {};
+      if (!s.h2h || typeof s.h2h !== 'object') s.h2h = {};
+      if (!s.trainerBest || typeof s.trainerBest !== 'object') s.trainerBest = {};
+      if (!s.dailyBest) s.dailyBest = (s.daily && s.daily.streak) || 0;     // older saves: best streak is at least the current one
       if (!s.look || typeof s.look !== 'object') s.look = d.look;
       for (var lk in d.look){ if (!(lk in s.look)) s.look[lk] = d.look[lk]; }
+      if (!s.life || typeof s.life !== 'object') s.life = d.life;
+      for (var fk in d.life){ if (!(fk in s.life)) s.life[fk] = d.life[fk]; }
+      if (!s.life.kinds || typeof s.life.kinds !== 'object') s.life.kinds = {};
       return s;
     } catch(e){ return this.defaults(); }
   },
   save:function(s){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch(e){} }
 };
+
+/* ============================================================
+   ACHIEVEMENTS (badges): each pays coins once; checked after points, matches and challenges
+   ============================================================ */
+var ACHIEVEMENTS = [
+  { key:'first_win',  name:'First Win',         desc:'Win a match',                       coins:20,  test:function(sv){ return sv.wins >= 1; } },
+  { key:'ace',        name:'Ace!',              desc:'Serve your first ace',              coins:15,  test:function(sv){ return sv.life.aces >= 1; } },
+  { key:'aces25',     name:'Serve Machine',     desc:'Hit 25 aces in total',              coins:60,  test:function(sv){ return sv.life.aces >= 25; } },
+  { key:'rally20',    name:'Long Rally',        desc:'Play a 20-shot rally in a match',   coins:40,  test:function(sv){ return sv.life.longest >= 20; } },
+  { key:'rally35',    name:'Marathon Rally',    desc:'Play a 35-shot rally in a match',   coins:80,  test:function(sv){ return sv.life.longest >= 35; } },
+  { key:'points250',  name:'Point Collector',   desc:'Win 250 points in total',           coins:40,  test:function(sv){ return sv.life.pointsWon >= 250; } },
+  { key:'wins10',     name:'Regular',           desc:'Win 10 matches',                    coins:50,  test:function(sv){ return sv.wins >= 10; } },
+  { key:'level5',     name:'Rising Star',       desc:'Reach level 5',                     coins:60,  test:function(sv){ return levelInfo(sv.xp).lvl >= 5; } },
+  { key:'daily1',     name:'Daily Driver',      desc:'Clear a daily challenge',           coins:30,  test:function(sv){ return !!sv.daily.lastWon; } },
+  { key:'streak3',    name:'On a Roll',         desc:'Reach a 3-day daily streak',        coins:50,  test:function(sv){ return sv.daily.streak >= 3; } },
+  { key:'doubles1',   name:'Team Player',       desc:'Win a doubles match',               coins:40,  test:function(sv){ return (sv.doublesWon||0) >= 1; } },
+  { key:'rallychal',  name:'Rally Pro',         desc:'Reach 25 in Rally Challenge',       coins:50,  test:function(sv){ return (sv.rallyBest||0) >= 25; } },
+  { key:'target100',  name:'Sharpshooter',      desc:'Score 100 in Target Practice',      coins:50,  test:function(sv){ return (sv.targetBest||0) >= 100; } },
+  { key:'trophy',     name:'Tournament Winner', desc:'Win the tournament',                coins:150, test:function(sv){ return (sv.tourneyTrophies||0) >= 1; } },
+  { key:'survive5',   name:'Survivor',          desc:'Clear level 5 in Survival',          coins:80,  test:function(sv){ return (sv.survivalBest||0) >= 5; } },
+  { key:'survive10',  name:'Last One Standing', desc:'Clear level 10 in Survival',         coins:150, test:function(sv){ return (sv.survivalBest||0) >= 10; } },
+  { key:'beatkai',    name:'Giant Slayer',      desc:'Beat the last opponent on the ladder', coins:100, test:function(sv, cx){ return !!(cx && cx.won && !cx.doubles && cx.oppIndex === OPPONENTS.length-1); } }
+];
+function checkAch(sv, cx){
+  var got = []; if (!sv.ach) sv.ach = {};
+  ACHIEVEMENTS.forEach(function(a){
+    if (!sv.ach[a.key] && a.test(sv, cx || {})){ sv.ach[a.key] = 1; sv.coins = (sv.coins||0) + a.coins; got.push(a); }
+  });
+  if (got.length) Save.save(sv);
+  return got;
+}
+/* medal icon: gold when earned, grey when locked */
+function drawMedal(g, cx, cy, r, on){
+  g.fillStyle(on ? 0xF2C14E : 0x3a3355, 1); g.fillCircle(cx, cy, r);
+  g.lineStyle(2, on ? 0xB8862B : 0x4a3d6b, 1); g.strokeCircle(cx, cy, r);
+  g.fillStyle(on ? 0xFFF3C4 : 0x2a2342, 1); g.fillCircle(cx, cy, r*0.62);
+  if (on){ g.lineStyle(3, 0xB8862B, 1); g.beginPath(); g.moveTo(cx-r*0.28, cy+r*0.02); g.lineTo(cx-r*0.05, cy+r*0.26); g.lineTo(cx+r*0.32, cy-r*0.22); g.strokePath(); }
+}
 
 /* ============================================================
    SFX  -- small synthesized sound set (WebAudio), no sample files
@@ -617,9 +728,10 @@ function solveShot(ball, targetX, targetY, baseT){
 function resolveHit(ball, hitterSide, opts){
   var timingQ = clamp(1 - Math.abs(opts.timingError)/TIMING_WINDOW, 0, 1);
   var centerQ = clamp(1 - Math.abs(opts.offset), 0, 1);
-  var power = 0.55 + 0.45*timingQ;
+  var chg = opts.charge || 0;                                   // 0..1 hold-to-charge: more power + spin, wider aim error
+  var power = Math.min(1.35, 0.55 + 0.45*timingQ + 0.35*chg);
   var control = 0.55 + 0.45*centerQ;
-  var aimErrorM = (1-control) * 0.18;
+  var aimErrorM = (1-control) * 0.18 + chg*0.10*(1 - 0.5*timingQ);
   var finalTargetX = clamp(opts.targetX + randRange(-aimErrorM, aimErrorM), BALL_RADIUS, TABLE.width - BALL_RADIUS);
 
   var baseT = lerp(0.78, 0.52, power) / Math.max(0.5, opts.paddleStats.power);
@@ -627,8 +739,8 @@ function resolveHit(ball, hitterSide, opts){
   var shot = solveShot(ball, finalTargetX, opts.targetY, baseT);
 
   ball.vx = shot.vx; ball.vy = shot.vy; ball.vh = shot.vh;
-  ball.topSpin = opts.spinTop * opts.paddleStats.spin * (0.5+0.5*timingQ);
-  ball.sideSpin = opts.spinSide * opts.paddleStats.spin * (0.5+0.5*timingQ);
+  ball.topSpin = opts.spinTop * opts.paddleStats.spin * (0.5+0.5*timingQ) * (1 + 0.6*chg);
+  ball.sideSpin = opts.spinSide * opts.paddleStats.spin * (0.5+0.5*timingQ) * (1 + 0.6*chg);
   ball.lastHitBy = hitterSide;
   ball.lastBounceSideSameHit = null;
   ball.bouncesSinceHit = 0;
@@ -654,6 +766,12 @@ function targetCoords(laneIndex, depthIndex, towardAi){
 /* ============================================================
    BOOT
    ============================================================ */
+function buzz(ms){ try{ if (navigator.vibrate) navigator.vibrate(ms); }catch(e){} }
+var CHARGE_MS = 600;   // time to reach a full charge
+var SPIN_OPTS = [ {k:'auto',t:'Auto'}, {k:'flat',t:'Flat',top:0,side:0}, {k:'top',t:'Top',top:1,side:0}, {k:'back',t:'Back',top:-1,side:0}, {k:'sideL',t:'Side-L',top:0,side:-1}, {k:'sideR',t:'Side-R',top:0,side:1} ];
+var SPIN_STRIP = { x:16, w:50, h:24, gap:2 };
+function spinStripY(){ return ZONE_STRIP.y + ZONE_STRIP.h + 18; }
+var KIND_PACE = { SMASH:0.74, ATTACK:0.82, LOOP:0.92, DRIVE:0.95, LIFT:1.0, BLOCK:1.12, DROP:1.28, PUSH:1.2, CHOP:1.18 };   // >1 = slower, floatier ball
 function BootScene(){ Phaser.Scene.call(this, {key:'Boot'}); }
 BootScene.prototype = Object.create(Phaser.Scene.prototype);
 BootScene.prototype.create = function(){ this.scene.start('Menu'); };
@@ -724,7 +842,7 @@ MenuScene.prototype.buildUI = function(){
     card.lineStyle(2, selected?0xF2A34C:0x4a3d6b, 1);
     card.strokeRoundedRect(-66, -34, 132, 68, 8);
     var nameTxt = self.add.text(0, -14, p.name, {fontFamily:'Arial', fontSize:'14px', color: unlocked?'#EAF3E7':'#5c5968'}).setOrigin(0.5);
-    var statTxt = self.add.text(0, 8, unlocked ? ('P'+p.power.toFixed(2)+' C'+p.control.toFixed(2)+' S'+p.spin.toFixed(2)) : ('Win '+p.unlock+' matches'),
+    var statTxt = self.add.text(0, 8, unlocked ? ('P'+p.power.toFixed(2)+' C'+p.control.toFixed(2)+' S'+p.spin.toFixed(2)) : ('Shop: '+PADDLE_PRICE[key]+' coins'),
       {fontFamily:'Arial', fontSize:'10px', color: unlocked?'#b8aee0':'#504a5c'}).setOrigin(0.5);
     container.add([card, nameTxt, statTxt]);
     if (unlocked){
@@ -781,7 +899,7 @@ MenuScene.prototype.buildUI = function(){
   });
   this.add.text(W/2, 482, DIFFICULTY[curDiff].desc, {fontFamily:'Arial', fontSize:'12px', color:'#8f86b0'}).setOrigin(0.5);
 
-  this.add.text(W/2, H*0.78, 'Wins: '+this.save.wins+'   Losses: '+this.save.losses, {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5);
+  this.add.text(W/2, H*0.795, 'Wins: '+this.save.wins+'   Losses: '+this.save.losses, {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5);
 
   // mode cards (replace the old single PLAY button)
   function modeCard(cx, w, label, sub, fill, txtColor, border, onGo){
@@ -797,10 +915,12 @@ MenuScene.prototype.buildUI = function(){
     c.add(h);
     wireButtonFeedback(self, c, w, 54, h, onGo);
   }
-  modeCard(W/2 - 363, 228, 'QUICK MATCH', 'Best of 3 vs. the ladder', 0xF2A34C, '#2c1a05', 0, function(){ self.startMatch(self.save.highestOpponent); });
-  modeCard(W/2 - 121, 228, 'TOURNAMENT', (this.save.tourneyTrophies ? 'Trophies: ' + this.save.tourneyTrophies : 'Beat all 5 in a row'), 0x5a3a10, '#FCDE5A', 0xF2A34C, function(){ self.scene.start('Match', { mode:'tourney', round:0 }); });
-  modeCard(W/2 + 121, 228, 'RALLY CHALLENGE', 'Best: ' + (this.save.rallyBest || 0), 0x3c3489, '#EAF3E7', 0xF2A34C, function(){ self.startRally(); });
-  modeCard(W/2 + 363, 228, 'TARGET PRACTICE', 'Best: ' + (this.save.targetBest || 0), 0x14584a, '#EAF3E7', 0x4FD1B8, function(){ self.scene.start('Match', { mode:'target' }); });
+  modeCard(W/2 - 515, 196, 'QUICK MATCH', 'Best of 3 vs. the ladder', 0xF2A34C, '#2c1a05', 0, function(){ self.startMatch(self.save.highestOpponent); });
+  modeCard(W/2 - 309, 196, 'DOUBLES', 'Pick your opponents', 0x1f3f7a, '#EAF3E7', 0x6fa8ff, function(){ self.scene.start('DoublesPick'); });
+  modeCard(W/2 - 103, 196, 'TOURNAMENT', (this.save.tourneyTrophies ? 'Trophies: ' + this.save.tourneyTrophies : 'Beat all ' + OPPONENTS.length), 0x5a3a10, '#FCDE5A', 0xF2A34C, function(){ self.scene.start('Match', { mode:'tourney', round:0 }); });
+  modeCard(W/2 + 103, 196, 'SURVIVAL', 'Best: Level ' + (this.save.survivalBest || 0) + ' cleared', 0x6a1f2c, '#FFD9D4', 0xE65B4F, function(){ self.scene.start('Match', { mode:'survival', level:1, lives:3 }); });
+  modeCard(W/2 + 309, 196, 'RALLY CHALLENGE', 'Best: ' + (this.save.rallyBest || 0), 0x3c3489, '#EAF3E7', 0xF2A34C, function(){ self.startRally(); });
+  modeCard(W/2 + 515, 196, 'TARGET PRACTICE', 'Best: ' + (this.save.targetBest || 0), 0x14584a, '#EAF3E7', 0x4FD1B8, function(){ self.scene.start('Match', { mode:'target' }); });
 
   var soundLabel = this.save.soundEnabled ? 'Sound: On' : 'Sound: Off';
   var soundContainer = this.add.container(W-60, 22);
@@ -825,7 +945,66 @@ MenuScene.prototype.buildUI = function(){
   custContainer.add(chit);
   wireButtonFeedback(this, custContainer, 116, 24, chit, function(){ self.scene.start('Customize'); });
 
-  this.add.text(W/2, H*0.93, 'A/D or drag to move · Space serve/swing (shot is picked automatically) · optional: 1-6 aim, W/S Q/E spin',
+  var shContainer = this.add.container(278, 22);
+  var shPill = this.add.graphics();
+  shPill.fillStyle(0x3a2a10, 0.9); shPill.fillRoundedRect(-38, -12, 76, 24, 12); shPill.lineStyle(1, 0xF2A34C, 0.8); shPill.strokeRoundedRect(-38, -12, 76, 24, 12);
+  shContainer.add([shPill, this.add.text(0, 0, 'Shop', {fontFamily:'Arial', fontSize:'13px', color:'#FCDE5A', fontStyle:'bold'}).setOrigin(0.5)]);
+  var shHit = this.add.rectangle(0, 0, 76, 24, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  shContainer.add(shHit);
+  wireButtonFeedback(this, shContainer, 76, 24, shHit, function(){ self.scene.start('Shop'); });
+
+  var bdContainer = this.add.container(366, 22);
+  var bdPill = this.add.graphics();
+  bdPill.fillStyle(0x241a3a, 0.8); bdPill.fillRoundedRect(-40, -12, 80, 24, 12);
+  bdContainer.add([bdPill, this.add.text(0, 0, 'Badges', {fontFamily:'Arial', fontSize:'13px', color:'#b8aee0'}).setOrigin(0.5)]);
+  var bdHit = this.add.rectangle(0, 0, 80, 24, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  bdContainer.add(bdHit);
+  wireButtonFeedback(this, bdContainer, 80, 24, bdHit, function(){ self.scene.start('Ach'); });
+
+  var trContainer = this.add.container(462, 22);
+  var trPill = this.add.graphics();
+  trPill.fillStyle(0x14584a, 0.9); trPill.fillRoundedRect(-44, -12, 88, 24, 12); trPill.lineStyle(1, 0x4FD1B8, 0.8); trPill.strokeRoundedRect(-44, -12, 88, 24, 12);
+  trContainer.add([trPill, this.add.text(0, 0, 'Trainer', {fontFamily:'Arial', fontSize:'13px', color:'#9FE1CB', fontStyle:'bold'}).setOrigin(0.5)]);
+  var trHit = this.add.rectangle(0, 0, 88, 24, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  trContainer.add(trHit);
+  wireButtonFeedback(this, trContainer, 88, 24, trHit, function(){ self.scene.start('TrainerPick'); });
+
+  // coins + level chip
+  var li = levelInfo(this.save.xp);
+  var chipG = this.add.graphics();
+  chipG.fillStyle(0x241a3a, 0.8); chipG.fillRoundedRect(W-290, 10, 170, 24, 12);
+  chipG.fillStyle(0xF2C14E, 1); chipG.fillCircle(W-274, 22, 7); chipG.lineStyle(1.5, 0xB8862B, 1); chipG.strokeCircle(W-274, 22, 7);
+  chipG.fillStyle(0x4a3d6b, 1); chipG.fillRoundedRect(W-150, 27, 24, 3, 1.5);
+  chipG.fillStyle(0x4FD1B8, 1); chipG.fillRoundedRect(W-150, 27, Math.max(2, 24*li.cur/li.need), 3, 1.5);
+  this.add.text(W-262, 22, (this.save.coins||0) + '   ·   Lv ' + li.lvl, {fontFamily:'Arial', fontSize:'13px', color:'#EAF3E7'}).setOrigin(0, 0.5);
+
+  // daily challenge banner (same opponent + twist for everyone today)
+  var dc = dailyConfig(dayKey(0)), dd = this.save.daily, doneToday = dd.date === dayKey(0) && dd.won;
+  var curStreak = (dd.lastWon === dayKey(0) || dd.lastWon === dayKey(-1)) ? dd.streak : 0;
+  var nextStreak = dd.lastWon === dayKey(-1) ? dd.streak + 1 : 1;
+  var dBox = this.add.container(W/2, 526);
+  var dG = this.add.graphics();
+  dG.fillStyle(doneToday ? 0x14312a : 0x3a2a10, 1); dG.fillRoundedRect(-250, -23, 500, 46, 10);
+  dG.lineStyle(2, doneToday ? 0x4FD1B8 : 0xF2A34C, 1); dG.strokeRoundedRect(-250, -23, 500, 46, 10);
+  dBox.add(dG);
+  dBox.add(this.add.text(0, -8, doneToday ? 'DAILY COMPLETE  ·  Streak ' + curStreak : 'DAILY CHALLENGE  ·  ' + OPPONENTS[dc.opp].name + '  ·  ' + dc.mod.name,
+    {fontFamily:'Arial', fontSize:'15px', color: doneToday ? '#9FE1CB' : '#FCDE5A', fontStyle:'bold'}).setOrigin(0.5));
+  dBox.add(this.add.text(0, 10, doneToday ? 'Replay for fun  ·  a new challenge tomorrow' : dc.mod.desc + '  ·  Win for +' + (60 + 10*Math.min(nextStreak,7)) + ' coins',
+    {fontFamily:'Arial', fontSize:'11px', color:'#b8aee0'}).setOrigin(0.5));
+  var dHit = this.add.rectangle(0, 0, 500, 46, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  dBox.add(dHit);
+  wireButtonFeedback(this, dBox, 500, 46, dHit, function(){ self.scene.start('Match', { mode:'daily' }); });
+
+  var stContainer = this.add.container(196, 22);
+  var stPill = this.add.graphics();
+  stPill.fillStyle(0x241a3a, 0.8); stPill.fillRoundedRect(-38, -12, 76, 24, 12);
+  var stTxt = this.add.text(0, 0, 'Stats', {fontFamily:'Arial', fontSize:'13px', color:'#b8aee0'}).setOrigin(0.5);
+  stContainer.add([stPill, stTxt]);
+  var sthit = this.add.rectangle(0, 0, 76, 24, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  stContainer.add(sthit);
+  wireButtonFeedback(this, stContainer, 76, 24, sthit, function(){ self.scene.start('Stats'); });
+
+  this.add.text(W/2, H*0.93, this.sys.game.device.input.touch ? 'Drag to move · tap SWING to serve and hit · optional: tap the AIM and SPIN strips to choose your shot' : 'A/D or drag to move · Space serve/swing (shot is picked automatically) · optional: 1-6 aim, W/S Q/E spin',
     {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'}).setOrigin(0.5);
 };
 MenuScene.prototype.startMatch = function(opponentIndex){
@@ -833,6 +1012,313 @@ MenuScene.prototype.startMatch = function(opponentIndex){
 };
 MenuScene.prototype.startRally = function(){
   this.scene.start('Match', { mode:'rally' });
+};
+
+/* ============================================================
+   STATS SCENE (career totals, saved on this device)
+   ============================================================ */
+function StatsScene(){ Phaser.Scene.call(this, {key:'Stats'}); }
+StatsScene.prototype = Object.create(Phaser.Scene.prototype);
+StatsScene.prototype.create = function(){
+  var self = this, W = this.scale.width, H = this.scale.height;
+  var sv = Save.load(), lf = sv.life;
+  this.tab = this.tab || 'career';
+  var g = this.add.graphics();
+  g.fillGradientStyle(0x1c1430,0x1c1430,0x0b0a14,0x0b0a14,1); g.fillRect(0,0,W,H);
+  this.add.text(W/2, 46, this.tab === 'career' ? 'CAREER STATS' : 'RECORDS', {fontFamily:'Georgia,serif', fontSize:'38px', color:'#EAF3E7'}).setOrigin(0.5);
+  [['career','Career'],['records','Records']].forEach(function(t, i){
+    var sel = self.tab === t[0], cx = W/2 + (i-0.5)*130, c = self.add.container(cx, 90), pg = self.add.graphics();
+    pg.fillStyle(sel ? 0x3c3489 : 0x241a3a, 1); pg.fillRoundedRect(-58, -15, 116, 30, 15);
+    pg.lineStyle(2, sel ? 0xF2A34C : 0x4a3d6b, 1); pg.strokeRoundedRect(-58, -15, 116, 30, 15);
+    c.add([pg, self.add.text(0, 0, t[1], {fontFamily:'Arial', fontSize:'14px', color: sel ? '#EAF3E7' : '#8f86b0', fontStyle: sel ? 'bold' : 'normal'}).setOrigin(0.5)]);
+    var h = self.add.rectangle(0, 0, 116, 30, 0xffffff, 0.001).setInteractive({useHandCursor:true}); c.add(h);
+    h.on('pointerup', function(){ if (self.tab !== t[0]){ self.tab = t[0]; self.scene.restart(); } });
+  });
+  var by;
+  if (this.tab === 'career'){
+    var fav = '-', best = 0;
+    for (var k in lf.kinds){ if (lf.kinds[k] > best){ best = lf.kinds[k]; fav = k.charAt(0) + k.slice(1).toLowerCase() + '  (' + best + ')'; } }
+    var total = lf.pointsWon + lf.pointsLost;
+    var rows = [
+      ['Matches won / lost', sv.wins + '  /  ' + sv.losses],
+      ['Doubles won / lost', (sv.doublesWon||0) + '  /  ' + (sv.doublesLost||0)],
+      ['Tournament trophies', String(sv.tourneyTrophies || 0)],
+      ['Furthest tournament round', (sv.tourneyBestRound || 0) + ' of ' + OPPONENTS.length],
+      ['Points won / lost', lf.pointsWon + '  /  ' + lf.pointsLost],
+      ['Points won %', total ? Math.round(100*lf.pointsWon/total) + '%' : '-'],
+      ['Aces', String(lf.aces)],
+      ['Winners', String(lf.winners)],
+      ['Longest rally (match)', lf.longest + ' shots'],
+      ['Rally Challenge best', String(sv.rallyBest || 0)],
+      ['Target Practice best', String(sv.targetBest || 0)],
+      ['Favorite shot', fav]
+    ];
+    g.fillStyle(0x241a3a, 1); g.fillRoundedRect(360, 120, 560, 12 + rows.length*40, 14);
+    g.lineStyle(2, 0x4a3d6b, 1); g.strokeRoundedRect(360, 120, 560, 12 + rows.length*40, 14);
+    for (var i=0;i<rows.length;i++){
+      var y = 146 + i*40;
+      this.add.text(390, y, rows[i][0], {fontFamily:'Arial', fontSize:'16px', color:'#b8aee0'}).setOrigin(0, 0.5);
+      this.add.text(890, y, rows[i][1], {fontFamily:'Georgia,serif', fontSize:'20px', color:'#EAF3E7'}).setOrigin(1, 0.5);
+      if (i < rows.length-1){ g.lineStyle(1, 0x4a3d6b, 0.6); g.lineBetween(380, y+20, 900, y+20); }
+    }
+    by = 120 + 12 + rows.length*40 + 40;
+  } else {
+    var recs = [
+      ['Longest rally', lf.longest + ' shots', 'in a match'],
+      ['Best win streak', String(sv.streakBest || 0), 'now: ' + (sv.streakNow || 0)],
+      ['Best daily streak', (sv.dailyBest || 0) + (sv.dailyBest === 1 ? ' day' : ' days'), 'daily challenge'],
+      ['Aces', String(lf.aces), 'career'],
+      ['Rally Challenge', String(sv.rallyBest || 0), 'returns in a row'],
+      ['Target Practice', String(sv.targetBest || 0), 'points'],
+      ['Survival', 'Level ' + (sv.survivalBest || 0), 'cleared'],
+      ['Trophies', String(sv.tourneyTrophies || 0), 'tournament wins']
+    ];
+    var cw = 290, ch = 92, gap = 14, x0 = W/2 - (4*cw + 3*gap)/2;
+    recs.forEach(function(r, i){
+      var x = x0 + (i%4)*(cw+gap), y = 128 + Math.floor(i/4)*(ch+12);
+      g.fillStyle(0x241a3a, 1); g.fillRoundedRect(x, y, cw, ch, 12);
+      g.lineStyle(2, 0x4a3d6b, 1); g.strokeRoundedRect(x, y, cw, ch, 12);
+      self.add.text(x+16, y+18, r[0].toUpperCase(), {fontFamily:'Arial', fontSize:'11px', color:'#8f86b0', fontStyle:'bold'}).setOrigin(0, 0.5);
+      self.add.text(x+16, y+50, r[1], {fontFamily:'Georgia,serif', fontSize:'30px', color:'#FCDE5A'}).setOrigin(0, 0.5);
+      self.add.text(x+16, y+78, r[2], {fontFamily:'Arial', fontSize:'12px', color:'#b8aee0'}).setOrigin(0, 0.5);
+    });
+    this.add.text(W/2, 356, 'HEAD TO HEAD', {fontFamily:'Georgia,serif', fontSize:'20px', color:'#EAF3E7'}).setOrigin(0.5);
+    g.lineStyle(1, 0xF2A34C, 0.4); g.lineBetween(W/2-120, 374, W/2+120, 374);
+    var hw = 560, hx0 = W/2 - hw - 10;
+    OPPONENTS.forEach(function(o, i){
+      var col = Math.floor(i/4), row = i%4, x = hx0 + col*(hw+20), y = 388 + row*50;
+      var rec = sv.h2h[i] || [0,0], played = rec[0] + rec[1] > 0;
+      g.fillStyle(0x241a3a, 1); g.fillRoundedRect(x, y, hw, 42, 10);
+      g.lineStyle(1, 0x4a3d6b, 1); g.strokeRoundedRect(x, y, hw, 42, 10);
+      drawPortrait(g, x+30, y+17, 1.0, o.look, false);
+      self.add.text(x+62, y+21, o.name, {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7'}).setOrigin(0, 0.5);
+      self.add.text(x+280, y+21, o.tier.toUpperCase(), {fontFamily:'Arial', fontSize:'11px', color:'#8f86b0'}).setOrigin(0, 0.5);
+      self.add.text(x+hw-18, y+21, played ? rec[0] + ' – ' + rec[1] : 'not played', {fontFamily:'Georgia,serif', fontSize: played ? '20px' : '14px', color: !played ? '#6c6580' : rec[0] >= rec[1] ? '#9FE1CB' : '#F09595'}).setOrigin(1, 0.5);
+    });
+    by = 388 + 4*50 + 26;
+  }
+  g.fillStyle(0x3c3489, 1); g.fillRoundedRect(W/2-100, by-22, 200, 44, 10);
+  g.lineStyle(2, 0xF2A34C, 1); g.strokeRoundedRect(W/2-100, by-22, 200, 44, 10);
+  this.add.text(W/2, by, 'BACK', {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5);
+  var hit = this.add.rectangle(W/2, by, 200, 44, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  hit.on('pointerup', function(){ self.tab = 'career'; self.scene.start('Menu'); });
+  this.input.keyboard.on('keydown-ESC', function(){ self.tab = 'career'; self.scene.start('Menu'); });
+};
+
+
+/* ============================================================
+   BADGES SCENE
+   ============================================================ */
+function AchieveScene(){ Phaser.Scene.call(this, {key:'Ach'}); }
+AchieveScene.prototype = Object.create(Phaser.Scene.prototype);
+AchieveScene.prototype.create = function(){
+  var self = this, W = this.scale.width, H = this.scale.height, sv = Save.load();
+  checkAch(sv);   // quietly catch up anything already earned
+  var g = this.add.graphics();
+  g.fillGradientStyle(0x1c1430,0x1c1430,0x0b0a14,0x0b0a14,1); g.fillRect(0,0,W,H);
+  var n = ACHIEVEMENTS.filter(function(a){ return sv.ach[a.key]; }).length;
+  this.add.text(W/2, 46, 'BADGES', {fontFamily:'Georgia,serif', fontSize:'38px', color:'#EAF3E7'}).setOrigin(0.5);
+  this.add.text(W/2, 84, n + ' of ' + ACHIEVEMENTS.length + ' earned   ·   each pays coins once', {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5);
+  var cw = 560, ch = 56, gx = 24, x0 = W/2 - cw - gx/2, rows = Math.ceil(ACHIEVEMENTS.length/2);
+  ACHIEVEMENTS.forEach(function(a, i){
+    var col = i % 2, row = Math.floor(i/2), x = x0 + col*(cw+gx), y = 112 + row*(ch+8), on = !!sv.ach[a.key];
+    g.fillStyle(on ? 0x2f2447 : 0x1a1430, 1); g.fillRoundedRect(x, y, cw, ch, 12);
+    g.lineStyle(2, on ? 0xF2A34C : 0x3a3355, 1); g.strokeRoundedRect(x, y, cw, ch, 12);
+    drawMedal(g, x+34, y+ch/2, 18, on);
+    self.add.text(x+68, y+18, a.name, {fontFamily:'Arial', fontSize:'17px', color: on ? '#FCDE5A' : '#8a82a8', fontStyle:'bold'}).setOrigin(0, 0.5);
+    self.add.text(x+68, y+39, a.desc, {fontFamily:'Arial', fontSize:'13px', color: on ? '#EAF3E7' : '#6f6890'}).setOrigin(0, 0.5);
+    self.add.text(x+cw-16, y+ch/2, on ? 'EARNED' : '+' + a.coins + ' coins', {fontFamily:'Arial', fontSize:'13px', color: on ? '#9FE1CB' : '#b8aee0', fontStyle:'bold'}).setOrigin(1, 0.5);
+  });
+  var by = 112 + rows*(ch+8) + 22;
+  g.fillStyle(0x3c3489, 1); g.fillRoundedRect(W/2-100, by-22, 200, 44, 10);
+  g.lineStyle(2, 0xF2A34C, 1); g.strokeRoundedRect(W/2-100, by-22, 200, 44, 10);
+  this.add.text(W/2, by, 'BACK', {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5);
+  var hit = this.add.rectangle(W/2, by, 200, 44, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+  hit.on('pointerup', function(){ self.scene.start('Menu'); });
+  this.input.keyboard.on('keydown-ESC', function(){ self.scene.start('Menu'); });
+};
+
+
+/* ============================================================
+   SHOP SCENE (coins are earned only by playing)
+   ============================================================ */
+function ShopScene(){ Phaser.Scene.call(this, {key:'Shop'}); }
+ShopScene.prototype = Object.create(Phaser.Scene.prototype);
+ShopScene.prototype.create = function(){
+  var self = this;
+  this.save = Save.load(); this.tab = this.tab || 'paddles';
+  this.input.keyboard.on('keydown-ESC', function(){ self.scene.start('Menu'); });
+  this.buildUI();
+};
+ShopScene.prototype.buy = function(price, give, label){
+  var sv = this.save;
+  if ((sv.coins||0) < price){ this.toastMsg = 'Need ' + (price - (sv.coins||0)) + ' more coins - win points and matches to earn them'; return; }
+  sv.coins -= price; give(sv); Save.save(sv); SFX.pointPlayer();
+  this.toastMsg = 'Bought ' + label + '!';
+};
+ShopScene.prototype.buildUI = function(){
+  this.children.removeAll(true);
+  var self = this, W = this.scale.width, H = this.scale.height, sv = this.save;
+  var g = this.add.graphics();
+  g.fillGradientStyle(0x1c1430,0x1c1430,0x0b0a14,0x0b0a14,1); g.fillRect(0,0,W,H);
+  this.add.text(W/2, 38, 'SHOP', {fontFamily:'Georgia,serif', fontSize:'34px', color:'#EAF3E7'}).setOrigin(0.5);
+  var li = levelInfo(sv.xp);
+  g.fillStyle(0xF2C14E, 1); g.fillCircle(W/2-150, 80, 9); g.lineStyle(2, 0xB8862B, 1); g.strokeCircle(W/2-150, 80, 9);
+  this.add.text(W/2-134, 80, (sv.coins||0) + ' coins   ·   Level ' + li.lvl + '  (' + li.cur + '/' + li.need + ' XP)   ·   earned only by playing',
+    {fontFamily:'Arial', fontSize:'15px', color:'#b8aee0'}).setOrigin(0, 0.5);
+  g.lineStyle(1, 0xF2A34C, 0.4); g.lineBetween(W/2-140, 100, W/2+140, 100);
+
+  var tabs = [['paddles','Paddles'],['looks','Looks'],['arenas','Arenas']];
+  tabs.forEach(function(t, i){
+    var sel = self.tab === t[0], c = self.add.container(W/2 + (i-1)*170, 128), pg = self.add.graphics();
+    pg.fillStyle(sel ? 0x3c3489 : 0x241a3a, 1); pg.fillRoundedRect(-75, -16, 150, 32, 16);
+    pg.lineStyle(2, sel ? 0xF2A34C : 0x4a3d6b, 1); pg.strokeRoundedRect(-75, -16, 150, 32, 16);
+    c.add([pg, self.add.text(0, 0, t[1], {fontFamily:'Arial', fontSize:'15px', color: sel ? '#EAF3E7' : '#8f86b0', fontStyle: sel ? 'bold' : 'normal'}).setOrigin(0.5)]);
+    var h = self.add.rectangle(0, 0, 150, 32, 0xffffff, 0.001).setInteractive({useHandCursor:true}); c.add(h);
+    h.on('pointerup', function(){ self.tab = t[0]; self.toastMsg = ''; self.buildUI(); });
+  });
+
+  function card(x, y, w, h, hot){
+    g.fillStyle(0x241a3a, 1); g.fillRoundedRect(x, y, w, h, 10);
+    g.lineStyle(2, hot ? 0xF2A34C : 0x4a3d6b, 1); g.strokeRoundedRect(x, y, w, h, 10);
+  }
+  function hitRect(x, y, w, h, fn){
+    var r = self.add.rectangle(x + w/2, y + h/2, w, h, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+    r.on('pointerup', function(){ fn(); self.buildUI(); });
+  }
+  var coins = sv.coins || 0;
+
+  if (this.tab === 'paddles'){
+    PADDLE_ORDER.forEach(function(key, i){
+      var pd = PADDLES[key], x = (i < 4 ? 130 + i*270 : 265 + (i-4)*270), y = i < 4 ? 172 : 352, w = 250, h = 164, owned = sv.unlockedPaddles.indexOf(key) >= 0, price = PADDLE_PRICE[key];
+      card(x, y, w, h, !owned && coins >= price);
+      self.add.text(x+w/2, y+26, pd.name, {fontFamily:'Georgia,serif', fontSize:'22px', color:'#EAF3E7'}).setOrigin(0.5);
+      var stats = [['Power', pd.power], ['Control', pd.control], ['Spin', pd.spin]];
+      stats.forEach(function(st, k){
+        var yy = y + 60 + k*26;
+        self.add.text(x+24, yy, st[0], {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0, 0.5);
+        g.fillStyle(0x4a3d6b, 1); g.fillRoundedRect(x+100, yy-5, 120, 10, 5);
+        g.fillStyle(0x4FD1B8, 1); g.fillRoundedRect(x+100, yy-5, clamp((st[1]-0.8)/0.4, 0.05, 1)*120, 10, 5);
+      });
+      self.add.text(x+w/2, y+h-20, owned ? 'OWNED' : price + ' coins', {fontFamily:'Arial', fontSize:'17px', color: owned ? '#9FE1CB' : (coins >= price ? '#FCDE5A' : '#8a82a8'), fontStyle:'bold'}).setOrigin(0.5);
+      if (!owned) hitRect(x, y, w, h, function(){ self.buy(price, function(v){ v.unlockedPaddles.push(key); }, pd.name + ' paddle'); });
+    });
+    this.add.text(W/2, 548, 'Pick your paddle on the main menu.', {fontFamily:'Arial', fontSize:'14px', color:'#8f86b0'}).setOrigin(0.5);
+  } else if (this.tab === 'looks'){
+    var items = [];
+    LOOK_ROWS.forEach(function(row){ row.list.forEach(function(opt, oi){ if (!ownsLook(sv, row.key, oi)) items.push({row:row, oi:oi, opt:opt, price:lookPrice(opt)}); }); });
+    if (!items.length) this.add.text(W/2, 300, 'You own every look!', {fontFamily:'Georgia,serif', fontSize:'26px', color:'#9FE1CB'}).setOrigin(0.5);
+    items.forEach(function(it, i){
+      var col = i%7, row = Math.floor(i/7), x = 28 + col*177, y = 168 + row*86, w = 168, h = 78, can = coins >= it.price;
+      card(x, y, w, h, can);
+      if (it.opt.v !== undefined){ g.fillStyle(it.opt.v, 1); g.fillCircle(x+22, y+39, 13); g.lineStyle(1, 0x4a3d6b, 1); g.strokeCircle(x+22, y+39, 13); }
+      var tx = it.opt.v !== undefined ? x+42 : x+14;
+      self.add.text(tx, y+19, it.row.label.toUpperCase(), {fontFamily:'Arial', fontSize:'10px', color:'#8f86b0'}).setOrigin(0, 0.5);
+      self.add.text(tx, y+39, it.opt.name, {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7'}).setOrigin(0, 0.5);
+      self.add.text(tx, y+59, it.price + ' coins', {fontFamily:'Arial', fontSize:'14px', color: can ? '#FCDE5A' : '#8a82a8', fontStyle:'bold'}).setOrigin(0, 0.5);
+      hitRect(x, y, w, h, function(){ self.buy(it.price, function(v){ (v.ownedLook[it.row.key] = v.ownedLook[it.row.key] || []).push(it.oi); }, it.opt.name + ' (equip it in Customize)'); });
+    });
+  } else {
+    ARENAS.forEach(function(a, i){
+      var x = 40 + i*200, y = 180, w = 190, h = 300, owned = sv.ownedArenas.indexOf(a.key) >= 0, eq = sv.arena === a.key;
+      card(x, y, w, h, eq || (!owned && coins >= a.price));
+      g.fillStyle(a.wall, 1); g.fillRect(x+16, y+16, w-32, 90);
+      g.fillStyle(a.trim, 1); g.fillRect(x+16, y+92, w-32, 14);
+      g.fillGradientStyle(a.f1, a.f1, a.f2, a.f2, 1); g.fillRect(x+16, y+106, w-32, 84);
+      g.fillStyle(0x3a2d6b, 1); g.fillTriangle(x+w/2-50, y+190, x+w/2+50, y+190, x+w/2+34, y+130); g.fillTriangle(x+w/2-50, y+190, x+w/2-34, y+130, x+w/2+34, y+130);
+      self.add.text(x+w/2, y+222, a.name, {fontFamily:'Georgia,serif', fontSize:'22px', color:'#EAF3E7'}).setOrigin(0.5);
+      var lab = eq ? 'EQUIPPED' : owned ? 'TAP TO EQUIP' : a.price + ' coins';
+      self.add.text(x+w/2, y+262, lab, {fontFamily:'Arial', fontSize:'16px', color: eq ? '#9FE1CB' : owned ? '#EAF3E7' : (coins >= a.price ? '#FCDE5A' : '#8a82a8'), fontStyle:'bold'}).setOrigin(0.5);
+      if (!eq) hitRect(x, y, w, h, function(){
+        if (owned){ sv.arena = a.key; Save.save(sv); self.toastMsg = a.name + ' equipped'; }
+        else self.buy(a.price, function(v){ v.ownedArenas.push(a.key); v.arena = a.key; }, a.name + ' (equipped)');
+      });
+    });
+  }
+  this.add.text(W/2, 632, this.toastMsg || '', {fontFamily:'Arial', fontSize:'15px', color:'#F2A34C'}).setOrigin(0.5);
+
+  var done = this.add.container(W/2, 676), dg = this.add.graphics();
+  dg.fillStyle(0xF2A34C, 1); dg.fillRoundedRect(-110, -21, 220, 42, 10);
+  done.add([dg, this.add.text(0, 0, 'DONE', {fontFamily:'Arial', fontSize:'16px', color:'#2c1a05', fontStyle:'bold'}).setOrigin(0.5)]);
+  var dh = this.add.rectangle(0, 0, 220, 42, 0xffffff, 0.001).setInteractive({useHandCursor:true}); done.add(dh);
+  dh.on('pointerup', function(){ self.scene.start('Menu'); });
+};
+
+
+/* ============================================================
+   DOUBLES PICKER (choose which team to face; you always play with Pip)
+   ============================================================ */
+function DoublesPickScene(){ Phaser.Scene.call(this, {key:'DoublesPick'}); }
+DoublesPickScene.prototype = Object.create(Phaser.Scene.prototype);
+DoublesPickScene.prototype.create = function(){
+  var self = this, W = this.scale.width, H = this.scale.height, sv = Save.load();
+  var g = this.add.graphics();
+  g.fillGradientStyle(0x1c1430,0x1c1430,0x0b0a14,0x0b0a14,1); g.fillRect(0,0,W,H);
+  this.add.text(W/2, 56, 'DOUBLES', {fontFamily:'Georgia,serif', fontSize:'40px', color:'#EAF3E7'}).setOrigin(0.5);
+  this.add.text(W/2, 100, 'You and ' + PARTNER.name + ' take on a team. Pick your opponents.', {fontFamily:'Arial', fontSize:'16px', color:'#b8aee0'}).setOrigin(0.5);
+  g.lineStyle(1, 0xF2A34C, 0.4); g.lineBetween(W/2-140, 124, W/2+140, 124);
+  var cw = 270, gap = 14, x0 = W/2 - (4*cw + 3*gap)/2 + cw/2;
+  OPPONENTS.forEach(function(o, i){
+    var o2 = OPPONENTS[oppPartner(i)], open = i <= sv.highestOpponent, cx = x0 + (i%4)*(cw+gap), cy = i < 4 ? 262 : 522;
+    var c = self.add.container(cx, cy), cg = self.add.graphics();
+    cg.fillStyle(open ? 0x241a3a : 0x18121f, 1); cg.fillRoundedRect(-cw/2, -125, cw, 250, 12);
+    cg.lineStyle(2, open ? 0x6fa8ff : 0x241f2b, 1); cg.strokeRoundedRect(-cw/2, -125, cw, 250, 12);
+    var pg = self.add.graphics();
+    drawPortrait(pg, -50, -52, 2.1, o.look, !open); drawPortrait(pg, 50, -52, 2.1, o2.look, !open);
+    c.add([cg, pg,
+      self.add.text(0, 24, open ? o.short + ' & ' + o2.short : '???', {fontFamily:'Georgia,serif', fontSize:'22px', color: open ? '#EAF3E7' : '#5c5968'}).setOrigin(0.5),
+      self.add.text(0, 54, open ? o.tier.toUpperCase() : 'Locked', {fontFamily:'Arial', fontSize:'13px', color: open ? '#b8aee0' : '#504a5c'}).setOrigin(0.5),
+      self.add.text(0, 78, open ? o.blurb : 'Beat ' + OPPONENTS[i-1 < 0 ? 0 : i-1].name + ' to unlock', {fontFamily:'Arial', fontSize:'11px', color: open ? '#8f86b0' : '#504a5c', wordWrap:{width:cw-24}, align:'center'}).setOrigin(0.5, 0)]);
+    if (open){
+      var hit = self.add.rectangle(0, 0, cw, 250, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+      c.add(hit);
+      hit.on('pointerover', function(){ self.tweens.add({targets:c, scale:1.04, duration:100}); });
+      hit.on('pointerout',  function(){ self.tweens.add({targets:c, scale:1, duration:100}); });
+      hit.on('pointerup', function(){ self.scene.start('Match', { mode:'doubles', opponentIndex:i }); });
+    }
+  });
+  var back = this.add.container(W/2, 686), bg = this.add.graphics();
+  bg.fillStyle(0x3c3489, 1); bg.fillRoundedRect(-100, -22, 200, 44, 10); bg.lineStyle(2, 0xF2A34C, 1); bg.strokeRoundedRect(-100, -22, 200, 44, 10);
+  back.add([bg, this.add.text(0, 0, 'BACK', {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5)]);
+  var bh = this.add.rectangle(0, 0, 200, 44, 0xffffff, 0.001).setInteractive({useHandCursor:true}); back.add(bh);
+  bh.on('pointerup', function(){ self.scene.start('Menu'); });
+  this.input.keyboard.on('keydown-ESC', function(){ self.scene.start('Menu'); });
+};
+
+/* ============================================================
+   TRAINER PICKER
+   ============================================================ */
+function TrainerPickScene(){ Phaser.Scene.call(this, {key:'TrainerPick'}); }
+TrainerPickScene.prototype = Object.create(Phaser.Scene.prototype);
+TrainerPickScene.prototype.create = function(){
+  var self = this, W = this.scale.width, H = this.scale.height, sv = Save.load();
+  var g = this.add.graphics();
+  g.fillGradientStyle(0x1c1430,0x1c1430,0x0b0a14,0x0b0a14,1); g.fillRect(0,0,W,H);
+  this.add.text(W/2, 56, 'TRAINER', {fontFamily:'Georgia,serif', fontSize:'40px', color:'#EAF3E7'}).setOrigin(0.5);
+  this.add.text(W/2, 100, TRAINER_BALLS + ' balls per drill. Return the machine\'s spins, or practise placing your serve.', {fontFamily:'Arial', fontSize:'16px', color:'#b8aee0'}).setOrigin(0.5);
+  g.lineStyle(1, 0xF2A34C, 0.4); g.lineBetween(W/2-140, 124, W/2+140, 124);
+  var nD = TRAINER_DRILLS.length, cw = 220, gap = 14, x0 = W/2 - (nD*cw + (nD-1)*gap)/2 + cw/2;
+  TRAINER_DRILLS.forEach(function(d, i){
+    var cx = x0 + i*(cw+gap), cy = 360, c = self.add.container(cx, cy), cg = self.add.graphics(), bst = sv.trainerBest[d.key] || 0;
+    cg.fillStyle(0x241a3a, 1); cg.fillRoundedRect(-cw/2, -140, cw, 280, 12);
+    cg.lineStyle(2, 0x4FD1B8, 1); cg.strokeRoundedRect(-cw/2, -140, cw, 280, 12);
+    c.add([cg,
+      self.add.text(0, -92, d.name, {fontFamily:'Georgia,serif', fontSize:'30px', color:'#EAF3E7'}).setOrigin(0.5),
+      self.add.text(0, -20, d.desc, {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0', wordWrap:{width:cw-44}, align:'center'}).setOrigin(0.5),
+      self.add.text(0, 66, bst ? 'Best: ' + bst + '/' + TRAINER_BALLS + (d.key === 'serve' ? ' on target' : '') : 'Not tried yet', {fontFamily:'Arial', fontSize:'16px', color: bst ? '#FCDE5A' : '#8f86b0', fontStyle:'bold'}).setOrigin(0.5),
+      self.add.text(0, 104, 'START', {fontFamily:'Arial', fontSize:'16px', color:'#9FE1CB', fontStyle:'bold'}).setOrigin(0.5)]);
+    var hit = self.add.rectangle(0, 0, cw, 280, 0xffffff, 0.001).setInteractive({useHandCursor:true});
+    c.add(hit);
+    hit.on('pointerover', function(){ self.tweens.add({targets:c, scale:1.04, duration:100}); });
+    hit.on('pointerout',  function(){ self.tweens.add({targets:c, scale:1, duration:100}); });
+    hit.on('pointerup', function(){ self.scene.start('Match', { mode:'trainer', drill:d.key }); });
+  });
+  var back = this.add.container(W/2, 600), bg = this.add.graphics();
+  bg.fillStyle(0x3c3489, 1); bg.fillRoundedRect(-100, -22, 200, 44, 10); bg.lineStyle(2, 0xF2A34C, 1); bg.strokeRoundedRect(-100, -22, 200, 44, 10);
+  back.add([bg, this.add.text(0, 0, 'BACK', {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5)]);
+  var bh = this.add.rectangle(0, 0, 200, 44, 0xffffff, 0.001).setInteractive({useHandCursor:true}); back.add(bh);
+  bh.on('pointerup', function(){ self.scene.start('Menu'); });
+  this.input.keyboard.on('keydown-ESC', function(){ self.scene.start('Menu'); });
 };
 
 /* ============================================================
@@ -856,7 +1342,7 @@ CustomizeScene.prototype.buildUI = function(){
   g.fillRect(0,0,W,H);
 
   this.add.text(W/2, 40, 'CUSTOMIZE PLAYER', {fontFamily:'Georgia,serif', fontSize:'34px', color:'#EAF3E7'}).setOrigin(0.5);
-  this.add.text(W/2, 76, 'Wins: '+wins+'   ·   win matches to unlock more looks', {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5);
+  this.add.text(W/2, 76, 'Coins: '+(this.save.coins||0)+'   ·   buy more looks in the Shop', {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5);
   g.lineStyle(1, 0xF2A34C, 0.4);
   g.lineBetween(W/2-140, 96, W/2+140, 96);
 
@@ -876,7 +1362,7 @@ CustomizeScene.prototype.buildUI = function(){
     var y = rowY0 + ri*rowGap;
     self.add.text(rowX, y, row.label, {fontFamily:'Georgia,serif', fontSize:'15px', color:'#EAF3E7'}).setOrigin(0, 0.5);
     row.list.forEach(function(opt, oi){
-      var unlocked = wins >= opt.unlock;
+      var unlocked = ownsLook(self.save, row.key, oi);
       var selected = self.save.look[row.key] === oi;
       var cont, hitW, hitH;
       if (row.type === 'swatch'){
@@ -888,7 +1374,7 @@ CustomizeScene.prototype.buildUI = function(){
         sg.strokeCircle(0, 0, selected ? 18 : 15);
         cont.add(sg);
         if (!unlocked){
-          cont.add(self.add.text(0, 24, 'Win '+opt.unlock, {fontFamily:'Arial', fontSize:'9px', color:'#8a82a8'}).setOrigin(0.5));
+          cont.add(self.add.text(0, 24, lookPrice(opt)+' coins', {fontFamily:'Arial', fontSize:'9px', color:'#8a82a8'}).setOrigin(0.5));
         }
         hitW = 40; hitH = 40;
       } else {
@@ -901,7 +1387,7 @@ CustomizeScene.prototype.buildUI = function(){
         cg.strokeRoundedRect(-cw/2, -ch/2, cw, ch, 8);
         cont.add(cg);
         cont.add(self.add.text(0, unlocked ? 0 : -5, opt.name, {fontFamily:'Arial', fontSize:'13px', color: unlocked ? '#EAF3E7' : '#6c6580'}).setOrigin(0.5));
-        if (!unlocked) cont.add(self.add.text(0, 8, 'Win '+opt.unlock, {fontFamily:'Arial', fontSize:'9px', color:'#8a82a8'}).setOrigin(0.5));
+        if (!unlocked) cont.add(self.add.text(0, 8, lookPrice(opt)+' coins', {fontFamily:'Arial', fontSize:'9px', color:'#8a82a8'}).setOrigin(0.5));
         hitW = cw; hitH = ch;
       }
       if (!unlocked) cont.setAlpha(0.5);
@@ -910,7 +1396,7 @@ CustomizeScene.prototype.buildUI = function(){
       hit.on('pointerover', function(){ self.tweens.add({targets:cont, scale:1.08, duration:100}); });
       hit.on('pointerout',  function(){ self.tweens.add({targets:cont, scale:1, duration:100}); });
       hit.on('pointerup', function(){
-        if (!unlocked){ self.toast.setText(opt.name+' unlocks after '+opt.unlock+' match win'+(opt.unlock===1?'':'s')); return; }
+        if (!unlocked){ self.toast.setText(opt.name+' is in the Shop for '+lookPrice(opt)+' coins'); return; }
         self.save.look[row.key] = oi;
         Save.save(self.save);
         self.buildUI();
@@ -951,19 +1437,39 @@ MatchScene.prototype.create = function(){
   this.save = Save.load();
   this.paddleStats = PADDLES[this.save.selectedPaddle] || PADDLES.starter;
   var cm = this.cfg.mode;
-  this.mode = (cm === 'rally' || cm === 'tourney' || cm === 'target') ? cm : 'quick';
-  this.isMatch = (this.mode === 'quick' || this.mode === 'tourney');
-  this.isFeed = (this.mode === 'rally' || this.mode === 'target');   // the opponent is a feeder, not a player
+  this.mode = (cm === 'rally' || cm === 'tourney' || cm === 'target' || cm === 'daily' || cm === 'doubles' || cm === 'survival' || cm === 'trainer') ? cm : 'quick';
+  this.isDoubles = this.mode === 'doubles';
+  this.isMatch = (this.mode === 'quick' || this.mode === 'tourney' || this.mode === 'daily' || this.mode === 'doubles' || this.mode === 'survival');
+  this.gp = this.mode === 'survival' ? 7 : 11; this.gamesNeed = this.mode === 'survival' ? 1 : 2;   // survival: one game to 7
+  this.surv = this.mode === 'survival' ? { level: Math.max(1, this.cfg.level||1), lives: this.cfg.lives === undefined ? 3 : this.cfg.lives } : null;
+  this.isFeed = (this.mode === 'rally' || this.mode === 'target' || this.mode === 'trainer');   // the opponent is a feeder, not a player
   this.rally = { count:0, newBest:false, startBest:this.save.rallyBest||0, milestoneAt:-9999, milestoneText:'' };
   this.oppIndex = this.mode === 'tourney' ? clamp(this.cfg.round||0, 0, OPPONENTS.length-1) : clamp(this.cfg.opponentIndex||0, 0, OPPONENTS.length-1);
-  this.opponent = this.mode === 'rally' ? RALLY_OPPONENT : this.mode === 'target' ? MACHINE_OPPONENT : OPPONENTS[this.oppIndex];
-  this.diffKey = DIFFICULTY[this.save.difficulty] ? this.save.difficulty : 'normal';
+  this.opponent = this.mode === 'rally' ? RALLY_OPPONENT : (this.mode === 'trainer' && this.cfg.drill === 'serve') ? Object.assign({}, MACHINE_OPPONENT, { name:'Serve Practice' }) : (this.mode === 'target' || this.mode === 'trainer') ? MACHINE_OPPONENT : OPPONENTS[this.oppIndex];
+  this.daily = this.mode === 'daily' ? dailyConfig(dayKey(0)) : null;
+  if (this.daily){ this.oppIndex = this.daily.opp; this.opponent = OPPONENTS[this.oppIndex]; }
+  if (this.surv){ this.oppIndex = survOpp(this.surv.level); this.opponent = OPPONENTS[this.oppIndex]; }
+  this.scout = { lane:[0,0,0], spin:{ top:0, back:0, none:0 }, n:0, last:null, noted:false, noteDue:'' };   // what the AI has learned about you
+  var dk = this.cfg.drill; this.trn = this.mode === 'trainer' ? { drill: TRAINER_DRILLS.some(function(d){ return d.key === dk; }) ? dk : 'mixed', serve: dk === 'serve', lit: Math.floor(Math.random()*6), hits:0, lastHit:false, lastZone:0, q:{perfect:0, good:0, weak:0}, ball:0, total:TRAINER_BALLS, resolved:false, returned:0, perfect:0, good:0, early:0, late:0, sum:0, n:0, cur:'' } : null;
+  this.earned = { coins:0, xp:0, levelUps:[] }; this.earnText = null; this.achQueue = []; this.achBusy = false;
+  this.diffKey = this.daily ? (this.daily.mod.diff || 'normal') : (DIFFICULTY[this.save.difficulty] ? this.save.difficulty : 'normal');
   var dif = DIFFICULTY[this.diffKey];
+  this.assist = this.isMatch ? dif.assist : DIFFICULTY.normal.assist;
+  this.pace = this.isMatch ? dif.pace : 1;   // how smart / safe the auto-shot is
   this.winScale = this.isMatch ? dif.win : 1;      // timing window scale (difficulty only affects match modes)
   this.reach = this.isMatch ? dif.reach : 3.0;     // sideways reach, in paddle half-widths
   this.aiTier = this.isMatch ? tierWithDifficulty(AI_TIERS[this.opponent.tier], dif.ai) : AI_TIERS[this.opponent.tier];
+  if (this.isDoubles){
+    this.opp2 = OPPONENTS[oppPartner(this.oppIndex)];
+    this.opponent = Object.assign({}, OPPONENTS[this.oppIndex], { name: OPPONENTS[this.oppIndex].short + ' & ' + this.opp2.short });
+    this.ptTier = AI_TIERS.medium; this.ai2Tier = tierWithDifficulty(AI_TIERS[this.opp2.tier], dif.ai);
+  }
+  if (this.surv){ var ex = this.surv.level - OPPONENTS.length; if (ex > 0) this.pace *= Math.max(0.7, 1 - 0.04*ex); }   // past the ladder the ball keeps getting faster
+  if (this.daily){ if (this.daily.mod.pace) this.pace *= this.daily.mod.pace; if (this.daily.mod.win) this.winScale *= this.daily.mod.win; }
   this.target = { score:0, combo:0, shots:0, hits:0, lit:Math.floor(Math.random()*6), resolved:false, timeLeft:60, started:false, newBest:false, startBest:this.save.targetBest||0, float:null };
-  this.rec = []; this.replayStart = 0; this.crowdAt = -9999; this.curRally = 0; this.leaving = false;
+  this.charge = { on:false, start:0 }; this.spinPick = 'auto'; this.touchHeld = false; this.touchHeldId = null; this.spinLabels = null; this.spinCaption = null;
+  this.paused = false; this.pauseUi = null; this.prevEsc = false; this.pPrevA = false; this.pPrevB = false;
+  this.rec = []; this.replayStart = 0; this.mpReplay = false; this.crowdAt = -9999; this.curRally = 0; this.leaving = false;
   // the Scene object is reused between matches, so drop anything lazily created last time (those Text objects were destroyed)
   this.zoneLabels = null; this.aimCaption = null; this.touchBtnText = null; this.replayLabel = null; this.statUi = null; this.statShown = false;
   this.targetFloat = null; this.ruleHint = null; this.hitFeedback = null; this.autoShot = null; this.manualZoneAt = -9999; this.manualSpinAt = -9999;
@@ -977,12 +1483,19 @@ MatchScene.prototype.create = function(){
     state: 'awaitingServe', // awaitingServe -> serveToss -> rally -> pointPause -> gameOver -> matchOver
     pointMsg: '', pointTimer: 0,
     matchOver:false, matchWinner:null, overT:0, serveCount:0,
-    stats:{ points:{human:0,ai:0}, winners:{human:0,ai:0}, errors:{human:0,ai:0}, longest:0, perfect:0, swings:0 }
+    stats:{ points:{human:0,ai:0}, aces:{human:0,ai:0}, winners:{human:0,ai:0}, errors:{human:0,ai:0}, longest:0, perfect:0, swings:0 }
   };
 
   this.ball = makeBall();
   this.human = { x: TABLE.width/2, laneIndex:1, depthIndex:1, spinTop:0, spinSide:0, swingUntil:-1, lastSwingAt:-999 };
   this.ai = { x: TABLE.width/2, targetX: TABLE.width/2, reactTimer:0, planned:null };
+  if (this.isDoubles){
+    var TW = TABLE.width;
+    this.human.x = TW*0.75; this.ai.x = this.ai.targetX = TW*0.25; this.ai.vx = 0; this.ai.swingUntil = -1;
+    this.pt  = { x:TW*0.25, targetX:TW*0.25, reactTimer:0, vx:0, swingUntil:-1 };
+    this.ai2 = { x:TW*0.75, targetX:TW*0.75, reactTimer:0, vx:0, swingUntil:-1 };
+    this.ptLook = Object.assign({}, PARTNER.look, { jerseyColor:this.save.look.jerseyColor, jerseyStyle:this.save.look.jerseyStyle });
+  }
 
   this.serveToss = { active:false, t:0, window:2.2 };
   this.fxList = []; this.ballAngle = 0; this.lastRenderT = 0;
@@ -1004,6 +1517,8 @@ MatchScene.prototype.create = function(){
   if (needPtr > 0) this.input.addPointer(needPtr);
   this.pointerDown = false; this.pointerX = null; this.movePointerId = null;
   this.input.on('pointerdown', function(p){
+    if (self.paused){ self.pauseClick(p.x, p.y); return; }
+    if (self.canPause() && p.x > W_DESIGN-66 && p.y < 66){ self.setPause(true); return; }
     if (self.match.state === 'rallyOver'){
       if (self.match.overT > 0.5){
         if (p.x > 540 && p.x < 740 && p.y > 564 && p.y < 608) self.scene.start('Menu'); else self.scene.restart(self.cfg);
@@ -1015,13 +1530,17 @@ MatchScene.prototype.create = function(){
     if (self.touchUi && self.inTouchBtn(p.x, p.y)){
       self.touchBtnAt = self.time.now;
       self.touchBtn.downUntil = self.time.now + 120;
+      self.touchHeld = true; self.touchHeldId = p.id;
       return;
     }
     if (self.handleZoneTap(p.x,p.y)) return;
     self.pointerDown = true; self.movePointerId = p.id; self.pointerX = p.x;
   });
   this.input.on('pointermove', function(p){ if (self.pointerDown && p.id === self.movePointerId) self.pointerX = p.x; });
-  this.input.on('pointerup', function(p){ if (p.id === self.movePointerId){ self.pointerDown = false; self.movePointerId = null; } });
+  this.input.on('pointerup', function(p){
+    if (p.id === self.movePointerId){ self.pointerDown = false; self.movePointerId = null; }
+    if (p.id === self.touchHeldId){ self.touchHeld = false; self.touchHeldId = null; }
+  });
 
   this.skyG = this.add.graphics();
   this.tableG = this.add.graphics();
@@ -1031,7 +1550,7 @@ MatchScene.prototype.create = function(){
   this.hudText = this.add.text(0,0,'',{fontFamily:'Arial'});
   this.buildHudTexts();
 
-  if (this.isFeed){ this.match.server = 'ai'; this.buildRallyUi(); this.beginServeSequence(); }
+  if (this.isFeed){ this.match.server = (this.trn && this.trn.serve) ? 'human' : 'ai'; this.buildRallyUi(); this.beginServeSequence(); }
   else { this.buildStatUi(); this.startIntro(); }
   if (this.mode === 'target'){
     this.targetFloat = this.add.text(0, 0, '', {fontFamily:'Georgia,serif', fontSize:'28px', color:'#FCDE5A', fontStyle:'bold', stroke:'#101923', strokeThickness:5}).setOrigin(0.5).setAlpha(0).setDepth(60);
@@ -1039,7 +1558,10 @@ MatchScene.prototype.create = function(){
 
   this.scale.on('resize', function(){ /* fixed design resolution via Scale.FIT, nothing to rebuild */ });
 
-  this.events.on('shutdown', function(){ SFX.setEnabled(self.save.soundEnabled); });
+  // pause automatically if the tab/app is hidden mid-point
+  this.onHidden = function(){ if (self.scene.isActive() && (self.match.state === 'serveToss' || self.match.state === 'rally')) self.setPause(true); };
+  this.game.events.on('hidden', this.onHidden);
+  this.events.on('shutdown', function(){ SFX.setEnabled(self.save.soundEnabled); Save.save(self.save); self.game.events.off('hidden', self.onHidden); });
 };
 
 MatchScene.prototype.buildHudTexts = function(){
@@ -1047,8 +1569,8 @@ MatchScene.prototype.buildHudTexts = function(){
   this.scoreText = this.add.text(W/2, 16, '', {fontFamily:'Georgia,serif', fontSize:'22px', color:'#EAF3E7'}).setOrigin(0.5,0);
   this.gameText = this.add.text(W/2, 44, '', {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'}).setOrigin(0.5,0);
   this.msgText = this.add.text(W/2, 300, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#EAF3E7', align:'center', stroke:'#101923', strokeThickness:5}).setOrigin(0.5).setAlpha(0).setDepth(95);
-  this.opponentText = this.add.text(16,15, (this.isFeed ? this.opponent.name : this.opponent.name+' ('+this.opponent.tier+')  ·  '+DIFFICULTY[this.diffKey].label), {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'});
-  this.ruleText = this.add.text(16, 112, '', {fontFamily:'Arial', fontSize:'12px', color:'#4a4a3e', wordWrap:{width:290}, backgroundColor:'rgba(255,250,238,0.55)', padding:{x:6,y:3}}).setAlpha(0);
+  this.opponentText = this.add.text(16,15, (this.isFeed ? this.opponent.name : this.opponent.name+' ('+this.opponent.tier+')  ·  '+(this.daily ? 'DAILY · '+this.daily.mod.name : DIFFICULTY[this.diffKey].label)), {fontFamily:'Arial', fontSize:'13px', color:'#9fb0a8'});
+  this.ruleText = this.add.text(16, this.touchUi ? 160 : 140, '', {fontFamily:'Arial', fontSize:'12px', color:'#4a4a3e', wordWrap:{width:290}, backgroundColor:'rgba(255,250,238,0.55)', padding:{x:6,y:3}}).setAlpha(0);
   this.hintText = this.add.text(16, this.scale.height-24, '', {fontFamily:'Arial', fontSize:'12px', color:'#6c7a74'});
   this.feedbackText = this.add.text(W/2, 548, '', {fontFamily:'Georgia,serif', fontSize:'30px', color:'#FCDE5A', fontStyle:'bold', stroke:'#101923', strokeThickness:5}).setOrigin(0.5).setAlpha(0).setDepth(50);
   this.actionText = this.add.text(W/2, 78, '', {fontFamily:'Georgia,serif', fontSize:'26px', color:'#F2A34C', fontStyle:'bold', stroke:'#101923', strokeThickness:4}).setOrigin(0.5).setAlpha(0);
@@ -1058,7 +1580,7 @@ MatchScene.prototype.buildHudTexts = function(){
 MatchScene.prototype.project = function(x,y,h){
   var W = this.scale.width;
   var t = clamp(y/TABLE.length, 0, 1);
-  var tableWidthPx = lerp(465,375,t);
+  var tableWidthPx = lerp(405,327,t);
   var centerX = W/2;
   var leftPx = centerX - tableWidthPx/2;
   var screenX = leftPx + (x/TABLE.width)*tableWidthPx;
@@ -1069,7 +1591,7 @@ MatchScene.prototype.project = function(x,y,h){
 MatchScene.prototype.screenXToTableX = function(sx, y){
   var W = this.scale.width;
   var t = clamp(y/TABLE.length, 0, 1);
-  var tableWidthPx = lerp(465,375,t);
+  var tableWidthPx = lerp(405,327,t);
   var centerX = W/2;
   var leftPx = centerX - tableWidthPx/2;
   return clamp((sx-leftPx)/tableWidthPx * TABLE.width, 0, TABLE.width);
@@ -1088,10 +1610,10 @@ MatchScene.prototype.startIntro = function(){
   this.introTexts = {
     me:   this.add.text(350, 214, 'YOU', Object.assign({}, st, {fontSize:'34px'})).setOrigin(0.5).setDepth(101),
     opp:  this.add.text(930, 214, this.opponent.name.toUpperCase(), Object.assign({}, st, {fontSize:'34px'})).setOrigin(0.5).setDepth(101),
-    tier: this.add.text(930, 250, this.opponent.tier.toUpperCase(), {fontFamily:'Arial', fontSize:'15px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
-    meSub:this.add.text(350, 250, 'Wins: '+this.save.wins, {fontFamily:'Arial', fontSize:'15px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
+    tier: this.add.text(930, 250, this.opponent.tier.toUpperCase() + (this.opponent.blurb ? '  ·  ' + this.opponent.blurb : ''), {fontFamily:'Arial', fontSize:'15px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
+    meSub:this.add.text(350, 250, this.surv ? 'Best: Level ' + (this.save.survivalBest||0) : 'Wins: '+this.save.wins, {fontFamily:'Arial', fontSize:'15px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
     vs:   this.add.text(640, 400, 'VS', {fontFamily:'Georgia,serif', fontSize:'84px', color:'#F2A34C', fontStyle:'bold', stroke:'#2c1a05', strokeThickness:6}).setOrigin(0.5).setDepth(101),
-    top:  this.add.text(640, 90, this.mode === 'tourney' ? (ROUND_NAMES[this.oppIndex].toUpperCase() + '  ·  TOURNAMENT  ·  BEST OF 3') : 'MATCH  ·  BEST OF 3', {fontFamily:'Arial', fontSize:'18px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
+    top:  this.add.text(640, 90, this.surv ? ('SURVIVAL  ·  LEVEL ' + this.surv.level + '  ·  ' + this.surv.lives + (this.surv.lives === 1 ? ' LIFE' : ' LIVES') + '  ·  FIRST TO 7') : this.mode === 'tourney' ? (ROUND_NAMES[this.oppIndex].toUpperCase() + '  ·  TOURNAMENT  ·  BEST OF 3') : this.isDoubles ? ('DOUBLES  ·  YOU & ' + PARTNER.short.toUpperCase() + '  VS  ' + this.opponent.name.toUpperCase()) : this.daily ? ('DAILY CHALLENGE  ·  ' + this.daily.mod.name.toUpperCase() + '  ·  ' + this.daily.mod.desc) : 'MATCH  ·  BEST OF 3', {fontFamily:'Arial', fontSize:'18px', color:'#b8aee0'}).setOrigin(0.5).setDepth(101),
     hint: this.add.text(640, 672, '', {fontFamily:'Arial', fontSize:'16px', color:'#EAF3E7'}).setOrigin(0.5).setDepth(101)
   };
   this.introTexts.hint.setText(this.touchUi ? 'Tap to start' : 'Press Space or click to start');
@@ -1119,7 +1641,7 @@ MatchScene.prototype.updateIntro = function(dt){
   drawFigure(g, 930 + slide, 590, 4.6, this.opponent.look, COLORS.paddleBlue, -1, (Math.sin(t*5+1.7)+1)/2*0.12, true);
   if (this.mode === 'tourney'){
     for (var pi=0; pi<OPPONENTS.length; pi++){
-      var px0 = 640 + (pi-2)*40;
+      var px0 = 640 + (pi-(OPPONENTS.length-1)/2)*40;
       if (pi < this.oppIndex){ g.fillStyle(0xF2A34C, 1); g.fillCircle(px0, 648, 8); }
       else if (pi === this.oppIndex){ g.lineStyle(3, 0xFCDE5A, 1); g.strokeCircle(px0, 648, 9); g.fillStyle(0xFCDE5A, 0.5); g.fillCircle(px0, 648, 5); }
       else { g.lineStyle(2, 0x4a3d6b, 1); g.strokeCircle(px0, 648, 8); }
@@ -1138,12 +1660,71 @@ MatchScene.prototype.endIntro = function(){
 };
 
 /* ---------- leaving a match / tournament flow ---------- */
+/* coins + XP: applied and saved right away, so quitting never loses them */
+MatchScene.prototype.earn = function(c, x){
+  var sv = this.save, e = this.earned, before = levelInfo(sv.xp).lvl;
+  sv.coins = (sv.coins||0) + c; sv.xp = (sv.xp||0) + x; e.coins += c; e.xp += x;
+  var after = levelInfo(sv.xp).lvl;
+  for (var L = before+1; L <= after; L++){ var b = 20*L; sv.coins += b; e.coins += b; e.levelUps.push(L); }
+  Save.save(sv);
+};
+
+/* badge check + toast (one at a time, top of the screen) */
+MatchScene.prototype.checkAch = function(cx){
+  var got = checkAch(this.save, cx);
+  for (var i=0;i<got.length;i++){ this.earned.coins += got[i].coins; this.achQueue.push(got[i]); }
+  if (got.length) this.nextAchToast();
+};
+MatchScene.prototype.nextAchToast = function(){
+  if (this.achBusy || !this.achQueue.length) return;
+  var self = this, a = this.achQueue.shift(); this.achBusy = true;
+  var c = this.add.container(1050, 40).setDepth(300).setAlpha(0), g = this.add.graphics();
+  g.fillStyle(0x241a3a, 0.96); g.fillRoundedRect(-200, 0, 400, 62, 12);
+  g.lineStyle(2, 0xF2A34C, 1); g.strokeRoundedRect(-200, 0, 400, 62, 12);
+  drawMedal(g, -164, 31, 18, true);
+  c.add([g,
+    this.add.text(-132, 17, 'BADGE UNLOCKED', {fontFamily:'Arial', fontSize:'11px', color:'#F2A34C', fontStyle:'bold'}).setOrigin(0, 0.5),
+    this.add.text(-132, 38, a.name, {fontFamily:'Arial', fontSize:'18px', color:'#FCDE5A', fontStyle:'bold'}).setOrigin(0, 0.5),
+    this.add.text(186, 31, '+' + a.coins, {fontFamily:'Arial', fontSize:'18px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(1, 0.5)]);
+  SFX.pointPlayer();
+  this.tweens.add({ targets:c, alpha:1, y:74, duration:260, ease:'Cubic.easeOut', onComplete:function(){
+    self.time.delayedCall(2200, function(){
+      self.tweens.add({ targets:c, alpha:0, duration:300, onComplete:function(){ c.destroy(); self.achBusy = false; self.nextAchToast(); } });
+    });
+  }});
+};
+MatchScene.prototype.showEarn = function(y){
+  if (!this.earnText) this.earnText = this.add.text(640, y, '', {fontFamily:'Arial', fontSize:'16px', color:'#FCDE5A', fontStyle:'bold'}).setOrigin(0.5).setDepth(102);
+  var e = this.earned, li = levelInfo(this.save.xp);
+  this.earnText.setY(y).setVisible(true).setColor(e.levelUps.length ? '#9FE1CB' : '#FCDE5A')
+    .setText('+' + e.coins + ' coins   ·   +' + e.xp + ' XP   ·   Level ' + li.lvl + (e.levelUps.length ? '   LEVEL UP!' : ''));
+};
+MatchScene.prototype.matchRewards = function(won){
+  if (this.surv){ if (won) this.earn(12 + 6*this.surv.level, 20 + 3*this.surv.level); else this.earn(3, 8); return; }
+  if (!won){ this.earn(5, 10); return; }
+  var mul = this.daily ? 1 : ({easy:0.8, normal:1, hard:1.3}[this.diffKey] || 1);
+  this.earn(Math.round(25*mul), 30);
+  if (this.mode === 'tourney'){
+    this.earn(15*(this.oppIndex+1), 10*(this.oppIndex+1));
+    if (this.oppIndex === OPPONENTS.length-1) this.earn(150, 100);
+  }
+  if (this.daily){
+    var d = this.save.daily, t = dayKey(0);
+    if (!(d.date === t && d.won)){
+      d.streak = (d.lastWon === dayKey(-1)) ? d.streak + 1 : 1;
+      d.date = t; d.won = true; d.lastWon = t; this.save.dailyBest = Math.max(this.save.dailyBest||0, d.streak);
+      this.earn(60 + 10*Math.min(d.streak, 7), 60);
+    }
+  }
+};
 MatchScene.prototype.leaveMatch = function(){
   if (this.leaving) return;
   this.leaving = true;
   var m = this.match;
   if (this.mode === 'tourney' && m.matchWinner === 'human' && this.oppIndex < OPPONENTS.length-1)
     this.scene.start('Match', { mode:'tourney', round:this.oppIndex+1 });
+  else if (this.surv && m.matchWinner === 'human') this.scene.start('Match', { mode:'survival', level:this.surv.level+1, lives:this.surv.lives });
+  else if (this.surv && this.surv.lives > 1) this.scene.start('Match', { mode:'survival', level:this.surv.level, lives:this.surv.lives-1 });
   else this.scene.start('Menu');
 };
 
@@ -1165,14 +1746,14 @@ MatchScene.prototype.buildStatUi = function(){
   var u = { g:this.add.graphics().setDepth(90), labels:[], you:[], opp:[] };
   u.headYou = this.add.text(740, 268, 'YOU', {fontFamily:'Arial', fontSize:'14px', color:'#F2A34C', fontStyle:'bold'}).setOrigin(0.5).setDepth(91);
   u.headOpp = this.add.text(870, 268, this.opponent.name.toUpperCase(), {fontFamily:'Arial', fontSize:'14px', color:'#9fb0a8', fontStyle:'bold'}).setOrigin(0.5).setDepth(91);
-  var names = ['Points won','Winners','Errors','Longest rally','Perfect swings'];
+  var names = ['Points won','Winners','Aces','Errors','Longest rally','Perfect swings'];
   for (var i=0;i<names.length;i++){
     var y = 308 + i*42;
     u.labels.push(this.add.text(385, y, names[i], lab).setOrigin(0,0.5).setDepth(91));
     u.you.push(this.add.text(740, y, '', val).setOrigin(0.5).setDepth(91));
     u.opp.push(this.add.text(870, y, '', val).setOrigin(0.5).setDepth(91));
   }
-  u.hint = this.add.text(640, 540, '', {fontFamily:'Arial', fontSize:'15px', color:'#EAF3E7'}).setOrigin(0.5).setDepth(91);
+  u.hint = this.add.text(640, 586, '', {fontFamily:'Arial', fontSize:'15px', color:'#EAF3E7'}).setOrigin(0.5).setDepth(91);
   this.statUi = u;
   this.setStatVisible(false);
 };
@@ -1188,20 +1769,22 @@ MatchScene.prototype.renderStats = function(){
   if (!this.statShown) this.setStatVisible(true);
   var g = u.g; g.clear();
   g.fillStyle(0x0b0a14, 0.8); g.fillRect(0, 0, 1280, 720);
-  g.fillStyle(0x241a3a, 1); g.fillRoundedRect(340, 240, 600, 330, 16);
-  g.lineStyle(2, 0x4a3d6b, 1); g.strokeRoundedRect(340, 240, 600, 330, 16);
+  g.fillStyle(0x241a3a, 1); g.fillRoundedRect(340, 240, 600, 372, 16);
+  g.lineStyle(2, 0x4a3d6b, 1); g.strokeRoundedRect(340, 240, 600, 372, 16);
   g.lineStyle(1, 0x4a3d6b, 0.7); g.lineBetween(370, 290, 910, 290);
-  for (var i=0;i<4;i++) g.lineBetween(370, 329+i*42, 910, 329+i*42);
+  for (var i=0;i<5;i++) g.lineBetween(370, 329+i*42, 910, 329+i*42);
   var champ = this.mode === 'tourney' && m.matchWinner === 'human' && this.oppIndex === OPPONENTS.length-1;
   if (champ){ drawTrophy(g, 410, 165, 1.7); drawTrophy(g, 870, 165, 1.7); }
   var o = st.points;
   u.you[0].setText(String(o.human)); u.opp[0].setText(String(o.ai));
   u.you[1].setText(String(st.winners.human)); u.opp[1].setText(String(st.winners.ai));
-  u.you[2].setText(String(st.errors.human)); u.opp[2].setText(String(st.errors.ai));
-  u.you[3].setText(st.longest + ' shots'); u.opp[3].setText('');
-  u.you[4].setText(String(st.perfect)); u.opp[4].setText('');
-  var next = (this.mode === 'tourney' && m.matchWinner === 'human' && this.oppIndex < OPPONENTS.length-1);
-  u.hint.setText(next ? (this.touchUi ? 'Tap for the next round' : 'Press Enter or click for the next round')
+  u.you[2].setText(String(st.aces.human)); u.opp[2].setText(String(st.aces.ai));
+  u.you[3].setText(String(st.errors.human)); u.opp[3].setText(String(st.errors.ai));
+  u.you[4].setText(st.longest + ' shots'); u.opp[4].setText('');
+  u.you[5].setText(String(st.perfect)); u.opp[5].setText('');
+  var next = (this.mode === 'tourney' && m.matchWinner === 'human' && this.oppIndex < OPPONENTS.length-1) || (this.surv && (m.matchWinner === 'human' || this.surv.lives > 1));
+  this.showEarn(556);
+  u.hint.setText(next ? (this.surv ? (this.touchUi ? 'Tap to continue' : 'Press Enter or click to continue') : (this.touchUi ? 'Tap for the next round' : 'Press Enter or click for the next round'))
                       : (this.touchUi ? 'Tap for the menu' : 'Press Enter or click for the menu'));
 };
 
@@ -1256,7 +1839,8 @@ MatchScene.prototype.endTarget = function(){
   m.state = 'rallyOver'; m.overT = 0;
   this.ball.alive = false;
   t.newBest = t.score > t.startBest && t.score > 0;
-  if (t.score > (this.save.targetBest||0)){ this.save.targetBest = t.score; Save.save(this.save); }
+  this.earn(Math.floor(t.score/25), Math.floor(t.score/10)); this.showEarn(486);
+  if (t.score > (this.save.targetBest||0)){ this.save.targetBest = t.score; Save.save(this.save); this.checkAch({}); }
   if (t.newBest) SFX.gameWin(); else SFX.gameLose();
   var u = this.rallyUi, acc = t.shots ? Math.round(100*t.hits/t.shots) : 0;
   u.title.setText(t.newBest ? 'NEW BEST!' : 'TIME!');
@@ -1268,6 +1852,60 @@ MatchScene.prototype.endTarget = function(){
   for (var k in u) if (k !== 'g') u[k].setVisible(true);
 };
 
+/* ---------- return trainer ---------- */
+MatchScene.prototype.trainerLanded = function(ball){
+  var t = this.trn;
+  if (t.resolved || this.match.state === 'rallyOver') return;
+  t.resolved = true; t.returned++;
+  SFX.pointPlayer();
+  var p = this.project(ball.x, ball.y, 0), onT = false;
+  if (t.serve){
+    t.lastZone = zoneOf(ball.x, ball.y); onT = t.lastZone === t.lit; t.lastHit = onT; if (onT) t.hits++;
+    this.hitFeedback = onT ? { text:'ON TARGET!', color:'#FCDE5A', at:this.time.now } : { text:'IN  ·  ' + zoneName(t.lastZone), color:'#9FE1CB', at:this.time.now };
+  }
+  this.addRing(p.x, p.y, 4, onT ? 52 : 38, 460, onT ? 0xFCDE5A : 0x9FE1CB, 0.9, 0.4);
+};
+MatchScene.prototype.trainerPoint = function(winner, reason){
+  var m = this.match, t = this.trn;
+  if (m.state === 'rallyOver') return;
+  if (!t.serve && reason === 'Serve fault' && !t.resolved){                    // a bad feed doesn't count against you: just feed again
+    m.pointMsg = ''; m.server = 'ai'; m.state = 'pointPause'; m.pointTimer = 0.85; return;
+  }
+  var landed = t.resolved;
+  t.ball++; t.resolved = false;
+  if (t.serve){ var pl = t.lit; do { t.lit = Math.floor(Math.random()*6); } while (t.lit === pl); }   // next target zone
+  if (t.ball >= t.total){ this.endTrainer(); return; }
+  m.pointMsg = landed ? '' : (t.serve ? 'FAULT' : 'MISSED'); m.pointWinner = landed ? 'human' : 'ai'; m.msgPopAt = this.time.now;
+  m.server = t.serve ? 'human' : 'ai'; m.state = 'pointPause'; m.pointTimer = 0.85;
+};
+MatchScene.prototype.endTrainer = function(){
+  var m = this.match, t = this.trn;
+  if (m.state === 'rallyOver') return;
+  m.state = 'rallyOver'; m.overT = 0;
+  this.ball.alive = false;
+  var score = t.serve ? t.hits : t.returned;                       // serving is scored on target hits, returns on balls returned
+  var best = this.save.trainerBest[t.drill] || 0, nb = score > best && score > 0;
+  if (nb){ this.save.trainerBest[t.drill] = score; Save.save(this.save); }
+  this.earn(Math.floor(score/4) + (t.serve ? Math.floor(t.returned/5) : 0), score*2 + (t.serve ? t.returned : 0)); this.showEarn(486);
+  if (nb) SFX.gameWin(); else SFX.gameLose();
+  var avg = t.n ? t.sum/t.n : 0, ms = Math.round(Math.abs(avg)*1000);
+  var tend = !t.n ? 'No swings this time - give it another go' : ms < 20 ? 'Your timing is well centered' : avg > 0 ? 'You swing early by about ' + ms + ' ms - wait a touch longer' : 'You swing late by about ' + ms + ' ms - start a touch sooner';
+  var u = this.rallyUi, dn = TRAINER_DRILLS.filter(function(d){ return d.key === t.drill; })[0].name;
+  u.title.setText(nb ? 'NEW BEST!' : 'DRILL COMPLETE'); u.title.setColor(nb ? '#FCDE5A' : '#EAF3E7');
+  if (t.serve){
+    u.label.setText('SERVING DRILL  ·  ON TARGET');
+    u.count.setText(t.hits + '/' + t.total);
+    u.best.setText('In ' + t.returned + '   ·   Toss timing: perfect ' + t.q.perfect + ', good ' + t.q.good + ', weak ' + t.q.weak);
+    tend = t.returned < 14 ? 'Too many faults - hit the serve at the top of the toss' : t.hits >= 14 ? 'Excellent placement' : 'Pick the glowing zone before you serve (keys 1-6)';
+  } else {
+    u.label.setText(dn.toUpperCase() + ' DRILL  ·  RETURNED');
+    u.count.setText(t.returned + '/' + t.total);
+    u.best.setText('Perfect ' + t.perfect + '   ·   Good ' + t.good + '   ·   Early ' + t.early + '   ·   Late ' + t.late);
+  }
+  u.hint.setText(tend + '   ·   ' + (this.touchUi ? 'Tap to run it again' : 'Space to run it again'));
+  for (var k in u) if (k !== 'g') u[k].setVisible(true);
+};
+
 /* ---------- rally challenge ---------- */
 MatchScene.prototype.countRallyReturn = function(){
   var r = this.rally;
@@ -1276,6 +1914,7 @@ MatchScene.prototype.countRallyReturn = function(){
     this.save.rallyBest = r.count;
     r.newBest = r.count > r.startBest && r.count >= 3;
     Save.save(this.save);
+    this.checkAch({});
   }
   if (r.count === 10 || r.count === 25 || r.count === 50 || r.count === 75 || r.count === 100 || (r.count > 100 && r.count % 50 === 0)){
     r.milestoneAt = this.time.now; r.milestoneText = r.count + ' IN A ROW!';
@@ -1295,6 +1934,7 @@ MatchScene.prototype.endRally = function(){
   if (m.state === 'rallyOver') return;
   m.state = 'rallyOver'; m.overT = 0;
   this.ball.alive = false;
+  this.earn(Math.floor(this.rally.count/4), this.rally.count); this.showEarn(486);
   if (this.rally.newBest) SFX.gameWin(); else SFX.gameLose();
   var u = this.rallyUi;
   u.title.setText(this.rally.newBest ? 'NEW BEST!' : 'RALLY OVER');
@@ -1328,27 +1968,115 @@ MatchScene.prototype.updateRallyOver = function(dt){
   if (m.overT > 0.5 && this.pressedSpace()) this.scene.restart(this.cfg);
 };
 
+/* ---------- doubles: four players, real rules ----------
+   Serve order cycles you -> opp1 -> partner -> opp2 (2 points each, 1 each at deuce); the receiver of each serve is the next
+   player in that order. Partners alternate hits: whoever hit last, their partner hits next. Serves go diagonally:
+   bounce on the server's right half, then the receiver's right half. */
+MatchScene.prototype.doublesOrder = function(gameNum){ return (gameNum % 2 === 1) ? ['you','a1','pt','a2'] : ['a1','you','a2','pt']; };
+MatchScene.prototype.actorOf = function(id){ return id === 'you' ? this.human : id === 'pt' ? this.pt : id === 'a1' ? this.ai : this.ai2; };
+MatchScene.prototype.nameOf = function(id){ return id === 'you' ? 'You' : id === 'pt' ? PARTNER.short : id === 'a1' ? OPPONENTS[this.oppIndex].short : this.opp2.short; };
+MatchScene.prototype.setDoublesServe = function(){
+  var m = this.match, t = m.score.human + m.score.ai;
+  var k = t < 20 ? Math.floor(t/2) % 4 : (10 + (t-20)) % 4;
+  var o = this.doublesOrder(m.gameNum);
+  m.serverPlayer = o[k]; m.receiverPlayer = o[(k+1) % 4]; m.server = D_TEAM[m.serverPlayer];
+  if (m.swapTeam && D_TEAM[m.receiverPlayer] === m.swapTeam) m.receiverPlayer = D_MATE[m.receiverPlayer];   // after the change of ends the receiving pair swaps its order
+  m.next = {}; m.next[D_TEAM[m.serverPlayer]] = m.serverPlayer; m.next[D_TEAM[m.receiverPlayer]] = m.receiverPlayer;
+};
+MatchScene.prototype.humanServes = function(){ var m = this.match; return this.isDoubles ? m.serverPlayer === 'you' : m.server === 'human'; };
+MatchScene.prototype.serverName = function(){ var m = this.match;
+  if (!this.isDoubles) return m.server === 'human' ? 'You' : this.opponent.name;
+  return this.nameOf(m.serverPlayer) + (m.receiverPlayer ? '  →  ' + this.nameOf(m.receiverPlayer) : ''); };
+MatchScene.prototype.updateDoublesActors = function(dt){
+  var self = this, ball = this.ball, m = this.match, W = TABLE.width;
+  ['pt','a1','a2'].forEach(function(id){
+    var ac = self.actorOf(id), team = D_TEAM[id], mate = self.actorOf(D_MATE[id]);
+    var tier = id === 'pt' ? self.ptTier : id === 'a1' ? self.aiTier : self.ai2Tier;
+    var isNext = m.next && m.next[team] === id;
+    var incoming = !ball.servePhase && ball.alive && (team === 'ai' ? (ball.vy > 0 && ball.lastHitBy !== 'ai') : (ball.vy < 0 && ball.lastHitBy !== 'human'));
+    var strikeY = team === 'ai' ? STRIKE_Y_AI : STRIKE_Y_HUMAN;
+    if (ac.reactTimer > 0) ac.reactTimer -= dt*1000;
+    if (isNext && incoming){
+      if (ac.reactTimer <= 0 && Math.abs(ball.vy) > 0.01){
+        var tA = (strikeY - ball.y)/ball.vy;
+        if (tA > 0) ac.targetX = clamp(ball.x + ball.vx*tA, PADDLE_X_MIN, PADDLE_X_MAX);
+      }
+    } else if (isNext){
+      // ready stance: servers and receivers wait in their right half, everyone else near the middle
+      var right = team === 'human' ? 0.72 : 0.28;
+      ac.targetX = (m.serverPlayer === id || m.receiverPlayer === id) ? W*right : W*0.5;
+    } else {
+      ac.targetX = clamp(mate.x < W/2 ? mate.x + 0.62 : mate.x - 0.62, PADDLE_X_MIN, PADDLE_X_MAX);   // clear the way for the partner
+    }
+    var maxStep = tier.paddleSpeed*dt, old = ac.x;
+    ac.x = clamp(ac.x + clamp(ac.targetX - ac.x, -maxStep, maxStep), PADDLE_X_MIN, PADDLE_X_MAX);
+    ac.vx = lerp(ac.vx || 0, dt > 0 ? (ac.x - old)/dt : 0, 0.3);
+  });
+};
+MatchScene.prototype.checkDoublesAiHits = function(){
+  var ball = this.ball, m = this.match;
+  if (ball.servePhase || ball.diagCheck || !m.next) return;       // a serve has to bounce on the receiver's side first
+  var inH = ball.h >= STRIKE_H_MIN && ball.h <= STRIKE_H_MAX;
+  var ida = m.next.ai, aca = this.actorOf(ida);
+  if (inH && ball.vy > 0 && ball.lastHitBy !== 'ai' && ball.y >= STRIKE_Y_AI - 0.02 && ball.y <= STRIKE_Y_AI + 0.35 && Math.abs(ball.x - aca.x) <= PADDLE_HALF_W*1.3)
+    this.doublesAiHit(ida);
+  if (m.next.human === 'pt' && inH && ball.vy < 0 && ball.lastHitBy !== 'human' && ball.y <= STRIKE_Y_HUMAN + 0.02 && ball.y >= STRIKE_Y_HUMAN - 0.35 && Math.abs(ball.x - this.pt.x) <= PADDLE_HALF_W*1.5)
+    this.doublesAiHit('pt');
+};
+MatchScene.prototype.doublesAiHit = function(id){
+  var ball = this.ball, m = this.match, team = D_TEAM[id], ac = this.actorOf(id);
+  var tier = id === 'pt' ? this.ptTier : id === 'a1' ? this.aiTier : this.ai2Tier;
+  var style = id === 'pt' ? PARTNER.style : id === 'a1' ? this.opponent.style : this.opp2.style;
+  var foe = this.actorOf(team === 'ai' ? m.next.human : m.next.ai);
+  ac.reactTimer = tier.reactMs; ac.swingUntil = this.time.now + 180;
+  var plan = this.planAiShot(foe.x, style, tier);
+  var target = targetCoords(plan.laneIndex, plan.depthIndex, team === 'human');
+  resolveHit(ball, team, {
+    targetX: target.x, targetY: target.y,
+    offset: randRange(-tier.aimErr, tier.aimErr)*(plan.errMul||1)/PADDLE_HALF_W,
+    timingError: randRange(-tier.timeErr, tier.timeErr)*(plan.errMul||1),
+    paddleStats: PADDLES.starter, spinTop: plan.spinTop, spinSide: plan.spinSide, speedMul: this.pace
+  });
+  m.next[team] = D_MATE[id]; ball.lastHitter = id;
+  this.curRally++;
+};
 MatchScene.prototype.beginServeSequence = function(){
   var m = this.match;
   this.ball = makeBall();
-  var serverIsHuman = m.server === 'human';
-  this.rec = []; this.curRally = 0; m.serveCount++;
+  if (this.isDoubles) this.setDoublesServe();
+  var serverIsHuman = this.humanServes();
+  this.charge.on = false;
+  if (this.scout) this.scout.last = null;                       // only learn from rallies the AI actually played in
+  this.rec = []; this.curRally = 0; m.serveCount++; this.pickPrev = null; this.pickSeed = Math.random(); this.swingVar = (Math.random()-0.5)*0.6;
   this.ruleHint = null;
-  if (this.isMatch && m.serveCount > 4 && !this.save.hintsSeen){ this.save.hintsSeen = true; Save.save(this.save); }
-  if (this.isMatch && !this.save.hintsSeen && m.serveCount <= 4){
+  if (this.isMatch && !this.isDoubles && m.serveCount > 5 && !this.save.hintsSeen){ this.save.hintsSeen = true; Save.save(this.save); }
+  if (this.isMatch && !this.isDoubles && !this.save.hintsSeen && m.serveCount <= 5){
+    var holdw = this.touchUi ? 'Hold SWING' : 'Hold Space';
     var tapw = this.touchUi ? 'Tap SWING' : 'Press Space', aimw = this.touchUi ? 'the AIM buttons' : 'keys 1-6';
     this.ruleHint = serverIsHuman
       ? ['Serving: ' + tapw + ' at the top of the toss. The ball must bounce on YOUR side first, then clear the net.',
          'Serves swap every 2 points. First to 11 (win by 2) takes the game.',
          'Aim your serve with ' + aimw + ', or leave it and it goes deep to the open side.',
-         this.touchUi ? 'Tip: lower balls get a safe push, higher balls get attacked.' : 'Spin: W/S for top/back spin, Q/E for side spin.'][m.serveCount-1]
+         this.touchUi ? 'Tip: pick a spin on the SPIN buttons under AIM.' : 'Spin: use the SPIN buttons, or hold W/S/Q/E.',
+         'Power shot: ' + holdw + ' BEFORE the ball is in range, then release to hit. More charge = more pace and spin, but a wider miss.'][m.serveCount-1]
       : ['Receiving: the ball bounces on their side, then yours. Swing when the prompt says SWING NOW.',
          'Move with ' + (this.touchUi ? 'your thumb (drag)' : 'A/D (or drag)') + ' so the paddle is under the ball.',
          'Green PERFECT timing hits harder and straighter.',
-         'Low balls get pushed short with backspin; high balls get attacked.'][m.serveCount-1];
+         'Low balls get pushed short with backspin; high balls get attacked.',
+         'Power shot: ' + holdw + ' as the ball comes, release when it is in range. Charge a high ball past the line for a SMASH.'][m.serveCount-1];
   }
-  this.ball.x = TABLE.width/2;
-  this.ball.y = serverIsHuman ? STRIKE_Y_HUMAN : STRIKE_Y_AI;
+  if (this.isDoubles){
+    if (m.serveCount > 5 && !this.save.doublesHintSeen){ this.save.doublesHintSeen = true; Save.save(this.save); }
+    if (!this.save.doublesHintSeen && m.serveCount <= 5){
+      this.ruleHint = ['Doubles: serve DIAGONALLY. Bounce it on your right half, then it must land in their right half.',
+        'Partners take turns: you hit one ball, ' + PARTNER.short + ' hits the next. The amber marker shows who is up.',
+        'The serve passes through all four players, 2 points each. Aim and spin work as usual.',
+        'On ' + PARTNER.short + '\'s turn just stay clear. ' + PARTNER.short + ' will play the ball.',
+        'On your turn you can still hold Space early for a charged power shot.'][m.serveCount-1];
+    }
+  }
+  this.ball.x = this.isDoubles ? this.actorOf(m.serverPlayer).x : TABLE.width/2;
+  this.ball.y = m.server === 'human' ? STRIKE_Y_HUMAN : STRIKE_Y_AI;
   this.ball.h = 0.30;
   this.ball.alive = false;
   this.ball.servePhase = true;
@@ -1373,7 +2101,7 @@ MatchScene.prototype.executeServe = function(side, quality){
   ball.alive = true;
   var towardAi = side === 'human';
   var laneIndex, depthIndex, spinTop, spinSide, offset, timingError, paddleStats;
-  if (side === 'human'){
+  if (side === 'human' && this.humanServes()){
     laneIndex = this.human.laneIndex; depthIndex = this.human.depthIndex;
     spinTop = this.human.spinTop; spinSide = this.human.spinSide;
     paddleStats = this.paddleStats;
@@ -1384,12 +2112,21 @@ MatchScene.prototype.executeServe = function(side, quality){
     paddleStats = PADDLES.starter;
     offset = plan.offsetNoise; timingError = plan.timingNoise;
   }
+  if (this.trn && this.trn.serve && side === 'human'){ var tq = this.trn.q; if (quality >= 0.8) tq.perfect++; else if (quality >= 0.5) tq.good++; else tq.weak++; }
   var realTarget = targetCoords(laneIndex, depthIndex, towardAi);
   ball.pendingServe = { targetX: realTarget.x, targetY: realTarget.y, offset: offset, timingError: timingError,
     paddleStats: paddleStats, spinTop: spinTop, spinSide: spinSide };
 
   var ownY = side === 'human' ? SERVE_OWN_Y_HUMAN : SERVE_OWN_Y_AI;
   var ownX = LANE_FRACS[laneIndex] * TABLE.width;
+  if (this.isDoubles){                                  // diagonal serve: own right half -> receiver's right half
+    var lowF = [0.08,0.20,0.32], highF = [0.68,0.80,0.92], srvNear = side === 'human';
+    ownX = (srvNear ? highF : lowF)[laneIndex] * TABLE.width;
+    ball.pendingServe.targetX = (srvNear ? lowF : highF)[laneIndex] * TABLE.width;
+    ball.diagCheck = true; ball.diagSide = srvNear ? 'ai' : 'human'; ball.diagLow = srvNear;
+    m.next[side] = D_MATE[m.serverPlayer]; ball.lastHitter = m.serverPlayer;
+    this.actorOf(m.serverPlayer).swingUntil = this.time.now + 180;
+  }
   var shot = solveShot(ball, ownX, ownY, 0.30);
   ball.vx = shot.vx; ball.vy = shot.vy; ball.vh = shot.vh;
   ball.topSpin = 0; ball.sideSpin = 0;
@@ -1403,6 +2140,12 @@ MatchScene.prototype.executeServe = function(side, quality){
 };
 
 MatchScene.prototype.planAiServe = function(){
+  if (this.trn){                                                 // trainer: the machine feeds the chosen spin
+    var d = this.trn.drill, pk = d === 'mixed' ? ['top','back','side'][Math.floor(Math.random()*3)] : d;
+    this.trn.cur = pk;
+    return { laneIndex:Math.floor(Math.random()*3), depthIndex:Math.random() < 0.5 ? 0 : 1, spinTop: pk === 'top' ? 1 : pk === 'back' ? -1 : 0,
+      spinSide: pk === 'side' ? (Math.random() < 0.5 ? -1 : 1) : 0, offsetNoise:0, timingNoise:0 };
+  }
   var tier = this.aiTier;
   var laneIndex = Math.floor(randRange(0,3));
   var depthIndex = Math.random() < 0.5 ? 0 : 1;
@@ -1419,6 +2162,14 @@ MatchScene.prototype.planAiServe = function(){
 MatchScene.prototype.update = function(t, dtMs){
   var dt = Math.min(dtMs/1000, 0.05);
   var m = this.match;
+
+  var escNow = this.keys.esc.isDown, escEdge = escNow && !this.prevEsc; this.prevEsc = escNow;
+  if (escEdge){
+    if (this.paused) this.setPause(false);
+    else if (m.state === 'rallyOver' || m.state === 'matchOver' || m.state === 'intro'){ this.scene.start('Menu'); return; }
+    else this.setPause(true);
+  }
+  if (this.paused){ this.updatePause(); return; }
 
   this.handleContinuousInput(dt);
 
@@ -1450,6 +2201,61 @@ MatchScene.prototype.update = function(t, dtMs){
   }
 
   this.render();
+};
+
+/* ---------- pause ---------- */
+var PAUSE_BTNS = [ {k:'resume', t:'Resume', y:300}, {k:'restart', t:'Restart', y:364}, {k:'quit', t:'Quit to menu', y:428} ];
+MatchScene.prototype.canPause = function(){
+  var st = this.match.state;
+  return !this.paused && (st === 'serveToss' || st === 'rally' || st === 'pointPause' || st === 'gameOver');
+};
+MatchScene.prototype.setPause = function(v){
+  if (v === this.paused) return;
+  if (v && !this.canPause()) return;
+  this.paused = v; this.charge.on = false; this.touchHeld = false; this.touchHeldId = null;
+  if (!this.pauseUi){
+    var st = {fontFamily:'Arial', fontSize:'18px', color:'#EAF3E7', fontStyle:'bold'};
+    var u = { g:this.add.graphics().setDepth(200), title:this.add.text(640, 232, 'PAUSED', {fontFamily:'Georgia,serif', fontSize:'44px', color:'#EAF3E7'}).setOrigin(0.5).setDepth(201), labels:[] };
+    for (var i=0;i<PAUSE_BTNS.length;i++) u.labels.push(this.add.text(640, PAUSE_BTNS[i].y, PAUSE_BTNS[i].t, st).setOrigin(0.5).setDepth(201));
+    u.hint = this.add.text(640, 500, 'Esc / Space to resume', {fontFamily:'Arial', fontSize:'14px', color:'#b8aee0'}).setOrigin(0.5).setDepth(201);
+    this.pauseUi = u;
+  }
+  var u2 = this.pauseUi;
+  u2.title.setVisible(v); u2.hint.setVisible(v);
+  for (var j=0;j<u2.labels.length;j++) u2.labels[j].setVisible(v);
+  u2.g.clear();
+  if (v){
+    u2.g.fillStyle(0x0b0a14, 0.78); u2.g.fillRect(0, 0, 1280, 720);
+    for (var k=0;k<PAUSE_BTNS.length;k++){
+      var b = PAUSE_BTNS[k];
+      u2.g.fillStyle(k === 0 ? 0xF2A34C : 0x3c3489, 1); u2.g.fillRoundedRect(540, b.y-23, 200, 46, 10);
+      if (k === 0) u2.labels[k].setColor('#2c1a05'); else u2.labels[k].setColor('#EAF3E7');
+    }
+    this.prevSpace = this.keys.space.isDown; this.prevEnter = this.keys.enter.isDown;
+    this.pPrevA = this.keys.space.isDown; this.pPrevB = this.keys.enter.isDown;
+  } else {
+    // swallow keys still held from the pause screen so resuming never fires a serve / swing
+    this.prevSpace = true; this.prevEnter = true; this.pointerDown = false; this.movePointerId = null;
+    this.touchBtnAt = -9999;
+  }
+};
+MatchScene.prototype.updatePause = function(){
+  var a = this.keys.space.isDown, b = this.keys.enter.isDown;
+  var edge = (a && !this.pPrevA) || (b && !this.pPrevB);
+  this.pPrevA = a; this.pPrevB = b;
+  if (edge) this.setPause(false);
+};
+MatchScene.prototype.pauseClick = function(x, y){
+  if (x < 540 || x > 740) return;
+  for (var i=0;i<PAUSE_BTNS.length;i++){
+    var b = PAUSE_BTNS[i];
+    if (y >= b.y-23 && y <= b.y+23){
+      if (b.k === 'resume') this.setPause(false);
+      else if (b.k === 'restart') this.scene.restart(this.surv ? { mode:'survival', level:1, lives:3 } : this.cfg);
+      else this.scene.start('Menu');
+      return;
+    }
+  }
 };
 
 MatchScene.prototype.inTouchBtn = function(x, y){
@@ -1513,8 +2319,16 @@ MatchScene.prototype.handleContinuousInput = function(dt){
 
 /* AIM strip: six small buttons in the top-left, clear of both players. Index i: 0-2 short L/C/R, 3-5 deep L/C/R. */
 var ZONE_STRIP = { x:16, y:50, w:50, h:30, gap:2 };
-function applyTouchStrip(){ ZONE_STRIP.w = 54; ZONE_STRIP.h = 40; ZONE_STRIP.gap = 2; }
+function applyTouchStrip(){ ZONE_STRIP.w = 54; ZONE_STRIP.h = 40; ZONE_STRIP.gap = 2; SPIN_STRIP.w = 54; SPIN_STRIP.h = 32; SPIN_STRIP.gap = 2; }
 MatchScene.prototype.handleZoneTap = function(sx,sy){
+  var sp = SPIN_STRIP, spy = spinStripY();
+  if (this.mode !== 'target' && sy >= spy - 4 && sy <= spy + sp.h + 4){
+    for (var j=0;j<6;j++){
+      var sx0 = sp.x + j*(sp.w+sp.gap);
+      if (sx >= sx0 && sx <= sx0 + sp.w){ this.spinPick = SPIN_OPTS[j].k; this.applySpinPick(); return true; }
+    }
+    return false;
+  }
   var z = ZONE_STRIP;
   if (sy < z.y - 4 || sy > z.y + z.h + 4) return false;
   for (var i=0;i<6;i++){
@@ -1529,24 +2343,42 @@ MatchScene.prototype.handleZoneTap = function(sx,sy){
   return false;
 };
 
+/* a spin chosen on the SPIN strip beats the automatic one (W/S/Q/E held keys still win while held) */
+MatchScene.prototype.applySpinPick = function(){
+  if (this.spinPick === 'auto' || this.mode === 'target') return;
+  var anyKey = this.keys.w.isDown || this.keys.s.isDown || this.keys.q.isDown || this.keys.e.isDown;
+  if (anyKey) return;
+  for (var i=0;i<SPIN_OPTS.length;i++) if (SPIN_OPTS[i].k === this.spinPick){
+    this.human.spinTop = SPIN_OPTS[i].top; this.human.spinSide = this.isFeed ? 0 : SPIN_OPTS[i].side; return;
+  }
+};
+MatchScene.prototype.pickLabel = function(isServe, manual){
+  var h = this.human, b = this.ball;
+  var base = isServe ? 'SERVE' : shotKind(h.depthIndex, h.spinTop, b.h);
+  var spin = isServe ? (h.spinTop > 0 ? ' · TOPSPIN' : h.spinTop < 0 ? ' · BACKSPIN' : '') : '';
+  var side = h.spinSide < 0 ? ' · SIDE-L' : h.spinSide > 0 ? ' · SIDE-R' : '';
+  return (manual ? 'MANUAL ' : '') + base + ' ' + (h.depthIndex ? 'DEEP ' : 'SHORT ') + LANE_NAMES[h.laneIndex] + spin + side;
+};
 MatchScene.prototype.applyAutoServeAim = function(){
-  var now = this.time.now, h = this.human, m = this.match;
-  var aiFrac = this.ai.x / TABLE.width;
-  var lane;
-  if (aiFrac < 0.40) lane = 2;
-  else if (aiFrac > 0.60) lane = 0;
-  else lane = (m.score.human + m.score.ai) % 3; // AI centered: rotate serve placement
-  this.autoShot = { label: 'SERVE DEEP '+LANE_NAMES[lane] };
-  if ((now - (this.manualZoneAt||-9999)) >= 1500){ h.laneIndex = lane; h.depthIndex = 1; }
-  if ((now - (this.manualSpinAt||-9999)) >= 1500){ h.spinTop = 0; h.spinSide = 0; }
+  var now = this.time.now, h = this.human;
+  // serves use the same scoring as returns (a mid-height ball, you perfectly centred): deep/short, any corner, spin
+  var a = pickAutoShot({ x:TABLE.width/2, h:0.22, topSpin:0 }, TABLE.width/2, this.ai, this.aiTier, this.pickPrev, this.assist, this.pickSeed);
+  this.pickPrev = a;
+  var mz = (now - (this.manualZoneAt||-9999)) < 1500, ms = (now - (this.manualSpinAt||-9999)) < 1500;
+  if (!mz){ h.laneIndex = a.laneIndex; h.depthIndex = a.depthIndex; }
+  if (this.trn && this.trn.serve){ mz = true; ms = true; }          // serving drill: your own aim and spin, never the auto pick
+  if (!ms){ h.spinTop = a.spinTop; h.spinSide = 0; }
+  this.applySpinPick();
+  this.autoShot = { label: this.pickLabel(true, mz || ms || this.spinPick !== 'auto') };
 };
 
 /* ---------- serve toss timing ---------- */
 MatchScene.prototype.updateServeToss = function(dt){
   var m = this.match;
-  var serverIsHuman = m.server === 'human';
+  var serverIsHuman = this.humanServes();
   this.serveToss.t += dt;
   var tossT = this.serveToss.t;
+  if (this.isDoubles){ this.updateDoublesActors(dt); if (!serverIsHuman) this.ball.x = this.actorOf(m.serverPlayer).x; }
   var peak = 0.9;
   this.ball.h = 0.30 + Math.max(0, (peak - Math.abs(tossT-peak))) * 0.9;
 
@@ -1568,7 +2400,7 @@ MatchScene.prototype.updateServeToss = function(dt){
     this.aiServeTimer -= dt;
     if (this.aiServeTimer <= 0){
       SFX.serveTone();
-      this.executeServe('ai', 0.85);
+      this.executeServe(m.server, 0.85);
     }
   }
 };
@@ -1590,37 +2422,50 @@ MatchScene.prototype.updateRally = function(dt){
   this.recPush();
   if (!ball.alive) return;
 
-  this.updateAiPaddle(dt);
+  if (this.isDoubles) this.updateDoublesActors(dt); else this.updateAiPaddle(dt);
   if (ball.lastHitBy !== 'human' && !ball.servePhase) this.applyAutoAim();
   this.checkHumanSwing();
-  this.checkAiAutoHit();
+  if (this.isDoubles) this.checkDoublesAiHits(); else this.checkAiAutoHit();
 };
 
 MatchScene.prototype.recPush = function(){
   var b = this.ball, rec = this.rec, now = this.time.now;
-  rec.push({ t:now, x:b.x, y:b.y, h:b.h });
-  while (rec.length > 2 && rec[rec.length-1].t - rec[0].t > 1400) rec.shift();
+  function sw(ac){ if (!ac) return 0; return ac.swingUntil < now ? 0 : clamp(1 - (ac.swingUntil - now)/180, 0, 1); }
+  rec.push({ t:now, x:b.x, y:b.y, h:b.h,
+    hx:this.human.x, ax:this.ai.x, px:this.pt ? this.pt.x : 0, bx:this.ai2 ? this.ai2.x : 0,
+    hs:sw(this.human), as:sw(this.ai), ps:sw(this.pt), bs:sw(this.ai2) });
+  while (rec.length > 2 && rec[rec.length-1].t - rec[0].t > 2000) rec.shift();
 };
-MatchScene.prototype.drawReplay = function(g){
+var MP_SLOW = 0.35;   // match-point replay speed
+/* where the replay is right now: two recorded frames and the blend between them (null when there is nothing to show) */
+MatchScene.prototype.sampleReplay = function(){
   var rec = this.rec;
-  if (!rec || rec.length < 3) return;
+  if (!rec || rec.length < 3) return null;
   var dur = rec[rec.length-1].t - rec[0].t;
-  if (dur < 100) return;
-  var el = ((this.time.now - this.replayStart) * 0.5) % (dur + 500);
+  if (dur < 100) return null;
+  var mp = this.mpReplay, el = (this.time.now - this.replayStart) * (mp ? MP_SLOW : 0.5);
+  if (mp) el = Math.min(el, dur); else el = el % (dur + 500);      // match point holds on the last frame
   var tt = rec[0].t + Math.min(el, dur);
   var i = 0; while (i < rec.length-1 && rec[i+1].t <= tt) i++;
   var a = rec[i], b = rec[Math.min(i+1, rec.length-1)];
   var k = b.t > a.t ? clamp((tt-a.t)/(b.t-a.t), 0, 1) : 0;
+  return { i:i, a:a, b:b, k:k, mp:mp };
+};
+MatchScene.prototype.drawReplay = function(g){
+  var rec = this.rec, rs = this.sampleReplay();
+  if (!rs) return;
+  var mp = rs.mp, i = rs.i, a = rs.a, b = rs.b, k = rs.k;
   var cx = lerp(a.x,b.x,k), cy = lerp(a.y,b.y,k), ch = lerp(a.h,b.h,k);
-  for (var j = Math.max(0,i-14); j < i; j++){
+  var tl = mp ? 30 : 14;
+  for (var j = Math.max(0,i-tl); j < i; j++){
     var p0 = this.project(rec[j].x, rec[j].y, rec[j].h), p1 = this.project(rec[j+1].x, rec[j+1].y, rec[j+1].h);
-    g.lineStyle(2.5, 0xFCDE5A, 0.15 + 0.5*(j-Math.max(0,i-14))/14);
+    g.lineStyle(mp ? 3.5 : 2.5, 0xFCDE5A, 0.15 + 0.5*(j-Math.max(0,i-tl))/tl);
     g.lineBetween(p0.x, p0.y, p1.x, p1.y);
   }
   var sh = this.project(cx, cy, 0), bp = this.project(cx, cy, ch);
   g.fillStyle(COLORS.shadow, 0.35); g.fillEllipse(sh.x, sh.y+2, 12, 4);
-  g.fillStyle(0xFCDE5A, 0.35); g.fillCircle(bp.x, bp.y, 11);
-  g.fillStyle(COLORS.ball, 1); g.fillCircle(bp.x, bp.y, 6);
+  g.fillStyle(0xFCDE5A, 0.35); g.fillCircle(bp.x, bp.y, mp ? 16 : 11);
+  g.fillStyle(COLORS.ball, 1); g.fillCircle(bp.x, bp.y, mp ? 8 : 6);
 };
 
 /* ---------- hit / bounce / net effects (screen-space rings and sparks) ---------- */
@@ -1711,7 +2556,13 @@ MatchScene.prototype.onBallBounce = function(ball, side){
     return;
   }
 
+  if (this.isDoubles && ball.diagCheck && side === ball.diagSide){
+    ball.diagCheck = false;
+    var okHalf = ball.diagLow ? ball.x < TABLE.width/2 : ball.x > TABLE.width/2;
+    if (!okHalf){ this.awardPoint(ball.lastHitBy === 'human' ? 'ai' : 'human', 'Serve fault'); ball.alive = false; return; }
+  }
   if (this.mode === 'target' && ball.lastHitBy === 'human' && side === 'ai' && ball.lastBounceSideSameHit !== 'ai') this.targetLanded(ball);
+  if (this.mode === 'trainer' && ball.lastHitBy === 'human' && side === 'ai' && ball.lastBounceSideSameHit !== 'ai') this.trainerLanded(ball);
   if (ball.lastBounceSideSameHit === side){
     // double bounce on the same side without a return in between -- fault
     var faultSide = side === 'human' ? 'human' : 'ai';
@@ -1748,20 +2599,69 @@ MatchScene.prototype.onBallOut = function(ball){
    Holding a zone key (1-6), tapping a zone button, or holding a spin key (W/S/Q/E)
    still overrides that part manually for ~1.5s. */
 var LANE_NAMES = ['LEFT','CENTER','RIGHT'];
-function pickAutoShot(ball, humanX, aiX){
-  var aiFrac = aiX / TABLE.width;
-  var ballFrac = ball.x / TABLE.width;
-  var lane;
-  if (aiFrac < 0.40) lane = 2;
-  else if (aiFrac > 0.60) lane = 0;
-  else if (Math.abs(ballFrac-0.5) < 0.12) lane = 1;
-  else lane = ballFrac < 0.5 ? 2 : 0;
-  var depth, spinTop, kind;
-  if (ball.h >= 0.30){ depth = 1; spinTop = 1; kind = 'ATTACK'; }
-  else if (ball.h >= 0.17){ depth = 1; spinTop = 0; kind = 'DRIVE'; }
-  else { depth = 0; spinTop = -1; kind = 'PUSH'; }
-  return { laneIndex:lane, depthIndex:depth, spinTop:spinTop, spinSide:0,
-           label: kind+' '+(depth?'DEEP':'SHORT')+' '+LANE_NAMES[lane] };
+var CROWD_DOUBLES = [0x4a5d7a,0x8a4a4a,0xcfc6b0,0x4a5d7a,0x6b6f7a];
+var CROWD_SINGLES = [0x4a5d7a,0xa05a52,0xcfc6b0,0x5f8a78,0xc79a52,0x7a6a98,0x4a5d7a,0x8a4a4a];
+/* Smart shot picker. Every combination of lane (L/C/R) x depth (short/deep) x spin (top/flat/back) that makes sense for
+   the ball's height is scored, and the best one wins.
+     + winning chance : how far the opponent is from that landing spot MINUS how far they can run before the ball arrives
+                        (their paddle speed and reaction time, so Hard opponents need a harder shot than Easy ones)
+     + wrong-foot     : a bonus for going the opposite way to where the opponent is already moving
+     - risk           : low balls are risky to hit deep / with topspin, high balls are wasted on a safe push, an incoming
+                        backspin ball sinks a flat shot, and being off-centre on the ball makes corners less accurate
+   The previous pick is kept unless a new one is clearly better, so the label doesn't flicker as the ball moves. */
+function shotKind(depth, spin, h){
+  if (depth === 1 && spin === 0) return 'DRIVE';
+  if (depth === 1 && spin === 1) return h >= 0.30 ? 'ATTACK' : (h >= 0.17 ? 'LOOP' : 'LIFT');
+  if (depth === 1 && spin === -1) return 'CHOP';
+  if (depth === 0 && spin === 1) return 'DROP';
+  if (depth === 0 && spin === 0) return 'BLOCK';
+  return 'PUSH';
+}
+function scoreShot(c, lane, depth, spin){
+  var laneX = LANE_FRACS[lane] * TABLE.width;
+  var dist = Math.abs(laneX - c.aiX);
+  var flight = depth ? 0.52 : 0.62;                              // rough time (s) the ball takes to reach the opponent
+  var reach = c.aiSpeed * Math.max(0, flight - c.aiReact/1000);  // how far they can run in that time
+  var margin = dist - reach;
+  var s = 3.0 * c.as.read * clamp(margin/0.45, -6, 1.4);
+  // wrong-foot: opponent is already travelling away from this lane
+  var toward = laneX - c.aiX;
+  if (c.aiVx*toward < 0) s += 0.8 * c.as.wf * clamp(Math.abs(c.aiVx)/1.5, 0, 1);
+  var low  = clamp((0.17 - c.h)/0.12, 0, 1);    // 1 = very low ball
+  var high = clamp((c.h - 0.17)/0.18, 0, 1);    // 1 = high ball
+  var risk = 0;
+  if (depth){
+    risk += 0.35 + 1.6*low*(spin>0 ? 1 : spin===0 ? 0.85 : 0.15);
+    if (spin > 0) s += 1.0*high + 0.35*(1-low);                  // a high ball wants a deep topspin kill
+  } else {
+    risk += 0.25 + 0.7*high*(spin>0 ? 0.35 : 1);                 // short on a high ball wastes the chance
+    if (low > 0.3 && spin < 0) s += 0.5*low;                     // short push is the safe answer to a low ball
+  }
+  if (spin < 0) risk += 0.1 + 0.9*high;                          // backspin on a high ball is a gift
+  if (spin > 0 && c.inTop > 0.15) risk += 0.3;                   // looping a topspin ball is harder
+  if (spin === 0 && depth && c.inTop < -0.15) risk += 0.6;       // a flat shot into backspin sinks
+  var corner = lane === 1 ? 0.3 : 1;
+  risk += c.off*0.12*corner + (depth ? c.off*0.08 : 0);          // off-centre contact = wider aim error
+  // fixed per-ball "misjudgement": higher difficulty = the auto-pick is less reliable
+  var nz = (Math.abs(Math.sin(c.seed*12.9898 + (lane*6 + depth*3 + spin + 1)*78.233)*43758.5453) % 1 - 0.5) * 2;
+  return s - risk*c.as.safety + nz*c.as.noise*2.2;
+}
+function pickAutoShot(ball, humanX, ai, tier, prev, assist, seed){
+  var c = { as:assist || {safety:1,wf:0.8,read:0.9,noise:0.35}, seed:seed||0.5, aiX:ai.x, aiVx:ai.vx||0, aiSpeed:tier.paddleSpeed, aiReact:tier.reactMs, h:ball.h,
+            inTop:ball.topSpin||0, off:Math.min(3, Math.abs(ball.x - humanX)/PADDLE_HALF_W) };
+  var spins = c.h >= 0.30 ? [1,0] : (c.h >= 0.17 ? [0,1,-1] : [-1,0,1]);
+  var best = null;
+  for (var ln=0; ln<3; ln++) for (var d=0; d<2; d++) for (var si=0; si<spins.length; si++){
+    var sc = scoreShot(c, ln, d, spins[si]);
+    if (!best || sc > best.score) best = { laneIndex:ln, depthIndex:d, spinTop:spins[si], score:sc };
+  }
+  if (prev && spins.indexOf(prev.spinTop) >= 0){
+    var ps = scoreShot(c, prev.laneIndex, prev.depthIndex, prev.spinTop);
+    if (best.score - ps < 0.35) best = { laneIndex:prev.laneIndex, depthIndex:prev.depthIndex, spinTop:prev.spinTop, score:ps };
+  }
+  best.spinSide = 0;
+  best.label = shotKind(best.depthIndex, best.spinTop, c.h) + ' ' + (best.depthIndex?'DEEP':'SHORT') + ' ' + LANE_NAMES[best.laneIndex];
+  return best;
 }
 MatchScene.prototype.applyAutoAim = function(){
   var now = this.time.now;
@@ -1772,43 +2672,84 @@ MatchScene.prototype.applyAutoAim = function(){
     this.autoShot = { label: 'AIM ' + zoneName(h.depthIndex*3 + h.laneIndex) };
     return;
   }
-  var a = pickAutoShot(this.ball, h.x, this.ai.x);
-  this.autoShot = a;
+  var oppA = this.ai, oppT = this.aiTier;
+  if (this.isDoubles && this.match.next && this.match.next.ai === 'a2'){ oppA = this.ai2; oppT = this.ai2Tier; }
+  var a = pickAutoShot(this.ball, h.x, oppA, oppT, this.pickPrev, this.assist, this.pickSeed);
+  this.pickPrev = a;
   var manualZone = (now - (this.manualZoneAt||-9999)) < 1500;
   var manualSpin = (now - (this.manualSpinAt||-9999)) < 1500;
   if (!manualZone){ h.laneIndex = a.laneIndex; h.depthIndex = a.depthIndex; }
   if (!manualSpin){ h.spinTop = a.spinTop; h.spinSide = a.spinSide; }
+  this.applySpinPick();
+  this.autoShot = { label: this.pickLabel(false, manualZone || manualSpin || this.spinPick !== 'auto'), score: a.score };
 };
 
-MatchScene.prototype.checkHumanSwing = function(){
-  var spacePressed = this.pressedSpace();
+MatchScene.prototype.swingDown = function(){ return this.keys.space.isDown || this.touchHeld; };
+/* is the incoming ball in range of your paddle right now? */
+MatchScene.prototype.humanRange = function(){
   var ball = this.ball;
-  this.swingPromptActive = false;
-  if (!ball.alive) return;
-  if (ball.lastHitBy === 'human') return; // already heading to opponent
-  if (ball.servePhase) return; // can't return a serve before it legally bounces on the server's own side
-  if (ball.h < STRIKE_H_MIN || ball.h > STRIKE_H_MAX) return;
-  if (ball.vy >= 0) return; // ball must be approaching the human side (moving toward y=0)
-  var timeToPlane = (STRIKE_Y_HUMAN - ball.y) / ball.vy;
-  if (Math.abs(timeToPlane) > TIMING_WINDOW*2.2*this.winScale) return; // not close enough to even attempt
-  var offset = (ball.x - this.human.x) / PADDLE_HALF_W;
-  if (Math.abs(offset) > this.reach) return; // nowhere near the paddle
-
-  this.swingPromptActive = true; // ball is in range right now -- show the on-screen prompt
-  if (!spacePressed) return;
-  this.human.swingUntil = this.time.now + 180;
+  if (this.isDoubles && this.match.next && this.match.next.human !== 'you') return null;   // your partner's ball
+  if (this.isDoubles && ball.diagCheck) return null;                                        // let the serve bounce first
+  if (!ball.alive || ball.lastHitBy === 'human' || ball.servePhase) return null;
+  if (ball.h < STRIKE_H_MIN || ball.h > STRIKE_H_MAX) return null;
+  if (ball.vy >= 0) return null;                                  // must be approaching your side
+  var t = (STRIKE_Y_HUMAN - ball.y) / ball.vy;
+  if (Math.abs(t) > TIMING_WINDOW*2.2*this.winScale) return null; // not close enough to even attempt
+  var off = (ball.x - this.human.x) / PADDLE_HALF_W;
+  if (Math.abs(off) > this.reach) return null;                    // nowhere near the paddle
+  return { t:t, off:off };
+};
+/* TAP while the ball is in range = normal hit (as before).
+   HOLD before it is in range = charge a power shot, then RELEASE while it is in range to hit. */
+MatchScene.prototype.checkHumanSwing = function(){
+  var pressed = this.pressedSpace(), down = this.swingDown(), now = this.time.now, ball = this.ball, ch = this.charge;
+  var rng = this.humanRange();
+  this.swingPromptActive = !!rng;
+  if (this.isDoubles && this.match.next && this.match.next.human !== 'you'){ ch.on = false; return; }
+  var incoming = ball.alive && ball.lastHitBy !== 'human' && !ball.servePhase && ball.vy < 0;
+  if (pressed){
+    if (rng && !ch.on){ this.doHumanHit(rng.t, rng.off, 0); return; }
+    if (incoming && !ch.on){ ch.on = true; ch.start = now; }
+    return;
+  }
+  if (ch.on){
+    if (!down){
+      ch.on = false;
+      if (rng) this.doHumanHit(rng.t, rng.off, clamp((now - ch.start)/CHARGE_MS, 0, 1));
+      else { this.human.swingUntil = now + 140; SFX.swing(); }     // released too early: a wasted swing
+      return;
+    }
+    if (!incoming || ball.y < STRIKE_Y_HUMAN - 0.3) ch.on = false;   // the ball has passed you
+  }
+};
+MatchScene.prototype.doHumanHit = function(timeToPlane, offset, charge){
+  var ball = this.ball, c = charge || 0;
+  this.human.swingUntil = this.time.now + 180 + 80*c;
   SFX.swing();
-
   var target = targetCoords(this.human.laneIndex, this.human.depthIndex, true);
   var te = Math.abs(timeToPlane) / this.winScale;
+  var qNow = clamp(1 - te/TIMING_WINDOW, 0, 1);
+  // landing depth varies with contact quality: a clean hit goes deeper / a mistimed one lands shorter; charging adds spread
+  target.y += (qNow - 0.5) * (this.human.depthIndex ? 0.14 : 0.08) + (Math.random()-0.5)*(0.05 + 0.2*c);
+  target.y = clamp(target.y, TABLE.netY + 0.25, TABLE.length - 0.06);
+  var kind = shotKind(this.human.depthIndex, this.human.spinTop, ball.h);
+  if (c >= 0.6 && ball.h >= 0.28 && this.human.depthIndex === 1 && this.human.spinTop >= 0) kind = 'SMASH';   // high ball + big charge
+  var lf = this.save.life; lf.kinds[kind] = (lf.kinds[kind]||0) + 1;
+  if (this.touchUi) buzz(c > 0.6 ? 34 : qNow > 0.8 ? 22 : 12);
   var fb = te < 0.05 ? ['PERFECT!', '#FCDE5A'] : te < 0.12 ? ['GOOD', '#9FE1CB'] : [timeToPlane > 0 ? 'EARLY' : 'LATE', '#F09595'];
+  if (kind === 'SMASH') fb = te < 0.12 ? ['SMASH!', '#FF9F43'] : [fb[0], fb[1]];
+  else if (c >= 0.6 && te < 0.05) fb = ['POWER SHOT!', '#FF9F43'];
   this.hitFeedback = { text: fb[0], color: fb[1], at: this.time.now };
+  if (this.trn){ var tn = this.trn; tn.n++; tn.sum += timeToPlane/this.winScale; if (te < 0.05) tn.perfect++; else if (te < 0.12) tn.good++; else if (timeToPlane > 0) tn.early++; else tn.late++; }
   resolveHit(ball, 'human', {
-    targetX: target.x, targetY: target.y,
-    offset: offset, timingError: timeToPlane / this.winScale,
+    targetX: target.x, targetY: target.y, charge: c,
+    offset: offset, timingError: timeToPlane / this.winScale, speedMul: (KIND_PACE[kind] || 1) * (1 - 0.18*c),
     paddleStats: this.paddleStats, spinTop: this.human.spinTop, spinSide: this.isFeed ? 0 : this.human.spinSide
   });
   this.curRally++;
+  if (this.isDoubles){ this.match.next.human = 'pt'; ball.lastHitter = 'you'; }
+  this.pickPrev = null; this.pickSeed = Math.random();
+  this.swingVar = clamp(offset/3, -1, 1)*0.7 + (this.human.spinTop > 0 ? 0.35 : this.human.spinTop < 0 ? -0.5 : 0) + (Math.random()-0.5)*0.3 + c*0.5;
   if (this.isMatch){ this.match.stats.swings++; if (te < 0.05) this.match.stats.perfect++; }
   if (this.mode === 'rally') this.countRallyReturn();
 };
@@ -1831,13 +2772,15 @@ MatchScene.prototype.updateAiPaddle = function(dt){
   }
   if (this.mode === 'rally' && ball.vy > 0) ai.targetX = clamp(ball.x + ball.vx*0.1, PADDLE_X_MIN, PADDLE_X_MAX);
   var maxStep = tier.paddleSpeed*dt;
+  var oldAx = ai.x;
   ai.x += clamp(ai.targetX-ai.x, -maxStep, maxStep);
   ai.x = clamp(ai.x, PADDLE_X_MIN, PADDLE_X_MAX);
+  ai.vx = lerp(ai.vx || 0, dt > 0 ? (ai.x - oldAx)/dt : 0, 0.3);
 };
 
 MatchScene.prototype.checkAiAutoHit = function(){
   var ball = this.ball, ai = this.ai, tier = this.aiTier;
-  if (this.mode === 'target') return; // the ball machine only feeds
+  if (this.mode === 'target' || this.mode === 'trainer') return; // the ball machine only feeds
   if (ball.lastHitBy === 'ai') return;
   if (ball.servePhase) return; // can't return a serve before it legally bounces on the server's own side
   if (ball.vy <= 0) return; // only hit balls approaching the AI side
@@ -1851,34 +2794,62 @@ MatchScene.prototype.checkAiAutoHit = function(){
   this.ai.reactTimer = tier.reactMs;
 
   var plan = this.planAiShot();
+  this.scout.last = plan;
   var target = targetCoords(plan.laneIndex, plan.depthIndex, false);
   resolveHit(ball, 'ai', {
     targetX: target.x, targetY: target.y,
-    offset: randRange(-tier.aimErr,tier.aimErr)/PADDLE_HALF_W,
-    timingError: randRange(-tier.timeErr,tier.timeErr),
+    offset: randRange(-tier.aimErr,tier.aimErr)*(plan.errMul||1)/PADDLE_HALF_W,
+    timingError: randRange(-tier.timeErr,tier.timeErr)*(plan.errMul||1),
     paddleStats: PADDLES.starter, spinTop: plan.spinTop, spinSide: plan.spinSide,
-    speedMul: this.mode === 'rally' ? Math.max(0.62, 1 - 0.012*this.rally.count) : 1
+    speedMul: this.mode === 'rally' ? Math.max(0.62, 1 - 0.012*this.rally.count) : this.pace
   });
   this.curRally++;
 };
 
-MatchScene.prototype.planAiShot = function(){
-  var tier = this.aiTier;
+MatchScene.prototype.planAiShot = function(foeX, styleArg, tierArg){
+  var tier = tierArg || this.aiTier;
   if (this.mode === 'rally'){
     var n = this.rally.count;
-    return { laneIndex: n < 4 ? 1 : Math.floor(Math.random()*3), depthIndex: (n < 3 || Math.random() < 0.65) ? 1 : 0, spinTop:0, spinSide:0 };
+    return { laneIndex: n < 4 ? 1 : Math.floor(Math.random()*3), depthIndex: (n < 3 || Math.random() < 0.65) ? 1 : 0, spinTop:0, spinSide:0, errMul:1 };
   }
-  var laneIndex = 1;
-  if (Math.random() < tier.aggressive){
-    // aim away from the human paddle's current lateral position
-    var humanFrac = clamp((this.human.x/TABLE.width - 0) , 0, 1);
-    laneIndex = humanFrac < 0.5 ? 2 : 0;
+  var r = Math.random;
+  var humanFrac = clamp((foeX !== undefined ? foeX : this.human.x)/TABLE.width, 0, 1);
+  var away = humanFrac < 0.5 ? 2 : 0;
+  var plan = { laneIndex:1, depthIndex:(r() < (0.4 + tier.aggressive*0.3)) ? 1 : 0, spinTop:0, spinSide:0, errMul:1 };
+  var useSpin = r() < tier.spinUse;
+  if (r() < tier.aggressive) plan.laneIndex = away;
+  if (useSpin){ plan.spinTop = r()<0.6 ? 1 : -1; if (r() < 0.5) plan.spinSide = r()<0.5 ? -1 : 1; }
+  var st = styleArg !== undefined ? styleArg : (this.isMatch ? this.opponent.style : null);
+  if (st === 'errorprone'){
+    plan.errMul = r() < 0.16 ? 3.2 : 1;                         // now and then a wild one
+  } else if (st === 'steady'){
+    plan.laneIndex = r() < 0.7 ? 1 : (r()<0.5 ? 0 : 2); plan.depthIndex = r() < 0.5 ? 1 : 0; plan.spinTop = 0; plan.spinSide = 0; plan.errMul = 0.6;
+  } else if (st === 'looper'){
+    plan.spinTop = r() < 0.75 ? 1 : 0; plan.depthIndex = r() < 0.7 ? 1 : 0; plan.laneIndex = r() < 0.6 ? away : plan.laneIndex;
+  } else if (st === 'spinner'){
+    if (r() < 0.85){ plan.spinTop = [1,-1,0][Math.floor(r()*3)]; plan.spinSide = r() < 0.7 ? (r()<0.5 ? -1 : 1) : 0; }
+    plan.laneIndex = r() < 0.5 ? away : Math.floor(r()*3);
+  } else if (st === 'smasher'){
+    plan.depthIndex = r() < 0.8 ? 1 : 0; plan.spinTop = r() < 0.7 ? 1 : 0; plan.spinSide = 0; plan.laneIndex = r() < 0.7 ? away : plan.laneIndex; plan.errMul = r() < 0.2 ? 2.2 : 1;
+  } else if (st === 'chopper'){
+    plan.spinTop = r() < 0.8 ? -1 : 0; plan.depthIndex = r() < 0.5 ? 1 : 0; plan.spinSide = r() < 0.3 ? (r()<0.5 ? -1 : 1) : 0; plan.laneIndex = r() < 0.5 ? away : Math.floor(r()*3); plan.errMul = 0.6;
+  } else if (st === 'allround'){
+    plan.spinTop = [1,-1,0][Math.floor(r()*3)]; plan.depthIndex = r() < 0.6 ? 1 : 0; plan.laneIndex = r() < 0.65 ? away : Math.floor(r()*3); plan.spinSide = r() < 0.4 ? (r()<0.5 ? -1 : 1) : 0; plan.errMul = 0.55;
+  } else if (st === 'wall'){
+    plan.depthIndex = r() < 0.55 ? 0 : 1; plan.spinTop = r() < 0.5 ? -1 : 0; plan.spinSide = 0; plan.laneIndex = r() < 0.5 ? away : 1; plan.errMul = 0.5;
   }
-  var depthIndex = Math.random() < (0.4 + tier.aggressive*0.3) ? 1 : 0;
-  var useSpin = Math.random() < tier.spinUse;
-  var spinTop = useSpin ? (Math.random()<0.6?1:-1) : 0;
-  var spinSide = (useSpin && Math.random()<0.5) ? (Math.random()<0.5?-1:1) : 0;
-  return { laneIndex:laneIndex, depthIndex:depthIndex, spinTop:spinTop, spinSide:spinSide };
+  // scouting: lean on the lane and spin that have been beating you
+  var sc = this.scout;
+  if (this.isMatch && !this.isDoubles && sc && tier.adapt > 0 && sc.n >= 3 && r() < tier.adapt){
+    var bl = 0; for (var li=1; li<3; li++) if (sc.lane[li] > sc.lane[bl] + 0.01) bl = li;
+    if (sc.lane[bl] >= 1.5){
+      plan.laneIndex = bl;
+      var bs = sc.spin.top >= sc.spin.back ? 1 : -1;
+      if (Math.max(sc.spin.top, sc.spin.back) >= 1.5 && plan.spinTop !== 0 && r() < 0.5) plan.spinTop = bs;
+      if (!sc.noted){ sc.noted = true; sc.noteDue = this.opponent.short + ' has spotted your ' + ['left','middle','right'][bl] + ' side'; }
+    }
+  }
+  return plan;
 };
 
 /* ============================================================
@@ -1887,12 +2858,26 @@ MatchScene.prototype.planAiShot = function(){
 MatchScene.prototype.awardPoint = function(winner, reason){
   if (this.mode === 'rally'){ this.rallyPoint(winner, reason); return; }
   if (this.mode === 'target'){ this.targetPoint(winner, reason); return; }
+  if (this.mode === 'trainer'){ this.trainerPoint(winner, reason); return; }
   var m = this.match;
+  if (this.isMatch && !this.isDoubles && this.scout && this.scout.last && this.curRally >= 2){
+    var scl = this.scout, lp = scl.last, sk = lp.spinTop > 0 ? 'top' : lp.spinTop < 0 ? 'back' : 'none';
+    if (winner === 'ai'){ scl.lane[lp.laneIndex] += 1; scl.spin[sk] += 1; scl.n++; }
+    else { scl.lane[lp.laneIndex] = Math.max(0, scl.lane[lp.laneIndex] - 0.5); scl.spin[sk] = Math.max(0, scl.spin[sk] - 0.5); }
+  }
   m.score[winner]++;
   // stats + crowd
   var stt = m.stats, loser = this.other(winner);
   stt.points[winner]++; stt.longest = Math.max(stt.longest, this.curRally);
+  var ace = (winner === m.server && this.curRally <= 1 && (reason === 'Winner' || reason === 'No return'));
+  if (ace) stt.aces[winner]++;
   if (reason === 'Winner' || reason === 'No return') stt.winners[winner]++; else stt.errors[loser]++;
+  var lf = this.save.life;
+  if (winner === 'human'){ lf.pointsWon++; if (ace) lf.aces++; if (reason === 'Winner' || reason === 'No return') lf.winners++; } else lf.pointsLost++;
+  lf.longest = Math.max(lf.longest, this.curRally);
+  if (winner === 'human' || this.curRally >= 20) this.checkAch({});
+  if (this.isMatch && winner === 'human') this.earn(ace ? 3 : 1, 2);
+  if (winner === 'human' && this.touchUi) buzz([20,40,20]);
   this.crowdAt = this.time.now; this.crowdWho = winner; SFX.crowd(winner === 'human');
   // streak tracking + a message that says what actually happened
   if (m.streak && m.streak.side === winner) m.streak.n++; else m.streak = { side: winner, n: 1 };
@@ -1902,24 +2887,31 @@ MatchScene.prototype.awardPoint = function(winner, reason){
     ai:    { 'Winner':nm+' wins the point', 'Out':'Out! Your shot missed the table', 'No return':'You didn\'t get it back', 'Serve fault':'Your serve was a fault' }
   };
   var head = (heads[winner] && heads[winner][reason]) || (winner==='human' ? 'You score' : nm+' scores');
+  if (ace) head = winner === 'human' ? 'ACE!' : nm + ' aces you';
   m.pointMsg = head + '\n' + m.score.human + ' – ' + m.score.ai + (m.streak.n >= 3 ? '   ·   ' + m.streak.n + ' in a row' : '');
+  if (this.scout && this.scout.noteDue){ m.pointMsg += '\n' + this.scout.noteDue; this.scout.noteDue = ''; }
   m.pointWinner = winner;
   m.msgPopAt = this.time.now;
 
   var hs = m.score.human, as = m.score.ai;
-  var gameOver = (hs>=11 || as>=11) && Math.abs(hs-as)>=2;
+  var gp = this.gp, gameOver = (hs>=gp || as>=gp) && Math.abs(hs-as)>=2;
   if (!gameOver){ if (winner === 'human') SFX.pointPlayer(); else SFX.pointAI(); }
   if (gameOver){
     var gw = hs>as ? 'human' : 'ai';
     m.gameWins[gw]++;
-    if (m.gameWins[gw] >= 2){ if (gw==='human') SFX.matchWin(); else SFX.matchLose(); }
+    if (m.gameWins[gw] >= this.gamesNeed){ if (gw==='human') SFX.matchWin(); else SFX.matchLose(); }
     else { if (gw==='human') SFX.gameWin(); else SFX.gameLose(); }
     m.pointMsg = (gw==='human'?'You win the game!':this.opponent.name+' wins the game') + '\n' + hs + ' – ' + as +
       '   ·   Games ' + m.gameWins.human + ' – ' + m.gameWins.ai;
-    if (m.gameWins[gw] >= 2){
+    if (m.gameWins[gw] >= this.gamesNeed){
       m.matchOver = true; m.matchWinner = gw;
+      this.matchRewards(gw === 'human');
       // record the result right away, so leaving early (Esc / closing the tab) can't lose the win
-      if (gw === 'human'){
+      if (this.isDoubles){
+        if (gw === 'human') this.save.doublesWon = (this.save.doublesWon||0) + 1; else this.save.doublesLost = (this.save.doublesLost||0) + 1;
+      } else if (this.mode === 'survival'){
+        if (gw === 'human') this.save.survivalBest = Math.max(this.save.survivalBest||0, this.surv.level);
+      } else if (gw === 'human'){
         this.save.wins++; this.save.highestOpponent = Math.min(OPPONENTS.length-1, Math.max(this.save.highestOpponent, this.oppIndex+1));
         if (this.mode === 'tourney'){
           this.save.tourneyBestRound = Math.max(this.save.tourneyBestRound||0, this.oppIndex+1);
@@ -1927,9 +2919,17 @@ MatchScene.prototype.awardPoint = function(winner, reason){
         }
       }
       else { this.save.losses++; }
+      if (this.mode !== 'survival'){                                           // win streak + head-to-head record
+        if (gw === 'human'){ this.save.streakNow = (this.save.streakNow||0) + 1; this.save.streakBest = Math.max(this.save.streakBest||0, this.save.streakNow); }
+        else this.save.streakNow = 0;
+        if (!this.isDoubles){ var hh = this.save.h2h[this.oppIndex] = this.save.h2h[this.oppIndex] || [0,0]; hh[gw === 'human' ? 0 : 1]++; }
+      }
       Save.save(this.save);
+      this.checkAch({ won: gw === 'human', doubles: this.isDoubles, oppIndex: this.oppIndex });
       m.state = 'gameOver';
-      m.pointTimer = 3.0; this.replayStart = this.time.now;
+      this.mpReplay = true;                      // slow-mo replay of the winning point, played once
+      var rr = this.rec, rd = rr.length > 2 ? rr[rr.length-1].t - rr[0].t : 0;
+      m.pointTimer = clamp(rd/(MP_SLOW*1000) + 1.2, 3.0, 8.0); this.replayStart = this.time.now;
     } else {
       m.state = 'gameOver';
       m.pointTimer = 3.0; this.replayStart = this.time.now;
@@ -1937,14 +2937,27 @@ MatchScene.prototype.awardPoint = function(winner, reason){
   } else {
     // serve rotation: switch server every 2 points, every 1 point once both reach 10
     var total = hs+as;
-    if (hs>=10 && as>=10){
+    if (this.isDoubles){
+      // deciding game: at 5 points the sides change and the pair due to receive next swaps its receiving order
+      if (!m.switched && m.gameWins.human === 1 && m.gameWins.ai === 1 && Math.max(hs, as) === 5){
+        m.switched = true;
+        var t0 = hs+as, k0 = t0 < 20 ? Math.floor(t0/2) % 4 : (10 + (t0-20)) % 4, o0 = this.doublesOrder(m.gameNum);
+        var due = o0[(k0+1) % 4];
+        m.swapTeam = D_TEAM[due];
+        m.pointMsg += '\nCHANGE OF ENDS  ·  ' + (m.swapTeam === 'human' ? 'you and ' + PARTNER.name : this.opponent.name) + ' swap who receives';
+        m.switchPause = true;
+      }
+      this.setDoublesServe();
+    }
+    else if (hs>=gp-1 && as>=gp-1){
       m.server = (total % 2 === 0) ? m.lastDeuceServer : this.other(m.lastDeuceServer);
-      if (total === 20) m.lastDeuceServer = m.server; // lock baseline at the deuce transition
+      if (total === 2*(gp-1)) m.lastDeuceServer = m.server; // lock baseline at the deuce transition
     } else {
       m.server = (Math.floor(total/2) % 2 === 0) ? m.firstServer : this.other(m.firstServer);
     }
     m.state = 'pointPause';
-    m.pointTimer = 1.1;
+    m.pointTimer = m.switchPause ? 2.6 : 1.1; m.switchPause = false;
+    if (m.pointMsg.indexOf('CHANGE OF ENDS') >= 0) SFX.crowd(true);
   }
 };
 MatchScene.prototype.other = function(side){ return side==='human' ? 'ai' : 'human'; };
@@ -1961,10 +2974,12 @@ MatchScene.prototype.startNextGame = function(){
     return;
   }
   m.score = {human:0, ai:0};
+  m.swapTeam = null;
   m.gameNum++;
   m.firstServer = this.other(m.firstServer);
   m.server = m.firstServer;
   m.lastDeuceServer = m.firstServer;
+  if (this.isDoubles) this.setDoublesServe();
   m.state = 'serveToss';
   this.beginServeSequence();
 };
@@ -1980,14 +2995,17 @@ MatchScene.prototype.render = function(){
   var horizonY = 330;
 
   // back wall -- gymnasium-style, light and even
-  this.skyG.fillStyle(0xd8d3c4, 1);
+  var AR = arenaOf(this.save.arena);
+  this.skyG.fillStyle(AR.wall, 1);
   this.skyG.fillRect(0, 0, W, horizonY);
-  this.skyG.fillStyle(0xc7c1ae, 1);
+  this.skyG.fillStyle(AR.trim, 1);
   this.skyG.fillRect(0, horizonY-14, W, 14); // wall/floor trim
 
   // arena dressing: bunting along the top, sponsor boards, and a crowd that reacts to points
   var now0 = this.time.now;
-  var cAge = now0 - this.crowdAt, cAmp = Math.max(0, 1 - cAge/1100);
+  var dbl = this.isDoubles;                                      // doubles gets a bigger, livelier crowd
+  var cAge = now0 - this.crowdAt, cAmp = Math.max(0, 1 - cAge/(dbl ? 1700 : 1100));
+  var heat = (dbl && this.match.state === 'rally') ? clamp((this.curRally - 5)/12, 0, 1) : 0;   // long rallies get the crowd swaying
   var cols = [0xE65B4F, 0xF2A34C, 0x4677D1, 0x5B3A7A, 0x2f8f6b, 0xd8d3c4];
   for (var bf=0; bf<=32; bf++){
     var bx = bf*(W/32), by = 10 + Math.sin(bf/32*Math.PI)*14;
@@ -2000,13 +3018,17 @@ MatchScene.prototype.render = function(){
   this.skyG.strokePath();
   var skins = [0xf1c9a5, 0xd9a47c, 0xa9714b, 0x7a4b2d, 0xe8b88f];
   var hairs = [0x2b1b12, 0x5a3a1f, 0x111111, 0xb5651d, 0x8a8a8a];
-  for (var row=0; row<2; row++){
-    var ry = row === 0 ? 268 : 298, rr = row === 0 ? 8 : 10, step = row === 0 ? 34 : 41;
-    for (var ci=0, cxp=(row?18:2); cxp < W+10; ci++, cxp += step){
+  var rowsDef = dbl ? [ {ry:241, rr:7, step:29, x0:10}, {ry:268, rr:8, step:34, x0:2}, {ry:298, rr:10, step:41, x0:18} ]
+                    : [ {ry:268, rr:8, step:34, x0:2}, {ry:298, rr:10, step:41, x0:18} ];
+  for (var row=0; row<rowsDef.length; row++){
+    var rd = rowsDef[row], ry = rd.ry, rr = rd.rr, step = rd.step, front = row === rowsDef.length-1;
+    for (var ci=0, cxp=rd.x0; cxp < W+10; ci++, cxp += step){
       var hsh = (ci*37 + row*91 + 13) % 97;
-      var jump = (cAmp > 0 && hsh % 3 !== 0) ? Math.abs(Math.sin(cAge/95 + hsh)) * 7 * cAmp * (this.crowdWho === 'human' ? 1 : 0.5) : 0;
-      var yy = ry - jump + (row ? 3 : 0);
-      this.skyG.fillStyle(cols[hsh % cols.length], 0.92);
+      var jump = (cAmp > 0 && (dbl || hsh % 3 !== 0)) ? Math.abs(Math.sin(cAge/95 + hsh)) * (dbl ? 9 : 7) * cAmp * (this.crowdWho === 'human' ? 1 : 0.6) : 0;
+      var sway = heat > 0 ? Math.sin(now0/190 + hsh*0.7) * 2.2 * heat : 0;
+      var yy = ry - jump - Math.abs(sway) + (front ? 3 : 0);
+      var shirts = dbl ? CROWD_DOUBLES : CROWD_SINGLES;               // doubles: 3 muted tones; everything else: 6 dusty tones
+      this.skyG.fillStyle(shirts[hsh % shirts.length], row < rowsDef.length-1 ? 0.8 : 0.92);
       this.skyG.fillRoundedRect(cxp - rr*1.15, yy + rr*0.7, rr*2.3, rr*2.4, {tl:rr*0.9, tr:rr*0.9, bl:0, br:0});
       this.skyG.fillStyle(skins[hsh % skins.length], 1);
       this.skyG.fillCircle(cxp, yy, rr*0.78);
@@ -2030,16 +3052,16 @@ MatchScene.prototype.render = function(){
   this.skyG.fillRect(0, 0, W, 26);
 
   // polished wood floor, filling the hall beyond the playing surface
-  this.skyG.fillStyle(0x8a6a44, 1);
+  this.skyG.fillStyle(AR.f0, 1);
   this.skyG.fillRect(0, horizonY, W, H-horizonY);
-  this.skyG.fillGradientStyle(0xa3824f, 0xa3824f, 0x6e5234, 0x6e5234, 1);
+  this.skyG.fillGradientStyle(AR.f1, AR.f1, AR.f2, AR.f2, 1);
   this.skyG.fillRect(0, horizonY, W, H-horizonY);
   // converging floor planks toward the back-wall vanishing point for depth
-  this.skyG.lineStyle(1, 0x5c4428, 0.4);
+  this.skyG.lineStyle(1, AR.fl, 0.4);
   for (var fx=-2; fx<=2; fx++){
     this.skyG.lineBetween(W/2 + fx*70, H, W/2 + fx*14, horizonY);
   }
-  this.skyG.lineStyle(1, 0x5c4428, 0.25);
+  this.skyG.lineStyle(1, AR.fl, 0.25);
   for (var fy=horizonY+26; fy<H; fy+=34){
     this.skyG.lineBetween(0, fy, W, fy);
   }
@@ -2048,7 +3070,7 @@ MatchScene.prototype.render = function(){
   this.skyG.fillRect(0, horizonY, W, 18);
 
   this.tableG.clear();
-  var nearW=465, farW=375, nearY=645, farY=225;
+  var nearW=405, farW=327, nearY=645, farY=225;
   var cx = W/2;
 
   // dark wood/laminate apron beneath the playing surface, with simple legs for depth
@@ -2080,8 +3102,8 @@ MatchScene.prototype.render = function(){
   this.tableG.lineStyle(1.5, COLORS.lines, 0.55);
   this.tableG.lineBetween(cx, nearY, cx, farY);
 
-  if (this.mode === 'target'){
-    var tz = this.target, zp = 0.5 + 0.5*Math.sin(this.time.now/170);
+  if (this.mode === 'target' || (this.trn && this.trn.serve)){
+    var tz = this.mode === 'target' ? this.target : this.trn, zp = 0.5 + 0.5*Math.sin(this.time.now/170);
     var selZ = this.human.depthIndex*3 + this.human.laneIndex;
     for (var zi=0; zi<6; zi++){
       var pts = this.zonePoints(zi);
@@ -2190,10 +3212,30 @@ MatchScene.prototype.render = function(){
 
   // players + paddles (one anchored draw each, so body/paddle/head never drift
   // apart the way they did when paddle and body used two different projected depths)
-  var swingP = clamp(1 - (this.human.swingUntil - this.time.now)/180, 0, 1);
-  if (this.human.swingUntil < this.time.now) swingP = 0;
-  this.drawPlayerWithPaddle(g, this.human.x, false, this.save.look, COLORS.paddleRed, swingP);
-  this.drawPlayerWithPaddle(g, this.ai.x, true, this.opponent.look, COLORS.paddleBlue);
+  var nowT = this.time.now;
+  function swingOf(ac){ var sp = clamp(1 - (ac.swingUntil - nowT)/180, 0, 1); return ac.swingUntil < nowT ? 0 : sp; }
+  var swingP = swingOf(this.human);
+  // match-point replay: the players move and swing exactly as they did, not just the ball
+  var rs = (this.match.state === 'gameOver' && this.isMatch && this.mpReplay) ? this.sampleReplay() : null;
+  function RX(key, live){ return rs ? lerp(rs.a[key], rs.b[key], rs.k) : live; }
+  function RS(key, live){ return rs ? lerp(rs.a[key], rs.b[key], rs.k) : live; }
+  var hX = RX('hx', this.human.x), aX = RX('ax', this.ai.x);
+  if (rs) swingP = RS('hs', swingP);
+  if (this.isDoubles){
+    this.drawPlayerWithPaddle(g, RX('bx', this.ai2.x), true, this.opp2.look, COLORS.paddleBlue, RS('bs', swingOf(this.ai2)));
+    this.drawPlayerWithPaddle(g, aX, true, this.opponent.look, COLORS.paddleBlue, RS('as', swingOf(this.ai)));
+    this.drawPlayerWithPaddle(g, RX('px', this.pt.x), false, this.ptLook, COLORS.paddleRed, RS('ps', swingOf(this.pt)));
+    this.drawPlayerWithPaddle(g, hX, false, this.save.look, COLORS.paddleRed, swingP);
+    var nx = this.match.next, st2 = this.match.state;
+    if (nx && (st2 === 'rally' || st2 === 'serveToss')){          // amber marker over whoever on your team plays the next ball
+      var mk = this.project(this.actorOf(nx.human).x, 0, 0);
+      g.fillStyle(0xF2A34C, 1); g.fillTriangle(mk.x-9, 572, mk.x+9, 572, mk.x, 586);
+      g.lineStyle(1.5, 0x2c1a05, 0.9); g.strokeTriangle(mk.x-9, 572, mk.x+9, 572, mk.x, 586);
+    }
+  } else {
+    this.drawPlayerWithPaddle(g, hX, false, this.save.look, COLORS.paddleRed, swingP);
+    this.drawPlayerWithPaddle(g, aX, true, this.opponent.look, COLORS.paddleBlue);
+  }
 
   if (this.match.state === 'gameOver' && this.isMatch) this.drawReplay(g);
 
@@ -2250,25 +3292,29 @@ MatchScene.prototype.drawPlayerWithPaddle = function(g, tableX, isAi, look, padd
   var farY = 225, nearY = 645;
   var p = this.project(tableX, isAi ? TABLE.length : 0, 0);
   var anchorY = isAi ? farY - 46 : nearY + 46;
-  drawFigure(g, p.x, anchorY, 1.7, look, paddleColor, isAi ? -1 : 1, swing, isAi);
+  drawFigure(g, p.x, anchorY, 1.7, look, paddleColor, isAi ? -1 : 1, swing, isAi, isAi ? 0 : (this.swingVar || 0));
 };
 
 MatchScene.prototype.renderHud = function(){
   var W = this.scale.width, H = this.scale.height;
   var m = this.match;
-  this.scoreText.setText(this.mode === 'rally' ? 'RALLY  ' + this.rally.count : this.mode === 'target' ? 'SCORE  ' + this.target.score : m.score.human + '  —  ' + m.score.ai);
+  this.scoreText.setText(this.mode === 'rally' ? 'RALLY  ' + this.rally.count : this.mode === 'target' ? 'SCORE  ' + this.target.score : this.trn ? 'BALL  ' + Math.min(this.trn.ball+1, this.trn.total) + '/' + this.trn.total : m.score.human + '  —  ' + m.score.ai);
   var hsc = m.score.human, asc = m.score.ai, pointTag = '';
   if (m.state !== 'gameOver' && m.state !== 'matchOver'){
-    var sideAtPoint = (hsc>=10 && hsc-asc>=1) ? 'human' : (asc>=10 && asc-hsc>=1) ? 'ai' : null;
-    if (sideAtPoint) pointTag = (m.gameWins[sideAtPoint] >= 1 ? '   ·   MATCH POINT' : '   ·   GAME POINT') + (sideAtPoint==='human' ? ' (you)' : ' ('+this.opponent.name+')');
+    var sideAtPoint = (hsc>=this.gp-1 && hsc-asc>=1) ? 'human' : (asc>=this.gp-1 && asc-hsc>=1) ? 'ai' : null;
+    if (sideAtPoint) pointTag = (m.gameWins[sideAtPoint] >= this.gamesNeed-1 ? '   ·   MATCH POINT' : '   ·   GAME POINT') + (sideAtPoint==='human' ? ' (you)' : ' ('+this.opponent.name+')');
   }
   this.gameText.setText('Game '+m.gameNum+'   You '+m.gameWins.human+' – '+m.gameWins.ai+' '+this.opponent.name+
-    '   Serve: '+(m.server==='human'?'You':this.opponent.name) + pointTag);
+    '   Serve: '+this.serverName() + pointTag);
   if (this.mode === 'tourney') this.gameText.setText(ROUND_NAMES[this.oppIndex] + '   ·   ' + this.gameText.text);
+  if (this.surv) this.gameText.setText('Level ' + this.surv.level + '   ·   Lives ' + this.surv.lives + '   ·   You vs ' + this.opponent.name + '   Serve: ' + this.serverName() + pointTag);
   if (this.mode === 'target'){
     var tl = Math.ceil(this.target.timeLeft), tgt = this.target;
     this.gameText.setText('Target Practice   ·   ' + (this.target.started ? Math.floor(tl/60) + ':' + ('0'+(tl%60)).slice(-2) : '1:00') +
       '   ·   Best: ' + Math.max(this.save.targetBest||0, tgt.score) + (tgt.combo > 1 ? '   ·   Combo x' + tgt.combo : ''));
+  } else if (this.trn){
+    var trd = this.trn, trn2 = TRAINER_DRILLS.filter(function(d){ return d.key === trd.drill; })[0].name, inc = trd.cur ? '   ·   Incoming: ' + ({top:'TOPSPIN', back:'BACKSPIN', side:'SIDESPIN'}[trd.cur]) : '';
+    this.gameText.setText(trd.serve ? 'Trainer  ·  Serving   ·   In ' + trd.returned + '   ·   On target ' + trd.hits : 'Trainer  ·  ' + trn2 + '   ·   Returned ' + trd.returned + inc);
   } else if (this.mode === 'rally'){
     var spdTag = this.rally.count >= 8 ? '   ·   Speed +' + Math.round(Math.min(38, this.rally.count*1.2)) + '%' : '';
     this.gameText.setText('Rally Challenge   ·   Best: ' + (this.save.rallyBest||0) + spdTag);
@@ -2305,6 +3351,31 @@ MatchScene.prototype.renderHud = function(){
     this.zoneLabels[k].setText(labels[k]).setColor(selK ? '#06241d' : '#EAF3E7');
   }
 
+  // SPIN strip (below AIM): Auto / Flat / Top / Back / Side-L / Side-R
+  if (!this.spinLabels){
+    this.spinLabels = [];
+    for (var sj=0;sj<6;sj++) this.spinLabels.push(this.add.text(0,0,SPIN_OPTS[sj].t,{fontFamily:'Arial', fontSize:'10px', color:'#EAF3E7'}).setOrigin(0.5).setDepth(5));
+    this.spinCaption = this.add.text(SPIN_STRIP.x, spinStripY()+SPIN_STRIP.h+3, this.touchUi ? 'SPIN  (tap to choose)' : 'SPIN  (or hold W/S/Q/E)', {fontFamily:'Arial', fontSize:'9px', color:'#7d8c85'}).setDepth(5);
+  }
+  var showSpin = this.mode !== 'target';
+  var spy2 = spinStripY();
+  if (showSpin){
+    this.hudG.fillStyle(0x000000, 0.18);
+    this.hudG.fillRoundedRect(SPIN_STRIP.x-4, spy2-4, 6*(SPIN_STRIP.w+SPIN_STRIP.gap)+2, SPIN_STRIP.h+8, 8);
+    for (var si=0; si<6; si++){
+      var sxp = SPIN_STRIP.x + si*(SPIN_STRIP.w+SPIN_STRIP.gap), selS = SPIN_OPTS[si].k === this.spinPick;
+      this.hudG.fillStyle(selS ? 0xF2A34C : 0x1c2d28, selS ? 0.95 : 0.7);
+      this.hudG.fillRoundedRect(sxp, spy2, SPIN_STRIP.w, SPIN_STRIP.h, 5);
+      this.hudG.lineStyle(1, selS ? 0xFFE0B0 : 0x2d3f3a, 0.9);
+      this.hudG.strokeRoundedRect(sxp, spy2, SPIN_STRIP.w, SPIN_STRIP.h, 5);
+    }
+  }
+  for (var sk=0; sk<6; sk++){
+    this.spinLabels[sk].setVisible(showSpin).setPosition(SPIN_STRIP.x + sk*(SPIN_STRIP.w+SPIN_STRIP.gap) + SPIN_STRIP.w/2, spy2 + SPIN_STRIP.h/2)
+      .setColor(SPIN_OPTS[sk].k === this.spinPick ? '#2c1a05' : '#EAF3E7');
+  }
+  this.spinCaption.setVisible(showSpin).setY(spy2 + SPIN_STRIP.h + 3);
+
   // spin indicator
   var spinLabel = '';
   if (this.human.spinTop>0) spinLabel += 'TOP ';
@@ -2315,14 +3386,22 @@ MatchScene.prototype.renderHud = function(){
   var rh = this.ruleHint && (m.state === 'serveToss' || (m.state === 'rally' && this.ball.lastHitBy !== 'human' && !this.ball.servePhase)) ? this.ruleHint : null;
   if (rh){ this.ruleText.setText(rh).setAlpha(1); } else { this.ruleText.setAlpha(0); }
   if (this.mode === 'target') this.hintText.setText(this.touchUi ? 'Drag to move   ·   Tap AIM buttons to pick the zone   ·   Tap SWING to hit' : 'A/D or drag to move   ·   1-6 or AIM buttons pick the zone   ·   Space swings   ·   Hit the glowing zone');
-  else this.hintText.setText(this.touchUi ? 'Drag to move   ·   Tap SWING to serve / hit' : 'Spin: '+spinLabel.trim()+'   [Space] Serve/Swing   [Enter] Continue after point   [Esc] Menu');
+  else if (this.trn && this.trn.serve) this.hintText.setText(this.touchUi ? 'Tap the glowing zone in AIM   ·   Tap SERVE at the top of the toss' : 'Press 1-6 to pick the glowing zone   ·   Space at the top of the toss   ·   Esc menu');
+  else if (this.trn) this.hintText.setText(this.touchUi ? 'Drag to move   ·   Tap SWING when the ball reaches you' : 'A/D or drag to move   ·   Space swings when the ball reaches you   ·   Esc menu');
+  else this.hintText.setText(this.touchUi ? 'Drag to move   ·   Tap SWING to serve / hit' : 'Spin: '+spinLabel.trim()+'   [Space] Serve/Swing (hold early = power)   [Enter] Continue after point   [Esc] Menu');
 
   // big, hard-to-miss prompt telling the player exactly what to do right now
   var pulse = Math.sin(this.time.now/140) > 0;
-  if (m.state === 'serveToss' && m.server === 'human'){
+  if (m.state === 'serveToss' && this.humanServes()){
     this.actionText.setAlpha(1);
     this.actionText.setColor(pulse ? '#F2A34C' : '#FCDE5A');
-    this.actionText.setText((this.touchUi ? 'TAP SWING TO SERVE' : 'PRESS SPACE TO SERVE') + (this.autoShot ? '  ·  '+this.autoShot.label : ''));
+    this.actionText.setText((this.touchUi ? 'TAP SERVE' : 'PRESS SPACE TO SERVE') + (this.autoShot ? '  ·  '+this.autoShot.label : ''));
+  } else if (m.state === 'rally' && this.charge.on){
+    this.actionText.setAlpha(1);
+    this.actionText.setColor(pulse ? '#FF9F43' : '#FCDE5A');
+    this.actionText.setText(this.swingPromptActive ? 'RELEASE NOW!' : 'CHARGING...' + (this.autoShot ? '  ·  '+this.autoShot.label : ''));
+  } else if (m.state === 'rally' && this.isDoubles && m.next && m.next.human === 'pt' && this.ball.alive && this.ball.vy < 0 && this.ball.lastHitBy !== 'human' && !this.ball.servePhase){
+    this.actionText.setAlpha(0.9).setColor('#9fb0a8').setText(PARTNER.short.toUpperCase() + "'S BALL");
   } else if (m.state === 'rally' && this.swingPromptActive){
     this.actionText.setAlpha(1);
     this.actionText.setColor(pulse ? '#1D9E75' : '#9FE1CB');
@@ -2345,18 +3424,30 @@ MatchScene.prototype.renderHud = function(){
     this.feedbackText.setAlpha(0);
   }
 
-  if (this.keys.esc.isDown){ this.scene.start('Menu'); }
 
   // point / game / match messages
   if (m.state !== 'matchOver'){ if (this.statUi && this.statShown) this.setStatVisible(false); this.msgText.setY(300); }
+  if (this.earnText && m.state !== 'matchOver' && m.state !== 'rallyOver') this.earnText.setVisible(false);
   var showMsg = (m.state==='pointPause' || m.state==='gameOver' || m.state==='matchOver' || (m.state==='serveToss' && m.pointMsg));
   if (m.state==='matchOver'){
     var won = m.matchWinner === 'human', last = this.oppIndex === OPPONENTS.length-1;
     var head = won ? 'YOU WIN THE MATCH' : this.opponent.name.toUpperCase() + ' WINS', sub = '';
     if (this.mode === 'tourney'){
-      if (won && last){ head = 'TOURNAMENT CHAMPION!'; sub = 'All five opponents beaten'; }
+      if (won && last){ head = 'TOURNAMENT CHAMPION!'; sub = 'All ' + OPPONENTS.length + ' opponents beaten'; }
       else if (won){ head = ROUND_NAMES[this.oppIndex].toUpperCase() + ' CLEARED'; sub = 'Next: ' + OPPONENTS[this.oppIndex+1].name + ' (' + ROUND_NAMES[this.oppIndex+1] + ')'; }
       else { head = 'ELIMINATED'; sub = 'Knocked out in the ' + ROUND_NAMES[this.oppIndex] + ' by ' + this.opponent.name; }
+    }
+    if (this.surv){
+      var sl = this.surv.level, sb = Math.max(this.save.survivalBest||0, won ? sl : 0);
+      if (won){ head = 'LEVEL ' + sl + ' CLEARED'; sub = 'Next: ' + OPPONENTS[survOpp(sl+1)].name + ' (Level ' + (sl+1) + ')  ·  Lives: ' + this.surv.lives; }
+      else if (this.surv.lives > 1){ head = this.opponent.name.toUpperCase() + ' WINS'; sub = 'Lives left: ' + (this.surv.lives-1) + '  ·  retry Level ' + sl; }
+      else { head = 'RUN OVER'; sub = 'Died on Level ' + sl + '  ·  Best cleared: Level ' + sb; }
+    }
+    if (this.isDoubles){ head = won ? 'YOUR TEAM WINS' : this.opponent.name.toUpperCase() + ' WIN'; }
+    if (this.daily){
+      var dd2 = this.save.daily;
+      if (won){ head = 'DAILY CLEARED'; sub = 'Streak: ' + dd2.streak + ' day' + (dd2.streak === 1 ? '' : 's'); }
+      else { head = this.opponent.name.toUpperCase() + ' WINS'; sub = 'Try again - the same challenge all day'; }
     }
     this.msgText.setAlpha(1).setY(sub ? 150 : 165).setScale(1);
     this.msgText.setColor(won ? '#FCDE5A' : '#F09595');
@@ -2378,12 +3469,27 @@ MatchScene.prototype.renderHud = function(){
     this.msgText.setScale(1);
   }
 
+  // charge meter under your player while you hold to charge a power shot
+  if (m.state === 'rally' && this.charge.on){
+    var cl = clamp((this.time.now - this.charge.start)/CHARGE_MS, 0, 1), cp = this.project(this.human.x, 0, 0);
+    var cc = cl < 0.5 ? 0x4FD1B8 : cl < 0.85 ? 0xFCDE5A : 0xFF6B4A;
+    this.hudG.fillStyle(0x000000, 0.55); this.hudG.fillRoundedRect(cp.x-48, 706, 96, 10, 5);
+    this.hudG.fillStyle(cc, 1); this.hudG.fillRoundedRect(cp.x-46, 708, Math.max(4, 92*cl), 6, 3);
+    this.hudG.lineStyle(1.5, 0xFFFFFF, 0.8); this.hudG.lineBetween(cp.x-46+92*0.6, 704, cp.x-46+92*0.6, 718);   // smash threshold
+  }
+  // pause button (top-right)
+  if (this.canPause()){
+    this.hudG.fillStyle(0x101923, 0.82); this.hudG.fillRoundedRect(W-56, 14, 42, 42, 10);
+    this.hudG.fillStyle(0xEAF3E7, 1); this.hudG.fillRoundedRect(W-45, 25, 7, 20, 2); this.hudG.fillRoundedRect(W-32, 25, 7, 20, 2);
+  }
   // replay badge
   if (m.state === 'gameOver' && this.isMatch){
-    this.hudG.fillStyle(0x000000, 0.45); this.hudG.fillRoundedRect(W-170, 20, 150, 30, 15);
-    this.hudG.fillStyle(0xE65B4F, 1); this.hudG.fillCircle(W-150, 35, 5);
-    if (!this.replayLabel) this.replayLabel = this.add.text(W-95, 35, 'REPLAY  0.5x', {fontFamily:'Arial', fontSize:'13px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5).setDepth(60);
-    this.replayLabel.setVisible(true);
+    var mpr = this.mpReplay, bw = mpr ? 238 : 150;
+    if (mpr){ this.hudG.fillStyle(0x000000, 0.22); this.hudG.fillRect(0, 0, W, 720); }
+    this.hudG.fillStyle(0x000000, 0.45); this.hudG.fillRoundedRect(W-66-bw, 20, bw, 30, 15);
+    this.hudG.fillStyle(0xE65B4F, 1); this.hudG.fillCircle(W-46-bw, 35, 5);
+    if (!this.replayLabel) this.replayLabel = this.add.text(0, 35, '', {fontFamily:'Arial', fontSize:'13px', color:'#EAF3E7', fontStyle:'bold'}).setOrigin(0.5).setDepth(60);
+    this.replayLabel.setText(mpr ? 'MATCH POINT REPLAY  0.35x' : 'REPLAY  0.5x').setX(W-66-bw/2+8).setVisible(true);
   } else if (this.replayLabel) this.replayLabel.setVisible(false);
 
   // target practice: floating score text
@@ -2397,7 +3503,7 @@ MatchScene.prototype.renderHud = function(){
   // on-screen swing button (touch devices only)
   if (this.touchUi){
     var tb = this.touchBtn, pressed = this.time.now < tb.downUntil;
-    var hot = (m.state==='serveToss' && m.server==='human') || (m.state==='rally' && this.swingPromptActive);
+    var hot = (m.state==='serveToss' && this.humanServes()) || (m.state==='rally' && this.swingPromptActive);
     var rr = tb.r * (pressed ? 0.92 : 1);
     this.hudG.fillStyle(0x000000, 0.25);
     this.hudG.fillCircle(tb.x, tb.y+5, rr+2);
@@ -2412,7 +3518,7 @@ MatchScene.prototype.renderHud = function(){
     if (!this.touchBtnText){
       this.touchBtnText = this.add.text(tb.x, tb.y, 'SWING', {fontFamily:'Arial', fontSize:'22px', color:'#ffffff', fontStyle:'bold'}).setOrigin(0.5).setDepth(50);
     }
-    var lbl = m.state==='serveToss' ? 'SERVE' : (m.state==='pointPause' || m.state==='gameOver') ? 'NEXT' : m.state==='matchOver' ? 'MENU' : 'SWING';
+    var lbl = (m.state==='rally' && this.charge.on) ? 'RELEASE' : m.state==='serveToss' ? (this.humanServes() ? 'SERVE' : 'SWING') : (m.state==='pointPause' || m.state==='gameOver') ? 'NEXT' : m.state==='matchOver' ? 'MENU' : 'SWING';
     this.touchBtnText.setText(lbl).setColor(hot ? '#2c1a05' : '#ffffff').setScale(pressed ? 0.92 : 1);
   }
 };
@@ -2426,7 +3532,7 @@ var config = {
   backgroundColor: '#101923',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 1280, height: 720 },
   physics: { default: 'none' },
-  scene: [BootScene, MenuScene, CustomizeScene, MatchScene]
+  scene: [BootScene, MenuScene, CustomizeScene, StatsScene, AchieveScene, ShopScene, DoublesPickScene, TrainerPickScene, MatchScene]
 };
 window.addEventListener('load', function(){
   window.game = new Phaser.Game(config);
