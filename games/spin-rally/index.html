@@ -47,6 +47,24 @@ window.addEventListener('resize', resize); resize();
 var R = 20, MU = 1100, VMAX = 1500, REST = 0.9, PWR_MAX = 1305;      // PWR_MAX: your 100% = a shot that just reaches the far edge
 var BX0 = 160, BX1 = 480, YTOP = 70, YBOT = 880, FOUL = 370, START_Y = 850;
 var Z3 = 170, Z2 = 270;                       // zone boundaries (3 | 2 | 1), FOUL ends zone 1
+var BOARDS = [
+  { name:'Standard', bx0:160, bx1:480, ytop:70,  mu:1100, desc:'Classic table' },
+  { name:'Narrow',   bx0:200, bx1:440, ytop:105, mu:1100, desc:'Tight and a bit shorter - the edges bite' },
+  { name:'Wide',     bx0:130, bx1:510, ytop:140, mu:1100, desc:'Roomy but shorter - more lanes to use' },
+  { name:'Short',    bx0:160, bx1:480, ytop:190, mu:1100, desc:'Close targets - lighter shots' },
+  { name:'Long',     bx0:160, bx1:480, ytop:44,  mu:1350, desc:'Slick and far - needs near-full power' },
+  { name:'Random',   bx0:160, bx1:480, ytop:70,  mu:1100, desc:'A different board every game' }
+];
+var RANDOM_BOARD = 5;
+function applyBoard(i){
+  var b = BOARDS[i] || BOARDS[0];
+  BX0 = b.bx0; BX1 = b.bx1; YTOP = b.ytop; MU = b.mu; Z3 = YTOP + 100; Z2 = YTOP + 200; FOUL = YTOP + 300;
+  PWR_MAX = Math.sqrt(2*MU*(START_Y - YTOP));
+  var w = BX1 - BX0, mid = (BX0 + BX1)/2, pw = Math.min(110, w*0.4);
+  PEGS = [ { x:BX0 + w*0.3, y:YBOT - 320, r:13 }, { x:BX1 - w*0.3, y:YBOT - 320, r:13 }, { x:mid, y:YBOT - 425, r:13 } ];
+  PATCHES = [ { x0:BX0, x1:BX0 + pw, y0:YBOT - 300, y1:YBOT - 170 }, { x0:BX1 - pw, x1:BX1, y0:YBOT - 450, y1:YBOT - 320 } ];
+  if (typeof genDecor === 'function') genDecor();
+}
 var TARGET = 21, PER_SIDE = 4, PULLMAX = 100, FRAME_CAP = 8;
 var COL = { a:'#d9473b', b:'#3b78d9' };
 
@@ -125,7 +143,7 @@ var OPPS = [
 ];
 var ORDER = [0, 4, 1, 2, 5, 3];            // ladder order: Rae, Lou, Gus, Dee, Zhu, Vic  (ids keep old saved records valid)
 var SAVE_KEY = 'shuffleboardClub.v1';
-var save = { rec: OPPS.map(function(){ return [0,0]; }), frames: 0, bestHang: 0, hangs: 0, diff: 1, guide: 0, sound: true, tut: false, trophies: [0,0,0], best: null, tour: { active:false, round:0, lives:3, diff:1, hangs:0, framesLost:0, v:2, obst:0 }, beat: OPPS.map(function(){ return [0,0,0]; }), vol: 0.8, vib: true, music: true, hints: {}, obst: 0, stats: { ko:0, bestShotKO:0, streak:0, bestStreak:0, bigFrame:0, fw:0, shutouts:0, dailyMax:0 }, ach: [], theme: 0, skin: 0, daily: { date:'', best:0, plays:0, streak:0, last:'' } };
+var save = { rec: OPPS.map(function(){ return [0,0]; }), frames: 0, bestHang: 0, hangs: 0, diff: 1, guide: 0, sound: true, tut: false, trophies: [0,0,0], best: null, tour: { active:false, round:0, lives:3, diff:1, hangs:0, framesLost:0, v:2, obst:0, board:0 }, beat: OPPS.map(function(){ return [0,0,0]; }), board: 0, vol: 0.8, vib: true, music: true, hints: {}, obst: 0, stats: { ko:0, bestShotKO:0, streak:0, bestStreak:0, bigFrame:0, fw:0, shutouts:0, dailyMax:0 }, ach: [], theme: 0, skin: 0, daily: { date:'', best:0, plays:0, streak:0, last:'' } };
 var DIFFS = [
   { name:'Easy',   desc:'Opponents miss more and take weaker shots', top:0.30, ang:1.8,  spd:1.8  },
   { name:'Normal', desc:'The standard game',                         top:0,    ang:1,    spd:1    },
@@ -180,6 +198,8 @@ var SKINS = [
     if (typeof j2.vol === 'number') save.vol = clamp(j2.vol, 0, 1); else if (j2.sound === false) save.vol = 0;
     if (j2.vib === false) save.vib = false; if (j2.music === false) save.music = false;
     if (j2.hints && typeof j2.hints === 'object') ['replay','daily','modes','newDaily','newStats','newCustom'].forEach(function(k){ if (j2.hints[k]) save.hints[k] = true; });
+    if (typeof j2.board === 'number' && j2.board >= 0 && j2.board < BOARDS.length) save.board = j2.board | 0;
+    if (save.tour && !(save.tour.board >= 0 && save.tour.board < BOARDS.length)) save.tour.board = 0;
     if (j2.obst === 0 || j2.obst === 1 || j2.obst === 2) save.obst = j2.obst;
     if (j2.stats && typeof j2.stats === 'object') for (var sk in save.stats) save.stats[sk] = +j2.stats[sk] || 0;
     if (Array.isArray(j2.ach)) save.ach = j2.ach.filter(function(x){ return typeof x === 'string'; });
@@ -193,9 +213,9 @@ function todayKey(d){ d = d || new Date(); function z(n){ return (n<10?'0':'') +
 /* ---------- obstacles ---------- */
 var OB = { mode:0 };                                              // 0 standard, 1 bumpers, 2 sticky patches
 var OBNAMES = ['Standard', 'Bumpers', 'Sticky Patches'];
-var PEGS = [ { x:BX0+95, y:560, r:13 }, { x:BX1-95, y:560, r:13 }, { x:(BX0+BX1)/2, y:455, r:13 } ];
-var PATCHES = [ { x0:BX0, x1:BX0+110, y0:580, y1:710 }, { x0:BX1-110, x1:BX1, y0:430, y1:560 } ], PATCH_K = 2.4;
-function obstTag(){ return G && G.obst ? '  ·  ' + OBNAMES[G.obst] : ''; }
+var PEGS = [], PATCHES = [], PATCH_K = 2.4;
+function pickBoard(b){ return b === RANDOM_BOARD ? Math.floor(Math.random()*RANDOM_BOARD) : b; }
+function obstTag(){ return G ? (G.board ? '  ·  ' + BOARDS[G.board].name + ' board' : '') + (G.obst ? '  ·  ' + OBNAMES[G.obst] : '') : ''; }
 function muAt(x, y){ if (OB.mode === 2) for (var k=0;k<PATCHES.length;k++){ var a = PATCHES[k]; if (x >= a.x0 && x <= a.x1 && y >= a.y0 && y <= a.y1) return MU*PATCH_K; } return MU; }
 
 /* ---------- physics ---------- */
@@ -313,7 +333,7 @@ function bestShot(side, oppIdx){
   for (i=0;i<ps.length;i++) if (ps[i].alive && !ps[i].falling && ps[i].side !== side && ps[i].y < FOUL) enemy.push(ps[i]);
   var enemyBefore = enemy.length, prof = profile(tier.style, G.score[side] - G.score[other(side)], curDiff(), shotsLeft(side));
   if (prof.noKnock) enemy = [];
-  var tys = [YTOP+R+10, 120, 150, 205, 250, 320]; if (prof.hang) tys.push(YTOP+R-8, YTOP+R-4);
+  var tys = [YTOP+R+10, YTOP+50, YTOP+80, YTOP+135, YTOP+180, YTOP+250]; if (prof.hang) tys.push(YTOP+R-8, YTOP+R-4);
   for (var a=0;a<xs.length;a++){
     sx = xs[a];
     var tgts = [];
@@ -359,15 +379,15 @@ function guideMode(){ return (hardMode() && settings.guide === 1) ? 0 : settings
 function lifeText(n){ var t = ''; for (var i=0;i<3;i++) t += i < n ? '♥' : '♡'; return t; }
 function names(){ return G.mode === 'ai' ? { a:'YOU', b:OPPS[G.opp].short.toUpperCase() } : G.mode === 'daily' ? { a:'YOU', b:'BLUE' } : { a:SKINS[save.skin].name.toUpperCase(), b:'BLUE' }; }
 function newGame(mode, opp, tour){
-  G = { tour:!!tour, rd:tour ? save.tour.round : 0, obst:(mode === 'daily' ? 0 : tour ? (save.tour.obst || 0) : save.obst), mode:mode, opp:opp||0, score:{a:0,b:0}, frame:1, first:'a', shots:0, pucks:[], state:'next', t:0, toast:null, toastT:0,
+  G = { tour:!!tour, rd:tour ? save.tour.round : 0, obst:(mode === 'daily' ? 0 : tour ? (save.tour.obst || 0) : save.obst), board:pickBoard(mode === 'daily' ? 0 : tour ? (save.tour.board || 0) : save.board), mode:mode, opp:opp||0, score:{a:0,b:0}, frame:1, first:'a', shots:0, pucks:[], state:'next', t:0, toast:null, toastT:0,
         aim:null, kb:{ angle:0, charging:false, t:0, p:0 }, keys:{}, hangsThis:0, frameHist:[] };
-  OB.mode = G.obst;
+  OB.mode = G.obst; applyBoard(G.board);
   G.tut = (mode === 'daily' && !save.hints.daily) ? { step:0, list:TIPS.daily, key:'daily' } : save.tut ? null : { step:0 };
   screen = 'game'; startFrame();
 }
 function startTour(fresh){
   var T = save.tour;
-  if (fresh || !T.active){ save.tour = T = { active:true, round:0, lives:3, diff:save.diff, hangs:0, framesLost:0, v:2, obst:save.obst }; persist(); }
+  if (fresh || !T.active){ save.tour = T = { active:true, round:0, lives:3, diff:save.diff, hangs:0, framesLost:0, v:2, obst:save.obst, board:save.board }; persist(); }
   newGame('ai', ORDER[T.round], true);
 }
 var DAILY_SHOTS = 3;
@@ -487,6 +507,7 @@ function continueFrame(){
 
 /* ---------- update ---------- */
 var last = 0;
+function replayRect(){ return [8, 96, Math.min(100, Math.max(62, BX0 - 62)), 46]; }
 function startReplay(){
   if (!G || !G.last || G.state !== 'aim') return;
   var ps = G.last.snap.map(function(q){ return { x:q.x, y:q.y, vx:0, vy:0, side:q.side, alive:true, falling:false }; }), L = G.last.shot;
@@ -565,10 +586,11 @@ function update(dt){
 
 /* ---------- drawing ---------- */
 var grain = [], dots = [];
-(function(){ var s = 7; function rnd(){ s = (s*16807) % 2147483647; return s/2147483647; }
+function genDecor(){ grain.length = 0; dots.length = 0; var s = 7; function rnd(){ s = (s*16807) % 2147483647; return s/2147483647; }
   for (var i=0;i<70;i++) grain.push({ x:BX0 + rnd()*(BX1-BX0), w:0.5+rnd()*1.5, a:0.03+rnd()*0.05 });
   for (i=0;i<420;i++) dots.push({ x:BX0 + rnd()*(BX1-BX0), y:YTOP + rnd()*(YBOT-YTOP), r:0.5+rnd()*0.9 });
-})();
+}
+genDecor();
 function txt(s, x, y, size, color, align, weight, font){
   ctx.font = (weight || 'bold') + ' ' + size + 'px ' + (font || 'Arial,Helvetica,sans-serif');
   ctx.fillStyle = color; ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s, x, y);
@@ -775,7 +797,7 @@ function drawGame(){
     var w = 360; rr(W/2-w/2, 440, w, 46, 12); ctx.fillStyle = 'rgba(10,20,54,0.88)'; ctx.fill(); txt(G.toast, W/2, 463, 19, '#ffd77a');
   }
   // bottom bar
-  if (G.last && G.state === 'aim' && (!G.tut || G.tut.key === 'replay')) btn(8, 96, 100, 46, '▶ Replay', startReplay, { size:16, r:10, fill:'#27407f', stroke:G.last.notable ? '#ffd77a' : '#6f8fd8' });
+  if (G.last && G.state === 'aim' && (!G.tut || G.tut.key === 'replay')) btn(replayRect()[0], replayRect()[1], replayRect()[2], replayRect()[3], '▶ Replay', startReplay, { size:replayRect()[2] < 90 ? 13 : 16, r:10, fill:'#27407f', stroke:G.last.notable ? '#ffd77a' : '#6f8fd8' });
   btn(10, 902, 110, 52, 'Pause', function(){ G.paused = true; }, { size:16, fill:'#27407f' });
   btn(512, 902, 118, 52, 'Guide: ' + GUIDES[guideMode()], function(){ var n = (guideMode() + 1) % 3; if (hardMode() && n === 1) n = 2; settings.guide = n; save.guide = n; persist(); }, { size:14, fill:'#27407f' });
   if (G.state === 'aim'){
@@ -801,21 +823,21 @@ function drawPause(){
 }
 function autoPause(){ if (screen === 'game' && G && !G.winner && !G.tut && !G.rep && G.state !== 'frameEnd') G.paused = true; }
 var TUT = [
-  { title:'Place your puck', body:['Drag your puck sideways, or slide the handle','under the table (or press A / D) to line up.'], spot:[120,898,400,56] },
-  { title:'Drag back, then let go', body:['Drag back anywhere on the board and release.','Further pull = harder shot.','100% just reaches the far edge.'], spot:[BX0-6, 760, BX1-BX0+12, 130] },
-  { title:'Closest puck scores', body:['Only the side with the furthest puck scores.','Zones are worth 1, 2 and 3 points.','Hang over the end edge for 4!'], spot:[BX0-6, YTOP-4, BX1-BX0+12, 330] },
-  { title:'Knock them off', body:['Hit their pucks off the end of the table.','A puck that stops short of the foul line is removed.','First to ' + TARGET + ' points wins.'], spot:[BX0-6, YTOP-4, BX1-BX0+12, 330] }
+  { title:'Place your puck', body:['Drag your puck sideways, or slide the handle','under the table (or press A / D) to line up.'], spot:function(){ return [BX0-40, 898, BX1-BX0+80, 56]; } },
+  { title:'Drag back, then let go', body:['Drag back anywhere on the board and release.','Further pull = harder shot.','100% just reaches the far edge.'], spot:function(){ return [BX0-6, 760, BX1-BX0+12, 130]; } },
+  { title:'Closest puck scores', body:['Only the side with the furthest puck scores.','Zones are worth 1, 2 and 3 points.','Hang over the end edge for 4!'], spot:function(){ return [BX0-6, YTOP-4, BX1-BX0+12, 330]; } },
+  { title:'Knock them off', body:['Hit their pucks off the end of the table.','A puck that stops short of the foul line is removed.','First to ' + TARGET + ' points wins.'], spot:function(){ return [BX0-6, YTOP-4, BX1-BX0+12, 330]; } }
 ];
 var TIPS = {
-  replay: [{ title:'Instant replay', body:['Tap Replay any time it is your turn to','watch the last shot again in slow motion.','It glows gold after a knock-off or a hang.'], spot:[8,96,100,46] }],
-  daily:  [{ title:'Daily Challenge', body:['3 shots, 3 blue pucks already on the table.','Knock them off and get closest to score.','Same layout for everyone today - beat your best!'], spot:[BX0-6, YTOP-4, BX1-BX0+12, 330] }]
+  replay: [{ title:'Instant replay', body:['Tap Replay any time it is your turn to','watch the last shot again in slow motion.','It glows gold after a knock-off or a hang.'], spot:function(){ return replayRect(); } }],
+  daily:  [{ title:'Daily Challenge', body:['3 shots, 3 blue pucks already on the table.','Knock them off and get closest to score.','Same layout for everyone today - beat your best!'], spot:function(){ return [BX0-6, YTOP-4, BX1-BX0+12, 330]; } }]
 };
 function tutList(){ return G.tut.list || TUT; }
 function tutNext(){ if (!G || !G.tut) return; G.tut.step++; if (G.tut.step >= tutList().length) tutEnd(); }
 function tutEnd(){ if (G && G.tut && G.tut.key){ save.hints[G.tut.key] = true; } else save.tut = true; if (G) G.tut = null; persist(); }
 function drawTut(){
   buttons.length = 0;
-  var TL = tutList(), st = TL[G.tut.step], sp = st.spot;
+  var TL = tutList(), st = TL[G.tut.step], sp = typeof st.spot === 'function' ? st.spot() : st.spot;
   ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.68)';
   ctx.beginPath(); ctx.rect(0,0,W,H); ctx.rect(sp[0], sp[1], sp[2], sp[3]); ctx.fill('evenodd'); ctx.restore();
   ctx.strokeStyle = '#ffd77a'; ctx.lineWidth = 3; rr(sp[0], sp[1], sp[2], sp[3], 10); ctx.stroke();
@@ -936,25 +958,28 @@ function drawCustom(){
   txt('PUCK SKIN', W/2, 410, 16, '#a9c1f0', 'center', 'bold');
   var keep = COL.a;
   SKINS.forEach(function(k, i){
-    var x = 20 + i*123, y = 430, w = 108, h = 158, open = k.ok(), sel = save.skin === i;
+    var x = 20 + i*123, y = 430, w = 108, h = 126, open = k.ok(), sel = save.skin === i;
     buttons.push({ x:x, y:y, w:w, h:h, cb:function(){ if (open){ save.skin = i; COL.a = k.col; persist(); custMsg = ''; } else custMsg = k.name + ' unlocks: ' + k.need; } });
     rr(x, y, w, h, 12); ctx.fillStyle = '#22366e'; ctx.fill();
-    ctx.save(); if (!open) ctx.globalAlpha = 0.35; COL.a = k.col; drawPuck({ x:x+w/2, y:y+52, side:'a' }); COL.a = keep; ctx.restore();
-    txt(k.name, x+w/2, y+100, 15, '#fff4dc');
-    txt(open ? (sel ? 'Selected' : 'Unlocked') : 'Locked', x+w/2, y+122, 12, open ? (sel ? '#ffe27a' : '#9cf26b') : '#a9c1f0', 'center', 'normal');
+    ctx.save(); if (!open) ctx.globalAlpha = 0.35; COL.a = k.col; drawPuck({ x:x+w/2, y:y+46, side:'a' }); COL.a = keep; ctx.restore();
+    txt(k.name, x+w/2, y+88, 15, '#fff4dc');
+    txt(open ? (sel ? 'Selected' : 'Unlocked') : 'Locked', x+w/2, y+110, 12, open ? (sel ? '#ffe27a' : '#9cf26b') : '#a9c1f0', 'center', 'normal');
     rr(x, y, w, h, 12); ctx.lineWidth = sel ? 4 : 2; ctx.strokeStyle = sel ? '#ffe27a' : '#6f8fd8'; ctx.stroke();
   });
-  txt(custMsg || 'Tap a locked skin to see how to unlock it', W/2, 610, 14, custMsg ? '#ffd77a' : '#a9c1f0', 'center', 'normal');
-  txt('TABLE MODE', W/2, 656, 16, '#a9c1f0', 'center', 'bold');
-  OBNAMES.forEach(function(n, i){ btn(20 + i*205, 676, 190, 46, n, function(){ save.obst = i; persist(); }, { size:17, r:10, fill: save.obst === i ? '#3f7be8' : '#22366e', stroke: save.obst === i ? '#ffe27a' : '#6f8fd8' }); });
-  txt(['Classic empty table', 'Three pegs bounce pucks around', 'Rough patches slow pucks down'][save.obst] + '  (not used in the Daily Challenge)', W/2, 744, 13, '#a9c1f0', 'center', 'normal');
-  btn(W/2-80, 780, 160, 48, 'Back', function(){ screen = 'menu'; }, { size:18, fill:'#27407f' });
+  txt(custMsg || 'Tap a locked skin to see how to unlock it', W/2, 574, 14, custMsg ? '#ffd77a' : '#a9c1f0', 'center', 'normal');
+  txt('TABLE MODE', W/2, 604, 16, '#a9c1f0', 'center', 'bold');
+  OBNAMES.forEach(function(n, i){ btn(20 + i*205, 620, 190, 40, n, function(){ save.obst = i; persist(); }, { size:16, r:10, fill: save.obst === i ? '#3f7be8' : '#22366e', stroke: save.obst === i ? '#ffe27a' : '#6f8fd8' }); });
+  txt(['Classic empty table', 'Three pegs bounce pucks around', 'Rough patches slow pucks down'][save.obst], W/2, 678, 13, '#a9c1f0', 'center', 'normal');
+  txt('BOARD SIZE', W/2, 708, 16, '#a9c1f0', 'center', 'bold');
+  BOARDS.forEach(function(n, i){ btn(20 + i*100, 724, 92, 40, n.name, function(){ save.board = i; persist(); }, { size:14, r:10, fill: save.board === i ? '#3f7be8' : '#22366e', stroke: save.board === i ? '#ffe27a' : '#6f8fd8' }); });
+  txt(BOARDS[save.board].desc + '  (modes and boards are not used in the Daily Challenge)', W/2, 782, 13, '#a9c1f0', 'center', 'normal');
+  btn(W/2-80, 806, 160, 44, 'Back', function(){ screen = 'menu'; }, { size:18, fill:'#27407f' });
   if (!save.hints.modes){
-    rr(20, 846, 600, 88, 12); ctx.fillStyle = '#2c4a9c'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#ffe27a'; ctx.stroke();
-    txt('NEW: Table modes', 40, 870, 17, '#ffd77a', 'left', 'bold', 'Georgia,serif');
-    txt('Bumpers add three pegs that bounce pucks around.', 40, 896, 13, '#e8f0ff', 'left', 'normal');
-    txt('Sticky Patches slow down pucks that cross them.', 40, 916, 13, '#e8f0ff', 'left', 'normal');
-    btn(500, 862, 100, 44, 'Got it', function(){ save.hints.modes = true; persist(); }, { size:16, stroke:'#ffe27a', fill:'#3f7be8' });
+    rr(20, 866, 600, 80, 12); ctx.fillStyle = '#2c4a9c'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#ffe27a'; ctx.stroke();
+    txt('NEW: Table modes and boards', 40, 888, 16, '#ffd77a', 'left', 'bold', 'Georgia,serif');
+    txt('Bumpers and Sticky Patches change how pucks move.', 40, 912, 13, '#e8f0ff', 'left', 'normal');
+    txt('Narrow, Wide, Short, Long - or Random each game.', 40, 930, 13, '#e8f0ff', 'left', 'normal');
+    btn(500, 880, 100, 44, 'Got it', function(){ save.hints.modes = true; persist(); }, { size:16, stroke:'#ffe27a', fill:'#3f7be8' });
   }
 }
 var shareReq = false, shareMsg = '', shareT = -9;
@@ -1201,7 +1226,7 @@ function frame(t){
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.SB = { startTour:startTour, newGame:newGame, bestShot:bestShot, fire:fire, update:update, get G(){ return G; }, get screen(){ return screen; }, simulate:simulate, frameScore:frameScore, OPPS:OPPS, continueFrame:continueFrame, setScreen:function(s){ screen = s; }, ORDER:ORDER, ACH:ACH, OB:OB, startReplay:startReplay, THEMES:THEMES, SKINS:SKINS, get save(){ return save; } };
+window.SB = { BOARDS:BOARDS, applyBoard:applyBoard, startTour:startTour, newGame:newGame, bestShot:bestShot, fire:fire, update:update, get G(){ return G; }, get screen(){ return screen; }, simulate:simulate, frameScore:frameScore, OPPS:OPPS, continueFrame:continueFrame, setScreen:function(s){ screen = s; }, ORDER:ORDER, ACH:ACH, OB:OB, startReplay:startReplay, THEMES:THEMES, SKINS:SKINS, get save(){ return save; } };
 })();
 </script>
 </body></html>
