@@ -57,15 +57,21 @@ var KICKI = {
 var MODES = {
   mar: { name:'MARATHON', desc:'Endless. Speeds up every 10 lines.' },
   spr: { name:'SPRINT',   desc:'Clear 40 lines as fast as you can.' },
-  ult: { name:'ULTRA',    desc:'Score the most in 2 minutes.' }
+  ult: { name:'ULTRA',    desc:'Score the most in 2 minutes.' },
+  dig: { name:'DIG',      desc:'Clear the garbage. 25 lines to win.' },
+  puz: { name:'PUZZLE',   desc:'Clear the whole board.' }
 };
+var DIG_LINES = 25, DIG_H = [2, 4, 6, 8], GARB = 8;
+var PUZ = [{"rows":["#.########","#.########","#.########","#.########"],"pcs":"I"},{"rows":["###..#####","###..#####"],"pcs":"O"},{"rows":["####..##..","####..##.#","########.#"],"pcs":"OJ"},{"rows":["#..#..####","#.##..####","#.########"],"pcs":"OJ"},{"rows":["....######","##..######","###.######","###.######"],"pcs":"JI"},{"rows":["###......#","####.##..#","####.##..#"],"pcs":"OLI"},{"rows":["#...##...#","##.###..##","######..##","######.###"],"pcs":"ITJ"},{"rows":["#.##....##","#.##..####","#.##..####","#.########"],"pcs":"ILL"},{"rows":["#...#..##.","#...#..##.","##..#####.","#########."],"pcs":"IOOL"},{"rows":["#....##..#","#....###.#","#..#.###.#","####.#####"],"pcs":"ILOL"},{"rows":["#......#..","#.#....#..","#.##.#.###","#.####.###"],"pcs":"ZTIIO"},{"rows":[".#...#..##",".##..#..##",".##..#..##",".###.#..##"],"pcs":"IOIOL"}];
 var SPRINT_LINES = 40, ULTRA_TIME = 120;
 
 /* ---------- save ---------- */
 var SAVE_KEY = 'blockfall.v1';
-var save = { best:{ mar:0, spr:0, ult:0 }, sound:true, vib:true, games:0, lines:0 };
+var save = { best:{ mar:0, spr:0, ult:0 }, sound:true, vib:true, games:0, lines:0, dig:{ '2':0, '4':0, '6':0, '8':0 }, puz:[0,0,0,0,0,0,0,0,0,0,0,0] };
 (function(){ try { var j = JSON.parse(localStorage.getItem(SAVE_KEY)); if (j && typeof j === 'object'){
   if (j.best && typeof j.best === 'object') ['mar','spr','ult'].forEach(function(k){ var v = +j.best[k]; if (isFinite(v) && v > 0) save.best[k] = Math.min(v, 1e9); });
+  if (j.dig && typeof j.dig === 'object') DIG_H.forEach(function(h){ var v = +j.dig[h]; if (isFinite(v) && v > 0) save.dig[h] = Math.min(v, 1e9); });
+  if (Array.isArray(j.puz)) for (var pi=0;pi<12;pi++){ var pv = +j.puz[pi]; if (isFinite(pv) && pv >= 1) save.puz[pi] = Math.min(3, pv|0); }
   if (j.sound === false) save.sound = false; if (j.vib === false) save.vib = false;
   if (isFinite(+j.games)) save.games = Math.max(0, +j.games|0); if (isFinite(+j.lines)) save.lines = Math.max(0, +j.lines|0);
 } } catch(e){} })();
@@ -106,15 +112,26 @@ var keys = {}, held = {}, heldBy = {}, parts = [], das = { dir:0, t:0, rep:false
 
 function newBoard(){ var b = []; for (var r=0;r<ROWS;r++){ b.push([]); for (var c=0;c<COLS;c++) b[r].push(0); } return b; }
 function bag(){ var a = TYPES.slice(); for (var i=a.length-1;i>0;i--){ var j = Math.floor(Math.random()*(i+1)), t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
-function newGame(mode){
+var puzAtt = 1;
+function newGame(mode, opt, retry){
   ac();
   G = { mode:mode, board:newBoard(), cur:null, hold:null, canHold:true, queue:[], score:0, lines:0, level:1, combo:-1, b2b:false, time:0, over:false, overT:0, won:false,
-        clearing:null, lockT:0, lockResets:0, lowest:0, acc:0, lastRot:false, od:{ meter:0, on:false, left:0 }, pops:[], paused:false, pieces:0, maxCombo:0, quads:0, tspins:0, newBest:false, reason:'' };
+        clearing:null, lockT:0, lockResets:0, lowest:0, acc:0, lastRot:false, od:{ meter:0, on:false, left:0 }, pops:[], paused:false, pieces:0, maxCombo:0, quads:0, tspins:0, newBest:false, reason:'', opt:opt, fixed:mode === 'puz', stars:0 };
   parts.length = 0; shake = 0; das.dir = 0; das.t = 0; das.rep = false;
+  if (mode === 'dig'){
+    var hh = DIG_H.indexOf(opt) >= 0 ? opt : 4, hole = -1;
+    for (var gr=0;gr<hh;gr++){ var nh; do { nh = Math.floor(Math.random()*COLS); } while (nh === hole); hole = nh; for (var gc=0;gc<COLS;gc++) if (gc !== hole) G.board[ROWS - 1 - gr][gc] = GARB; }
+  } else if (mode === 'puz'){
+    var pz = PUZ[opt >= 0 && opt < PUZ.length ? opt : 0]; G.opt = opt;
+    for (var pr=0;pr<pz.rows.length;pr++) for (var pc2=0;pc2<COLS;pc2++) if (pz.rows[pz.rows.length - 1 - pr].charAt(pc2) === '#') G.board[ROWS - 1 - pr][pc2] = GARB;
+    G.queue = pz.pcs.split('');
+    puzAtt = retry ? puzAtt + 1 : 1;
+  }
   refill(); spawn(null); screen = 'game';
 }
-function refill(){ while (G.queue.length < 7) G.queue = G.queue.concat(bag()); }
+function refill(){ if (G.fixed) return; while (G.queue.length < 7) G.queue = G.queue.concat(bag()); }
 function spawn(forced){
+  if (G.fixed && !forced && !G.queue.length){ endGame(false, 'Out of pieces'); return; }
   var t = forced || G.queue.shift(); refill();
   G.cur = { t:t, r:0, x:t === 'O' ? 4 : 3, y:1 }; G.lockT = 0; G.lockResets = 0; G.lowest = G.cur.y; G.acc = 0; G.lastRot = false;
   if (collide(G.cur.t, G.cur.r, G.cur.x, G.cur.y)) endGame(false, 'Blocked out');
@@ -132,7 +149,8 @@ function collide(t, r, x, y){
 }
 function cells(p){ var m = SHAPES[p.t][p.r], n = m.length, out = []; for (var i=0;i<n;i++) for (var j=0;j<n;j++) if (m[i][j]) out.push({ x:p.x + j, y:p.y + i }); return out; }
 function onGround(){ return collide(G.cur.t, G.cur.r, G.cur.x, G.cur.y + 1); }
-function touchReset(){ if (onGround() && G.lockResets < 15){ G.lockT = 0; G.lockResets++; } }
+function lockMax(){ return G.fixed ? 1.0 : 0.5; }
+function touchReset(){ if (onGround() && G.lockResets < (G.fixed ? 30 : 15)){ G.lockT = 0; G.lockResets++; } }
 function move(dx){
   if (!G || G.over || G.clearing || G.paused) return false;
   if (collide(G.cur.t, G.cur.r, G.cur.x + dx, G.cur.y)) return false;
@@ -144,12 +162,12 @@ function rotate(dir){
   var nr = (c.r + dir + 4) % 4, tbl = (c.t === 'I' ? KICKI : KICK)[c.r + '' + nr];
   for (var k=0;k<tbl.length;k++){
     var nx = c.x + tbl[k][0], ny = c.y - tbl[k][1];
-    if (!collide(c.t, nr, nx, ny)){ c.r = nr; c.x = nx; c.y = ny; G.lastRot = true; touchReset(); SFX.rot(); return true; }
+    if (!collide(c.t, nr, nx, ny)){ c.r = nr; c.x = nx; c.y = ny; G.lastRot = true; G.lastKick = k; touchReset(); SFX.rot(); return true; }
   }
   return false;
 }
 function doHold(){
-  if (!G || G.over || G.clearing || G.paused || !G.canHold) return;
+  if (!G || G.fixed || G.over || G.clearing || G.paused || !G.canHold) return;
   var t = G.cur.t; SFX.hold();
   if (G.hold){ var h = G.hold; G.hold = t; spawn(h); } else { G.hold = t; spawn(null); }
   G.canHold = false;
@@ -170,11 +188,17 @@ function addPart(x, y, col){ if (parts.length < 400) parts.push({ x:x, y:y, vx:(
 
 function lockPiece(){
   var c = G.cur, cs = cells(c), tIdx = TYPES.indexOf(c.t) + 1, i;
-  var tspin = false;
+  var tspin = false, mini = false;
   if (c.t === 'T' && G.lastRot){
-    var cr = [[0,0],[2,0],[0,2],[2,2]], occ = 0;
-    cr.forEach(function(p){ var x = c.x + p[0], y = c.y + p[1]; if (x < 0 || x >= COLS || y >= ROWS || (y >= 0 && G.board[y][x])) occ++; });
-    tspin = occ >= 3;
+    var cr = [[0,0],[2,0],[0,2],[2,2]], occ = [];
+    cr.forEach(function(p){ var x = c.x + p[0], y = c.y + p[1]; occ.push(x < 0 || x >= COLS || y >= ROWS || (y >= 0 && !!G.board[y][x])); });
+    var total = occ.filter(Boolean).length;
+    if (total >= 3){
+      tspin = true;
+      var fr = [[0,1],[1,3],[2,3],[0,2]][c.r];
+      var front = (occ[fr[0]] ? 1 : 0) + (occ[fr[1]] ? 1 : 0);
+      mini = !(front === 2 || G.lastKick === 4);
+    }
   }
   var allHidden = cs.every(function(q){ return q.y < HID; });
   cs.forEach(function(q){ if (q.y >= 0) G.board[q.y][q.x] = tIdx; });
@@ -184,12 +208,12 @@ function lockPiece(){
   var n = rows.length, lvl = G.level, mult = G.od.on ? 2 : 1, gain = 0;
   if (n === 0){
     G.combo = -1;
-    if (tspin){ gain = 400*lvl*mult; pop('T-SPIN', '#d8a0ff'); SFX.tspin(); G.tspins++; }
+    if (tspin){ gain = (mini ? 100 : 400)*lvl*mult; pop(mini ? 'MINI T-SPIN' : 'T-SPIN', '#d8a0ff'); SFX.tspin(); G.tspins++; }
     G.score += gain;
     if (allHidden){ endGame(false, 'Locked out'); return; }
     G.canHold = true; spawn(null); return;
   }
-  var base = tspin ? [0,800,1200,1600][n] : [0,100,300,500,800][n], hard = (n === 4) || tspin;
+  var base = tspin ? (mini ? [0,200,400,400][n] : [0,800,1200,1600][n]) : [0,100,300,500,800][n], hard = (n === 4) || tspin;
   if (hard && G.b2b){ base = Math.floor(base*1.5); pop('BACK-TO-BACK', '#ffd77a'); }
   G.b2b = hard;
   gain = base*lvl*mult; G.combo++;
@@ -198,11 +222,11 @@ function lockPiece(){
   if (n === 4) G.quads++;
   if (tspin) G.tspins++;
   G.score += gain;
-  pop((tspin ? 'T-SPIN ' : '') + ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'][n] + '  +' + gain, tspin ? '#d8a0ff' : n === 4 ? '#ffe27a' : '#ffffff');
+  pop((tspin ? (mini ? 'MINI T-SPIN ' : 'T-SPIN ') : '') + ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'][n] + '  +' + gain, tspin ? '#d8a0ff' : n === 4 ? '#ffe27a' : '#ffffff');
   if (tspin) SFX.tspin();
   SFX.clear(n); buzz(n === 4 ? 40 : 20); shake = Math.max(shake, n === 4 ? 9 : 4);
-  if (!G.od.on) G.od.meter = Math.min(100, G.od.meter + n*10 + (n === 4 ? 20 : 0));
-  rows.forEach(function(rr){ for (var q=0;q<COLS;q++){ var col = PCOL[TYPES[G.board[rr][q] - 1]]; for (var k=0;k<3;k++) addPart(BX + q*CS + CS/2, BY + (rr - HID)*CS + CS/2, col); } });
+  if (!G.od.on && !G.fixed) G.od.meter = Math.min(100, G.od.meter + n*10 + (n === 4 ? 20 : 0));
+  rows.forEach(function(rr){ for (var q=0;q<COLS;q++){ var col = colOf(G.board[rr][q]); for (var k=0;k<3;k++) addPart(BX + q*CS + CS/2, BY + (rr - HID)*CS + CS/2, col); } });
   G.clearing = { rows:rows, t:0 };
 }
 function finishClear(){
@@ -213,8 +237,10 @@ function finishClear(){
   var nl = Math.min(20, 1 + Math.floor(G.lines/10));
   if (nl > G.level){ G.level = nl; SFX.level(); pop('LEVEL ' + nl, '#9be04a'); }
   var empty = G.board.every(function(row){ return row.every(function(v){ return !v; }); });
-  if (empty){ var pc = 1000*G.level*(G.od.on ? 2 : 1); G.score += pc; pop('PERFECT CLEAR +' + pc, '#7dfcff'); SFX.win(); }
+  if (empty && !G.fixed){ var pc = 1000*G.level*(G.od.on ? 2 : 1); G.score += pc; pop('PERFECT CLEAR +' + pc, '#7dfcff'); SFX.win(); }
   if (G.mode === 'spr' && G.lines >= SPRINT_LINES){ endGame(true, 'Sprint complete'); return; }
+  if (G.mode === 'dig' && G.lines >= DIG_LINES){ endGame(true, 'Dig complete'); return; }
+  if (G.mode === 'puz' && empty){ endGame(true, 'Solved'); return; }
   G.canHold = true; spawn(null);
 }
 function endGame(won, reason){
@@ -222,12 +248,15 @@ function endGame(won, reason){
   G.over = true; G.won = won; G.reason = reason; G.overT = 0;
   var b = save.best, m = G.mode;
   if (m === 'mar' || m === 'ult'){ if (G.score > b[m]){ b[m] = G.score; G.newBest = G.score > 0; } }
+  else if (m === 'dig'){ if (won){ var dms = Math.round(G.time*1000), dk = G.opt; if (!save.dig[dk] || dms < save.dig[dk]){ save.dig[dk] = dms; G.newBest = true; } } }
+  else if (m === 'puz'){ if (won){ G.stars = puzAtt <= 1 ? 3 : puzAtt === 2 ? 2 : 1; if (G.stars > save.puz[G.opt]) save.puz[G.opt] = G.stars; } }
   else if (won){ var ms = Math.round(G.time*1000); if (!b.spr || ms < b.spr){ b.spr = ms; G.newBest = true; } }
   save.games++; persist();
   if (won || (m === 'ult' && reason === 'Time up')) SFX.win(); else SFX.over();
   buzz(80);
 }
 function gravSpr(){
+  if (G.fixed) return 0.5;
   var l = G.level, s = Math.pow(0.8 - (l - 1)*0.007, l - 1);
   if (G.od.on) s *= 3.5;
   return Math.max(0.02, s);
@@ -273,7 +302,7 @@ function update(dt){
       if (G.cur.y > G.lowest){ G.lowest = G.cur.y; G.lockResets = 0; }
     } else { G.acc = 0; break; }
   }
-  if (onGround()){ G.lockT += dt; if (G.lockT >= 0.5) lockPiece(); } else G.lockT = 0;
+  if (onGround()){ G.lockT += dt; if (G.lockT >= lockMax()) lockPiece(); } else G.lockT = 0;
 }
 
 /* ---------- drawing ---------- */
@@ -296,7 +325,9 @@ function cell(px, py, s, col, alpha){
   ctx.fillStyle = shade(col, 0.15); ctx.fillRect(px + e, py + e, s - 2*e, s - 2*e);
   ctx.globalAlpha = 1;
 }
+function colOf(v){ return v === GARB ? '#6f7f9f' : PCOL[TYPES[v - 1]]; }
 function miniPiece(t, cx, cy, s, alpha){
+  if (!t) return;
   var m = SHAPES[t][0], n = m.length, minX = 9, maxX = -1, minY = 9, maxY = -1, i, j;
   for (i=0;i<n;i++) for (j=0;j<n;j++) if (m[i][j]){ minX = Math.min(minX, j); maxX = Math.max(maxX, j); minY = Math.min(minY, i); maxY = Math.max(maxY, i); }
   var w = (maxX - minX + 1)*s, h = (maxY - minY + 1)*s, ox = cx - w/2 - minX*s, oy = cy - h/2 - minY*s;
@@ -332,16 +363,52 @@ function drawMenu(){
     txt(MODES[m].desc, 100, y + 62, 16, '#e8eeff', 'left', 'normal');
     txt('BEST', 548, y + 28, 12, '#ffe27a', 'right'); txt(best, 548, y + 56, 24, '#ffffff', 'right');
   });
-  btn(70, 614, 242, 52, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); ac(); SFX.rot(); }, { size:20, fill:'#27407f' });
-  btn(328, 614, 242, 52, save.vib ? 'Vibration: On' : 'Vibration: Off', function(){ save.vib = !save.vib; persist(); buzz(30); }, { size:20, fill:'#27407f' });
-  txt('HOW TO PLAY', W/2, 712, 16, '#9ff3ff');
+  btn(70, 598, 242, 62, 'DIG', function(){ screen = 'digsel'; }, { size:26, fill:'#1f8a70', stroke:'#fff4dc', r:16 });
+  btn(328, 598, 242, 62, 'PUZZLE', function(){ screen = 'puzsel'; }, { size:26, fill:'#c2701f', stroke:'#fff4dc', r:16 });
+  btn(70, 672, 242, 46, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); ac(); SFX.rot(); }, { size:18, fill:'#27407f' });
+  btn(328, 672, 242, 46, save.vib ? 'Vibration: On' : 'Vibration: Off', function(){ save.vib = !save.vib; persist(); buzz(30); }, { size:18, fill:'#27407f' });
+  txt('HOW TO PLAY', W/2, 750, 16, '#9ff3ff');
   ['Keyboard:  ← →  move    ↓  soft drop    ↑ / X  rotate    Z  rotate back',
    'Space  hard drop    C  hold    O  Overdrive    P  pause',
    'Touch:  drag the board to move, tap to rotate, flick down to drop',
    'or use the buttons under the board.',
    'Clear lines to charge OVERDRIVE: when full, it slows the',
-   'blocks and doubles your points for 10 seconds.'].forEach(function(l, i){ txt(l, W/2, 746 + i*26, 15, '#c9d6f5', 'center', 'normal'); });
-  txt('Games played ' + save.games + '   ·   Lines cleared ' + save.lines, W/2, 916, 14, '#7388bb', 'center', 'normal');
+   'blocks and doubles your points for 10 seconds.'].forEach(function(l, i){ txt(l, W/2, 778 + i*24, 15, '#c9d6f5', 'center', 'normal'); });
+  txt('Games played ' + save.games + '   ·   Lines cleared ' + save.lines, W/2, 930, 14, '#7388bb', 'center', 'normal');
+}
+
+function drawDigSel(){
+  bgDraw();
+  txt('DIG', W/2, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt('Start with garbage rows. Clear 25 lines to win.', W/2, 172, 18, '#a9c1f0', 'center', 'normal');
+  txt('Pick how tall the garbage starts', W/2, 214, 16, '#9ff3ff');
+  var names = ['Easy', 'Medium', 'Hard', 'Brutal'];
+  DIG_H.forEach(function(h, i){
+    var y = 250 + i*112, b = save.dig[h];
+    btn(70, y, 500, 96, '', function(){ newGame('dig', h); }, { fill:['#1f8a70','#2f66d6','#7a3fd1','#d6456f'][i], stroke:'#fff4dc', r:18 });
+    txt(names[i], 100, y + 32, 30, '#fff4dc', 'left', 'bold', 'Georgia,serif');
+    txt(h + ' garbage rows', 100, y + 64, 16, '#e8eeff', 'left', 'normal');
+    txt('BEST TIME', 548, y + 28, 12, '#ffe27a', 'right'); txt(b ? fmtMs(b) : '--', 548, y + 58, 24, '#ffffff', 'right');
+  });
+  btn(W/2 - 100, 730, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
+}
+function puzOpen(i){ return i === 0 || save.puz[i - 1] >= 1; }
+function drawPuzSel(){
+  bgDraw();
+  txt('PUZZLE', W/2, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt('Fill every gap with the pieces you are given.', W/2, 172, 18, '#a9c1f0', 'center', 'normal');
+  txt('Clear the whole board. First try = 3 stars.', W/2, 200, 16, '#9ff3ff');
+  var tot = 0; save.puz.forEach(function(v){ tot += v; });
+  txt(tot + ' / 36 stars', W/2, 236, 20, '#ffe27a', 'center', 'bold');
+  for (var i=0;i<12;i++){
+    var cx = 62 + (i % 3)*182, cy = 270 + Math.floor(i/3)*112, open = puzOpen(i), st = save.puz[i];
+    (function(n){
+      btn(cx, cy, 170, 98, '', open ? function(){ newGame('puz', n); } : function(){}, { fill: open ? (st ? '#2a6a4f' : '#2f66d6') : '#1a2244', stroke: open ? '#fff4dc' : '#3a4a7a', r:16 });
+    })(i);
+    txt(open ? String(i + 1) : '🔒', cx + 85, cy + 38, open ? 36 : 28, open ? '#fff4dc' : '#6c7bb0', 'center', 'bold', 'Georgia,serif');
+    if (open){ for (var q=0;q<3;q++) txt('★', cx + 45 + q*40, cy + 78, 24, q < st ? '#ffd24a' : '#53659c'); }
+  }
+  btn(W/2 - 100, 740, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
 }
 function drawBoard(){
   // frame + well
@@ -358,14 +425,14 @@ function drawBoard(){
     var py = BY + (i - HID)*CS;
     if (clr.indexOf(i) >= 0){
       var f = Math.min(1, G.clearing.t/0.3);
-      cell(BX + j*CS, py, CS, PCOL[TYPES[v - 1]], 1 - f);
+      cell(BX + j*CS, py, CS, colOf(v), 1 - f);
       ctx.fillStyle = 'rgba(255,255,255,' + (0.9*(1 - f)) + ')'; ctx.fillRect(BX + j*CS, py, CS, CS);
-    } else cell(BX + j*CS, py, CS, PCOL[TYPES[v - 1]], i < HID ? 0.4 : 1);
+    } else cell(BX + j*CS, py, CS, colOf(v), i < HID ? 0.4 : 1);
   }
   if (G.cur && !G.over && !G.clearing){
     var gy = ghostY(), cs = cells(G.cur), dy = gy - G.cur.y;
     cs.forEach(function(q){ var y2 = q.y + dy; if (y2 < 1) return; ctx.strokeStyle = PCOL[G.cur.t]; ctx.globalAlpha = 0.5; ctx.lineWidth = 2; ctx.strokeRect(BX + q.x*CS + 2, BY + (y2 - HID)*CS + 2, CS - 4, CS - 4); ctx.globalAlpha = 1; });
-    var lockF = onGround() ? Math.min(1, G.lockT/0.5) : 0;
+    var lockF = onGround() ? Math.min(1, G.lockT/lockMax()) : 0;
     cs.forEach(function(q){ if (q.y < 1) return; cell(BX + q.x*CS, BY + (q.y - HID)*CS, CS, PCOL[G.cur.t], 1 - lockF*0.35); });
   }
   // ceiling mask for rows above the well
@@ -381,27 +448,37 @@ function panel(x, y, w, h, label){
 function drawHud(){
   // hold
   panel(10, 80, 112, 100, 'HOLD');
-  if (G.hold) miniPiece(G.hold, 66, 140, 20, G.canHold ? 1 : 0.35);
+  if (G.fixed) txt('OFF', 66, 140, 16, '#6c7bb0'); else if (G.hold) miniPiece(G.hold, 66, 140, 20, G.canHold ? 1 : 0.35);
   // overdrive
-  panel(10, 196, 112, 82, 'OVERDRIVE');
+  panel(10, 196, 112, 82, G.fixed ? 'TRY' : 'OVERDRIVE');
+  if (G.fixed){ txt(String(puzAtt), 66, 246, 30, '#fff4dc'); } else {
   rr(20, 222, 92, 18, 9); ctx.fillStyle = '#0a1030'; ctx.fill();
   var full = G.od.meter >= 100 && !G.od.on;
   rr(20, 222, Math.max(18, 92*G.od.meter/100), 18, 9); ctx.fillStyle = G.od.on ? '#7dfcff' : full ? '#ffe27a' : '#5b7cff'; ctx.fill();
   txt(G.od.on ? Math.ceil(G.od.left) + 's' : full ? 'READY!' : Math.floor(G.od.meter) + '%', 66, 260, 14, full ? '#ffe27a' : '#e8eeff');
+  }
   // stats
   panel(10, 294, 112, 330);
+  if (G.fixed){
+    txt('PUZZLE', 66, 314, 13, '#9ff3ff'); txt(String(G.opt + 1), 66, 342, 26, '#fff4dc');
+    txt('PIECES', 66, 384, 13, '#9ff3ff'); txt(String(G.queue.length + (G.over ? 0 : 1)), 66, 412, 26, '#fff4dc');
+    txt('BLOCKS', 66, 454, 13, '#9ff3ff'); var bl = 0; G.board.forEach(function(row){ row.forEach(function(v){ if (v === GARB) bl++; }); }); txt(String(bl), 66, 482, 26, '#fff4dc');
+  } else {
   txt('SCORE', 66, 314, 13, '#9ff3ff'); txt(String(G.score), 66, 342, G.score > 99999 ? 20 : 26, '#fff4dc');
   txt('LEVEL', 66, 384, 13, '#9ff3ff'); txt(String(G.level), 66, 412, 26, '#fff4dc');
-  txt('LINES', 66, 454, 13, '#9ff3ff'); txt(G.mode === 'spr' ? G.lines + '/' + SPRINT_LINES : String(G.lines), 66, 482, 26, '#fff4dc');
+  txt('LINES', 66, 454, 13, '#9ff3ff'); txt(G.mode === 'spr' ? G.lines + '/' + SPRINT_LINES : G.mode === 'dig' ? G.lines + '/' + DIG_LINES : String(G.lines), 66, 482, 26, '#fff4dc');
+  }
   txt(G.mode === 'ult' ? 'TIME LEFT' : 'TIME', 66, 524, 13, '#9ff3ff');
   txt(G.mode === 'ult' ? fmtTime(Math.max(0, ULTRA_TIME - G.time)) : fmtTime(G.time), 66, 552, 18, '#fff4dc');
-  txt('COMBO', 66, 590, 13, '#9ff3ff'); txt(G.combo > 0 ? 'x' + (G.combo + 1) : '-', 66, 610, 18, '#fff4dc');
+  if (!G.fixed){ txt('COMBO', 66, 590, 13, '#9ff3ff'); txt(G.combo > 0 ? 'x' + (G.combo + 1) : '-', 66, 610, 18, '#fff4dc'); }
   // next
   panel(538, 80, 92, 400, 'NEXT');
-  for (var i=0;i<5;i++) miniPiece(G.queue[i], 584, 126 + i*72, i === 0 ? 20 : 16, 1);
-  panel(538, 496, 92, 128, G.mode === 'spr' ? 'BEST TIME' : 'BEST');
-  var b = save.best[G.mode]; txt(G.mode === 'spr' ? (b ? fmtMs(b) : '--') : String(b), 584, 540, G.mode === 'spr' ? 16 : 20, '#ffe27a');
-  txt(MODES[G.mode].name, W/2, 38, 22, '#ffd77a', 'center', 'bold', 'Georgia,serif');
+  for (var i=0;i<5;i++) if (G.queue[i]) miniPiece(G.queue[i], 584, 126 + i*72, i === 0 ? 20 : 16, 1);
+  panel(538, 496, 92, 128, (G.mode === 'spr' || G.mode === 'dig') ? 'BEST TIME' : G.fixed ? 'STARS' : 'BEST');
+  if (G.fixed){ var sv = save.puz[G.opt]; txt('★'.repeat(sv) + '☆'.repeat(3 - sv), 584, 546, 18, '#ffe27a'); }
+  else if (G.mode === 'dig'){ var bd = save.dig[G.opt]; txt(bd ? fmtMs(bd) : '--', 584, 540, 16, '#ffe27a'); }
+  else { var b = save.best[G.mode]; txt(G.mode === 'spr' ? (b ? fmtMs(b) : '--') : String(b), 584, 540, G.mode === 'spr' ? 16 : 20, '#ffe27a'); }
+  txt(G.mode === 'puz' ? 'PUZZLE ' + (G.opt + 1) : G.mode === 'dig' ? 'DIG  ' + G.opt + ' rows' : MODES[G.mode].name, W/2, 38, 22, '#ffd77a', 'center', 'bold', 'Georgia,serif');
   btn(560, 22, 70, 34, 'II', function(){ G.paused = true; }, { size:18, r:10, fill:'#27407f' });
 }
 function drawControls(){
@@ -440,28 +517,43 @@ function drawPause(){
   rr(130, 250, 380, 440, 18); ctx.fillStyle = '#1d2b5c'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#e0a458'; ctx.stroke();
   txt('PAUSED', W/2, 304, 40, '#ffd77a', 'center', 'bold', 'Georgia,serif');
   btn(170, 350, 300, 58, 'Resume', function(){ G.paused = false; }, { size:22, fill:'#2f66d6', stroke:'#9ff3ff' });
-  btn(170, 424, 300, 54, 'Restart', function(){ newGame(G.mode); }, { size:20 });
+  btn(170, 424, 300, 54, 'Restart', function(){ newGame(G.mode, G.opt, true); }, { size:20 });
   btn(170, 494, 300, 54, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); }, { size:20 });
   btn(170, 564, 300, 54, 'Quit to Menu', function(){ screen = 'menu'; G = null; }, { size:20 });
 }
+function drawOverPuz(){
+  bgDraw();
+  txt(G.won ? 'SOLVED!' : 'NOT QUITE', W/2, 150, 52, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
+  txt('PUZZLE ' + (G.opt + 1), W/2, 200, 20, '#a9c1f0', 'center', 'normal');
+  if (G.won){ for (var q=0;q<3;q++) txt('★', W/2 - 70 + q*70, 300, 64, q < G.stars ? '#ffd24a' : '#53659c');
+    txt(G.stars === 3 ? 'First try!' : 'Solved on try ' + puzAtt, W/2, 360, 20, '#e8eeff', 'center', 'normal'); }
+  else txt(G.reason + ' with blocks left on the board.', W/2, 290, 20, '#e8eeff', 'center', 'normal');
+  var y = 440;
+  if (G.won && G.opt < PUZ.length - 1){ btn(W/2 - 140, y, 280, 62, 'Next puzzle', function(){ newGame('puz', G.opt + 1); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' }); y += 78; }
+  btn(W/2 - 140, y, 280, 56, G.won ? 'Play again' : 'Try again', function(){ newGame('puz', G.opt, true); }, { size:22, fill: G.won ? '#27407f' : '#2f66d6', stroke:'#9ff3ff' }); y += 72;
+  btn(W/2 - 140, y, 280, 56, 'All puzzles', function(){ screen = 'puzsel'; G = null; }, { size:20, fill:'#27407f' }); y += 72;
+  btn(W/2 - 140, y, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
+}
 function drawOver(){
+  if (G.mode === 'puz'){ drawOverPuz(); return; }
   bgDraw();
   var m = G.mode;
-  txt(G.won ? 'SPRINT COMPLETE' : m === 'ult' ? 'TIME UP' : 'GAME OVER', W/2, 130, 46, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
+  txt(G.won ? (m === 'dig' ? 'DIG COMPLETE' : 'SPRINT COMPLETE') : m === 'ult' ? 'TIME UP' : 'GAME OVER', W/2, 130, 46, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
   txt(MODES[m].name, W/2, 180, 18, '#a9c1f0', 'center', 'normal');
-  var main = m === 'spr' ? (G.won ? fmtTime(G.time) : G.lines + ' / ' + SPRINT_LINES + ' lines') : String(G.score);
-  txt(main, W/2, 280, m === 'spr' ? 70 : 90, '#fff4dc', 'center', 'bold', 'Georgia,serif');
-  txt(m === 'spr' ? (G.won ? 'final time' : 'sprint not finished') : 'points', W/2, 340, 20, '#a9c1f0', 'center', 'normal');
+  var tm = (m === 'spr' || m === 'dig'), goal = m === 'dig' ? DIG_LINES : SPRINT_LINES;
+  var main = tm ? (G.won ? fmtTime(G.time) : G.lines + ' / ' + goal + ' lines') : String(G.score);
+  txt(main, W/2, 280, tm ? 70 : 90, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt(tm ? (G.won ? 'final time' : (m === 'dig' ? 'dig not finished' : 'sprint not finished')) : 'points', W/2, 340, 20, '#a9c1f0', 'center', 'normal');
   if (G.newBest) txt('NEW BEST!', W/2, 384, 28, '#ffe27a', 'center', 'bold');
-  else txt('Best: ' + (m === 'spr' ? (save.best.spr ? fmtMs(save.best.spr) : '--') : save.best[m]), W/2, 384, 20, '#e0a458', 'center', 'bold');
+  else txt('Best: ' + (m === 'dig' ? (save.dig[G.opt] ? fmtMs(save.dig[G.opt]) : '--') : m === 'spr' ? (save.best.spr ? fmtMs(save.best.spr) : '--') : save.best[m]), W/2, 384, 20, '#e0a458', 'center', 'bold');
   var rows = [['Lines', G.lines], ['Level', G.level], ['Time', fmtTime(G.time)], ['Quads', G.quads], ['T-spins', G.tspins], ['Best combo', G.maxCombo > 0 ? 'x' + (G.maxCombo + 1) : '-'], ['Pieces', G.pieces]];
   rows.forEach(function(r, i){ var y = 440 + i*34; txt(r[0], 190, y, 18, '#a9c1f0', 'left', 'normal'); txt(String(r[1]), 450, y, 18, '#fff4dc', 'right', 'bold'); });
-  btn(W/2 - 140, 720, 280, 62, 'Play Again', function(){ newGame(G.mode); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' });
+  btn(W/2 - 140, 720, 280, 62, 'Play Again', function(){ newGame(G.mode, G.opt); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' });
   btn(W/2 - 140, 798, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
 }
 function draw(){
   ctx.setTransform(RS, 0, 0, RS, 0, 0); buttons = [];
-  if (screen === 'menu') drawMenu(); else if (screen === 'game' && G) drawGame(); else if (screen === 'over' && G) drawOver(); else { screen = 'menu'; drawMenu(); }
+  if (screen === 'menu') drawMenu(); else if (screen === 'digsel') drawDigSel(); else if (screen === 'puzsel') drawPuzSel(); else if (screen === 'game' && G) drawGame(); else if (screen === 'over' && G) drawOver(); else { screen = 'menu'; drawMenu(); }
 }
 
 /* ---------- input ---------- */
@@ -506,7 +598,7 @@ cv.addEventListener('pointerup', function(e){ e.preventDefault(); endPointer(e, 
 cv.addEventListener('pointercancel', function(e){ endPointer(e, true); });
 window.addEventListener('keydown', function(e){
   var k = e.key; ac();
-  if (screen !== 'game' || !G){ if (screen === 'over' && (k === 'Enter' || k === ' ')){ e.preventDefault(); newGame(G.mode); } return; }
+  if (screen !== 'game' || !G){ if (screen === 'over' && G && (k === 'Enter' || k === ' ')){ e.preventDefault(); newGame(G.mode, G.opt, G.mode === 'puz'); } return; }
   if (G.paused){ if (k === 'Escape' || k === 'p' || k === 'P'){ G.paused = false; } e.preventDefault(); return; }
   var used = true;
   if (k === 'ArrowLeft' || k === 'a') keys.left = true;
