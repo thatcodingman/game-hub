@@ -15,8 +15,9 @@ canvas{display:block;touch-action:none;-webkit-tap-highlight-color:transparent}
 <script>
 (function(){
 'use strict';
-var cv = document.getElementById('c'), ctx = cv.getContext('2d'), W = 640, H = 960, S = 1, RS = 1;
+var cv = document.getElementById('c'), ctx = cv.getContext('2d'), W = 640, H = 960, S = 1, RS = 1, CX = 320, DX = 0;
 function resize(){
+  W = Math.max(640, Math.min(1100, Math.round(H*innerWidth/Math.max(1, innerHeight)))); DX = (W - 640)/2;
   var s = Math.min(innerWidth / W, innerHeight / H), d = Math.min(2, window.devicePixelRatio || 1);
   cv.style.width = Math.floor(W*s) + 'px'; cv.style.height = Math.floor(H*s) + 'px';
   cv.width = Math.round(W*s*d); cv.height = Math.round(H*s*d); S = s; RS = s*d;
@@ -67,11 +68,13 @@ var SPRINT_LINES = 40, ULTRA_TIME = 120;
 
 /* ---------- save ---------- */
 var SAVE_KEY = 'blockfall.v1';
-var save = { best:{ mar:0, spr:0, ult:0 }, sound:true, vib:true, games:0, lines:0, dig:{ '2':0, '4':0, '6':0, '8':0 }, puz:[0,0,0,0,0,0,0,0,0,0,0,0] };
+var HANDLING = [{ n:'Normal', das:0.17, arr:0.045 }, { n:'Fast', das:0.11, arr:0.03 }, { n:'Pro', das:0.08, arr:0.012 }];
+var save = { hand:0, best:{ mar:0, spr:0, ult:0 }, sound:true, vib:true, games:0, lines:0, dig:{ '2':0, '4':0, '6':0, '8':0 }, puz:[0,0,0,0,0,0,0,0,0,0,0,0] };
 (function(){ try { var j = JSON.parse(localStorage.getItem(SAVE_KEY)); if (j && typeof j === 'object'){
   if (j.best && typeof j.best === 'object') ['mar','spr','ult'].forEach(function(k){ var v = +j.best[k]; if (isFinite(v) && v > 0) save.best[k] = Math.min(v, 1e9); });
   if (j.dig && typeof j.dig === 'object') DIG_H.forEach(function(h){ var v = +j.dig[h]; if (isFinite(v) && v > 0) save.dig[h] = Math.min(v, 1e9); });
   if (Array.isArray(j.puz)) for (var pi=0;pi<12;pi++){ var pv = +j.puz[pi]; if (isFinite(pv) && pv >= 1) save.puz[pi] = Math.min(3, pv|0); }
+  if (isFinite(+j.hand) && +j.hand >= 0 && +j.hand < HANDLING.length) save.hand = +j.hand|0;
   if (j.sound === false) save.sound = false; if (j.vib === false) save.vib = false;
   if (isFinite(+j.games)) save.games = Math.max(0, +j.games|0); if (isFinite(+j.lines)) save.lines = Math.max(0, +j.lines|0);
 } } catch(e){} })();
@@ -102,6 +105,8 @@ var SFX = {
   od:function(){ tone(200, 900, 0.4, 0.1, 'sawtooth'); tone(300, 1200, 0.4, 0.06, 'square', 0.05); },
   odend:function(){ tone(700, 200, 0.35, 0.08, 'sawtooth'); },
   over:function(){ tone(330, 70, 0.9, 0.14, 'sawtooth'); },
+  count:function(){ tone(440, 440, 0.12, 0.09, 'square'); },
+  go:function(){ tone(880, 1100, 0.25, 0.1, 'square'); },
   win:function(){ [523, 659, 784, 1047, 1319].forEach(function(f, i){ tone(f, 0, 0.18, 0.09, 'triangle', i*0.09); }); }
 };
 function buzz(ms){ try { if (save.vib && navigator.vibrate) navigator.vibrate(ms); } catch(e){} }
@@ -116,7 +121,7 @@ var puzAtt = 1;
 function newGame(mode, opt, retry){
   ac();
   G = { mode:mode, board:newBoard(), cur:null, hold:null, canHold:true, queue:[], score:0, lines:0, level:1, combo:-1, b2b:false, time:0, over:false, overT:0, won:false,
-        clearing:null, lockT:0, lockResets:0, lowest:0, acc:0, lastRot:false, od:{ meter:0, on:false, left:0 }, pops:[], paused:false, pieces:0, maxCombo:0, quads:0, tspins:0, newBest:false, reason:'', opt:opt, fixed:mode === 'puz', stars:0 };
+        clearing:null, lockT:0, lockResets:0, lowest:0, acc:0, lastRot:false, od:{ meter:0, on:false, left:0 }, pops:[], paused:false, pieces:0, maxCombo:0, quads:0, tspins:0, newBest:false, reason:'', opt:opt, fixed:mode === 'puz', stars:0, count:mode === 'puz' ? 0 : 3, trail:null };
   parts.length = 0; shake = 0; das.dir = 0; das.t = 0; das.rep = false;
   if (mode === 'dig'){
     var hh = DIG_H.indexOf(opt) >= 0 ? opt : 4, hole = -1;
@@ -152,12 +157,12 @@ function onGround(){ return collide(G.cur.t, G.cur.r, G.cur.x, G.cur.y + 1); }
 function lockMax(){ return G.fixed ? 1.0 : 0.5; }
 function touchReset(){ if (onGround() && G.lockResets < (G.fixed ? 30 : 15)){ G.lockT = 0; G.lockResets++; } }
 function move(dx){
-  if (!G || G.over || G.clearing || G.paused) return false;
+  if (!G || G.over || G.clearing || G.paused || G.count > 0) return false;
   if (collide(G.cur.t, G.cur.r, G.cur.x + dx, G.cur.y)) return false;
   G.cur.x += dx; G.lastRot = false; touchReset(); SFX.move(); return true;
 }
 function rotate(dir){
-  if (!G || G.over || G.clearing || G.paused) return false;
+  if (!G || G.over || G.clearing || G.paused || G.count > 0) return false;
   var c = G.cur; if (c.t === 'O') return false;
   var nr = (c.r + dir + 4) % 4, tbl = (c.t === 'I' ? KICKI : KICK)[c.r + '' + nr];
   for (var k=0;k<tbl.length;k++){
@@ -167,20 +172,21 @@ function rotate(dir){
   return false;
 }
 function doHold(){
-  if (!G || G.fixed || G.over || G.clearing || G.paused || !G.canHold) return;
+  if (!G || G.fixed || G.over || G.clearing || G.paused || G.count > 0 || !G.canHold) return;
   var t = G.cur.t; SFX.hold();
   if (G.hold){ var h = G.hold; G.hold = t; spawn(h); } else { G.hold = t; spawn(null); }
   G.canHold = false;
 }
 function hardDrop(){
-  if (!G || G.over || G.clearing || G.paused) return;
-  var d = 0; while (!collide(G.cur.t, G.cur.r, G.cur.x, G.cur.y + 1)){ G.cur.y++; d++; }
+  if (!G || G.over || G.clearing || G.paused || G.count > 0) return;
+  var d = 0, sc0 = cells(G.cur); while (!collide(G.cur.t, G.cur.r, G.cur.x, G.cur.y + 1)){ G.cur.y++; d++; }
+  if (d > 1) G.trail = { cs:sc0, d:d, col:PCOL[G.cur.t], t:0 };
   if (d) G.lastRot = false;
   G.score += d*2*(G.od.on ? 2 : 1); shake = Math.max(shake, 5); SFX.drop(); lockPiece();
 }
 function ghostY(){ var y = G.cur.y; while (!collide(G.cur.t, G.cur.r, G.cur.x, y + 1)) y++; return y; }
 function activateOD(){
-  if (!G || G.over || G.clearing || G.paused || G.od.on || G.od.meter < 100) return;
+  if (!G || G.over || G.clearing || G.paused || G.count > 0 || G.od.on || G.od.meter < 100) return;
   G.od.on = true; G.od.left = 10; SFX.od(); buzz(30); pop('OVERDRIVE!', '#7dfcff');
 }
 function pop(text, color){ G.pops.push({ text:text, color:color, age:0 }); if (G.pops.length > 5) G.pops.shift(); }
@@ -203,6 +209,7 @@ function lockPiece(){
   var allHidden = cs.every(function(q){ return q.y < HID; });
   cs.forEach(function(q){ if (q.y >= 0) G.board[q.y][q.x] = tIdx; });
   SFX.lock(); buzz(8);
+  cs.forEach(function(q){ if (q.y >= HID){ addPart(BX + q.x*CS + CS/2, BY + (q.y - HID)*CS + CS/2, PCOL[c.t]); addPart(BX + q.x*CS + CS/2, BY + (q.y - HID)*CS + CS/2, '#ffffff'); } });
   var rows = [];
   for (var r=0;r<ROWS;r++){ var full = true; for (var cc=0;cc<COLS;cc++) if (!G.board[r][cc]){ full = false; break; } if (full) rows.push(r); }
   var n = rows.length, lvl = G.level, mult = G.od.on ? 2 : 1, gain = 0;
@@ -270,14 +277,16 @@ function update(dt){
   for (var i=parts.length-1;i>=0;i--){ var p = parts[i]; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 900*dt; p.a -= dt*1.8; if (p.a <= 0) parts.splice(i, 1); }
   shake = Math.max(0, shake - dt*30);
   if (screen === 'menu'){
-    if (menuBlocks.length < 14 && Math.random() < dt*3) menuBlocks.push({ x:Math.random()*W, y:-40, v:40 + Math.random()*80, t:TYPES[Math.floor(Math.random()*7)], r:Math.floor(Math.random()*4), s:12 + Math.random()*10 });
+    if (menuBlocks.length < 14 && Math.random() < dt*3) menuBlocks.push({ x:Math.random()*W - DX, y:-40, v:40 + Math.random()*80, t:TYPES[Math.floor(Math.random()*7)], r:Math.floor(Math.random()*4), s:12 + Math.random()*10 });
     for (var k=menuBlocks.length-1;k>=0;k--){ menuBlocks[k].y += menuBlocks[k].v*dt; if (menuBlocks[k].y > H + 80) menuBlocks.splice(k, 1); }
     return;
   }
   if (screen === 'over' || !G) return;
   if (screen !== 'game') return;
   for (var q=G.pops.length-1;q>=0;q--){ G.pops[q].age += dt; if (G.pops[q].age > 1.4) G.pops.splice(q, 1); }
+  if (G.trail){ G.trail.t += dt; if (G.trail.t > 0.18) G.trail = null; }
   if (G.paused) return;
+  if (G.count > 0){ var pc0 = Math.ceil(G.count); G.count -= dt; if (G.count <= 0){ G.count = 0; SFX.go(); } else if (Math.ceil(G.count) !== pc0) SFX.count(); return; }
   if (G.over){ G.overT += dt; if (G.overT > 0.9) screen = 'over'; return; }
   G.time += dt;
   if (G.mode === 'ult' && G.time >= ULTRA_TIME){ G.time = ULTRA_TIME; endGame(false, 'Time up'); return; }
@@ -288,8 +297,8 @@ function update(dt){
   if (dir !== das.dir){ das.dir = dir; das.t = 0; das.rep = false; if (dir) move(dir); }
   else if (dir){
     das.t += dt;
-    if (!das.rep){ if (das.t >= 0.17){ das.rep = true; das.t = 0; move(dir); } }
-    else { var guard = 0; while (das.t >= 0.045 && guard++ < 10){ das.t -= 0.045; move(dir); } }
+    if (!das.rep){ if (das.t >= HANDLING[save.hand].das){ das.rep = true; das.t = 0; move(dir); } }
+    else { var guard = 0; var ar = HANDLING[save.hand].arr; while (das.t >= ar && guard++ < 10){ das.t -= ar; move(dir); } }
   }
   if (G.over || G.clearing) return;
   // gravity
@@ -346,7 +355,7 @@ function hbtn(x, y, w, h, label, name, o){
 }
 function bgDraw(){
   var g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#101a44'); g.addColorStop(0.55, '#0a1030'); g.addColorStop(1, '#070b1c');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = g; ctx.fillRect(-DX, 0, W, H);
 }
 function menuCard(x, y, w, h, c1, c2, r){
   ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
@@ -360,60 +369,61 @@ function menuCard(x, y, w, h, c1, c2, r){
 function drawMenu(){
   bgDraw();
   // soft glow behind the title + faint grid
-  var gl = ctx.createRadialGradient(W/2, 150, 10, W/2, 150, 330); gl.addColorStop(0, 'rgba(95,227,255,0.20)'); gl.addColorStop(1, 'rgba(95,227,255,0)');
-  ctx.fillStyle = gl; ctx.fillRect(0, 0, W, 420);
+  var gl = ctx.createRadialGradient(CX, 150, 10, CX, 150, 330 + DX); gl.addColorStop(0, 'rgba(95,227,255,0.20)'); gl.addColorStop(1, 'rgba(95,227,255,0)');
+  ctx.fillStyle = gl; ctx.fillRect(-DX, 0, W, 420);
   ctx.strokeStyle = 'rgba(120,150,230,0.05)'; ctx.lineWidth = 1; ctx.beginPath();
-  for (var gx=0;gx<=W;gx+=40){ ctx.moveTo(gx, 0); ctx.lineTo(gx, H); }
-  for (var gy=0;gy<=H;gy+=40){ ctx.moveTo(0, gy); ctx.lineTo(W, gy); }
+  for (var gx=-DX - (DX % 40);gx<=W;gx+=40){ ctx.moveTo(gx, 0); ctx.lineTo(gx, H); }
+  for (var gy=0;gy<=H;gy+=40){ ctx.moveTo(-DX, gy); ctx.lineTo(W, gy); }
   ctx.stroke();
   menuBlocks.forEach(function(b){ ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.r*Math.PI/2 + animT*0.2); miniPiece(b.t, 0, 0, b.s, 0.3); ctx.restore(); });
   // piece strip above the title
-  TYPES.forEach(function(t, i){ miniPiece(t, W/2 + (i - 3)*74, 84 + Math.sin(animT*2 + i)*4, 11, 1); });
+  TYPES.forEach(function(t, i){ miniPiece(t, CX + (i - 3)*74, 84 + Math.sin(animT*2 + i)*4, 11, 1); });
   // title
   ctx.shadowColor = 'rgba(95,227,255,' + (0.45 + 0.2*Math.sin(animT*2)) + ')'; ctx.shadowBlur = 28;
   var tg = ctx.createLinearGradient(0, 110, 0, 190); tg.addColorStop(0, '#ffffff'); tg.addColorStop(1, '#c9dcff');
-  txt('BLOCK', W/2 - 112, 150, 76, tg, 'center', 'bold', 'Georgia,serif');
+  txt('BLOCK', CX - 112, 150, 76, tg, 'center', 'bold', 'Georgia,serif');
   var fg = ctx.createLinearGradient(0, 110, 0, 190); fg.addColorStop(0, '#9ff3ff'); fg.addColorStop(1, '#3fb6ff');
-  txt('FALL', W/2 + 148, 150, 76, fg, 'center', 'bold', 'Georgia,serif');
+  txt('FALL', CX + 148, 150, 76, fg, 'center', 'bold', 'Georgia,serif');
   ctx.shadowBlur = 0;
-  ctx.fillStyle = 'rgba(159,243,255,0.35)'; ctx.fillRect(70, 213, 130, 2); ctx.fillRect(W - 200, 213, 130, 2);
-  txt('Stack. Clear. Overdrive.', W/2, 214, 19, '#a9c1f0', 'center', 'normal');
+  ctx.fillStyle = 'rgba(159,243,255,0.35)'; ctx.fillRect(CX - 250, 213, 130, 2); ctx.fillRect(CX + 120, 213, 130, 2);
+  txt('Stack. Clear. Overdrive.', CX, 214, 19, '#a9c1f0', 'center', 'normal');
+  var cw = W > 640 ? Math.min(W - 80, 860) : 500, x0 = CX - cw/2, hw = (cw - 16)/2;
   var icons = ['I', 'L', 'T'], cA = ['#3b78e8', '#e0527c', '#8a4fe0'], cB = ['#1f4fb8', '#a32b52', '#5a2bb0'];
   ['mar','spr','ult'].forEach(function(m, i){
     var y = 262 + i*112, b = save.best[m], best = m === 'spr' ? (b ? fmtMs(b) : '--') : String(b);
-    menuCard(70, y, 500, 96, cA[i], cB[i], 18);
-    btn(70, y, 500, 96, '', function(){ newGame(m); }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:18 });
-    rr(86, y + 14, 80, 68, 12); ctx.fillStyle = 'rgba(5,10,40,0.35)'; ctx.fill();
-    miniPiece(icons[i], 126, y + 48, 14, 1);
-    txt(MODES[m].name, 188, y + 31, 30, '#fff4dc', 'left', 'bold', 'Georgia,serif');
-    txt(MODES[m].desc, 188, y + 66, 15, '#e8eeff', 'left', 'normal');
-    rr(458, y + 16, 98, 64, 12); ctx.fillStyle = 'rgba(5,10,40,0.35)'; ctx.fill();
-    txt('BEST', 507, y + 33, 12, '#ffe27a'); txt(best, 507, y + 59, best.length > 6 ? 18 : 24, '#ffffff');
+    menuCard(x0, y, cw, 96, cA[i], cB[i], 18);
+    btn(x0, y, cw, 96, '', function(){ newGame(m); }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:18 });
+    rr(x0 + 16, y + 14, 80, 68, 12); ctx.fillStyle = 'rgba(5,10,40,0.35)'; ctx.fill();
+    miniPiece(icons[i], x0 + 56, y + 48, 14, 1);
+    txt(MODES[m].name, x0 + 118, y + 31, 30, '#fff4dc', 'left', 'bold', 'Georgia,serif');
+    txt(MODES[m].desc, x0 + 118, y + 66, 15, '#e8eeff', 'left', 'normal');
+    rr(x0 + cw - 112, y + 16, 98, 64, 12); ctx.fillStyle = 'rgba(5,10,40,0.35)'; ctx.fill();
+    txt('BEST', x0 + cw - 63, y + 33, 12, '#ffe27a'); txt(best, x0 + cw - 63, y + 59, best.length > 6 ? 18 : 24, '#ffffff');
   });
-  menuCard(70, 598, 242, 62, '#27a284', '#16604f', 16);
-  btn(70, 598, 242, 62, '', function(){ screen = 'digsel'; }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:16 });
-  txt('DIG', 191, 619, 25, '#fff4dc', 'center', 'bold', 'Georgia,serif'); txt('Clear the garbage', 191, 643, 13, '#d5fff0', 'center', 'normal');
-  menuCard(328, 598, 242, 62, '#e08a2c', '#8f4a12', 16);
-  btn(328, 598, 242, 62, '', function(){ screen = 'puzsel'; }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:16 });
-  txt('PUZZLE', 449, 619, 25, '#fff4dc', 'center', 'bold', 'Georgia,serif'); txt('12 levels, fill the gaps', 449, 643, 13, '#ffe9cc', 'center', 'normal');
-  btn(70, 672, 242, 46, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); ac(); SFX.rot(); }, { size:17, fill:'#1d2f66', stroke:'#4a68b8' });
-  btn(328, 672, 242, 46, save.vib ? 'Vibration: On' : 'Vibration: Off', function(){ save.vib = !save.vib; persist(); buzz(30); }, { size:17, fill:'#1d2f66', stroke:'#4a68b8' });
-  rr(70, 736, 500, 180, 14); ctx.fillStyle = 'rgba(10,18,52,0.72)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#2b4388'; ctx.stroke();
-  txt('HOW TO PLAY', W/2, 758, 15, '#9ff3ff');
+  menuCard(x0, 598, hw, 62, '#27a284', '#16604f', 16);
+  btn(x0, 598, hw, 62, '', function(){ screen = 'digsel'; }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:16 });
+  txt('DIG', x0 + hw/2, 619, 25, '#fff4dc', 'center', 'bold', 'Georgia,serif'); txt('Clear the garbage', x0 + hw/2, 643, 13, '#d5fff0', 'center', 'normal');
+  menuCard(x0 + hw + 16, 598, hw, 62, '#e08a2c', '#8f4a12', 16);
+  btn(x0 + hw + 16, 598, hw, 62, '', function(){ screen = 'puzsel'; }, { fill:'rgba(0,0,0,0)', stroke:'rgba(0,0,0,0)', r:16 });
+  txt('PUZZLE', x0 + hw + 16 + hw/2, 619, 25, '#fff4dc', 'center', 'bold', 'Georgia,serif'); txt('12 levels, fill the gaps', x0 + hw + 16 + hw/2, 643, 13, '#ffe9cc', 'center', 'normal');
+  btn(x0, 672, hw, 46, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); ac(); SFX.rot(); }, { size:17, fill:'#1d2f66', stroke:'#4a68b8' });
+  btn(x0 + hw + 16, 672, hw, 46, save.vib ? 'Vibration: On' : 'Vibration: Off', function(){ save.vib = !save.vib; persist(); buzz(30); }, { size:17, fill:'#1d2f66', stroke:'#4a68b8' });
+  rr(x0, 736, cw, 180, 14); ctx.fillStyle = 'rgba(10,18,52,0.72)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#2b4388'; ctx.stroke();
+  txt('HOW TO PLAY', CX, 758, 15, '#9ff3ff');
   ['Keyboard:  ← →  move    ↓  soft drop    ↑ / X / Shift  rotate    Z  back',
    'Space  hard drop    C  hold    O  Overdrive    P  pause',
    'Touch:  drag the board to move, tap to rotate, flick down to drop',
    'or use the buttons under the board.',
    'Clear lines to charge OVERDRIVE: when full, it slows the',
-   'blocks and doubles your points for 10 seconds.'].forEach(function(l, i){ txt(l, W/2, 786 + i*22, 14, '#c9d6f5', 'center', 'normal'); });
-  txt('Games played ' + save.games + '   ·   Lines cleared ' + save.lines, W/2, 938, 14, '#7388bb', 'center', 'normal');
+   'blocks and doubles your points for 10 seconds.'].forEach(function(l, i){ txt(l, CX, 786 + i*22, 14, '#c9d6f5', 'center', 'normal'); });
+  txt('Games played ' + save.games + '   ·   Lines cleared ' + save.lines, CX, 938, 14, '#7388bb', 'center', 'normal');
 }
 
 function drawDigSel(){
   bgDraw();
-  txt('DIG', W/2, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
-  txt('Start with garbage rows. Clear 25 lines to win.', W/2, 172, 18, '#a9c1f0', 'center', 'normal');
-  txt('Pick how tall the garbage starts', W/2, 214, 16, '#9ff3ff');
+  txt('DIG', CX, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt('Start with garbage rows. Clear 25 lines to win.', CX, 172, 18, '#a9c1f0', 'center', 'normal');
+  txt('Pick how tall the garbage starts', CX, 214, 16, '#9ff3ff');
   var names = ['Easy', 'Medium', 'Hard', 'Brutal'];
   DIG_H.forEach(function(h, i){
     var y = 250 + i*112, b = save.dig[h];
@@ -422,16 +432,16 @@ function drawDigSel(){
     txt(h + ' garbage rows', 100, y + 64, 16, '#e8eeff', 'left', 'normal');
     txt('BEST TIME', 548, y + 28, 12, '#ffe27a', 'right'); txt(b ? fmtMs(b) : '--', 548, y + 58, 24, '#ffffff', 'right');
   });
-  btn(W/2 - 100, 730, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
+  btn(CX - 100, 730, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
 }
 function puzOpen(i){ return i === 0 || save.puz[i - 1] >= 1; }
 function drawPuzSel(){
   bgDraw();
-  txt('PUZZLE', W/2, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
-  txt('Fill every gap with the pieces you are given.', W/2, 172, 18, '#a9c1f0', 'center', 'normal');
-  txt('Clear the whole board. First try = 3 stars.', W/2, 200, 16, '#9ff3ff');
+  txt('PUZZLE', CX, 120, 56, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt('Fill every gap with the pieces you are given.', CX, 172, 18, '#a9c1f0', 'center', 'normal');
+  txt('Clear the whole board. First try = 3 stars.', CX, 200, 16, '#9ff3ff');
   var tot = 0; save.puz.forEach(function(v){ tot += v; });
-  txt(tot + ' / 36 stars', W/2, 236, 20, '#ffe27a', 'center', 'bold');
+  txt(tot + ' / 36 stars', CX, 236, 20, '#ffe27a', 'center', 'bold');
   for (var i=0;i<12;i++){
     var cx = 62 + (i % 3)*182, cy = 270 + Math.floor(i/3)*112, open = puzOpen(i), st = save.puz[i];
     (function(n){
@@ -440,7 +450,7 @@ function drawPuzSel(){
     txt(open ? String(i + 1) : '🔒', cx + 85, cy + 38, open ? 36 : 28, open ? '#fff4dc' : '#6c7bb0', 'center', 'bold', 'Georgia,serif');
     if (open){ for (var q=0;q<3;q++) txt('★', cx + 45 + q*40, cy + 78, 24, q < st ? '#ffd24a' : '#53659c'); }
   }
-  btn(W/2 - 100, 740, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
+  btn(CX - 100, 740, 200, 54, 'Back', function(){ screen = 'menu'; }, { size:20, fill:'#27407f' });
 }
 function drawBoard(){
   // frame + well
@@ -460,6 +470,12 @@ function drawBoard(){
       cell(BX + j*CS, py, CS, colOf(v), 1 - f);
       ctx.fillStyle = 'rgba(255,255,255,' + (0.9*(1 - f)) + ')'; ctx.fillRect(BX + j*CS, py, CS, CS);
     } else cell(BX + j*CS, py, CS, colOf(v), i < HID ? 0.4 : 1);
+  }
+  if (G.trail){
+    var tr = G.trail, top = {}; tr.cs.forEach(function(q){ if (top[q.x] === undefined || q.y < top[q.x]) top[q.x] = q.y; });
+    ctx.globalAlpha = 0.4*(1 - tr.t/0.18); ctx.fillStyle = tr.col;
+    Object.keys(top).forEach(function(cx){ ctx.fillRect(BX + (+cx)*CS + 6, BY + (top[cx] - HID)*CS, CS - 12, tr.d*CS); });
+    ctx.globalAlpha = 1;
   }
   if (G.cur && !G.over && !G.clearing){
     var gy = ghostY(), cs = cells(G.cur), dy = gy - G.cur.y;
@@ -510,7 +526,7 @@ function drawHud(){
   if (G.fixed){ var sv = save.puz[G.opt]; txt('★'.repeat(sv) + '☆'.repeat(3 - sv), 584, 546, 18, '#ffe27a'); }
   else if (G.mode === 'dig'){ var bd = save.dig[G.opt]; txt(bd ? fmtMs(bd) : '--', 584, 540, 16, '#ffe27a'); }
   else { var b = save.best[G.mode]; txt(G.mode === 'spr' ? (b ? fmtMs(b) : '--') : String(b), 584, 540, G.mode === 'spr' ? 16 : 20, '#ffe27a'); }
-  txt(G.mode === 'puz' ? 'PUZZLE ' + (G.opt + 1) : G.mode === 'dig' ? 'DIG  ' + G.opt + ' rows' : MODES[G.mode].name, W/2, 38, 22, '#ffd77a', 'center', 'bold', 'Georgia,serif');
+  txt(G.mode === 'puz' ? 'PUZZLE ' + (G.opt + 1) : G.mode === 'dig' ? 'DIG  ' + G.opt + ' rows' : MODES[G.mode].name, CX, 38, 22, '#ffd77a', 'center', 'bold', 'Georgia,serif');
   btn(560, 22, 70, 34, 'II', function(){ G.paused = true; }, { size:18, r:10, fill:'#27407f' });
 }
 function drawControls(){
@@ -536,60 +552,62 @@ function drawGame(){
     var a = p.age < 1 ? 1 : Math.max(0, 1 - (p.age - 1)/0.4), y = BY + 260 - p.age*40 - i*0;
     ctx.globalAlpha = a; txt(p.text, BX + COLS*CS/2, y, 26, p.color, 'center', 'bold', 'Georgia,serif'); ctx.globalAlpha = 1;
   });
+  if (G.count > 0){ var cn = Math.ceil(G.count), cf = G.count - Math.floor(G.count); ctx.globalAlpha = 0.35 + 0.65*cf; txt(String(cn), BX + COLS*CS/2, BY + 220, 120*(0.8 + 0.3*cf), '#ffe27a', 'center', 'bold', 'Georgia,serif'); ctx.globalAlpha = 1; txt('GET READY', BX + COLS*CS/2, BY + 300, 20, '#9ff3ff'); }
   drawControls();
   if (G.over){
-    ctx.fillStyle = 'rgba(5,8,24,' + Math.min(0.7, G.overT*0.8) + ')'; ctx.fillRect(0, 0, W, H);
-    txt(G.won ? 'FINISHED!' : G.reason.toUpperCase(), W/2, 440, 44, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
+    ctx.fillStyle = 'rgba(5,8,24,' + Math.min(0.7, G.overT*0.8) + ')'; ctx.fillRect(-DX, 0, W, H);
+    txt(G.won ? 'FINISHED!' : G.reason.toUpperCase(), CX, 440, 44, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
   }
   if (G.paused) drawPause();
 }
 function drawPause(){
   buttons.length = 0;
-  ctx.fillStyle = 'rgba(5,8,24,0.82)'; ctx.fillRect(0, 0, W, H);
-  rr(130, 250, 380, 440, 18); ctx.fillStyle = '#1d2b5c'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#e0a458'; ctx.stroke();
-  txt('PAUSED', W/2, 304, 40, '#ffd77a', 'center', 'bold', 'Georgia,serif');
-  btn(170, 350, 300, 58, 'Resume', function(){ G.paused = false; }, { size:22, fill:'#2f66d6', stroke:'#9ff3ff' });
-  btn(170, 424, 300, 54, 'Restart', function(){ newGame(G.mode, G.opt, true); }, { size:20 });
-  btn(170, 494, 300, 54, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); }, { size:20 });
-  btn(170, 564, 300, 54, 'Quit to Menu', function(){ screen = 'menu'; G = null; }, { size:20 });
+  ctx.fillStyle = 'rgba(5,8,24,0.82)'; ctx.fillRect(-DX, 0, W, H);
+  rr(130, 250, 380, 420, 18); ctx.fillStyle = '#1d2b5c'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#e0a458'; ctx.stroke();
+  txt('PAUSED', CX, 304, 40, '#ffd77a', 'center', 'bold', 'Georgia,serif');
+  btn(170, 336, 300, 58, 'Resume', function(){ G.paused = false; }, { size:22, fill:'#2f66d6', stroke:'#9ff3ff' });
+  btn(170, 406, 300, 52, 'Restart', function(){ newGame(G.mode, G.opt, true); }, { size:20 });
+  btn(170, 470, 300, 52, 'Handling: ' + HANDLING[save.hand].n, function(){ save.hand = (save.hand + 1) % HANDLING.length; persist(); }, { size:20 });
+  btn(170, 534, 300, 52, save.sound ? 'Sound: On' : 'Sound: Off', function(){ save.sound = !save.sound; persist(); }, { size:20 });
+  btn(170, 598, 300, 52, 'Quit to Menu', function(){ screen = 'menu'; G = null; }, { size:20 });
 }
 function drawOverPuz(){
   bgDraw();
-  txt(G.won ? 'SOLVED!' : 'NOT QUITE', W/2, 150, 52, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
-  txt('PUZZLE ' + (G.opt + 1), W/2, 200, 20, '#a9c1f0', 'center', 'normal');
-  if (G.won){ for (var q=0;q<3;q++) txt('★', W/2 - 70 + q*70, 300, 64, q < G.stars ? '#ffd24a' : '#53659c');
-    txt(G.stars === 3 ? 'First try!' : 'Solved on try ' + puzAtt, W/2, 360, 20, '#e8eeff', 'center', 'normal'); }
-  else txt(G.reason + ' with blocks left on the board.', W/2, 290, 20, '#e8eeff', 'center', 'normal');
+  txt(G.won ? 'SOLVED!' : 'NOT QUITE', CX, 150, 52, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
+  txt('PUZZLE ' + (G.opt + 1), CX, 200, 20, '#a9c1f0', 'center', 'normal');
+  if (G.won){ for (var q=0;q<3;q++) txt('★', CX - 70 + q*70, 300, 64, q < G.stars ? '#ffd24a' : '#53659c');
+    txt(G.stars === 3 ? 'First try!' : 'Solved on try ' + puzAtt, CX, 360, 20, '#e8eeff', 'center', 'normal'); }
+  else txt(G.reason + ' with blocks left on the board.', CX, 290, 20, '#e8eeff', 'center', 'normal');
   var y = 440;
-  if (G.won && G.opt < PUZ.length - 1){ btn(W/2 - 140, y, 280, 62, 'Next puzzle', function(){ newGame('puz', G.opt + 1); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' }); y += 78; }
-  btn(W/2 - 140, y, 280, 56, G.won ? 'Play again' : 'Try again', function(){ newGame('puz', G.opt, true); }, { size:22, fill: G.won ? '#27407f' : '#2f66d6', stroke:'#9ff3ff' }); y += 72;
-  btn(W/2 - 140, y, 280, 56, 'All puzzles', function(){ screen = 'puzsel'; G = null; }, { size:20, fill:'#27407f' }); y += 72;
-  btn(W/2 - 140, y, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
+  if (G.won && G.opt < PUZ.length - 1){ btn(CX - 140, y, 280, 62, 'Next puzzle', function(){ newGame('puz', G.opt + 1); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' }); y += 78; }
+  btn(CX - 140, y, 280, 56, G.won ? 'Play again' : 'Try again', function(){ newGame('puz', G.opt, true); }, { size:22, fill: G.won ? '#27407f' : '#2f66d6', stroke:'#9ff3ff' }); y += 72;
+  btn(CX - 140, y, 280, 56, 'All puzzles', function(){ screen = 'puzsel'; G = null; }, { size:20, fill:'#27407f' }); y += 72;
+  btn(CX - 140, y, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
 }
 function drawOver(){
   if (G.mode === 'puz'){ drawOverPuz(); return; }
   bgDraw();
   var m = G.mode;
-  txt(G.won ? (m === 'dig' ? 'DIG COMPLETE' : 'SPRINT COMPLETE') : m === 'ult' ? 'TIME UP' : 'GAME OVER', W/2, 130, 46, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
-  txt(MODES[m].name, W/2, 180, 18, '#a9c1f0', 'center', 'normal');
+  txt(G.won ? (m === 'dig' ? 'DIG COMPLETE' : 'SPRINT COMPLETE') : m === 'ult' ? 'TIME UP' : 'GAME OVER', CX, 130, 46, G.won ? '#ffd77a' : '#ff9fb4', 'center', 'bold', 'Georgia,serif');
+  txt(MODES[m].name, CX, 180, 18, '#a9c1f0', 'center', 'normal');
   var tm = (m === 'spr' || m === 'dig'), goal = m === 'dig' ? DIG_LINES : SPRINT_LINES;
   var main = tm ? (G.won ? fmtTime(G.time) : G.lines + ' / ' + goal + ' lines') : String(G.score);
-  txt(main, W/2, 280, tm ? 70 : 90, '#fff4dc', 'center', 'bold', 'Georgia,serif');
-  txt(tm ? (G.won ? 'final time' : (m === 'dig' ? 'dig not finished' : 'sprint not finished')) : 'points', W/2, 340, 20, '#a9c1f0', 'center', 'normal');
-  if (G.newBest) txt('NEW BEST!', W/2, 384, 28, '#ffe27a', 'center', 'bold');
-  else txt('Best: ' + (m === 'dig' ? (save.dig[G.opt] ? fmtMs(save.dig[G.opt]) : '--') : m === 'spr' ? (save.best.spr ? fmtMs(save.best.spr) : '--') : save.best[m]), W/2, 384, 20, '#e0a458', 'center', 'bold');
+  txt(main, CX, 280, tm ? 70 : 90, '#fff4dc', 'center', 'bold', 'Georgia,serif');
+  txt(tm ? (G.won ? 'final time' : (m === 'dig' ? 'dig not finished' : 'sprint not finished')) : 'points', CX, 340, 20, '#a9c1f0', 'center', 'normal');
+  if (G.newBest) txt('NEW BEST!', CX, 384, 28, '#ffe27a', 'center', 'bold');
+  else txt('Best: ' + (m === 'dig' ? (save.dig[G.opt] ? fmtMs(save.dig[G.opt]) : '--') : m === 'spr' ? (save.best.spr ? fmtMs(save.best.spr) : '--') : save.best[m]), CX, 384, 20, '#e0a458', 'center', 'bold');
   var rows = [['Lines', G.lines], ['Level', G.level], ['Time', fmtTime(G.time)], ['Quads', G.quads], ['T-spins', G.tspins], ['Best combo', G.maxCombo > 0 ? 'x' + (G.maxCombo + 1) : '-'], ['Pieces', G.pieces]];
   rows.forEach(function(r, i){ var y = 440 + i*34; txt(r[0], 190, y, 18, '#a9c1f0', 'left', 'normal'); txt(String(r[1]), 450, y, 18, '#fff4dc', 'right', 'bold'); });
-  btn(W/2 - 140, 720, 280, 62, 'Play Again', function(){ newGame(G.mode, G.opt); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' });
-  btn(W/2 - 140, 798, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
+  btn(CX - 140, 720, 280, 62, 'Play Again', function(){ newGame(G.mode, G.opt); }, { size:24, fill:'#2f66d6', stroke:'#9ff3ff' });
+  btn(CX - 140, 798, 280, 56, 'Menu', function(){ screen = 'menu'; G = null; }, { size:20, fill:'#27407f' });
 }
 function draw(){
-  ctx.setTransform(RS, 0, 0, RS, 0, 0); buttons = [];
+  ctx.setTransform(RS, 0, 0, RS, DX*RS, 0); buttons = [];
   if (screen === 'menu') drawMenu(); else if (screen === 'digsel') drawDigSel(); else if (screen === 'puzsel') drawPuzSel(); else if (screen === 'game' && G) drawGame(); else if (screen === 'over' && G) drawOver(); else { screen = 'menu'; drawMenu(); }
 }
 
 /* ---------- input ---------- */
-function pos(e){ var r = cv.getBoundingClientRect(); return { x:(e.clientX - r.left)/(r.width/W), y:(e.clientY - r.top)/(r.height/H) }; }
+function pos(e){ var r = cv.getBoundingClientRect(); return { x:(e.clientX - r.left)/(r.width/W) - DX, y:(e.clientY - r.top)/(r.height/H) }; }
 var gest = null;
 function inBoard(p){ return p.x >= BX - 6 && p.x <= BX + COLS*CS + 6 && p.y >= BY - 6 && p.y <= BY + (ROWS - HID)*CS + 6; }
 cv.addEventListener('pointerdown', function(e){
@@ -603,7 +621,7 @@ cv.addEventListener('pointerdown', function(e){
       return;
     }
   }
-  if (screen === 'game' && G && !G.over && !G.paused && !G.clearing && inBoard(p)){
+  if (screen === 'game' && G && !G.over && !G.paused && !(G.count > 0) && !G.clearing && inBoard(p)){
     gest = { id:e.pointerId, sx:p.x, sy:p.y, ax:p.x, t:performance.now(), moved:0 };
     try { cv.setPointerCapture(e.pointerId); } catch(err){}
   }
